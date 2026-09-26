@@ -26,6 +26,7 @@ COPY src/__init__.py ./src/
 COPY src/config.py ./src/
 COPY src/realtime.py ./src/
 COPY src/message_utils.py ./src/
+COPY src/transcription_contract.py ./src/
 COPY src/db/ ./src/db/
 COPY src/web/ ./src/web/
 COPY scripts/healthcheck_viewer.py ./scripts/healthcheck_viewer.py

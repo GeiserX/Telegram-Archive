@@ -8,7 +8,7 @@ import logging
 import os
 from urllib.parse import quote_plus
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from .models import (
     ChatFolderMember,
     ForumTopic,
     Media,
+    MediaTranscript,
     Message,
     MessageVersion,
     Metadata,
@@ -47,6 +48,7 @@ MIGRATION_MODELS = [
     Message,
     MessageVersion,
     Media,
+    MediaTranscript,
     Reaction,
     SyncStatus,
     Metadata,
@@ -60,6 +62,31 @@ MIGRATION_MODELS = [
     ViewerToken,
     AppSettings,
 ]
+
+
+# ORM tables the copy leaves behind, each with the reason. A new table lands in
+# MIGRATION_MODELS or here (tests/test_db_migrate.py checks), so a move to
+# PostgreSQL never drops one silently.
+MIGRATION_EXCLUDED = {
+    # Known gap from migration 031, outside the transcription work.
+    "avatar_history": "not copied yet",
+}
+
+# Tables whose integer ``id`` is a serial. Rows are copied with their ids, so
+# the sequence has to move past them or the next insert collides with a copied row.
+SERIAL_ID_MODELS = [MediaTranscript]
+
+
+async def _reset_id_sequence(target: DatabaseManager, model) -> None:
+    """Move a serial ``id`` sequence past the copied rows. The table name is a module constant."""
+    table = model.__tablename__
+    async with target.engine.begin() as conn:
+        await conn.execute(
+            text(
+                f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                f"COALESCE((SELECT MAX(id) FROM {table}), 0) + 1, false)"
+            )
+        )
 
 
 def _is_missing_table_error(exc: Exception, table_name: str) -> bool:
@@ -162,6 +189,8 @@ async def migrate_sqlite_to_postgres(
         # Migration order matters due to foreign key relationships.
         for model in MIGRATION_MODELS:
             counts[model.__tablename__] = await _migrate_table(source, target, model, batch_size)
+        for model in SERIAL_ID_MODELS:
+            await _reset_id_sequence(target, model)
 
         logger.info(f"Migration complete: {counts}")
 

@@ -49,6 +49,46 @@ PG_ADD_COLUMN = (
 )
 PG_CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_messages_text_search ON messages USING GIN (text_search)"
 
+# Transcript search (migration 032, docs/TRANSCRIPTION.md). A PostgreSQL
+# generated column cannot read another table, so transcripts get their own
+# objects, built by the same parser as the messages ones. The SQLite index
+# keys on ``id``: media_transcripts has a single INTEGER primary key, which
+# SQLite aliases to the rowid, unlike the composite key of messages.
+SQLITE_TRANSCRIPT_FTS_TABLE = "media_transcripts_fts"
+
+SQLITE_CREATE_TRANSCRIPT_FTS = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS media_transcripts_fts USING fts5("
+    "text, content='media_transcripts', content_rowid='id', "
+    "tokenize='unicode61 remove_diacritics 2'"
+    ")"
+)
+
+SQLITE_TRANSCRIPT_TRIGGER_NAMES = ("media_transcripts_fts_ai", "media_transcripts_fts_ad", "media_transcripts_fts_au")
+
+SQLITE_TRANSCRIPT_TRIGGERS = (
+    """CREATE TRIGGER IF NOT EXISTS media_transcripts_fts_ai AFTER INSERT ON media_transcripts BEGIN
+  INSERT INTO media_transcripts_fts(rowid, text) VALUES (new.id, new.text);
+END""",
+    """CREATE TRIGGER IF NOT EXISTS media_transcripts_fts_ad AFTER DELETE ON media_transcripts BEGIN
+  INSERT INTO media_transcripts_fts(media_transcripts_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END""",
+    """CREATE TRIGGER IF NOT EXISTS media_transcripts_fts_au AFTER UPDATE OF text ON media_transcripts BEGIN
+  INSERT INTO media_transcripts_fts(media_transcripts_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO media_transcripts_fts(rowid, text) VALUES (new.id, new.text);
+END""",
+)
+
+SQLITE_TRANSCRIPT_REBUILD = "INSERT INTO media_transcripts_fts(media_transcripts_fts) VALUES ('rebuild')"
+
+PG_TRANSCRIPT_ADD_COLUMN = (
+    "ALTER TABLE media_transcripts ADD COLUMN IF NOT EXISTS text_search tsvector "
+    "GENERATED ALWAYS AS (to_tsvector('simple', coalesce(text, ''))) STORED"
+)
+PG_TRANSCRIPT_INDEX_NAME = "idx_media_transcripts_text_search"
+PG_TRANSCRIPT_CREATE_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_media_transcripts_text_search ON media_transcripts USING GIN (text_search)"
+)
+
 # NOT \w+: unicode61 treats '_' as a separator (\w keeps it), so foo_bar is
 # indexed as foo,bar and the query must split the same way.
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
@@ -86,9 +126,20 @@ PG_TSQUERY_FROM_SEARCH = (
     "FROM unnest(to_tsvector('simple', :fts_search)))"
 )
 
+# The same query built for the transcript side of a search. Its own bind name:
+# chat and global search put both sides in one statement, and two text()
+# clauses may not share a bind parameter name.
+PG_TRANSCRIPT_TSQUERY_FROM_SEARCH = PG_TSQUERY_FROM_SEARCH.replace(":fts_search", ":transcript_search")
+
+
+def sqlite_has_fts5(connection) -> bool:
+    """Whether this SQLite build compiled FTS5 in (exotic builds leave it out)."""
+    row = connection.exec_driver_sql("SELECT 1 FROM pragma_compile_options WHERE compile_options='ENABLE_FTS5'").first()
+    return row is not None
+
 
 def install_fts_ddl_listener(metadata) -> None:
-    """Make ``create_all()`` produce the same FTS layer migration 028 does.
+    """Make ``create_all()`` produce the same FTS layer migrations 028 and 032 do.
 
     The schema has two authors — the ORM (fresh databases) and Alembic
     (upgrades) — and the parity gate requires them to agree exactly. The
@@ -102,14 +153,16 @@ def install_fts_ddl_listener(metadata) -> None:
     @event.listens_for(metadata, "after_create")
     def _create_fts_layer(target, connection, **kw):
         if connection.dialect.name == "sqlite":
-            fts5_row = connection.exec_driver_sql(
-                "SELECT 1 FROM pragma_compile_options WHERE compile_options='ENABLE_FTS5'"
-            ).first()
-            if fts5_row is None:
+            if not sqlite_has_fts5(connection):
                 return
             connection.exec_driver_sql(SQLITE_CREATE_FTS)
             for trigger_sql in SQLITE_TRIGGERS:
                 connection.exec_driver_sql(trigger_sql)
+            connection.exec_driver_sql(SQLITE_CREATE_TRANSCRIPT_FTS)
+            for trigger_sql in SQLITE_TRANSCRIPT_TRIGGERS:
+                connection.exec_driver_sql(trigger_sql)
         elif connection.dialect.name == "postgresql":
             connection.exec_driver_sql(PG_ADD_COLUMN)
             connection.exec_driver_sql(PG_CREATE_INDEX)
+            connection.exec_driver_sql(PG_TRANSCRIPT_ADD_COLUMN)
+            connection.exec_driver_sql(PG_TRANSCRIPT_CREATE_INDEX)

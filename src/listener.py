@@ -64,6 +64,7 @@ from .message_utils import (
 )
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import absorb_media_floods, call_with_flood_retry
+from .transcription import transcribe_media
 from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
@@ -313,6 +314,10 @@ class TelegramListener:
 
         # Real-time notifier for viewer WebSocket updates
         self._notifier: RealtimeNotifier | None = None
+
+        # Immediate transcriptions of just-downloaded voice messages, retained
+        # so the handler never waits on the server (docs/TRANSCRIPTION.md).
+        self._transcription_tasks: set[asyncio.Task] = set()
 
         # Callbacks handed to client.add_event_handler, kept so stop() can detach
         # them again. Telethon only ever appends, and the scheduler builds a NEW
@@ -1432,6 +1437,9 @@ class TelegramListener:
                                 }
                                 await self.db.insert_media(media_row, account_id=self.account_id)
                                 logger.debug("📎 Downloaded media")
+                                # A live voice message gets its transcript within
+                                # seconds instead of at the next drain.
+                                self._enqueue_transcription(media_row)
                                 # Mirror the DB row so the WS row matches what the next poll returns.
                                 ws_media = {
                                     "id": media_id,
@@ -1814,10 +1822,43 @@ class TelegramListener:
             except Exception as e:
                 logger.debug(f"Event webhook close failed: {type(e).__name__}")
 
+            # Same for immediate transcriptions: a cancelled one leaves its row
+            # queued, and the next drain resubmits it.
+            for task in list(self._transcription_tasks):
+                task.cancel()
+            if self._transcription_tasks:
+                await asyncio.gather(*self._transcription_tasks, return_exceptions=True)
+            self._transcription_tasks.clear()
+
             # Stop the protector
             await self._protector.stop()
 
             await self._log_stats()
+
+    def _enqueue_transcription(self, media_row: dict[str, Any]) -> None:
+        """Transcribe a just-downloaded voice message now, not at the next drain.
+
+        The same function the drain calls, run as a retained task so the
+        handler never waits on the server. Only for the configured types and
+        only with a server configured; the drain covers everything else.
+        """
+        if getattr(self.config, "transcription_enabled", False) is not True:
+            return
+        types = getattr(self.config, "transcription_types", None)
+        if not isinstance(types, (set, frozenset)) or media_row.get("type") not in types:
+            return
+        url = getattr(self.config, "transcription_url", None)
+        if not isinstance(url, str) or not url:
+            return
+        task = asyncio.create_task(self._transcribe_now(media_row))
+        self._transcription_tasks.add(task)
+        task.add_done_callback(self._transcription_tasks.discard)
+
+    async def _transcribe_now(self, media_row: dict[str, Any]) -> None:
+        try:
+            await transcribe_media(self.config, self.db, media_row, account_id=self.account_id, notifier=self._notifier)
+        except Exception as e:
+            logger.warning(f"Immediate transcription failed: {describe_exception(e)}")
 
     async def stop(self) -> None:
         """

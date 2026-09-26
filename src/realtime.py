@@ -146,6 +146,10 @@ class NotificationType(str, Enum):
     CHAT_UPDATE = "chat_update"
     PIN = "pin"
     REACTION = "reaction"
+    # Ids and status only (account_id, chat_id, message_id, media_id,
+    # transcript_id, status), never the text: pg_notify caps a payload at 8 KB
+    # and the browser fetches the rows itself (docs/TRANSCRIPTION.md).
+    TRANSCRIPT = "transcript"
 
 
 def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:

@@ -21,6 +21,13 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Automatic voice transcription (docs/TRANSCRIPTION.md). ``audio`` and
+# ``video`` are opt-in: music and long videos are wasted work by default.
+TRANSCRIPTION_DEFAULT_TYPES = frozenset({"voice", "video_note"})
+TRANSCRIPTION_VALID_TYPES = frozenset({"voice", "video_note", "audio", "video"})
+TRANSCRIPTION_PRESETS = frozenset({"lite", "fast", "best", "fusion", "auto"})
+TRANSCRIPTION_SECRET_PREFIX = "whsec_"
+
 
 def _parse_bool(value: str | None, default: bool = False, *, name: str | None = None) -> bool:
     """Parse a boolean-like environment variable value."""
@@ -64,6 +71,16 @@ def _parse_int_env(name: str, default: int) -> int:
         return int(raw.strip())
     except ValueError:
         raise ValueError(f"{name} must be an integer") from None
+
+
+def _is_http_url(raw: str) -> bool:
+    """An http:// or https:// URL with a hostname. A malformed one, such as an
+    unclosed IPv6 bracket that makes urlparse raise, is simply not one."""
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    except ValueError:
+        return False
 
 
 def _parse_float_env(name: str, default: float) -> float:
@@ -967,6 +984,33 @@ class Config:
             self._validate_event_webhook()
 
         # =====================================================================
+        # AUTOMATIC VOICE TRANSCRIPTION (docs/TRANSCRIPTION.md)
+        # =====================================================================
+        # On by default so that the day a server is configured everything
+        # already archived gets transcribed. An empty URL with the feature on
+        # is the "no server configured" state: the drain returns at once and
+        # the viewer shows a one-line nudge. The key and the webhook secret
+        # are secrets and never reach a log line. Validation follows the
+        # event webhook rule: one warning naming the variable, never the
+        # value, and the feature degrades instead of aborting the archiver.
+        self.transcription_enabled = _parse_bool_env("TRANSCRIPTION_ENABLED", True)
+        self.transcription_url = os.getenv("TRANSCRIPTION_URL", "").strip()
+        self.transcription_api_key = os.getenv("TRANSCRIPTION_API_KEY", "").strip()
+        self.transcription_preset = os.getenv("TRANSCRIPTION_PRESET", "auto").strip().lower() or "auto"
+        self.transcription_types: set[str] = set(TRANSCRIPTION_DEFAULT_TYPES)
+        self.transcription_max_seconds = 1800
+        self.transcription_language = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip()
+        self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
+        self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
+        self.transcription_backfill_per_run = 50
+        if self.transcription_enabled:
+            # Parsed only when on: a typo in a setting of a feature the
+            # operator turned off must not stop the archiver.
+            self.transcription_max_seconds = _parse_int_env("TRANSCRIPTION_MAX_SECONDS", 1800)
+            self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
+            self._validate_transcription()
+
+        # =====================================================================
         # GROUP → SUPERGROUP MIGRATION FOLLOWING (issue #228)
         # =====================================================================
         # When a basic group is upgraded to a supergroup it is assigned a brand
@@ -1160,6 +1204,20 @@ class Config:
                     logger.warning("  message_deleted webhooks will never fire: LISTEN_DELETIONS=false")
                 if "message_edited" in self.event_webhook_events and not self.listen_edits:
                     logger.warning("  message_edited webhooks will never fire: LISTEN_EDITS=false")
+        if self.transcription_enabled:
+            # Scheme and host only: the URL may carry a path or query the
+            # operator considers private. The key and the secret never appear.
+            if self.transcription_url:
+                parsed_url = urllib.parse.urlparse(self.transcription_url)
+                server = f"{parsed_url.scheme}://{parsed_url.hostname}"
+            else:
+                server = "no server configured (set TRANSCRIPTION_URL)"
+            logger.info(
+                f"TRANSCRIPTION enabled - server: {server}, preset: {self.transcription_preset}, "
+                f"types: {', '.join(sorted(self.transcription_types))}"
+            )
+        else:
+            logger.info("TRANSCRIPTION disabled")
         if self.follow_chat_migrations:
             logger.info(
                 "FOLLOW_CHAT_MIGRATIONS enabled - will adopt the new supergroup id after a group→supergroup migration"
@@ -1290,6 +1348,55 @@ class Config:
         except ValueError:
             _disable("EVENT_WEBHOOK_CHAT_IDS must be comma-separated integer chat ids")
             return
+
+    def _validate_transcription(self) -> None:
+        """Validate TRANSCRIPTION_* sub-options; warn and degrade, never abort.
+
+        Warnings name the variable and the expected format but never echo the
+        configured value. Runs only when TRANSCRIPTION_ENABLED=true. An empty
+        URL is valid: it is the "no server configured" state the viewer nudges
+        about. A bad URL disables the feature; a bad callback URL drops the
+        callback and a malformed secret drops the secret, and polling, which
+        always works, keeps going. The callback URL and the secret are not
+        checked against each other: the backup sends the URL and the viewer
+        holds the secret, so one process normally sees only one of them.
+        """
+        if self.transcription_url:
+            if not _is_http_url(self.transcription_url):
+                logger.warning(
+                    "TRANSCRIPTION_URL must be an http:// or https:// URL with a hostname - transcription disabled"
+                )
+                self.transcription_enabled = False
+                self.transcription_url = ""
+                return
+        if self.transcription_preset not in TRANSCRIPTION_PRESETS:
+            logger.warning(
+                "TRANSCRIPTION_PRESET must be one of lite, fast, best, fusion or auto - falling back to auto"
+            )
+            self.transcription_preset = "auto"
+        types_raw = os.getenv("TRANSCRIPTION_TYPES", "")
+        if types_raw.strip():
+            requested = {part.strip().lower() for part in types_raw.split(",") if part.strip()}
+            unknown = requested - TRANSCRIPTION_VALID_TYPES
+            if unknown:
+                logger.warning(
+                    f"TRANSCRIPTION_TYPES dropped {len(unknown)} unknown name(s) - "
+                    "valid names are voice, video_note, audio and video"
+                )
+            accepted = requested & TRANSCRIPTION_VALID_TYPES
+            self.transcription_types = accepted or set(TRANSCRIPTION_DEFAULT_TYPES)
+        if self.transcription_webhook_secret and not self.transcription_webhook_secret.startswith(
+            TRANSCRIPTION_SECRET_PREFIX
+        ):
+            logger.warning("TRANSCRIPTION_WEBHOOK_SECRET must start with whsec_ - secret ignored")
+            self.transcription_webhook_secret = ""
+        if self.transcription_callback_url:
+            if not _is_http_url(self.transcription_callback_url):
+                logger.warning(
+                    "TRANSCRIPTION_CALLBACK_URL must be an http:// or https:// URL with a hostname - "
+                    "callback dropped, polling keeps working"
+                )
+                self.transcription_callback_url = ""
 
     def _parse_topic_skip_list(self, skip_str: str) -> dict[int, set[int]]:
         """Parse SKIP_TOPIC_IDS into {chat_id: {topic_id, ...}}.
@@ -1904,6 +2011,9 @@ def setup_logging(config: Config):
 
     # Set Telethon logging to WARNING to reduce noise
     logging.getLogger("telethon").setLevel(logging.WARNING)
+    # httpx logs every request's full URL at INFO. The transcription server
+    # and the event webhook URLs never belong in the container log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 if __name__ == "__main__":

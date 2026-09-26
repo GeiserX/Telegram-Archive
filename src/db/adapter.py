@@ -23,23 +23,26 @@ from typing import Any
 
 from sqlalchemy import (
     and_,
+    case,
     delete,
     desc,
     exists,
     false,
     func,
     literal,
+    literal_column,
     nulls_last,
     or_,
     select,
     text,
     tuple_,
+    union,
     union_all,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
@@ -49,10 +52,19 @@ from ..message_utils import (
     utcnow_naive,
 )
 from .base import DatabaseManager
-from .fts import PG_TSQUERY_FROM_SEARCH, PG_TSVECTOR_COLUMN, SQLITE_FTS_TABLE, fts_match_query, search_has_words
+from .fts import (
+    PG_TRANSCRIPT_TSQUERY_FROM_SEARCH,
+    PG_TSQUERY_FROM_SEARCH,
+    PG_TSVECTOR_COLUMN,
+    SQLITE_FTS_TABLE,
+    SQLITE_TRANSCRIPT_FTS_TABLE,
+    fts_match_query,
+    search_has_words,
+)
 from .models import (
     DEFAULT_ACCOUNT_ID,
     PRIVATE_CHAT_TYPE,
+    TRANSCRIPT_OPEN_STATUSES,
     Account,
     AppSettings,
     AvatarHistory,
@@ -61,6 +73,7 @@ from .models import (
     ChatFolderMember,
     ForumTopic,
     Media,
+    MediaTranscript,
     Message,
     MessageVersion,
     Metadata,
@@ -80,6 +93,51 @@ logger = logging.getLogger(__name__)
 # Bare (peerless) events can only ever refer to the common message box, whose
 # ids sit above it — the same constant migration 022 types placeholders with.
 SUPERGROUP_ID_CEILING = -(10**12)
+
+# Media transcripts (032). ``status`` only advances along this rank; a row at
+# a terminal status is never written again. The drain query retries a media
+# whose newest row failed only while it has fewer than this many failed rows.
+TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
+TRANSCRIPT_TERMINAL_STATUSES = frozenset({"done", "failed", "skipped"})
+TRANSCRIPT_MAX_FAILED_ROWS = 3
+TRANSCRIPT_JSON_COLUMNS = frozenset({"models", "words", "segments"})
+TRANSCRIPT_FILL_COLUMNS = frozenset(
+    {
+        "content_hash",
+        "idempotency_key",
+        "source",
+        "engine_name",
+        "engine_version",
+        "preset",
+        "models",
+        "language",
+        "language_confidence",
+        "text",
+        "words",
+        "segments",
+        "confidence",
+        "duration_s",
+        "job_id",
+        "error",
+        "completed_at",
+    }
+)
+# app_settings keys the backup writes for the viewer's settings row and for
+# the akou event feed; both appear in the master-only settings dump, neither
+# is a secret.
+TRANSCRIPTION_EVENTS_CURSOR_KEY = "transcription.events_cursor"
+TRANSCRIPTION_SERVER_KEY = "transcription.server"
+
+
+def _json_list(value: str | None) -> list:
+    """A JSON-text column as a list; anything unreadable is an empty list."""
+    if not value:
+        return []
+    try:
+        loaded = json.loads(value)
+    except ValueError, TypeError:
+        return []
+    return loaded if isinstance(loaded, list) else []
 
 
 def _strip_tz(dt: datetime | None) -> datetime | None:
@@ -482,6 +540,7 @@ class DatabaseAdapter:
         self._is_sqlite = db_manager._is_sqlite
         # Full-text capability, probed once on first search: None = unknown.
         self._fts_ready_cache: bool | None = None
+        self._transcript_fts_ready_cache: bool | None = None
         # (read_at, {telegram_user_id: account_id}) — see _account_owner_ids.
         self._account_owner_cache: tuple[float, dict[int, int]] | None = None
 
@@ -1529,7 +1588,12 @@ class DatabaseAdapter:
         *,
         account_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get messages within a date range (None account_id = unscoped until phase 4)."""
+        """Get messages within a date range (None account_id = unscoped until phase 4).
+
+        Each row carries its ``account_id``: unscoped, two accounts' private
+        chats with the same peer share a chat id and message ids, and the
+        export tells them apart by the account.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(Message)
 
@@ -1549,7 +1613,7 @@ class DatabaseAdapter:
             stmt = stmt.order_by(Message.date.asc())
 
             result = await session.execute(stmt)
-            return [self._message_to_dict(m) for m in result.scalars()]
+            return [{**self._message_to_dict(m), "account_id": m.account_id} for m in result.scalars()]
 
     async def find_message_by_date(
         self, chat_id: int, target_date: datetime, *, account_id: int | None = None
@@ -1719,14 +1783,30 @@ class DatabaseAdapter:
             "media_type": media_row[0] if media_row else None,
         }
 
+    @staticmethod
+    def _delete_transcripts_of(media_predicate, *, account_id: int):
+        """DELETE of the transcript rows of the media ``media_predicate`` selects.
+
+        The flag-gated removal paths take a media row's transcripts with it
+        (docs/TRANSCRIPTION.md): run this before deleting the media, in the
+        same transaction. There is no foreign key to cascade through.
+        """
+        return delete(MediaTranscript).where(
+            and_(
+                MediaTranscript.account_id == account_id,
+                MediaTranscript.media_id.in_(select(Media.id).where(media_predicate)),
+            )
+        )
+
     @retry_on_locked()
     async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> dict | None:
         """Delete a specific message and its media.
 
         Returns a pre-deletion snapshot of the row (see _deletion_snapshot) so
         the listener can fire the event webhook with the destroyed content, or
-        None when the message was never archived. The four DELETEs still run
-        unconditionally — orphan-cleanup behavior is unchanged.
+        None when the message was never archived. The DELETEs still run
+        unconditionally — orphan-cleanup behavior is unchanged. The message's
+        media take their transcript rows with them.
         """
         async with self.db_manager.async_session_factory() as session:
             snapshot = await self._deletion_snapshot(session, account_id, chat_id, message_id)
@@ -1740,7 +1820,13 @@ class DatabaseAdapter:
                     )
                 )
             )
-            # Delete associated media
+            # Delete the transcripts of the media below, then the media
+            await session.execute(
+                self._delete_transcripts_of(
+                    and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id),
+                    account_id=account_id,
+                )
+            )
             await session.execute(
                 delete(Media).where(
                     and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id)
@@ -2148,17 +2234,22 @@ class DatabaseAdapter:
         before: datetime | None = None,
         limit: int = 50,
         scope: ChatScope | None = None,
+        with_transcripts: bool = True,
     ) -> list[dict[str, Any]]:
-        """The what-changed feed: deletions and edits the archive captured.
+        """The what-changed feed: deletions, edits and transcripts the archive captured.
 
         The archive's differentiator is that it KEEPS what disappeared; this
-        is the query that finally lists it. Two streams share one shape:
+        is the query that finally lists it. Three streams share one shape:
 
         * ``deleted`` — soft-deleted messages (``is_deleted=1``), dated by
           ``deleted_at``, carrying the text the archive kept.
         * ``edited`` — ``message_versions`` rows, dated by ``captured_at``
           (when the archive observed the supersession), carrying the old text
           plus the message's CURRENT text.
+        * ``transcript`` — finished voice transcripts, dated by
+          ``completed_at``, carrying the transcript text and its language, so
+          a poller sees new transcripts (docs/TRANSCRIPTION.md). Left out
+          when ``with_transcripts`` is False, for a no-download login.
 
         Newest first. ``before`` is an exclusive keyset cursor over the
         per-row date: pass the last row's ``date`` back to page. Rows sharing
@@ -2216,16 +2307,38 @@ class DatabaseAdapter:
                 )
                 .join(Chat, and_(Chat.account_id == MessageVersion.account_id, Chat.id == MessageVersion.chat_id))
             )
+            transcript_stmt = (
+                self._transcript_hit_messages(
+                    select(
+                        Message.id.label("message_id"),
+                        MediaTranscript.completed_at.label("date"),
+                        MediaTranscript.text,
+                        MediaTranscript.language,
+                        Message.sender_name,
+                        Chat.ref,
+                        Chat.title,
+                        Chat.first_name,
+                        Chat.last_name,
+                        Chat.username,
+                        Chat.type.label("chat_type"),
+                    )
+                )
+                .join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
+                .where(MediaTranscript.status == "done", MediaTranscript.completed_at.isnot(None))
+            )
             if since is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at >= since)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at >= since)
+                transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at >= since)
             if before is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at < before)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at < before)
+                transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at < before)
             if scope is not None:
                 for predicate in scope.sql_predicates():
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
+                    transcript_stmt = transcript_stmt.where(predicate)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -2263,12 +2376,37 @@ class DatabaseAdapter:
             # otherwise list. Without them an event whose other copy fell just
             # outside the window would vanish from the page instead of being
             # deduplicated.
+            # A transcript is an event of the message: two accounts holding one
+            # channel each transcribe their own media row of the same audio,
+            # and the text names the result the way the superseded text names
+            # an edit.
+            lower_media = aliased(Media, name="lower_transcribed_media")
+            lower_media_chat = aliased(Chat, name="lower_transcribed_chat")
+            lower_transcript = aliased(MediaTranscript, name="lower_transcript")
+            lower_transcript_match = [
+                lower_transcript.account_id == lower_media.account_id,
+                lower_transcript.media_id == lower_media.id,
+                lower_transcript.status == "done",
+                lower_transcript.completed_at.isnot(None),
+                lower_transcript.text.is_not_distinct_from(MediaTranscript.text),
+            ]
             if since is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at >= since)
                 edited_duplicate.append(lower_edited.captured_at >= since)
+                lower_transcript_match.append(lower_transcript.completed_at >= since)
             if before is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at < before)
                 edited_duplicate.append(lower_edited.captured_at < before)
+                lower_transcript_match.append(lower_transcript.completed_at < before)
+            transcript_duplicate = [
+                lower_media.chat_id == Message.chat_id,
+                lower_media.message_id == Message.id,
+                lower_media.account_id < Message.account_id,
+                # Correlated by name: auto-correlation reaches one level up only,
+                # and this EXISTS sits two levels below the transcript row whose
+                # text it compares, so without it the text rule matched any row.
+                select(literal(1)).where(*lower_transcript_match).correlate(MediaTranscript, lower_media).exists(),
+            ]
 
             deleted_stmt = deleted_stmt.where(
                 self._event_not_already_listed(
@@ -2281,8 +2419,15 @@ class DatabaseAdapter:
                 )
             )
 
+            transcript_stmt = transcript_stmt.where(
+                self._event_not_already_listed(
+                    scope, lower_rows=lower_media, lower_chat=lower_media_chat, event_match=transcript_duplicate
+                )
+            )
+
             deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
             edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
+            transcript_stmt = transcript_stmt.order_by(MediaTranscript.completed_at.desc()).limit(per_stream)
 
             changes: list[dict[str, Any]] = []
             for row in (await session.execute(deleted_stmt)).all():
@@ -2306,6 +2451,19 @@ class DatabaseAdapter:
                         "sender_name": row.sender_name,
                         "old_text": row.old_text,
                         "new_text": row.new_text,
+                    }
+                )
+            transcript_rows = (await session.execute(transcript_stmt)).all() if with_transcripts else []
+            for row in transcript_rows:
+                changes.append(
+                    {
+                        "kind": "transcript",
+                        "date": row.date.isoformat() if row.date else None,
+                        "chat": _chat_fields(row),
+                        "message_id": row.message_id,
+                        "sender_name": row.sender_name,
+                        "text": row.text,
+                        "language": row.language,
                     }
                 )
             changes.sort(key=lambda c: c["date"] or "", reverse=True)
@@ -2857,8 +3015,9 @@ class DatabaseAdapter:
             Number of media records deleted
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = delete(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id))
-            result = await session.execute(stmt)
+            chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
+            await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
+            result = await session.execute(delete(Media).where(chat_media))
             await session.commit()
             return result.rowcount
 
@@ -2933,12 +3092,19 @@ class DatabaseAdapter:
             )
         return records
 
-    async def delete_media_records(self, media_ids: Collection[str], *, account_id: int) -> int:
+    async def delete_media_records(
+        self, media_ids: Collection[str], *, account_id: int, with_transcripts: bool = False
+    ) -> int:
         """Delete specific media rows by id. Returns how many were removed.
 
         A media id repeats across accounts (``{chat}_{msg}_{type}``), so the
         account leads the predicate here exactly as it does in
         ``increment_media_download_attempts``.
+
+        ``with_transcripts`` also deletes the transcript rows of those media.
+        Only the flag-gated ``YOUTUBE_VIDEOS_DELETE_EXISTING`` cleanup passes
+        it; the pending-twin cleanup, which runs on every backup, removes the
+        media row only, the way ``delete_voice_note_audio_twins`` does.
         """
         ids = list(media_ids)
         if not ids:
@@ -2948,7 +3114,14 @@ class DatabaseAdapter:
             # Chunked: SQLite caps a statement at 999 bound parameters by default,
             # and a large archive can exceed that in one cleanup pass.
             for start in range(0, len(ids), 500):
-                stmt = delete(Media).where(and_(Media.account_id == account_id, Media.id.in_(ids[start : start + 500])))
+                chunk = ids[start : start + 500]
+                if with_transcripts:
+                    await session.execute(
+                        delete(MediaTranscript).where(
+                            and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id.in_(chunk))
+                        )
+                    )
+                stmt = delete(Media).where(and_(Media.account_id == account_id, Media.id.in_(chunk)))
                 result = await session.execute(stmt)
                 deleted += result.rowcount or 0
             await session.commit()
@@ -2969,6 +3142,10 @@ class DatabaseAdapter:
         Only rows go, and only when the ``voice`` twin is downloaded and names
         the very same ``file_path``, so the file stays referenced by the row that
         remains. Returns the number of rows deleted.
+
+        Transcripts are left alone: a transcript of the removed row stays in
+        its table, and the viewer shows it on the voice twin, which holds the
+        same audio, until that twin has rows of its own (docs/TRANSCRIPTION.md).
         """
         twin = aliased(Media)
         async with self.db_manager.async_session_factory() as session:
@@ -4046,8 +4223,10 @@ class DatabaseAdapter:
                     and_(MessageVersion.account_id == account_id, MessageVersion.chat_id == chat_id)
                 )
             )
-            # Delete media records
-            await session.execute(delete(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id)))
+            # Delete the transcripts of the chat's media, then the media records
+            chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
+            await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
+            await session.execute(delete(Media).where(chat_media))
             # Delete reactions
             await session.execute(
                 delete(Reaction).where(and_(Reaction.account_id == account_id, Reaction.chat_id == chat_id))
@@ -4382,6 +4561,7 @@ class DatabaseAdapter:
         dense_hits: int | None = None,
         walk_timeout_ms: int | None = None,
         fold_shared: bool = False,
+        with_transcripts: bool = True,
     ) -> dict[str, Any]:
         """Messages whose text matches ``search`` in ANY entitled chat, newest first.
 
@@ -4410,6 +4590,17 @@ class DatabaseAdapter:
         ``dense_hits`` and ``walk_timeout_ms`` exist for tests that want to
         drive each PostgreSQL path with a handful of rows.
 
+        Voice transcripts are searched too (docs/TRANSCRIPTION.md): the hit
+        set is the UNION of two indexed key sets, message keys from the
+        messages index and message keys reached from transcript hits through
+        ``media`` on ``(account_id, media_id)``. Never an OR or an EXISTS in
+        the message predicate, which would turn every page into a scan. Each
+        row's ``matched_in`` is ``transcript`` when only the transcript side
+        produced its key, else ``message``. Without the transcript search
+        objects (SQLite without FTS5, or a database not yet at 032), or with
+        ``with_transcripts`` False (a no-download login), the transcript side
+        is absent.
+
         Returns ``{"results": [...], "has_more": bool, "indexed": bool}``; one
         extra row is fetched to answer ``has_more``.
         """
@@ -4424,27 +4615,28 @@ class DatabaseAdapter:
             predicate = await self._text_search_predicate(session, search)
             if predicate is None:
                 return {"results": [], "has_more": False, "indexed": False}
+            sides = {
+                "fold_shared": fold_shared,
+                "transcript_predicate": (
+                    await self._transcript_search_predicate(session, search) if with_transcripts else None
+                ),
+            }
 
             if (
                 self._is_sqlite
-                or await self._global_search_hit_count(session, predicate, scope, dense_hits, fold_shared=fold_shared)
-                < dense_hits
+                or await self._global_search_hit_count(session, predicate, scope, dense_hits, **sides) < dense_hits
             ):
-                rows = await self._global_search_sorted_hits(
-                    session, predicate, scope, limit, offset, fold_shared=fold_shared
-                )
+                rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset, **sides)
             else:
                 try:
                     rows = await self._global_search_walk(
-                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms, fold_shared=fold_shared
+                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms, **sides
                     )
                 except DBAPIError as exc:
                     if not _is_statement_timeout(exc):
                         raise
                     await session.rollback()
-                    rows = await self._global_search_sorted_hits(
-                        session, predicate, scope, limit, offset, fold_shared=fold_shared
-                    )
+                    rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset, **sides)
 
         results = [
             {
@@ -4465,6 +4657,7 @@ class DatabaseAdapter:
                 "chat_is_forum": bool(row["chat_is_forum"]),
                 "chat_avatar_photo_id": row["chat_avatar_photo_id"],
                 "topic_title": row["topic_title"],
+                "matched_in": "transcript" if row["via_transcript"] else "message",
             }
             for row in rows[:limit]
         ]
@@ -4513,15 +4706,109 @@ class DatabaseAdapter:
             ),
         )
 
-    async def _global_search_hit_count(
-        self, session, predicate, scope: ChatScope, cap: int, *, fold_shared: bool = False
-    ) -> int:
-        """How many rows match, counted through the index and stopped at ``cap``."""
-        hits = self._global_search_scoped(
-            select(literal(1)).select_from(Message).where(predicate), scope, fold_shared=fold_shared
+    @staticmethod
+    def _transcript_hit_messages(stmt):
+        """Put ``media_transcripts`` in FROM and join it through ``media`` to the message that carries it."""
+        return (
+            stmt.select_from(MediaTranscript)
+            .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Media.account_id,
+                    Message.chat_id == Media.chat_id,
+                    Message.id == Media.message_id,
+                ),
+            )
         )
-        capped = hits.limit(cap).subquery("search_hits")
+
+    def _global_search_side_keys(self, predicate, scope: ChatScope, *, fold_shared: bool = False, via_transcript=False):
+        """One side of the hit set: message keys, their date and which side found them.
+
+        The message side reads ``messages`` through its own index. The
+        transcript side reads ``media_transcripts`` through its index and
+        reaches the message through ``media``. Both are scoped the same way.
+        The transcript side is DISTINCT: a media transcribed twice, or a
+        message with two transcribed media, is one key, so a side cut to
+        ``offset + limit + 1`` rows by the walk holds that many messages.
+        """
+        stmt = select(
+            Message.account_id,
+            Message.chat_id,
+            Message.id,
+            Message.date,
+            literal_column("1" if via_transcript else "0").label("via_transcript"),
+        )
+        if via_transcript:
+            stmt = self._transcript_hit_messages(stmt).distinct()
+        else:
+            stmt = stmt.select_from(Message)
+        return self._global_search_scoped(stmt.where(predicate), scope, fold_shared=fold_shared)
+
+    def _global_search_sides(self, predicate, transcript_predicate, scope: ChatScope, *, fold_shared: bool):
+        sides = [self._global_search_side_keys(predicate, scope, fold_shared=fold_shared)]
+        if transcript_predicate is not None:
+            sides.append(
+                self._global_search_side_keys(transcript_predicate, scope, fold_shared=fold_shared, via_transcript=True)
+            )
+        return sides
+
+    async def _global_search_hit_count(
+        self, session, predicate, scope: ChatScope, cap: int, *, fold_shared: bool = False, transcript_predicate=None
+    ) -> int:
+        """How many distinct messages match, counted through the indexes and stopped at ``cap``."""
+        sides = [
+            side.limit(cap).subquery(f"search_side_{index}")
+            for index, side in enumerate(
+                self._global_search_sides(predicate, transcript_predicate, scope, fold_shared=fold_shared)
+            )
+        ]
+        if len(sides) == 1:
+            capped = select(literal(1)).select_from(sides[0]).subquery("search_hits")
+        else:
+            keys = union(*(select(side.c.account_id, side.c.chat_id, side.c.id) for side in sides)).subquery("keys")
+            capped = select(literal(1)).select_from(keys).limit(cap).subquery("search_hits")
         return int((await session.execute(select(func.count()).select_from(capped))).scalar_one())
+
+    def _global_search_page_rows(self, sides, limit: int, offset: int, *, materialize: bool):
+        """One page of the hit set, keyed and sorted before the joins, then its columns.
+
+        Two sides are a UNION ALL grouped by key: a message found by both
+        reports the message side (``via_transcript`` 0), and each key is one
+        row, so offsets and ``has_more`` count messages, not matches.
+        """
+        if len(sides) == 1:
+            hits = sides[0].cte("search_hits")
+        else:
+            hits = union_all(*(select(*side.subquery().c) for side in sides)).cte("search_hits")
+        if materialize:
+            hits = hits.prefix_with("MATERIALIZED")
+        via = hits.c.via_transcript
+        page = select(hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date)
+        if len(sides) == 1:
+            page = page.add_columns(via.label("via_transcript"))
+        else:
+            page = page.add_columns(func.min(via).label("via_transcript")).group_by(
+                hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date
+            )
+        page = (
+            page.order_by(hits.c.date.desc(), hits.c.account_id.desc(), hits.c.chat_id.desc(), hits.c.id.desc())
+            .limit(limit + 1)
+            .offset(offset)
+            .subquery("search_page")
+        )
+        return self._global_search_joins(
+            select(*self._GLOBAL_SEARCH_COLUMNS, page.c.via_transcript)
+            .select_from(page)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == page.c.account_id,
+                    Message.chat_id == page.c.chat_id,
+                    Message.id == page.c.id,
+                ),
+            )
+        ).order_by(page.c.date.desc(), page.c.account_id.desc(), page.c.chat_id.desc(), page.c.id.desc())
 
     async def _global_search_walk(
         self,
@@ -4533,14 +4820,21 @@ class DatabaseAdapter:
         *,
         timeout_ms: int | None = None,
         fold_shared: bool = False,
+        transcript_predicate=None,
     ):
-        """Newest-first walk that filters as it goes — the shape for dense terms."""
-        stmt = self._global_search_joins(select(*self._GLOBAL_SEARCH_COLUMNS).select_from(Message)).where(predicate)
-        for scope_predicate in scope.sql_predicates():
-            stmt = stmt.where(scope_predicate)
-        if fold_shared:
-            stmt = stmt.where(scope.displayed_copy_predicate())
-        stmt = stmt.order_by(*(column.desc() for column in self._GLOBAL_SEARCH_ORDER)).limit(limit + 1).offset(offset)
+        """Newest-first walk that filters as it goes — the shape for dense terms.
+
+        Each side walks its own newest ``offset + limit + 1`` keys; the page
+        of the union is always inside the union of those tops, so paging by
+        key stays exact.
+        """
+        depth = offset + limit + 1
+        order = [column.desc() for column in self._GLOBAL_SEARCH_ORDER]
+        sides = [
+            side.order_by(*order).limit(depth)
+            for side in self._global_search_sides(predicate, transcript_predicate, scope, fold_shared=fold_shared)
+        ]
+        stmt = self._global_search_page_rows(sides, limit, offset, materialize=False)
         if timeout_ms is not None:
             # SET LOCAL: scoped to this transaction, so the pooled connection
             # never carries it into another request.
@@ -4548,7 +4842,15 @@ class DatabaseAdapter:
         return (await session.execute(stmt)).mappings().all()
 
     async def _global_search_sorted_hits(
-        self, session, predicate, scope: ChatScope, limit: int, offset: int, *, fold_shared: bool = False
+        self,
+        session,
+        predicate,
+        scope: ChatScope,
+        limit: int,
+        offset: int,
+        *,
+        fold_shared: bool = False,
+        transcript_predicate=None,
     ):
         """Materialise the hit keys through the index, sort them, then fetch one page.
 
@@ -4556,31 +4858,8 @@ class DatabaseAdapter:
         into the date walk it prefers, and the page is cut BEFORE the joins so
         a dense term never joins every hit to fetch twenty rows.
         """
-        keys = select(Message.account_id, Message.chat_id, Message.id, Message.date).select_from(Message)
-        hits = (
-            self._global_search_scoped(keys.where(predicate), scope, fold_shared=fold_shared)
-            .cte("search_hits")
-            .prefix_with("MATERIALIZED")
-        )
-        page = (
-            select(hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date)
-            .order_by(hits.c.date.desc(), hits.c.account_id.desc(), hits.c.chat_id.desc(), hits.c.id.desc())
-            .limit(limit + 1)
-            .offset(offset)
-            .subquery("search_page")
-        )
-        stmt = self._global_search_joins(
-            select(*self._GLOBAL_SEARCH_COLUMNS)
-            .select_from(page)
-            .join(
-                Message,
-                and_(
-                    Message.account_id == page.c.account_id,
-                    Message.chat_id == page.c.chat_id,
-                    Message.id == page.c.id,
-                ),
-            )
-        ).order_by(page.c.date.desc(), page.c.account_id.desc(), page.c.chat_id.desc(), page.c.id.desc())
+        sides = self._global_search_sides(predicate, transcript_predicate, scope, fold_shared=fold_shared)
+        stmt = self._global_search_page_rows(sides, limit, offset, materialize=True)
         return (await session.execute(stmt)).mappings().all()
 
     async def _fts_ready(self, session) -> bool:
@@ -4611,6 +4890,30 @@ class DatabaseAdapter:
             self._fts_ready_cache = row.first() is not None
         return self._fts_ready_cache
 
+    async def _transcript_fts_ready(self, session) -> bool:
+        """Whether migration 032's transcript search objects exist in THIS database.
+
+        Same contract as ``_fts_ready``: probed once per adapter. A database
+        migrated to 031 and not yet to 032 keeps searching messages only.
+        """
+        if self._transcript_fts_ready_cache is None:
+            if self._is_sqlite:
+                row = await session.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t").bindparams(
+                        t=SQLITE_TRANSCRIPT_FTS_TABLE
+                    )
+                )
+            else:
+                row = await session.execute(
+                    text(
+                        "SELECT 1 FROM pg_attribute "
+                        "WHERE attrelid = to_regclass('media_transcripts') "
+                        "AND attname = :c AND NOT attisdropped"
+                    ).bindparams(c=PG_TSVECTOR_COLUMN)
+                )
+            self._transcript_fts_ready_cache = row.first() is not None
+        return self._transcript_fts_ready_cache
+
     async def _text_search_predicate(self, session, search: str):
         """An indexed word-prefix predicate for ``search``, or None for ILIKE.
 
@@ -4634,6 +4937,30 @@ class DatabaseAdapter:
         # string only ever travels as a bind parameter.
         return text(f"messages.text_search @@ {PG_TSQUERY_FROM_SEARCH}").bindparams(fts_search=search)
 
+    async def _transcript_search_predicate(self, session, search: str):
+        """The transcript side of a search: an indexed predicate on ``media_transcripts``, or None.
+
+        None when this database lacks migration 032's search objects (SQLite
+        built without FTS5, or not yet migrated) or the search has no word.
+        Kept apart from ``_text_search_predicate`` on purpose: callers union
+        the two sides as key sets and never OR them into one predicate.
+        """
+        if not await self._transcript_fts_ready(session):
+            return None
+        if self._is_sqlite:
+            match = fts_match_query(search)
+            if match is None:
+                return None
+            return text(
+                "media_transcripts.id IN "
+                "(SELECT rowid FROM media_transcripts_fts WHERE media_transcripts_fts MATCH :transcript_match)"
+            ).bindparams(transcript_match=match)
+        if not search_has_words(search):
+            return None
+        return text(f"media_transcripts.text_search @@ {PG_TRANSCRIPT_TSQUERY_FROM_SEARCH}").bindparams(
+            transcript_search=search
+        )
+
     async def get_messages_paginated(
         self,
         chat_id: int,
@@ -4646,9 +4973,13 @@ class DatabaseAdapter:
         topic_id: int | None = None,
         *,
         account_id: int | None = None,
+        with_transcripts: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
+
+        ``with_transcripts`` False keeps a search on message text only, for a
+        no-download login that may not learn what a voice message says.
 
         ``account_id=None`` is unscoped until phase 4 (viewer entitlements).
 
@@ -4707,9 +5038,30 @@ class DatabaseAdapter:
             if topic_id is not None:
                 stmt = stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
+            # Chat search, like global search, is the UNION of two indexed key
+            # sets: the message index and the transcript index reached through
+            # media (docs/TRANSCRIPTION.md). ``transcript_predicate`` stays None
+            # on the ILIKE fallback and without the transcript objects.
+            fts_predicate = transcript_predicate = None
             if search:
                 fts_predicate = await self._text_search_predicate(session, search)
-                if fts_predicate is not None:
+                if fts_predicate is not None and with_transcripts:
+                    transcript_predicate = await self._transcript_search_predicate(session, search)
+                if transcript_predicate is not None:
+                    message_keys = select(Message.account_id, Message.id).where(
+                        Message.chat_id == chat_id, fts_predicate
+                    )
+                    transcript_keys = self._transcript_hit_messages(select(Message.account_id, Message.id)).where(
+                        Media.chat_id == chat_id, transcript_predicate
+                    )
+                    if account_id is not None:
+                        message_keys = message_keys.where(Message.account_id == account_id)
+                        transcript_keys = transcript_keys.where(Message.account_id == account_id)
+                    hit_keys = union(message_keys, transcript_keys).subquery("chat_search_hits")
+                    stmt = stmt.where(
+                        tuple_(Message.account_id, Message.id).in_(select(hit_keys.c.account_id, hit_keys.c.id))
+                    )
+                elif fts_predicate is not None:
                     stmt = stmt.where(fts_predicate)
                 else:
                     escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
@@ -4781,6 +5133,20 @@ class DatabaseAdapter:
 
             version_counts = {msg["id"]: 0 for msg in messages}
             page_message_ids = [msg["id"] for msg in messages]
+
+            if search:
+                # matched_in: "transcript" when only the transcript side found
+                # the row. One indexed read over the page's own ids.
+                by_message = set(zip(row_accounts, page_message_ids, strict=True))
+                if transcript_predicate is not None and page_message_ids:
+                    matched_stmt = select(Message.account_id, Message.id).where(
+                        Message.chat_id == chat_id, Message.id.in_(page_message_ids), fts_predicate
+                    )
+                    if account_id is not None:
+                        matched_stmt = matched_stmt.where(Message.account_id == account_id)
+                    by_message = {(row.account_id, row.id) for row in await session.execute(matched_stmt)}
+                for account, msg in zip(row_accounts, messages, strict=True):
+                    msg["matched_in"] = "message" if (account, msg["id"]) in by_message else "transcript"
 
             # v6.0.0 media as a nested object — batched for the page. When a
             # message carries several media rows, ONE is attached
@@ -5272,13 +5638,20 @@ class DatabaseAdapter:
             to_date: naive-UTC EXCLUSIVE upper bound on Message.date
 
         Yields:
-            Message dictionaries with user info
+            Message dictionaries with user info. A message whose media has
+            transcripts carries them all under ``transcripts``, newest first.
         """
+        transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        for row in await self.get_transcripts_for_export(
+            chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+        ):
+            transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
         async with self.db_manager.async_session_factory() as session:
             if include_media:
                 stmt = (
                     select(
                         Message.id,
+                        Message.account_id,
                         Message.date,
                         Message.text,
                         Message.is_outgoing,
@@ -5306,6 +5679,7 @@ class DatabaseAdapter:
                 stmt = (
                     select(
                         Message.id,
+                        Message.account_id,
                         Message.date,
                         Message.text,
                         Message.is_outgoing,
@@ -5346,6 +5720,8 @@ class DatabaseAdapter:
                 if include_media:
                     msg["media_type"] = row.media_type
                     msg["media_path"] = row.media_file_path
+                if (row.account_id, row.id) in transcripts:
+                    msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 yield msg
 
     # ========== Forum Topic Operations (v6.2.0) ==========
@@ -6110,6 +6486,572 @@ class DatabaseAdapter:
             "use_count": token.use_count,
             "created_at": token.created_at.isoformat() if token.created_at else None,
         }
+
+    # ========================================================================
+    # Media transcripts (032, docs/TRANSCRIPTION.md)
+    # ========================================================================
+
+    @staticmethod
+    def _transcript_to_dict(row: MediaTranscript) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "media_id": row.media_id,
+            "content_hash": row.content_hash,
+            "idempotency_key": row.idempotency_key,
+            "source": row.source,
+            "engine_name": row.engine_name,
+            "engine_version": row.engine_version,
+            "preset": row.preset,
+            "models": _json_list(row.models),
+            "language": row.language,
+            "language_confidence": row.language_confidence,
+            "text": row.text,
+            "words": _json_list(row.words),
+            "segments": _json_list(row.segments),
+            "confidence": row.confidence,
+            "duration_s": row.duration_s,
+            "job_id": row.job_id,
+            "status": row.status,
+            "error": row.error,
+            "requested_at": row.requested_at,
+            "completed_at": row.completed_at,
+            "created_at": row.created_at,
+            "job_stored_at": row.job_stored_at,
+        }
+
+    @staticmethod
+    async def _newest_transcript(session, media_id: str, account_id: int) -> MediaTranscript | None:
+        stmt = (
+            select(MediaTranscript)
+            .where(and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id))
+            .order_by(MediaTranscript.id.desc())
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    @retry_on_locked()
+    async def enqueue_media_transcript(
+        self,
+        media_id: str,
+        *,
+        account_id: int,
+        content_hash: str | None = None,
+        idempotency_key: str | None = None,
+        preset: str | None = None,
+        source: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any] | None:
+        """Insert-if-absent of a ``queued`` row for one media; the open row, or None.
+
+        The newest row decides. Open (``queued`` or ``running``): nothing is
+        inserted and that row is returned, so a drain that runs twice and the
+        viewer's ask-now route share one row. ``done`` or ``skipped``: None,
+        and no row, unless ``force`` says the user asked for another
+        transcript. ``failed``: a new row (the drain query caps those at
+        three per media). Two processes racing past the read both try to
+        insert; the partial unique index on open rows stops the second, and
+        the loser returns the winner's row as if it were its own.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            newest = await self._newest_transcript(session, media_id, account_id)
+            if newest is not None:
+                if newest.status in TRANSCRIPT_OPEN_STATUSES:
+                    return self._transcript_to_dict(newest)
+                if newest.status in ("done", "skipped") and not force:
+                    return None
+            now = utcnow_naive()
+            row = MediaTranscript(
+                account_id=account_id,
+                media_id=media_id,
+                content_hash=content_hash,
+                idempotency_key=idempotency_key,
+                preset=preset,
+                source=source,
+                status="queued",
+                requested_at=now,
+                created_at=now,
+            )
+            session.add(row)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                newest = await self._newest_transcript(session, media_id, account_id)
+                return self._transcript_to_dict(newest) if newest is not None else None
+            await session.refresh(row)
+            return self._transcript_to_dict(row)
+
+    @retry_on_locked()
+    async def fill_media_transcript(
+        self, transcript_id: int, *, status: str, account_id: int | None = None, **columns: Any
+    ) -> bool:
+        """Advance one row's ``status`` and fill its empty columns; True when a row changed.
+
+        ``status`` only moves forward: queued, running, then done, failed or
+        skipped, and a row that already reached a final status is left alone,
+        so a repeated delivery of the same result changes nothing. Every other
+        column is written once: a value lands only where the column is still
+        NULL (COALESCE), which is the archive rule that nothing captured is
+        overwritten. JSON columns take a list or a ready string. The first
+        ``job_id`` written also stamps ``job_stored_at``, the time the
+        straggler poll and the retention expiry count from.
+        """
+        if status not in TRANSCRIPT_STATUS_RANK:
+            raise ValueError(f"unknown transcript status: {status}")
+        unknown = set(columns) - TRANSCRIPT_FILL_COLUMNS
+        if unknown:
+            raise ValueError(f"not a fillable transcript column: {', '.join(sorted(unknown))}")
+        values: dict[str, Any] = {"status": status}
+        for name, value in columns.items():
+            if value is None:
+                continue
+            if name in TRANSCRIPT_JSON_COLUMNS and not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False)
+            values[name] = func.coalesce(getattr(MediaTranscript, name), value)
+        if status in TRANSCRIPT_TERMINAL_STATUSES and "completed_at" not in values:
+            values["completed_at"] = func.coalesce(MediaTranscript.completed_at, utcnow_naive())
+        if "job_id" in values:
+            values["job_stored_at"] = case(
+                (MediaTranscript.job_id.is_(None), utcnow_naive()), else_=MediaTranscript.job_stored_at
+            )
+        rank = TRANSCRIPT_STATUS_RANK[status]
+        allowed_from = [
+            name
+            for name, current in TRANSCRIPT_STATUS_RANK.items()
+            if current <= rank and name not in TRANSCRIPT_TERMINAL_STATUSES
+        ]
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                update(MediaTranscript)
+                .where(and_(MediaTranscript.id == transcript_id, MediaTranscript.status.in_(allowed_from)))
+                .values(**values)
+            )
+            if account_id is not None:
+                stmt = stmt.where(MediaTranscript.account_id == account_id)
+            result = await session.execute(stmt)
+            await session.commit()
+            return (result.rowcount or 0) > 0
+
+    @retry_on_locked()
+    async def mark_media_transcript_skipped(
+        self,
+        media_id: str,
+        *,
+        account_id: int,
+        reason: str,
+        content_hash: str | None = None,
+        duration_s: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Record that a media is not sent (too long); the ``skipped`` row.
+
+        An open row for the media (a user asked before the drain saw the
+        length) is closed as skipped instead of leaving it queued forever; a
+        newest row already skipped is left as it is; otherwise a new row.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            newest = await self._newest_transcript(session, media_id, account_id)
+        if newest is not None and newest.status in TRANSCRIPT_OPEN_STATUSES:
+            await self.fill_media_transcript(
+                newest.id, status="skipped", error=reason, content_hash=content_hash, duration_s=duration_s
+            )
+            return await self.get_media_transcript(newest.id)
+        if newest is not None and newest.status == "skipped":
+            return self._transcript_to_dict(newest)
+        now = utcnow_naive()
+        async with self.db_manager.async_session_factory() as session:
+            row = MediaTranscript(
+                account_id=account_id,
+                media_id=media_id,
+                content_hash=content_hash,
+                duration_s=duration_s,
+                status="skipped",
+                error=reason,
+                requested_at=now,
+                completed_at=now,
+                created_at=now,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return self._transcript_to_dict(row)
+
+    async def get_media_chat_pairs(self, media_id: str) -> list[dict[str, Any]]:
+        """``{account_id, chat_id, message_id}`` of every account's row for one media id.
+
+        The id string is only unique per account, so the viewer resolves each
+        copy to its chat and applies the visibility rule per copy.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Media.account_id, Media.chat_id, Media.message_id)
+                .where(Media.id == media_id)
+                .order_by(Media.account_id)
+            )
+            result = await session.execute(stmt)
+            return [{"account_id": row[0], "chat_id": row[1], "message_id": row[2]} for row in result]
+
+    async def list_media_transcripts(self, media_id: str, *, account_id: int) -> list[dict[str, Any]]:
+        """Every transcript row for one media, newest first."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id))
+                .order_by(MediaTranscript.id.desc())
+            )
+            result = await session.execute(stmt)
+            return [self._transcript_to_dict(row) for row in result.scalars()]
+
+    async def list_transcripts_for_media_ids(
+        self, media_ids: Collection[str], *, account_id: int, with_twins: bool = False
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Every transcript row for a page of media ids, newest first per media.
+
+        One query for the whole page, so the message list carries its
+        transcripts without a request per bubble. Media with no rows are
+        absent from the result.
+
+        ``with_twins`` is the viewer's read path: a media with no rows of its
+        own gets the ``done`` rows of the same account whose
+        ``idempotency_key`` is its ``content_hash``, the same audio held by
+        another media row. That is how a transcript whose media row the
+        voice/audio twin cleanup removed is still shown on the row that
+        survived. Nothing is copied or moved; the rows stay where they are.
+        """
+        wanted = sorted({m for m in media_ids if isinstance(m, str) and m})
+        if not wanted:
+            return {}
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id.in_(wanted)))
+                .order_by(MediaTranscript.id.desc())
+            )
+            result = await session.execute(stmt)
+            by_media: dict[str, list[dict[str, Any]]] = {}
+            for row in result.scalars():
+                by_media.setdefault(row.media_id, []).append(self._transcript_to_dict(row))
+            missing = [media_id for media_id in wanted if media_id not in by_media]
+            if not with_twins or not missing:
+                return by_media
+            hashes = await session.execute(
+                select(Media.id, Media.content_hash).where(
+                    and_(Media.account_id == account_id, Media.id.in_(missing), Media.content_hash.is_not(None))
+                )
+            )
+            by_hash: dict[str, list[str]] = {}
+            for media_id, content_hash in hashes:
+                by_hash.setdefault(content_hash, []).append(media_id)
+            if not by_hash:
+                return by_media
+            twins = await session.execute(
+                select(MediaTranscript)
+                .where(
+                    and_(
+                        MediaTranscript.account_id == account_id,
+                        MediaTranscript.status == "done",
+                        MediaTranscript.idempotency_key.in_(sorted(by_hash)),
+                    )
+                )
+                .order_by(MediaTranscript.id.desc())
+            )
+            for row in twins.scalars():
+                for media_id in by_hash[row.idempotency_key]:
+                    by_media.setdefault(media_id, []).append(self._transcript_to_dict(row))
+            return by_media
+
+    async def get_transcripts_for_export(
+        self,
+        chat_id: int | None = None,
+        *,
+        account_id: int | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every transcript row with the ``chat_id`` and ``message_id`` its media belongs to.
+
+        For the two exports: every column, datetimes as ISO strings, newest
+        row first. A transcript whose media row is gone has no message to sit
+        under and is left out. ``None`` scopes mean every chat or account.
+        ``from_date`` (inclusive) and ``to_date`` (exclusive) bound the date
+        of the message, as ``get_messages_for_export`` does, so a windowed
+        export reads only the rows of the messages it exports.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript, Media.chat_id, Media.message_id)
+                .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+                .order_by(MediaTranscript.id.desc())
+            )
+            if chat_id is not None:
+                stmt = stmt.where(Media.chat_id == chat_id)
+            if account_id is not None:
+                stmt = stmt.where(MediaTranscript.account_id == account_id)
+            if from_date is not None or to_date is not None:
+                stmt = stmt.join(
+                    Message,
+                    and_(
+                        Message.account_id == Media.account_id,
+                        Message.chat_id == Media.chat_id,
+                        Message.id == Media.message_id,
+                    ),
+                )
+                if from_date is not None:
+                    stmt = stmt.where(Message.date >= from_date)
+                if to_date is not None:
+                    stmt = stmt.where(Message.date < to_date)
+            rows = []
+            for transcript, media_chat_id, message_id in await session.execute(stmt):
+                row = self._transcript_to_dict(transcript)
+                for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
+                    if isinstance(row[key], datetime):
+                        row[key] = row[key].isoformat()
+                row["chat_id"] = media_chat_id
+                row["message_id"] = message_id
+                rows.append(row)
+            return rows
+
+    async def get_media_transcript(self, transcript_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
+        """One transcript row by id, or None."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(MediaTranscript).where(MediaTranscript.id == transcript_id)
+            if account_id is not None:
+                stmt = stmt.where(MediaTranscript.account_id == account_id)
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._transcript_to_dict(row) if row is not None else None
+
+    async def get_media_awaiting_transcription(
+        self, *, account_id: int, types: Collection[str], per_run: int, stale_before: datetime
+    ) -> list[dict[str, Any]]:
+        """The drain query: downloaded media of ``types`` that still needs a transcript.
+
+        A media qualifies when its newest transcript row is missing, or is
+        ``queued`` with no ``job_id`` and older than ``stale_before`` (a
+        process died between the insert and the submit; the row is reused),
+        or is ``failed`` while fewer than three failed rows exist for it. A
+        ``done`` or ``skipped`` newest row ends the loop for that media.
+
+        A media with no row of its own is left out when its account already
+        holds a ``done`` transcript of the same audio (``idempotency_key``
+        equal to its ``content_hash``): the viewer shows that one on it.
+
+        A ``queued`` row with no ``job_id`` and no ``preset`` is a user's
+        ask-now from the viewer, which never knows the preset: the backup
+        fills it when it picks the row up. Such a row qualifies at once,
+        whatever its type (the viewer does not know ``types`` and refuses
+        types no server transcribes), and sorts first, so the next drain
+        sends it first. Then newest download
+        first, at most ``per_run`` rows. Each result carries the media
+        columns and ``transcript``: the newest row's id, status and job_id,
+        or None.
+
+        The ask-now rows are read by a query of their own, from the few
+        open transcript rows. OR-ing them into the type filter of the main
+        query would keep PostgreSQL off ``idx_media_type`` and read every
+        media row of every type on each drain.
+        """
+        wanted = sorted({t for t in types if isinstance(t, str) and t})
+        if not wanted or per_run <= 0:
+            return []
+        newest = aliased(MediaTranscript, name="newest_transcript")
+        newest_id = (
+            select(func.max(MediaTranscript.id))
+            .where(and_(MediaTranscript.account_id == Media.account_id, MediaTranscript.media_id == Media.id))
+            .correlate(Media)
+            .scalar_subquery()
+        )
+        failed_rows = (
+            select(func.count(MediaTranscript.id))
+            .where(
+                and_(
+                    MediaTranscript.account_id == Media.account_id,
+                    MediaTranscript.media_id == Media.id,
+                    MediaTranscript.status == "failed",
+                )
+            )
+            .correlate(Media)
+            .scalar_subquery()
+        )
+        twin_done = (
+            select(MediaTranscript.id)
+            .where(
+                and_(
+                    MediaTranscript.account_id == Media.account_id,
+                    MediaTranscript.idempotency_key == Media.content_hash,
+                    MediaTranscript.status == "done",
+                )
+            )
+            .correlate(Media)
+            .exists()
+        )
+        # Newest download first in both queries.
+        order = (nulls_last(Media.download_date.desc()), Media.id.desc())
+        asked_stmt = (
+            select(Media, newest.id, newest.status, newest.job_id)
+            .join(newest, and_(newest.account_id == Media.account_id, newest.media_id == Media.id))
+            .where(
+                and_(
+                    newest.account_id == account_id,
+                    newest.status == "queued",
+                    newest.job_id.is_(None),
+                    newest.preset.is_(None),
+                    newest.id == newest_id,
+                    Media.downloaded == 1,
+                )
+            )
+            .order_by(*order)
+            .limit(per_run)
+        )
+        stmt = (
+            select(Media, newest.id, newest.status, newest.job_id)
+            .outerjoin(
+                newest,
+                and_(newest.account_id == Media.account_id, newest.media_id == Media.id, newest.id == newest_id),
+            )
+            .where(
+                and_(
+                    Media.account_id == account_id,
+                    Media.downloaded == 1,
+                    Media.type.in_(wanted),
+                    or_(
+                        and_(newest.id.is_(None), ~twin_done),
+                        and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
+                        and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
+                    ),
+                )
+            )
+            .order_by(*order)
+            .limit(per_run)
+        )
+        async with self.db_manager.async_session_factory() as session:
+            found = list(await session.execute(asked_stmt))
+            if len(found) < per_run:
+                asked_ids = {media.id for media, *_ in found}
+                for match in await session.execute(stmt):
+                    if match[0].id not in asked_ids:
+                        found.append(match)
+            rows = []
+            for media, transcript_id, transcript_status, transcript_job_id in found[:per_run]:
+                rows.append(
+                    {
+                        "id": media.id,
+                        "account_id": media.account_id,
+                        "message_id": media.message_id,
+                        "chat_id": media.chat_id,
+                        "type": media.type,
+                        "file_path": media.file_path,
+                        "file_name": media.file_name,
+                        "file_size": media.file_size,
+                        "mime_type": media.mime_type,
+                        "duration": media.duration,
+                        "content_hash": media.content_hash,
+                        "transcript": (
+                            {"id": transcript_id, "status": transcript_status, "job_id": transcript_job_id}
+                            if transcript_id is not None
+                            else None
+                        ),
+                    }
+                )
+            return rows
+
+    async def fill_open_transcripts_by_key(
+        self, idempotency_key: str, *, job_id: str | None, status: str, **columns: Any
+    ) -> list[dict[str, Any]]:
+        """Write one job's outcome into every open row for the same audio; the rows filled.
+
+        The callback, the event feed and the straggler poll all land here.
+        The row rule first: when any row already reached a final status for
+        ``job_id``, the outcome was applied before and nothing is written, so
+        a replayed delivery or an old event re-read after a user asked for a
+        new transcript changes nothing. Otherwise every ``queued`` or
+        ``running`` row, in any account, whose ``idempotency_key`` is this
+        hash and whose ``job_id`` is empty or this job gets the outcome, so
+        the same audio under two media rows shares one job and both fill.
+        Each fill goes through ``fill_media_transcript``, so only empty
+        columns are written.
+        """
+        if not idempotency_key:
+            return []
+        async with self.db_manager.async_session_factory() as session:
+            if job_id:
+                applied = await session.execute(
+                    select(MediaTranscript.id)
+                    .where(
+                        and_(
+                            MediaTranscript.job_id == job_id,
+                            MediaTranscript.status.in_(TRANSCRIPT_TERMINAL_STATUSES),
+                        )
+                    )
+                    .limit(1)
+                )
+                if applied.first() is not None:
+                    return []
+            job_match = MediaTranscript.job_id.is_(None)
+            if job_id:
+                job_match = or_(job_match, MediaTranscript.job_id == job_id)
+            result = await session.execute(
+                select(MediaTranscript.id, MediaTranscript.account_id, MediaTranscript.media_id)
+                .where(
+                    and_(
+                        MediaTranscript.idempotency_key == idempotency_key,
+                        MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
+                        job_match,
+                    )
+                )
+                .order_by(MediaTranscript.id)
+            )
+            open_rows = list(result)
+        filled = []
+        for row_id, account_id, media_id in open_rows:
+            if await self.fill_media_transcript(row_id, status=status, job_id=job_id, **columns):
+                filled.append({"id": row_id, "account_id": account_id, "media_id": media_id, "status": status})
+        return filled
+
+    async def get_open_job_transcripts(
+        self, *, account_id: int, stored_before: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Open rows of one account that hold a job id; with ``stored_before``, only the stragglers.
+
+        Without ``stored_before`` every job still in flight, which the drain
+        counts against its per-run limit. A row from before ``job_stored_at``
+        existed counts from its insert time.
+        """
+        conditions = [
+            MediaTranscript.account_id == account_id,
+            MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
+            MediaTranscript.job_id.is_not(None),
+        ]
+        if stored_before is not None:
+            conditions.append(
+                func.coalesce(MediaTranscript.job_stored_at, MediaTranscript.requested_at) < stored_before
+            )
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(MediaTranscript).where(and_(*conditions)).order_by(MediaTranscript.id)
+            result = await session.execute(stmt)
+            return [self._transcript_to_dict(row) for row in result.scalars()]
+
+    async def get_transcription_events_cursor(self) -> str | None:
+        """Where the akou event feed was last read, or None before the first read."""
+        return await self.get_setting(TRANSCRIPTION_EVENTS_CURSOR_KEY)
+
+    async def set_transcription_events_cursor(self, cursor: str) -> None:
+        await self.set_setting(TRANSCRIPTION_EVENTS_CURSOR_KEY, cursor)
+
+    async def get_transcription_server(self) -> dict[str, str] | None:
+        """``{"name", "version"}`` of the server the backup last detected, or None."""
+        raw = await self.get_setting(TRANSCRIPTION_SERVER_KEY)
+        if not raw:
+            return None
+        try:
+            loaded = json.loads(raw)
+        except ValueError, TypeError:
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        return {"name": str(loaded.get("name") or ""), "version": str(loaded.get("version") or "")}
+
+    async def set_transcription_server(self, name: str, version: str) -> None:
+        await self.set_setting(TRANSCRIPTION_SERVER_KEY, json.dumps({"name": name, "version": version}))
 
     # ========================================================================
     # App Settings (v7.2.0 - key-value store)
