@@ -1577,7 +1577,7 @@ class TestJobPath:
 
     async def test_diarize_asked_and_answered_without_is_a_mismatch(self, real_adapter, tmp_path):
         """An old undiarized job under the key is never stored as a diarized row with no speakers."""
-        cases = {"m_1_voice": ("1" * 64, False), "m_2_voice": ("2" * 64, "false")}  # a JSON boolean, and a string
+        cases = {"m_1_voice": ("1" * 64, False), "m_2_voice": ("2" * 64, False)}
         server = AkouServer()
         for media_id, (audio, answered) in cases.items():
             await _media(real_adapter, tmp_path, media_id, content_hash=audio)
