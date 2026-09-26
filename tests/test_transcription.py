@@ -330,14 +330,32 @@ class TestClient:
         assert not TranscriptionClient(_config(str(tmp_path), transcription_url="ftp://x")).configured
         assert not TranscriptionClient(MagicMock()).configured  # a bare mock reads truthy; the type check holds
 
-    def test_a_language_is_stored_only_when_it_looks_like_a_bcp47_tag(self):
-        """akou's OpenAI route answers "unknown"; OpenAI itself answers English names. Both become NULL."""
+    def test_a_language_is_stored_only_as_a_bcp47_tag(self):
+        """Tags are kept, Whisper's English names map to their codes, "unknown" and the rest become NULL."""
         from src.transcription_contract import job_outcome
 
-        kept = ("es", "pt-BR", "yue", "zh-Hant-TW")
-        dropped = ("unknown", "spanish", "", "e", "es_ES", "1a", None, 7)
-        for value in kept + dropped:
-            want = value if value in kept else None
+        cases = {
+            "es": "es",
+            "pt-BR": "pt-BR",
+            "yue": "yue",
+            "zh-Hant-TW": "zh-Hant-TW",
+            "spanish": "es",
+            "Haitian Creole": "ht",
+            "javanese": "jv",
+            "lao": "lo",
+            "castilian": "es",
+            "unknown": None,
+            "klingon": None,
+            "": None,
+            "e": None,
+            "es_ES": None,
+            "1a": None,
+            # Longer than media_transcripts.language (String(16)) holds.
+            "en-abcdefgh-ijklmnop": None,
+            None: None,
+            7: None,
+        }
+        for value, want in cases.items():
             assert result_columns({"text": "x", "language": value}, model="auto")["language"] == want, value
             _status, columns = job_outcome({"status": "done", "text": "x", "language": value})
             assert columns["language"] == want, value

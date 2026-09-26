@@ -57,16 +57,142 @@ WEBHOOK_TOLERANCE_SECONDS = 5 * 60
 WEBHOOK_SECRET_PREFIX = "whsec_"
 
 
-# A language is stored only when it looks like a BCP-47 tag ("es", "pt-BR",
-# "yue"). Anything else, akou's OpenAI route answering "unknown" or OpenAI's
-# own English names ("spanish"), is stored as NULL rather than as a code the
-# viewer would show and nothing could filter on.
+# A language is stored only as a BCP-47 tag ("es", "pt-BR", "yue"), at most
+# 16 characters to fit ``media_transcripts.language``. OpenAI's endpoint
+# answers Whisper's English names instead ("spanish"), which map to their
+# codes below. Anything else, akou's OpenAI route answering "unknown" among
+# it, is stored as NULL rather than as a code nothing could filter on.
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*")
+LANGUAGE_TAG_MAX = 16
+
+# Whisper's language names (openai/whisper, tokenizer.py: LANGUAGES and the
+# aliases of TO_LANGUAGE_CODE) to their codes. Javanese is "jv", its BCP-47
+# code, where Whisper itself says "jw".
+WHISPER_LANGUAGE_CODES = {
+    "english": "en",
+    "chinese": "zh",
+    "german": "de",
+    "spanish": "es",
+    "russian": "ru",
+    "korean": "ko",
+    "french": "fr",
+    "japanese": "ja",
+    "portuguese": "pt",
+    "turkish": "tr",
+    "polish": "pl",
+    "catalan": "ca",
+    "dutch": "nl",
+    "arabic": "ar",
+    "swedish": "sv",
+    "italian": "it",
+    "indonesian": "id",
+    "hindi": "hi",
+    "finnish": "fi",
+    "vietnamese": "vi",
+    "hebrew": "he",
+    "ukrainian": "uk",
+    "greek": "el",
+    "malay": "ms",
+    "czech": "cs",
+    "romanian": "ro",
+    "danish": "da",
+    "hungarian": "hu",
+    "tamil": "ta",
+    "norwegian": "no",
+    "thai": "th",
+    "urdu": "ur",
+    "croatian": "hr",
+    "bulgarian": "bg",
+    "lithuanian": "lt",
+    "latin": "la",
+    "maori": "mi",
+    "malayalam": "ml",
+    "welsh": "cy",
+    "slovak": "sk",
+    "telugu": "te",
+    "persian": "fa",
+    "latvian": "lv",
+    "bengali": "bn",
+    "serbian": "sr",
+    "azerbaijani": "az",
+    "slovenian": "sl",
+    "kannada": "kn",
+    "estonian": "et",
+    "macedonian": "mk",
+    "breton": "br",
+    "basque": "eu",
+    "icelandic": "is",
+    "armenian": "hy",
+    "nepali": "ne",
+    "mongolian": "mn",
+    "bosnian": "bs",
+    "kazakh": "kk",
+    "albanian": "sq",
+    "swahili": "sw",
+    "galician": "gl",
+    "marathi": "mr",
+    "punjabi": "pa",
+    "sinhala": "si",
+    "khmer": "km",
+    "shona": "sn",
+    "yoruba": "yo",
+    "somali": "so",
+    "afrikaans": "af",
+    "occitan": "oc",
+    "georgian": "ka",
+    "belarusian": "be",
+    "tajik": "tg",
+    "sindhi": "sd",
+    "gujarati": "gu",
+    "amharic": "am",
+    "yiddish": "yi",
+    "lao": "lo",
+    "uzbek": "uz",
+    "faroese": "fo",
+    "haitian creole": "ht",
+    "pashto": "ps",
+    "turkmen": "tk",
+    "nynorsk": "nn",
+    "maltese": "mt",
+    "sanskrit": "sa",
+    "luxembourgish": "lb",
+    "myanmar": "my",
+    "tibetan": "bo",
+    "tagalog": "tl",
+    "malagasy": "mg",
+    "assamese": "as",
+    "tatar": "tt",
+    "hawaiian": "haw",
+    "lingala": "ln",
+    "hausa": "ha",
+    "bashkir": "ba",
+    "javanese": "jv",
+    "sundanese": "su",
+    "cantonese": "yue",
+    "burmese": "my",
+    "valencian": "ca",
+    "flemish": "nl",
+    "haitian": "ht",
+    "letzeburgesch": "lb",
+    "pushto": "ps",
+    "panjabi": "pa",
+    "moldavian": "ro",
+    "moldovan": "ro",
+    "sinhalese": "si",
+    "castilian": "es",
+    "mandarin": "zh",
+}
 
 
 def language_tag(value: Any) -> str | None:
-    """``value`` when it looks like a BCP-47 tag, otherwise None."""
-    return value if isinstance(value, str) and _LANGUAGE_TAG.fullmatch(value) else None
+    """A BCP-47 tag for ``value``: the tag itself, the code of a Whisper language name, or None."""
+    if not isinstance(value, str):
+        return None
+    # Names first: "lao" is Whisper's name for Lao and would also pass as a tag.
+    code = WHISPER_LANGUAGE_CODES.get(value.strip().lower())
+    if code is not None:
+        return code
+    return value if len(value) <= LANGUAGE_TAG_MAX and _LANGUAGE_TAG.fullmatch(value) else None
 
 
 def _number(value: Any) -> float | None:

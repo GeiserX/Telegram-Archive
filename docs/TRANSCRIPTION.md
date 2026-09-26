@@ -134,7 +134,7 @@ Migration `032` adds one append-only table. It follows [`AvatarHistory`](../src/
 | `engine_version` | string | |
 | `preset` | string(16) | The preset requested |
 | `models` | text | JSON list of model ids, stored as text like [`raw_data`](../src/db/models.py#L180) |
-| `language` | string(16) | BCP-47. Anything the server answers that does not look like a tag (akou's OpenAI route says `unknown`, OpenAI says `spanish`) is stored as NULL |
+| `language` | string(16) | BCP-47, at most 16 characters. Whisper's English names, which OpenAI's endpoint answers (`spanish`), are mapped to their codes. Anything else that is not a tag, akou's OpenAI route answering `unknown` among it, is stored as NULL |
 | `language_confidence` | float | Nullable |
 | `text` | text | The transcript |
 | `words` | text | JSON `[{w, s, e, c}]`, may be empty |
