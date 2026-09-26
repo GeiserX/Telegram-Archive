@@ -16,15 +16,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
+from .transcription_contract import TRANSCRIBABLE_TYPES
+
 # Load environment variables from .env file if it exists
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Automatic voice transcription (docs/TRANSCRIPTION.md). ``audio`` and
-# ``video`` are opt-in: music and long videos are wasted work by default.
-TRANSCRIPTION_DEFAULT_TYPES = frozenset({"voice", "video_note"})
-TRANSCRIPTION_VALID_TYPES = frozenset({"voice", "video_note", "audio", "video"})
+# Automatic transcription (docs/TRANSCRIPTION.md). Every media with sound is
+# eligible by default; TRANSCRIPTION_TYPES narrows it.
+TRANSCRIPTION_DEFAULT_TYPES = TRANSCRIBABLE_TYPES
+TRANSCRIPTION_VALID_TYPES = TRANSCRIBABLE_TYPES
 TRANSCRIPTION_PRESETS = frozenset({"lite", "fast", "best", "fusion", "auto"})
 TRANSCRIPTION_SECRET_PREFIX = "whsec_"
 
@@ -1381,7 +1383,7 @@ class Config:
             if unknown:
                 logger.warning(
                     f"TRANSCRIPTION_TYPES dropped {len(unknown)} unknown name(s) - "
-                    "valid names are voice, video_note, audio and video"
+                    "valid names are voice, video_note, audio, video and document"
                 )
             accepted = requested & TRANSCRIPTION_VALID_TYPES
             self.transcription_types = accepted or set(TRANSCRIPTION_DEFAULT_TYPES)

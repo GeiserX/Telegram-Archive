@@ -245,9 +245,22 @@ class TestDrainQuery:
         await _media(real_adapter, "m_3_voice", downloaded=False)
         await _media(real_adapter, "m_4_voice", account_id=2)
         assert await _drain(real_adapter) == ["m_1_voice"]
-        assert await _drain(real_adapter, types=("photo",)) == ["m_2_photo"]
+        # A type outside is_transcribable is ignored even when asked for.
+        assert await _drain(real_adapter, types=("photo",)) == []
         assert await _drain(real_adapter, types=()) == []
         assert await _drain(real_adapter, account_id=2) == ["m_4_voice"]
+
+    async def test_a_document_qualifies_only_with_an_audio_or_video_mime_type(self, real_adapter):
+        """A .wav or .mkv sent as a file is transcribable; a PDF, a bare file and a GIF-style clip are not."""
+        await _media(real_adapter, "m_1_document", media_type="document", mime_type="audio/x-wav")
+        await _media(real_adapter, "m_2_document", media_type="document", mime_type="Video/X-Matroska")
+        await _media(real_adapter, "m_3_document", media_type="document", mime_type="application/pdf")
+        await _media(real_adapter, "m_4_document", media_type="document")
+        await _media(real_adapter, "m_5_animation", media_type="animation", mime_type="video/mp4")
+        every_type = ("voice", "video_note", "audio", "video", "document", "animation")
+        assert sorted(await _drain(real_adapter, types=every_type)) == ["m_1_document", "m_2_document"]
+        # Left out of TRANSCRIPTION_TYPES, no document is sent.
+        assert await _drain(real_adapter, types=("voice", "video")) == []
 
     async def test_newest_done_row_ends_the_loop(self, real_adapter):
         await _media(real_adapter, "m_1_voice")

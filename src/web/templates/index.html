@@ -2318,36 +2318,81 @@
                                         </div>
 
                                         <!-- Videos - click to open in lightbox -->
-                                        <div v-else-if="msg.media?.type === 'video'"
-                                            class="relative group"
-                                            :class="msg.mediaLoadFailed ? '' : 'cursor-pointer'"
-                                            @click="msg.mediaLoadFailed || openMedia(msg)">
-                                            <!-- The missing-media placeholder is rendered BY Vue. Writing it in
-                                                 with innerHTML detached this subtree from the render tree for
-                                                 good: Vue kept patching nodes that were no longer in the
-                                                 document, so the bubble never updated again. -->
-                                            <div v-if="msg.mediaLoadFailed" class="flex items-center gap-2 text-tg-n400 text-sm py-2">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                                </svg>
-                                                <span>Media not found</span>
-                                            </div>
-                                            <template v-else>
-                                                <video preload="metadata"
-                                                    class="rounded-lg max-h-64 w-full pointer-events-none"
-                                                    @error="handleMediaError($event, msg)">
-                                                    <source :src="getMediaUrl(msg)" type="video/mp4">
-                                                </video>
-                                                <!-- Play overlay -->
-                                                <div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition rounded-lg">
-                                                    <div class="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
-                                                        <svg class="w-8 h-8 text-gray-800 ml-1" fill="currentColor" viewBox="0 0 24 24">
-                                                            <path d="M8 5v14l11-7z"/>
-                                                        </svg>
-                                                    </div>
+                                        <!-- The transcript button sits over the bottom corner, as on a
+                                             round video, and the text opens under the player. -->
+                                        <div v-else-if="msg.media?.type === 'video'">
+                                            <div class="relative group"
+                                                :class="msg.mediaLoadFailed ? '' : 'cursor-pointer'"
+                                                @click="msg.mediaLoadFailed || openMedia(msg)">
+                                                <!-- The missing-media placeholder is rendered BY Vue. Writing it in
+                                                     with innerHTML detached this subtree from the render tree for
+                                                     good: Vue kept patching nodes that were no longer in the
+                                                     document, so the bubble never updated again. -->
+                                                <div v-if="msg.mediaLoadFailed" class="flex items-center gap-2 text-tg-n400 text-sm py-2">
+                                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                            d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                    </svg>
+                                                    <span>Media not found</span>
                                                 </div>
-                                            </template>
+                                                <template v-else>
+                                                    <video preload="metadata"
+                                                        class="rounded-lg max-h-64 w-full pointer-events-none"
+                                                        @error="handleMediaError($event, msg)">
+                                                        <source :src="getMediaUrl(msg)" type="video/mp4">
+                                                    </video>
+                                                    <!-- Play overlay -->
+                                                    <div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition rounded-lg">
+                                                        <div class="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
+                                                            <svg class="w-8 h-8 text-gray-800 ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                                                <path d="M8 5v14l11-7z"/>
+                                                            </svg>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                                <button v-if="!msg.mediaLoadFailed && hasTranscriptButton(msg)" type="button"
+                                                    class="transcript-btn transcript-btn--overlay"
+                                                    :class="isOwnMessage(msg) ? 'left-1' : 'right-1'"
+                                                    @click.stop="pressTranscript(msg)"
+                                                    :aria-expanded="isTranscriptExpanded(msg) ? 'true' : 'false'"
+                                                    :aria-controls="transcriptRegionId(msg)"
+                                                    :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
+                                                    :aria-label="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'"
+                                                    :title="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'">
+                                                    <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
+                                                        viewBox="0 0 32 32" preserveAspectRatio="none">
+                                                        <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
+                                                    </svg>
+                                                    <span aria-hidden="true">{{ isTranscriptExpanded(msg) ? 'A→' : '→A' }}</span>
+                                                </button>
+                                            </div>
+                                            <div v-if="!msg.mediaLoadFailed && hasTranscriptButton(msg)" :id="transcriptRegionId(msg)"
+                                                v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
+                                                class="mt-2">
+                                                <template v-if="showTranscriptText(msg)">
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                    <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
+                                                        <span class="min-w-0 flex-1">
+                                                            <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
+                                                                target="_blank" rel="noopener noreferrer" @click.stop
+                                                                class="underline hover:text-tg-ink">{{ transcriptCaption(msg).engine }}</a>
+                                                            <span v-else>{{ transcriptCaption(msg).engine }}</span>
+                                                            <span v-for="part in transcriptCaption(msg).rest" :key="part" class="whitespace-nowrap"> · {{ part }}</span>
+                                                        </span>
+                                                        <select v-if="doneTranscripts(msg).length > 1"
+                                                            :value="selectedTranscript(msg).id"
+                                                            @click.stop
+                                                            @change="pickTranscript(msg, $event.target.value)"
+                                                            aria-label="Transcript version"
+                                                            class="shrink-0 bg-transparent text-tg-n400 hover:text-tg-ink rounded focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                            <option v-for="(row, i) in doneTranscripts(msg)" :key="row.id" :value="row.id">
+                                                                {{ i + 1 }} of {{ doneTranscripts(msg).length }}
+                                                            </option>
+                                                        </select>
+                                                    </div>
+                                                </template>
+                                                <p v-else-if="transcriptStatus(msg) === 'error'" class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>
+                                            </div>
                                         </div>
 
                                         <!-- Stickers (static/animated) -->
@@ -2378,24 +2423,71 @@
                                         </div>
 
                                         <!-- Other documents / files -->
-                                        <a v-else :href="noDownload ? '#' : getMediaUrl(msg) + '?download=1'" :download="!noDownload"
-                                            :class="{'pointer-events-none opacity-60': noDownload}"
-                                            class="flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
-                                            <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
-                                                viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
-                                                </path>
-                                            </svg>
-                                            <div class="flex flex-col text-xs">
-                                                <span class="font-medium truncate">
-                                                    {{ getDocumentDisplayName(msg) }}
-                                                </span>
-                                                <span class="text-[10px] text-tg-muted" v-if="msg.media?.type">
-                                                    {{ msg.media?.type }} file
-                                                </span>
+                                        <!-- A video sent as a file carries the transcript button beside
+                                             its name; an audio file takes the audio bubble above. -->
+                                        <div v-else>
+                                            <div class="flex items-center gap-2">
+                                                <a :href="noDownload ? '#' : getMediaUrl(msg) + '?download=1'" :download="!noDownload"
+                                                    :class="{'pointer-events-none opacity-60': noDownload}"
+                                                    class="flex-1 min-w-0 flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
+                                                    <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
+                                                        viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                            d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
+                                                        </path>
+                                                    </svg>
+                                                    <div class="flex flex-col text-xs">
+                                                        <span class="font-medium truncate">
+                                                            {{ getDocumentDisplayName(msg) }}
+                                                        </span>
+                                                        <span class="text-[10px] text-tg-muted" v-if="msg.media?.type">
+                                                            {{ msg.media?.type }} file
+                                                        </span>
+                                                    </div>
+                                                </a>
+                                                <button v-if="hasTranscriptButton(msg)" type="button"
+                                                    class="transcript-btn"
+                                                    @click.stop="pressTranscript(msg)"
+                                                    :aria-expanded="isTranscriptExpanded(msg) ? 'true' : 'false'"
+                                                    :aria-controls="transcriptRegionId(msg)"
+                                                    :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
+                                                    :aria-label="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'"
+                                                    :title="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'">
+                                                    <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
+                                                        viewBox="0 0 32 32" preserveAspectRatio="none">
+                                                        <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
+                                                    </svg>
+                                                    <span aria-hidden="true">{{ isTranscriptExpanded(msg) ? 'A→' : '→A' }}</span>
+                                                </button>
                                             </div>
-                                        </a>
+                                            <div v-if="hasTranscriptButton(msg)" :id="transcriptRegionId(msg)"
+                                                v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
+                                                class="mt-2">
+                                                <template v-if="showTranscriptText(msg)">
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                    <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
+                                                        <span class="min-w-0 flex-1">
+                                                            <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
+                                                                target="_blank" rel="noopener noreferrer" @click.stop
+                                                                class="underline hover:text-tg-ink">{{ transcriptCaption(msg).engine }}</a>
+                                                            <span v-else>{{ transcriptCaption(msg).engine }}</span>
+                                                            <span v-for="part in transcriptCaption(msg).rest" :key="part" class="whitespace-nowrap"> · {{ part }}</span>
+                                                        </span>
+                                                        <select v-if="doneTranscripts(msg).length > 1"
+                                                            :value="selectedTranscript(msg).id"
+                                                            @click.stop
+                                                            @change="pickTranscript(msg, $event.target.value)"
+                                                            aria-label="Transcript version"
+                                                            class="shrink-0 bg-transparent text-tg-n400 hover:text-tg-ink rounded focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                            <option v-for="(row, i) in doneTranscripts(msg)" :key="row.id" :value="row.id">
+                                                                {{ i + 1 }} of {{ doneTranscripts(msg).length }}
+                                                            </option>
+                                                        </select>
+                                                    </div>
+                                                </template>
+                                                <p v-else-if="transcriptStatus(msg) === 'error'" class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <!-- Text with clickable links (for albums, use caption from whichever message has it) -->
@@ -6254,12 +6346,19 @@
                 const transcriptRegionId = (msg) => `transcript-${msg?.id}`
                 const transcriptRows = (msg) => Array.isArray(msg?.media?.transcripts) ? msg.media.transcripts : []
                 const doneTranscripts = (msg) => transcriptRows(msg).filter(row => row.status === 'done')
+                // Mirror of is_transcribable in src/transcription_contract.py, the rule the
+                // drain and the ask-now route read: every media with sound, a document
+                // only with an audio or video mime type, never an animation.
+                const isTranscribable = (media) => {
+                    const type = media?.type
+                    if (type === 'document') return /^(audio|video)\//i.test(media.mime_type || '')
+                    return type === 'voice' || type === 'video_note' || type === 'audio' || type === 'video'
+                }
                 const hasTranscriptButton = (msg) => {
                     if (!transcriptionState.value.enabled || !msg?.media) return false
                     // A no-download login reads no transcript: the routes answer 403.
                     if (msg.media.no_download) return false
-                    const type = msg.media.type
-                    return type === 'voice' || type === 'video_note' || transcriptRows(msg).length > 0
+                    return isTranscribable(msg.media) || transcriptRows(msg).length > 0
                 }
                 // One of: loading, done, error, none (a server is configured),
                 // unconfigured. A press keeps "loading" for at least 350 ms. An
@@ -6329,6 +6428,7 @@
                     expired: 'The server dropped the job before it finished',
                     cancelled: 'Cancelled on the transcription server',
                     not_found: 'The transcription server no longer knows this job',
+                    no_audio_track: 'This file has no sound',
                 }
                 const transcriptErrorText = (msg) => {
                     const newest = transcriptRows(msg)[0]

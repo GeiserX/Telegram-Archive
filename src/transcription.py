@@ -40,6 +40,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
@@ -52,6 +53,7 @@ from .realtime import NotificationType, RealtimeNotifier
 from .transcription_contract import (
     _SAFE_CODE,
     SOURCE_AKOU,
+    TRANSCRIBABLE_TYPES,
     _dicts,
     _number,
     apply_job_outcome,
@@ -86,6 +88,16 @@ DEFAULT_RETAIN_DAYS = 7
 # At most this many pages of the event feed per drain; the rest waits for
 # the next run, the cursor keeps the place.
 MAX_EVENT_PAGES = 20
+
+# ffprobe reads a file's stream headers, not its samples; a file it cannot
+# read in this long is sent as if there were no ffprobe.
+FFPROBE_TIMEOUT_SECONDS = 30
+
+# ``media_transcripts.error`` of a file ffprobe found no audio stream in.
+NO_AUDIO_TRACK = "no_audio_track"
+
+# One warning per process when ffprobe is missing or fails; debug after that.
+_probe_warned = False
 
 
 class TranscriptionError(Exception):
@@ -459,6 +471,82 @@ def _read_file(path: str) -> bytes:
         return handle.read()
 
 
+@dataclass(frozen=True)
+class AudioProbe:
+    """What ffprobe said about a stored file: an audio stream or not, and its duration if known."""
+
+    has_audio: bool
+    duration: float | None = None
+
+
+def _run_ffprobe(path: str) -> AudioProbe | None:
+    """ffprobe on one stored file; None when ffprobe is missing, fails or times out.
+
+    A fixed argument list and no shell: the path is the only variable and
+    goes after ``-i``. Blocking, so the caller runs it off the event loop.
+    """
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type:format=duration",
+            "-of",
+            "json",
+            "-i",
+            path,
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=FFPROBE_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout or b"{}")
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    streams = _dicts(payload.get("streams"))
+    fmt = payload.get("format")
+    duration = None
+    if isinstance(fmt, dict):
+        try:
+            duration = float(fmt.get("duration"))
+        except TypeError, ValueError:
+            duration = None
+        if duration is not None and not duration > 0:
+            duration = None
+    return AudioProbe(has_audio=any(s.get("codec_type") == "audio" for s in streams), duration=duration)
+
+
+async def probe_audio(path: str) -> AudioProbe | None:
+    """``_run_ffprobe`` off the event loop. None means "unknown": the caller sends the file anyway.
+
+    Logs one warning per process when ffprobe is missing or fails, never
+    the path (the exception strings of subprocess carry the full argv).
+    """
+    global _probe_warned
+    try:
+        probe = await asyncio.to_thread(_run_ffprobe, path)
+        reason = "failed"
+    except FileNotFoundError:
+        probe, reason = None, "not installed"
+    except (OSError, subprocess.SubprocessError) as e:
+        probe, reason = None, type(e).__name__
+    if probe is None:
+        message = f"Transcription: ffprobe {reason}; sending the file without the audio check"
+        if _probe_warned:
+            logger.debug(message)
+        else:
+            _probe_warned = True
+            logger.warning(message)
+    return probe
+
+
 async def _notify(notifier, media: dict[str, Any], transcript_id: int, status: str, account_id: int) -> None:
     """Push ids and status only; the browser fetches the rows itself."""
     if notifier is None or media.get("chat_id") is None:
@@ -744,19 +832,38 @@ async def transcribe_media(
         return "noop"
     media_id = media["id"]
     max_seconds = getattr(config, "transcription_max_seconds", 1800)
+    if not isinstance(max_seconds, int) or isinstance(max_seconds, bool):
+        max_seconds = None
     duration = _number(media.get("duration"))
-    if isinstance(max_seconds, int) and not isinstance(max_seconds, bool) and duration is not None:
-        if duration > max_seconds:
-            row = await db.mark_media_transcript_skipped(
-                media_id,
-                account_id=account_id,
-                reason=f"longer than the {max_seconds} second limit",
-                content_hash=media.get("content_hash"),
-                duration_s=duration,
-            )
-            if row is not None:
-                await _notify(notifier, media, row["id"], "skipped", account_id)
-            return "skipped"
+    path = resolve_stored_media_path(media.get("file_path"), getattr(config, "media_path", ""))
+
+    async def skip(reason: str) -> str:
+        row = await db.mark_media_transcript_skipped(
+            media_id,
+            account_id=account_id,
+            reason=reason,
+            content_hash=media.get("content_hash"),
+            duration_s=duration,
+        )
+        if row is not None:
+            await _notify(notifier, media, row["id"], "skipped", account_id)
+        return "skipped"
+
+    too_long = f"longer than the {max_seconds} second limit"
+    if max_seconds is not None and duration is not None and duration > max_seconds:
+        return await skip(too_long)
+    if path and os.path.isfile(path):
+        # A video with no sound, or a document that only claims an audio or
+        # video mime type, is never sent. Documents and many videos carry no
+        # stored duration, so ffprobe's is what the limit reads for them.
+        probe = await probe_audio(path)
+        if probe is not None:
+            if duration is None:
+                duration = probe.duration
+            if not probe.has_audio:
+                return await skip(NO_AUDIO_TRACK)
+            if max_seconds is not None and duration is not None and duration > max_seconds:
+                return await skip(too_long)
 
     content_hash = media.get("content_hash")
     if not isinstance(content_hash, str) or not content_hash:
@@ -782,7 +889,6 @@ async def transcribe_media(
         # rule of the drain query applies to it like to any other row.
         await db.fill_media_transcript(row["id"], status="queued", preset=client.preset, content_hash=content_hash)
 
-    path = resolve_stored_media_path(media.get("file_path"), getattr(config, "media_path", ""))
     if not path or not os.path.isfile(path):
         await db.fill_media_transcript(row["id"], status="failed", error="file_missing", source=source or SOURCE_SYNC)
         await _notify(notifier, media, row["id"], "failed", account_id)
@@ -943,7 +1049,7 @@ async def drain_transcriptions(
     # 4. Submit.
     types = getattr(config, "transcription_types", None)
     if not isinstance(types, (set, frozenset, list, tuple)):
-        types = ("voice", "video_note")
+        types = TRANSCRIBABLE_TYPES
     per_run = getattr(config, "transcription_backfill_per_run", 50)
     if not isinstance(per_run, int) or isinstance(per_run, bool) or per_run < 1:
         per_run = 50

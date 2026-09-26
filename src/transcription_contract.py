@@ -23,6 +23,24 @@ from typing import Any
 # ``media_transcripts.source`` of the akou job path.
 SOURCE_AKOU = "akou"
 
+# What can be transcribed: every media that carries sound. The drain query,
+# the listener, the viewer's ask-now routes and its bubble all read these.
+# ``document`` counts only when its stored mime_type is audio or video: a
+# .wav, .flac or .mkv sent as a file. ``animation`` never does: Telegram's
+# GIF-style clips have no sound.
+TRANSCRIBABLE_TYPES = frozenset({"voice", "video_note", "audio", "video", "document"})
+TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES = ("audio/", "video/")
+
+
+def is_transcribable(media_type: Any, mime_type: Any, types: Any = TRANSCRIBABLE_TYPES) -> bool:
+    """True when a media of ``media_type`` and ``mime_type`` is in ``types`` and carries sound."""
+    if media_type not in TRANSCRIBABLE_TYPES or media_type not in types:
+        return False
+    if media_type == "document":
+        return isinstance(mime_type, str) and mime_type.lower().startswith(TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES)
+    return True
+
+
 # The event types of akou's feed and callback (SERVER.md SV-E1). Any other
 # type is skipped and the cursor still moves past it.
 EVENT_COMPLETED = "transcription.completed"

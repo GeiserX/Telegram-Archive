@@ -51,6 +51,7 @@ from ..message_utils import (
     resolve_sender_display_name,
     utcnow_naive,
 )
+from ..transcription_contract import TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES, TRANSCRIBABLE_TYPES
 from .base import DatabaseManager
 from .fts import (
     PG_TRANSCRIPT_TSQUERY_FROM_SEARCH,
@@ -6825,6 +6826,11 @@ class DatabaseAdapter:
     ) -> list[dict[str, Any]]:
         """The drain query: downloaded media of ``types`` that still needs a transcript.
 
+        ``types`` follows the rule of ``is_transcribable`` in
+        transcription_contract: a name outside ``TRANSCRIBABLE_TYPES`` is
+        ignored, and a ``document`` qualifies only with an audio or video
+        ``mime_type``.
+
         A media qualifies when its newest transcript row is missing, or is
         ``queued`` with no ``job_id`` and older than ``stale_before`` (a
         process died between the insert and the submit; the row is reused),
@@ -6850,9 +6856,14 @@ class DatabaseAdapter:
         query would keep PostgreSQL off ``idx_media_type`` and read every
         media row of every type on each drain.
         """
-        wanted = sorted({t for t in types if isinstance(t, str) and t})
+        wanted = sorted({t for t in types if isinstance(t, str) and t in TRANSCRIBABLE_TYPES})
         if not wanted or per_run <= 0:
             return []
+        # The SQL form of is_transcribable: a document needs a mime_type with sound.
+        has_sound = or_(
+            Media.type != "document",
+            *(func.lower(Media.mime_type).like(f"{prefix}%") for prefix in TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES),
+        )
         newest = aliased(MediaTranscript, name="newest_transcript")
         newest_id = (
             select(func.max(MediaTranscript.id))
@@ -6913,6 +6924,7 @@ class DatabaseAdapter:
                     Media.account_id == account_id,
                     Media.downloaded == 1,
                     Media.type.in_(wanted),
+                    has_sound,
                     or_(
                         and_(newest.id.is_(None), ~twin_done),
                         and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),

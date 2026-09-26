@@ -51,7 +51,8 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_url, "")
         self.assertEqual(config.transcription_api_key, "")
         self.assertEqual(config.transcription_preset, "auto")
-        self.assertEqual(config.transcription_types, {"voice", "video_note"})
+        # Every media with sound is eligible out of the box; the variable narrows it.
+        self.assertEqual(config.transcription_types, {"voice", "video_note", "audio", "video", "document"})
         self.assertEqual(config.transcription_max_seconds, 1800)
         self.assertEqual(config.transcription_language, "")
         self.assertEqual(config.transcription_callback_url, "")
@@ -144,7 +145,16 @@ class TestTranscriptionConfig(unittest.TestCase):
     def test_only_unknown_types_keeps_the_default(self):
         with self.assertLogs("src.config", level="WARNING"):
             config = self._config(TRANSCRIPTION_TYPES="sticker")
-        self.assertEqual(config.transcription_types, {"voice", "video_note"})
+        self.assertEqual(config.transcription_types, {"voice", "video_note", "audio", "video", "document"})
+
+    def test_document_is_a_type_name_and_animation_is_not(self):
+        """``document`` means an audio or video file sent as a document; GIF-style clips have no sound."""
+        config = self._config(TRANSCRIPTION_TYPES="Document, voice")
+        self.assertEqual(config.transcription_types, {"document", "voice"})
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(TRANSCRIPTION_TYPES="document,animation")
+        self.assertEqual(config.transcription_types, {"document"})
+        self.assertTrue(any("video and document" in line for line in logs.output))
 
     def test_bad_callback_url_drops_the_callback_and_keeps_the_feature(self):
         with self.assertLogs("src.config", level="WARNING") as logs:

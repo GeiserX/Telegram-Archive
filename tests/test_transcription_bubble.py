@@ -45,6 +45,33 @@ def _round_video(html: str) -> str:
     return _between(html, "<div v-else-if=\"msg.media?.type === 'video_note'\">", "<!-- Videos - click to open")
 
 
+def _video(html: str) -> str:
+    return _between(html, "<!-- Videos - click to open in lightbox -->", "<!-- Stickers")
+
+
+def _file(html: str) -> str:
+    return _between(html, "<!-- Other documents / files -->", "<!-- Text with clickable links")
+
+
+def _assert_accessible_toggle(test: unittest.TestCase, block: str) -> None:
+    """The bubble's button is the audio bubble's: named, tied to its region, busy while loading."""
+    button = block[block.index("<button v-if=") :]
+    button = button[: button.index("</button>")]
+    test.assertIn("hasTranscriptButton(msg)", button)
+    test.assertIn('type="button"', button)
+    test.assertIn('@click.stop="pressTranscript(msg)"', button)
+    test.assertIn(":aria-expanded=\"isTranscriptExpanded(msg) ? 'true' : 'false'\"", button)
+    test.assertIn(':aria-controls="transcriptRegionId(msg)"', button)
+    test.assertIn(":aria-busy=\"transcriptStatus(msg) === 'loading' ? 'true' : 'false'\"", button)
+    test.assertIn("'Hide transcript' : 'Show transcript'", button)
+    test.assertIn('class="transcript-loop"', button)
+    region = block[block.index(':id="transcriptRegionId(msg)"') :]
+    test.assertEqual(block.count(':id="transcriptRegionId(msg)"'), 1)
+    test.assertIn('<p dir="auto" class="transcript-text', region)
+    test.assertIn("transcriptErrorText(msg)", region)
+    test.assertIn('aria-label="Transcript version"', region)
+
+
 # ============================================================================
 # Markup
 # ============================================================================
@@ -90,6 +117,25 @@ class TestBubbleMarkup(unittest.TestCase):
         self.assertIn('v-for="(h, i) in transcriptPlaceholderBars"', block)
         self.assertIn('<p dir="auto" class="transcript-text', block)
         self.assertEqual(block.count(':id="transcriptRegionId(msg)"'), 1)
+
+    def test_a_video_carries_the_button_over_the_corner_and_the_text_under_the_player(self):
+        block = _video(_html())
+        _assert_accessible_toggle(self, block)
+        overlay = _between(block, "<button v-if=", "</button>")
+        self.assertIn('class="transcript-btn transcript-btn--overlay"', overlay)
+        self.assertIn(":class=\"isOwnMessage(msg) ? 'left-1' : 'right-1'\"", overlay)
+        # Inside the player that opens the lightbox, so the press must not open it too.
+        self.assertLess(block.index('@click="msg.mediaLoadFailed || openMedia(msg)"'), block.index("<button v-if="))
+        self.assertLess(block.index("</button>"), block.index(':id="transcriptRegionId(msg)"'))
+
+    def test_a_file_carries_the_button_beside_its_name_and_the_text_under_it(self):
+        block = _file(_html())
+        _assert_accessible_toggle(self, block)
+        self.assertIn('<button v-if="hasTranscriptButton(msg)" type="button"', block)
+        # A button inside the download link would be invalid markup and a nested control.
+        link = _between(block, "<a :href=", "</a>")
+        self.assertNotIn("<button", link)
+        self.assertLess(block.index("</a>"), block.index("<button v-if="))
 
     def test_a_polite_live_region_announces_the_result(self):
         html = _html()
@@ -207,12 +253,43 @@ def test_the_states_follow_the_design_table() -> None:
             assert.equal(transcriptStatus(skipped), 'error')
             assert.equal(transcriptErrorText(skipped), 'Longer than the 30 minute limit')
             assert.equal(transcriptErrorText(voice(7, [{ id: 8, status: 'failed', error: 'file_missing' }])), 'The audio file is missing')
-            // Music is opt-in: an audio bubble shows the button only once a row exists.
-            assert.equal(hasTranscriptButton({ id: 8, media: { id: '8_audio', type: 'audio' } }), false)
-            assert.equal(hasTranscriptButton({ id: 9, media: { id: '9_audio', type: 'audio', transcripts: [done(1)] } }), true)
+            // Every media with sound shows the button before any row exists.
+            assert.equal(hasTranscriptButton({ id: 8, media: { id: '8_audio', type: 'audio' } }), true)
+            assert.equal(hasTranscriptButton({ id: 9, media: { id: '9_video', type: 'video' } }), true)
+            assert.equal(hasTranscriptButton({ id: 14, media: { id: '14_document', type: 'document', mime_type: 'audio/flac' } }), true)
+            assert.equal(hasTranscriptButton({ id: 15, media: { id: '15_document', type: 'document', mime_type: 'Video/x-matroska' } }), true)
+            // No sound, no button: a PDF, a document with no mime type, a GIF-style clip.
+            assert.equal(hasTranscriptButton({ id: 16, media: { id: '16_document', type: 'document', mime_type: 'application/pdf' } }), false)
+            assert.equal(hasTranscriptButton({ id: 17, media: { id: '17_document', type: 'document' } }), false)
+            assert.equal(hasTranscriptButton({ id: 18, media: { id: '18_animation', type: 'animation' } }), false)
+            // A row found another way still shows, whatever the type.
+            assert.equal(hasTranscriptButton({ id: 19, media: { id: '19_photo', type: 'photo', transcripts: [done(1)] } }), true)
             assert.equal(hasTranscriptButton({ id: 10, media: { id: '10_video_note', type: 'video_note' } }), true)
             // A no-download login reads no transcript; the routes would answer 403.
             assert.equal(hasTranscriptButton({ id: 13, media: { id: '13_voice', type: 'voice', no_download: true } }), false)
+            """
+        )
+    )
+
+
+def test_the_bubble_rule_is_the_drains_rule() -> None:
+    """The template's isTranscribable mirrors is_transcribable in transcription_contract."""
+    from src.transcription_contract import is_transcribable
+
+    cases = [
+        (media_type, mime)
+        for media_type in ("voice", "video_note", "audio", "video", "document", "animation", "photo", "sticker")
+        for mime in (None, "audio/ogg", "Audio/FLAC", "video/x-matroska", "application/pdf", "image/png", "")
+    ]
+    expected = [is_transcribable(media_type, mime) for media_type, mime in cases]
+    assert any(expected) and not all(expected)
+    media = [{"id": i, "media": {"id": f"{i}_x", "type": t, "mime_type": m}} for i, (t, m) in enumerate(cases)]
+    _run_node(
+        _script(
+            f"""
+            transcriptionState.value = {{ enabled: true, configured: true }}
+            const media = {json.dumps(media)}
+            assert.deepEqual(media.map(hasTranscriptButton), {json.dumps(expected)})
             """
         )
     )
@@ -567,6 +644,32 @@ class TestAskNowRoute:
         for media_id in ("m_1_voice", "m_2_photo"):
             assert await real_adapter.list_media_transcripts(media_id, account_id=1) == []
 
+    async def test_a_video_and_an_audio_document_can_be_asked_and_a_pdf_cannot(self, real_adapter, viewer):
+        await _media(real_adapter, "m_1_video", media_type="video", mime_type="video/mp4")
+        await _media(real_adapter, "m_2_document", media_type="document", mime_type="audio/x-wav")
+        await _media(real_adapter, "m_3_document", media_type="document", mime_type="video/x-matroska")
+        await _media(real_adapter, "m_4_document", media_type="document", mime_type="application/pdf")
+        await _media(real_adapter, "m_5_animation", media_type="animation", mime_type="video/mp4")
+        ref = await _chat_ref(real_adapter)
+        async with _client() as client:
+            by_id = [await client.post(f"/api/media/{m}/transcripts") for m in ("m_1_video", "m_2_document")]
+            by_chat = await client.post(f"/api/chats/{ref}/media/3_document/transcripts")
+            refused = [
+                await client.post("/api/media/m_4_document/transcripts"),
+                await client.post(f"/api/chats/{ref}/media/4_document/transcripts"),
+                await client.post("/api/media/m_5_animation/transcripts"),
+            ]
+        assert [resp.status_code for resp in [*by_id, by_chat]] == [200, 200, 200], [r.text for r in by_id]
+        assert [resp.status_code for resp in refused] == [409, 409, 409]
+        for media_id in ("m_1_video", "m_2_document", "m_3_document"):
+            [row] = await real_adapter.list_media_transcripts(media_id, account_id=1)
+            assert row["status"] == "queued"
+        for media_id in ("m_4_document", "m_5_animation"):
+            assert await real_adapter.list_media_transcripts(media_id, account_id=1) == []
+        # The drain sends what was asked, even with documents and videos outside TRANSCRIPTION_TYPES.
+        assert sorted(await _drain(real_adapter, types=("voice",))) == ["m_1_video", "m_2_document", "m_3_document"]
+        assert viewer == []
+
     async def test_an_asked_type_outside_transcription_types_is_still_sent(self, real_adapter, viewer):
         """The viewer does not know TRANSCRIPTION_TYPES, so the drain honours the click."""
         await _media(real_adapter, "m_1_audio", media_type="audio")
@@ -658,6 +761,19 @@ class TestMessagePagePayload:
         rows = json.dumps(media["transcripts"])
         assert "m_1_voice" not in rows, "no storage id, which spells the chat id"
         assert not {"media_id", "idempotency_key", "content_hash", "job_id", "words"} & set(media["transcripts"][0])
+
+    async def test_media_with_sound_carries_an_empty_list_and_a_pdf_carries_none(self, real_adapter, viewer):
+        """The empty list is what a bubble with no row yet renders from; a PDF has nothing to transcribe."""
+        await _media(real_adapter, "m_1_video", media_type="video", mime_type="video/mp4")
+        await _media(real_adapter, "m_2_document", media_type="document", mime_type="audio/flac")
+        await _media(real_adapter, "m_3_document", media_type="document", mime_type="application/pdf")
+        async with _client() as client:
+            resp = await client.get(f"/api/chats/{await _chat_ref(real_adapter)}/messages")
+        assert resp.status_code == 200, resp.text
+        by_id = {m["id"]: m["media"] for m in resp.json()}
+        assert by_id[1]["transcripts"] == [] and by_id[1]["transcript"] is None
+        assert by_id[2]["transcripts"] == [] and by_id[2]["transcript"] is None
+        assert "transcripts" not in by_id[3]
 
 
 class TestDrainPicksUpTheAsk:
