@@ -3158,8 +3158,8 @@ def _transcript_payload(row: dict) -> dict:
 async def get_media_transcripts(media_id: str, user: UserContext = Depends(require_auth)):
     """Every transcript row for one media, newest first (docs/TRANSCRIPTION.md).
 
-    What the browser fetches on a realtime ``transcript`` event and what the
-    version picker reads. A media id names one row per account, so each
+    For a client that holds the storage id; the browser uses the chat route
+    below instead. A media id names one row per account, so each
     account's copy is resolved to its chat and passes the same visibility
     rule as every ``{chat_ref}`` route; an id that names nothing the caller
     may see is a uniform 404.

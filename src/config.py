@@ -73,6 +73,16 @@ def _parse_int_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from None
 
 
+def _is_http_url(raw: str) -> bool:
+    """An http:// or https:// URL with a hostname. A malformed one, such as an
+    unclosed IPv6 bracket that makes urlparse raise, is simply not one."""
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    except ValueError:
+        return False
+
+
 def _parse_float_env(name: str, default: float) -> float:
     """os.getenv(name) as a finite float that FAILS BY NAME.
 
@@ -988,12 +998,16 @@ class Config:
         self.transcription_api_key = os.getenv("TRANSCRIPTION_API_KEY", "").strip()
         self.transcription_preset = os.getenv("TRANSCRIPTION_PRESET", "auto").strip().lower() or "auto"
         self.transcription_types: set[str] = set(TRANSCRIPTION_DEFAULT_TYPES)
-        self.transcription_max_seconds = _parse_int_env("TRANSCRIPTION_MAX_SECONDS", 1800)
+        self.transcription_max_seconds = 1800
         self.transcription_language = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip()
         self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
         self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
-        self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
+        self.transcription_backfill_per_run = 50
         if self.transcription_enabled:
+            # Parsed only when on: a typo in a setting of a feature the
+            # operator turned off must not stop the archiver.
+            self.transcription_max_seconds = _parse_int_env("TRANSCRIPTION_MAX_SECONDS", 1800)
+            self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
             self._validate_transcription()
 
         # =====================================================================
@@ -1348,8 +1362,7 @@ class Config:
         holds the secret, so one process normally sees only one of them.
         """
         if self.transcription_url:
-            parsed = urllib.parse.urlparse(self.transcription_url)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            if not _is_http_url(self.transcription_url):
                 logger.warning(
                     "TRANSCRIPTION_URL must be an http:// or https:// URL with a hostname - transcription disabled"
                 )
@@ -1378,8 +1391,7 @@ class Config:
             logger.warning("TRANSCRIPTION_WEBHOOK_SECRET must start with whsec_ - secret ignored")
             self.transcription_webhook_secret = ""
         if self.transcription_callback_url:
-            parsed = urllib.parse.urlparse(self.transcription_callback_url)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            if not _is_http_url(self.transcription_callback_url):
                 logger.warning(
                     "TRANSCRIPTION_CALLBACK_URL must be an http:// or https:// URL with a hostname - "
                     "callback dropped, polling keeps working"

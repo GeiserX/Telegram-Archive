@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, update
@@ -202,6 +203,30 @@ class TestExports:
         assert isinstance(exported[1]["transcripts"][0]["created_at"], str)
         assert "transcripts" not in exported[2]
         json.dumps(exported[1])  # serialisable as the route streams it
+
+    async def test_a_windowed_viewer_export_reads_only_the_rows_of_its_messages(self, real_adapter):
+        await _voice(real_adapter, 1, "inside the window")
+        await _voice(real_adapter, 2, "before the window")
+        await _voice(real_adapter, 3, "after the window")
+        async with real_adapter.db_manager.async_session_factory() as session:
+            from src.db.models import Message
+
+            for message_id, when in ((2, WHEN - timedelta(days=2)), (3, WHEN + timedelta(days=2))):
+                await session.execute(update(Message).where(Message.id == message_id).values(date=when))
+            await session.commit()
+        window = {"from_date": WHEN - timedelta(days=1), "to_date": WHEN + timedelta(days=1)}
+
+        rows = await real_adapter.get_transcripts_for_export(CHAT, account_id=1, **window)
+        assert [row["text"] for row in rows] == ["inside the window"]
+        # The window's end is exclusive, as it is for the messages.
+        edge = await real_adapter.get_transcripts_for_export(CHAT, account_id=1, from_date=WHEN, to_date=WHEN)
+        assert edge == []
+
+        read = real_adapter.get_transcripts_for_export
+        with patch.object(real_adapter, "get_transcripts_for_export", wraps=read) as spy:
+            exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, **window)]
+        assert [(m["id"], [r["text"] for r in m["transcripts"]]) for m in exported] == [(1, ["inside the window"])]
+        assert spy.await_args.kwargs == {"account_id": 1, **window}
 
     async def test_the_cli_export_attaches_rows_from_the_database(self, real_adapter, tmp_path):
         await _voice(real_adapter, 1, "cli words")

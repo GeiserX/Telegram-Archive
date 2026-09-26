@@ -22,7 +22,8 @@ HTTP client.
 A server that cannot be reached is transient: the row stays ``queued`` and
 the ten-minute branch of the drain query resubmits on it, so an outage
 never spends the cap of three failed rows. An HTTP error is an answer and
-is stored as a ``failed`` row.
+is stored as a ``failed`` row, and so is a synchronous request the server
+took and never answered (a read or write timeout).
 
 PII rule: this module never logs a URL (httpx exception strings embed it,
 so exceptions log as class names), the bearer key, a media id (it carries
@@ -84,14 +85,20 @@ MAX_EVENT_PAGES = 20
 class TranscriptionError(Exception):
     """A request that failed. ``reason`` is safe to store and to log.
 
-    ``transient`` is True when the server could not be reached at all, so
-    the caller leaves the row queued instead of storing a failed one.
+    ``transient`` is True when no HTTP answer came, so the caller leaves
+    the row queued instead of storing a failed one. ``stalled`` narrows it:
+    the connection was made and the request taken, then it timed out or
+    broke. The synchronous path stores that as a failed row, since a
+    message the server always times out on would otherwise be resent on
+    every run with no cap; the job path keeps it queued, because its
+    resubmit with the same ``Idempotency-Key`` finds any job akou made.
     """
 
-    def __init__(self, reason: str, *, transient: bool = False) -> None:
+    def __init__(self, reason: str, *, transient: bool = False, stalled: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
         self.transient = transient
+        self.stalled = stalled
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,11 @@ class ServerInfo:
     @property
     def job_path(self) -> bool:
         return self.name == SOURCE_AKOU and self.jobs
+
+
+# The transport errors that mean the server was never reached. Any other
+# httpx.TransportError came after the connection was made: ``stalled``.
+_UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 def _base_url(raw: Any) -> str:
@@ -240,7 +252,7 @@ class TranscriptionClient:
         to read.
         """
         reason = "unknown"
-        transient = False
+        transient = stalled = False
         async with self._client(timeout) as client:
             for attempt in range(self.ATTEMPTS):
                 try:
@@ -248,14 +260,15 @@ class TranscriptionClient:
                 except httpx.TransportError as e:
                     reason = type(e).__name__
                     transient = True
+                    stalled = not isinstance(e, _UNREACHABLE)
                 else:
-                    transient = False
+                    transient = stalled = False
                     if response.status_code != 429 and response.status_code < 500:
                         return response
                     reason = f"HTTP {response.status_code}"
                 if attempt < self.ATTEMPTS - 1:
                     await asyncio.sleep(self.backoffs[attempt])
-        raise TranscriptionError(reason, transient=transient)
+        raise TranscriptionError(reason, transient=transient, stalled=stalled)
 
     # ------------------------------------------------------------------
     # The akou job path (SERVER.md sections 5 and 6)
@@ -647,7 +660,7 @@ async def transcribe_media(
     """One media to the server; the drain and the listener both call this.
 
     Returns ``done``, ``failed``, ``skipped``, ``submitted``, ``refused``,
-    ``unreachable`` or ``noop``. The queued row is inserted first
+    ``unreachable``, ``stalled`` or ``noop``. The queued row is inserted first
     (insert-if-absent, so a second call while one is open reuses it), the
     audio is hashed when the media row carries no hash, and the answer
     fills the same row: at once on the synchronous path, or with the job
@@ -655,7 +668,9 @@ async def transcribe_media(
     later. The row stays ``queued`` during the request on purpose: a
     process that dies mid-request, and a server that cannot be reached
     (``unreachable``), both leave a row the next drain resubmits after ten
-    minutes, with no failed row added. ``refused`` is akou's
+    minutes, with no failed row added. ``stalled`` is a synchronous request
+    the server took and never answered: the row is failed, so the cap of
+    three applies, and the drain ends the run. ``refused`` is akou's
     ``callback_not_allowed``: the row is failed and the drain ends the run.
     """
     client = client or TranscriptionClient(config)
@@ -695,29 +710,35 @@ async def transcribe_media(
         return "noop"  # the newest row is done or skipped; only a user click adds another
     if row["status"] != "queued" or row.get("job_id"):
         return "noop"  # in flight on the job path, or being written by another process
+    if not row.get("preset"):
+        # A viewer ask-now row carries no preset. Filling it marks the row
+        # picked up before anything below can fail: from here the ten-minute
+        # rule of the drain query applies to it like to any other row.
+        await db.fill_media_transcript(row["id"], status="queued", preset=client.preset, content_hash=content_hash)
 
     path = resolve_stored_media_path(media.get("file_path"), getattr(config, "media_path", ""))
     if not path or not os.path.isfile(path):
         await db.fill_media_transcript(row["id"], status="failed", error="file_missing", source=source or SOURCE_SYNC)
         await _notify(notifier, media, row["id"], "failed", account_id)
         return "failed"
-    audio = await asyncio.to_thread(_read_file, path)
+    try:
+        audio = await asyncio.to_thread(_read_file, path)
+    except OSError:
+        # Unreadable (permissions, a disk error): an answer about this file,
+        # not an outage, so it spends a failed row instead of stopping the run.
+        await db.fill_media_transcript(
+            row["id"], status="failed", error="file_unreadable", source=source or SOURCE_SYNC
+        )
+        await _notify(notifier, media, row["id"], "failed", account_id)
+        return "failed"
     idempotency_key = content_hash
     if idempotency_key is None:
         # Imported rows carry no hash: computed here, stored on the transcript
         # row only, never written back to media.
         idempotency_key = hashlib.sha256(audio).hexdigest()
-    if not row.get("idempotency_key") or not row.get("preset"):
-        # A viewer ask-now row carries neither a key nor a preset. Filling the
-        # preset marks it picked up: from here the ten-minute rule of the drain
-        # query applies to it like to any other row.
-        await db.fill_media_transcript(
-            row["id"],
-            status="queued",
-            idempotency_key=idempotency_key,
-            preset=client.preset,
-            content_hash=content_hash,
-        )
+    if not row.get("idempotency_key"):
+        # An ask-now row, or a row for an imported media with no hash.
+        await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
 
     if server is None:
         try:
@@ -746,7 +767,7 @@ async def transcribe_media(
     try:
         payload = await client.transcribe(audio, os.path.basename(path), model=model, prompt=_prompt_for(config))
     except TranscriptionError as e:
-        if e.transient:
+        if e.transient and not e.stalled:
             # Same as above: an outage is not an answer and spends no failed row.
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
@@ -760,7 +781,9 @@ async def transcribe_media(
         )
         await _notify(notifier, media, row["id"], "failed", account_id)
         logger.warning(f"Transcription failed ({e.reason})")
-        return "failed"
+        # A server that took the request and never answered would make every
+        # later media wait out the same timeouts: the run ends here.
+        return "stalled" if e.stalled else "failed"
 
     await db.fill_media_transcript(
         row["id"],
@@ -800,6 +823,7 @@ async def drain_transcriptions(
         "submitted": 0,
         "refused": 0,
         "unreachable": 0,
+        "stalled": 0,
         "noop": 0,
         "reconciled": 0,
         "polled": 0,
@@ -856,15 +880,15 @@ async def drain_transcriptions(
             config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
         )
         stats[outcome] = stats.get(outcome, 0) + 1
-        if outcome in ("unreachable", "refused"):
+        if outcome in ("unreachable", "stalled", "refused"):
             # transcribe_media warned once; every media after this one would
-            # wait out the same connect timeouts, or get the same refusal.
+            # wait out the same timeouts, or get the same refusal.
             break
     logger.info(
         "Transcription drain: %d done, %d failed, %d skipped, %d submitted, %d unreachable of %d media; "
         "%d filled from the event feed, %d from the poll",
         stats["done"],
-        stats["failed"] + stats["refused"],
+        stats["failed"] + stats["stalled"] + stats["refused"],
         stats["skipped"],
         stats["submitted"],
         stats["unreachable"],

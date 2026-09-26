@@ -7,7 +7,7 @@ Implemented in this branch, slices 1 to 7 of the rollout section at the end. Whe
 ## The simple version
 
 - On by default. The backup process finds every downloaded voice message and round video without a transcript and sends the audio to the configured server. Until a server is configured the viewer shows a one-line nudge and nothing fails.
-- A transcript is a new row in a new table, never a change to the media row. A second transcript with another engine or preset is another row. Nothing this feature does deletes or overwrites anything.
+- A transcript is a new row in a new table, never a change to the media row. A second transcript with another engine or preset is another row. On its own the feature deletes nothing, and the one value it changes after writing it is a row's `status`, which only moves forward. The operator's flag-gated removal paths take transcripts with their media, as listed under [what this feature deletes](#what-this-feature-deletes-overwrites-and-forgets).
 - The viewer shows the official Telegram pattern: a small button beside the waveform that swaps the text in under it. The text is searchable from the chat search box and the global search.
 - Only the backup process talks to the server. The viewer never makes an outbound request for this feature; it receives the signed callback and serves rows.
 - Results reach the archive three ways and all three write the same row: the callback into the viewer, the server's event feed read on every drain, and a per-job poll for anything left over. An archive behind NAT with no reachable callback URL loses nothing.
@@ -249,7 +249,7 @@ POST {TRANSCRIPTION_URL}/v1/audio/transcriptions
 file=<bytes> model=<the preset when the server is akou, else "whisper-1"> response_format=verbose_json timestamp_granularities[]=word
 ```
 
-`verbose_json` carries `text`, `language`, `duration`, `words` and `segments`, which map onto the same columns. `source` is `openai`, `job_id` stays NULL, and no callback or event feed is involved. This is also what a user gets from speaches, LocalAI or whisper.cpp today. Only akou reads a preset name in `model`; a server that validates the field would refuse it for good, so everyone else gets `whisper-1`. A server that answers with an HTTP error after the client's attempts gets a `failed` row; a server that cannot be reached at all is an outage, not an answer: the row stays `queued`, the run ends there, and the ten-minute branch of the drain query resubmits on the same row, so an outage never spends the cap of three failed rows.
+`verbose_json` carries `text`, `language`, `duration`, `words` and `segments`, which map onto the same columns. `source` is `openai`, `job_id` stays NULL, and no callback or event feed is involved. This is also what a user gets from speaches, LocalAI or whisper.cpp today. Only akou reads a preset name in `model`; a server that validates the field would refuse it for good, so everyone else gets `whisper-1`. A server that answers with an HTTP error after the client's attempts gets a `failed` row, and so does a request it took and never answered, a read or write timeout, which also ends the run so the next media does not wait out the same timeouts. A server that cannot be reached at all is an outage, not an answer: the row stays `queued`, the run ends there, and the ten-minute branch of the drain query resubmits on the same row, so an outage never spends the cap of three failed rows.
 
 ### Completion
 
@@ -283,7 +283,7 @@ sequenceDiagram
     V->>DB: fill rows by idempotency_key, status=done
     V->>DB: read media row for chat_id
     V->>U: ws transcript event (ids and status)
-    U->>V: GET /api/media/{media_id}/transcripts
+    U->>V: GET /api/chats/{ref}/media/{message_id}_{type}/transcripts
     Note over B,A: next drain: GET /v1/events?after=cursor catches anything the callback missed
     B->>A: GET /v1/events?after=cursor
     A-->>B: events
@@ -318,7 +318,7 @@ We do not send chat titles, sender names, message text or ids to the server. `me
 | Consumer | Change |
 | --- | --- |
 | `/api/chats/{ref}/messages` at [main.py](../src/web/main.py#L2920) | `media.transcript` with the newest `done` row's `text`, `language`, `engine_name`, `preset`, `confidence` and `completed_at`; `media.transcripts` with every row. Built where the [message media dict](../src/db/adapter.py#L4808) is built |
-| `GET /api/media/{media_id}/transcripts` | New. Every row for one media, newest first. What the browser fetches on a realtime event and what the version picker reads |
+| `GET /api/media/{media_id}/transcripts` | New. Every row for one media, newest first, every column, for a client that holds the storage id. The browser never calls it: the version picker reads `media.transcripts` and a realtime event fetches the chat route below |
 | `/api/chats/{ref}/media` at [main.py](../src/web/main.py#L3147) | The same two fields on each [gallery item](../src/db/adapter.py#L2733) |
 | Chat and global search | `matched_in` on each hit |
 | `/api/changes` at [main.py](../src/web/main.py#L3046) | A `transcript` kind beside the `deleted` and `edited` kinds, dated by `completed_at` and carrying `text` and `language`, so pollers see new transcripts. Like the other kinds it lists one row per event: two accounts holding one channel list its transcript once, matched by text |

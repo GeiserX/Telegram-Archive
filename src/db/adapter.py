@@ -5631,7 +5631,9 @@ class DatabaseAdapter:
             transcripts carries them all under ``transcripts``, newest first.
         """
         transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
-        for row in await self.get_transcripts_for_export(chat_id, account_id=account_id):
+        for row in await self.get_transcripts_for_export(
+            chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+        ):
             transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
         async with self.db_manager.async_session_factory() as session:
             if include_media:
@@ -6707,13 +6709,21 @@ class DatabaseAdapter:
             return by_media
 
     async def get_transcripts_for_export(
-        self, chat_id: int | None = None, *, account_id: int | None = None
+        self,
+        chat_id: int | None = None,
+        *,
+        account_id: int | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Every transcript row with the ``chat_id`` and ``message_id`` its media belongs to.
 
         For the two exports: every column, datetimes as ISO strings, newest
         row first. A transcript whose media row is gone has no message to sit
         under and is left out. ``None`` scopes mean every chat or account.
+        ``from_date`` (inclusive) and ``to_date`` (exclusive) bound the date
+        of the message, as ``get_messages_for_export`` does, so a windowed
+        export reads only the rows of the messages it exports.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
@@ -6725,6 +6735,19 @@ class DatabaseAdapter:
                 stmt = stmt.where(Media.chat_id == chat_id)
             if account_id is not None:
                 stmt = stmt.where(MediaTranscript.account_id == account_id)
+            if from_date is not None or to_date is not None:
+                stmt = stmt.join(
+                    Message,
+                    and_(
+                        Message.account_id == Media.account_id,
+                        Message.chat_id == Media.chat_id,
+                        Message.id == Media.message_id,
+                    ),
+                )
+                if from_date is not None:
+                    stmt = stmt.where(Message.date >= from_date)
+                if to_date is not None:
+                    stmt = stmt.where(Message.date < to_date)
             rows = []
             for transcript, media_chat_id, message_id in await session.execute(stmt):
                 row = self._transcript_to_dict(transcript)

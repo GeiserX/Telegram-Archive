@@ -99,6 +99,36 @@ class TestTranscriptionConfig(unittest.TestCase):
             self.assertIn("TRANSCRIPTION_URL", joined)
             self.assertNotIn("example.test", joined)
 
+    def test_a_malformed_bracketed_url_degrades_instead_of_aborting(self):
+        """urlparse raises on an unclosed IPv6 bracket; the warning paths still apply."""
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(TRANSCRIPTION_URL="https://[akou.example.test")
+        self.assertFalse(config.transcription_enabled)
+        self.assertEqual(config.transcription_url, "")
+        self.assertTrue(any("TRANSCRIPTION_URL" in line for line in logs.output))
+
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(
+                TRANSCRIPTION_URL=self.URL, TRANSCRIPTION_CALLBACK_URL="https://[viewer.example.test/cb"
+            )
+        self.assertTrue(config.transcription_enabled)
+        self.assertEqual(config.transcription_callback_url, "")
+        joined = "\n".join(logs.output)
+        self.assertIn("TRANSCRIPTION_CALLBACK_URL", joined)
+        self.assertNotIn("example.test", joined)
+
+    def test_disabled_ignores_a_typo_in_its_numeric_settings(self):
+        """A setting of a feature the operator turned off must not stop the archiver."""
+        config = self._config(
+            TRANSCRIPTION_ENABLED="false", TRANSCRIPTION_MAX_SECONDS="30m", TRANSCRIPTION_BACKFILL_PER_RUN="lots"
+        )
+        self.assertFalse(config.transcription_enabled)
+        self.assertEqual(config.transcription_max_seconds, 1800)
+        self.assertEqual(config.transcription_backfill_per_run, 50)
+        # On, the same typo still fails by name, like every other numeric setting.
+        with self.assertRaisesRegex(ValueError, "TRANSCRIPTION_MAX_SECONDS"):
+            self._config(TRANSCRIPTION_MAX_SECONDS="30m")
+
     def test_bad_preset_falls_back_to_auto(self):
         with self.assertLogs("src.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_PRESET="turbo")

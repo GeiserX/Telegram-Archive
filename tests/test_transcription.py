@@ -68,11 +68,13 @@ class FakeServer:
         server_body: dict | None = None,
         transcribe_status: int = 200,
         transcribe_down: bool = False,
+        transcribe_timeout: bool = False,
     ):
         self.server_status = server_status
         self.server_body = server_body
         self.transcribe_status = transcribe_status
         self.transcribe_down = transcribe_down  # /v1/server answers, the upload cannot connect
+        self.transcribe_timeout = transcribe_timeout  # the upload connects, the answer never comes
         self.requests: list[httpx.Request] = []
         self.transport = httpx.MockTransport(self._handle)
 
@@ -85,6 +87,8 @@ class FakeServer:
         if request.url.path.endswith("/v1/audio/transcriptions"):
             if self.transcribe_down:
                 raise httpx.ConnectError(f"cannot reach {URL}")
+            if self.transcribe_timeout:
+                raise httpx.ReadTimeout(f"no answer from {URL}")
             if self.transcribe_status == 200:
                 return httpx.Response(200, json=VERBOSE_JSON)
             if self.transcribe_status == 302:
@@ -157,7 +161,8 @@ async def _media(
 def _stats(**counts: int) -> dict[str, int]:
     """A drain's counts: every key at zero except the ones named."""
     stats = dict.fromkeys(
-        ("done", "failed", "skipped", "submitted", "refused", "unreachable", "noop", "reconciled", "polled"), 0
+        ("done", "failed", "skipped", "submitted", "refused", "unreachable", "stalled", "noop", "reconciled", "polled"),
+        0,
     )
     stats.update(counts)
     return stats
@@ -276,6 +281,22 @@ class TestClient:
         assert excinfo.value.transient is True
         assert len(server.transcribe_requests) == 3
         assert KEY not in str(excinfo.value)
+
+    async def test_a_timeout_after_connecting_is_stalled_and_a_connect_timeout_is_not(self, tmp_path):
+        server = FakeServer(transcribe_timeout=True)
+        with pytest.raises(TranscriptionError) as excinfo:
+            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg", model="auto")
+        assert (excinfo.value.reason, excinfo.value.transient, excinfo.value.stalled) == ("ReadTimeout", True, True)
+        assert len(server.transcribe_requests) == 3
+
+        def connect_timeout(request):
+            raise httpx.ConnectTimeout(f"cannot reach {URL}")
+
+        client = TranscriptionClient(_config(str(tmp_path)), transport=httpx.MockTransport(connect_timeout))
+        client.backoffs = (0.0, 0.0)
+        with pytest.raises(TranscriptionError) as excinfo:
+            await client.transcribe(AUDIO, "a.ogg", model="auto")
+        assert (excinfo.value.reason, excinfo.value.transient, excinfo.value.stalled) == ("ConnectTimeout", True, False)
 
     def test_bad_or_missing_url_means_not_configured(self, tmp_path):
         assert not TranscriptionClient(_config(str(tmp_path), transcription_url="")).configured
@@ -436,6 +457,36 @@ class TestDrain:
         assert server.transcribe_requests == []
         assert (await _rows(real_adapter, "m_1_voice"))[0]["error"] == "file_missing"
 
+    async def test_an_unreadable_file_is_a_failed_row_and_the_run_goes_on(self, real_adapter, tmp_path):
+        """A read error spends a failed row instead of aborting the drain, and an
+        ask-now row is marked picked up (its preset) before the read is tried."""
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 2))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
+        asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        assert asked["preset"] is None
+        real_read = __import__("src.transcription", fromlist=["_read_file"])._read_file
+
+        def read(path):
+            if "m_1_voice" in path:
+                raise PermissionError("denied")
+            return real_read(path)
+
+        server = FakeServer()
+        config = _config(str(tmp_path))
+        with patch("src.transcription._read_file", side_effect=read):
+            stats = await drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+            )
+        assert (stats["failed"], stats["done"]) == (1, 1)
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["id"], row["status"], row["error"], row["preset"]) == (
+            asked["id"],
+            "failed",
+            "file_unreadable",
+            "auto",
+        )
+        assert [r["status"] for r in await _rows(real_adapter, "m_2_voice")] == ["done"]
+
     async def test_an_unreachable_server_writes_no_rows(self, real_adapter, tmp_path, caplog):
         await _media(real_adapter, tmp_path, "m_1_voice")
 
@@ -513,6 +564,33 @@ class TestDrain:
         assert stats["done"] == 2
         assert [(r["id"], r["status"]) for r in await _rows(real_adapter, "m_1_voice")] == [(first_row["id"], "done")]
         assert [(r["id"], r["status"]) for r in await _rows(real_adapter, "m_2_voice")] == [(second_row["id"], "done")]
+
+    async def test_a_server_that_never_answers_spends_a_failed_row_and_ends_the_run(self, real_adapter, tmp_path):
+        """A read timeout reached the server: a failed row, so the cap of three ends a message it always times out on."""
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 2))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
+        slow = FakeServer(transcribe_timeout=True)
+        config = _config(str(tmp_path))
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, slow)
+        )
+        assert stats == _stats(stalled=1)
+        assert len(slow.transcribe_requests) == 3  # one media, then the run ends
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"]) == ("failed", "ReadTimeout")
+        assert await _rows(real_adapter, "m_2_voice") == []
+
+        for _ in range(6):
+            await drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, slow)
+            )
+        for media_id in ("m_1_voice", "m_2_voice"):
+            assert [r["status"] for r in await _rows(real_adapter, media_id)] == ["failed"] * 3
+        sent = len(slow.transcribe_requests)
+        await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, slow)
+        )
+        assert len(slow.transcribe_requests) == sent  # the cap holds: nothing is resent
 
     async def test_the_server_row_is_written_only_when_the_server_names_itself(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -692,6 +770,7 @@ class AkouServer(FakeServer):
         self.events: list[dict] = []
         self.issued = 0  # job ids are never reused, even after a job is deleted
         self.nest_result = True  # a done job answer carries its result under "result"
+        self.submit_timeout = False  # POST /v1/jobs connects, then the answer never comes
 
     # -- what the tests drive -------------------------------------------------
 
@@ -784,6 +863,8 @@ class AkouServer(FakeServer):
         path = request.url.path
         if request.method == "POST" and path.endswith("/v1/jobs"):
             self.requests.append(request)
+            if self.submit_timeout:
+                raise httpx.ReadTimeout(f"no answer from {URL}")
             return self._submit(request)
         if request.method == "GET" and path.endswith("/v1/events"):
             self.requests.append(request)
@@ -952,6 +1033,16 @@ class TestJobPath:
         assert await _rows(real_adapter, "m_2_voice") == []
         assert sum("callback_not_allowed" in r.getMessage() for r in caplog.records) == 1
         assert all(CALLBACK not in r.getMessage() for r in caplog.records)
+
+    async def test_a_submit_that_times_out_stays_queued_for_the_same_key(self, real_adapter, tmp_path):
+        """akou may have made the job: the resubmit with the same key finds it, so no failed row."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        server.submit_timeout = True
+        stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        assert stats == _stats(unreachable=1)
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["job_id"], row["error"]) == ("queued", None, None)
 
     async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)
