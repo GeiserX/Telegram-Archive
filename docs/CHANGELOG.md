@@ -4,7 +4,9 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
-## [8.16.1]
+## [8.16.1] - 2026-09-26
+
+Three fixes to transcription from a real diarization test against akou. Upgrading needs no manual steps and no migration.
 
 ### Fixed
 - **A diarized request no longer gets an old answer without speakers.** The key the archive sends with each akou job covered only the audio, so audio sent again with diarization on, another preset or another language hint got akou's earlier job back, stored as if it had speakers. The key now names those options too, and an answer made with other options than asked is stored as failed and retried instead of kept. Transcripts that 8.16.0 stored as diarized without any speaker stay as they are, but are no longer reused for other files. ([#490](https://github.com/GeiserX/Telegram-Archive/pull/490))
