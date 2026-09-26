@@ -1608,7 +1608,7 @@ class TelegramBackup:
             if self.config.verify_media:
                 await self._verify_and_redownload_media()
 
-            # Transcribe the voice messages and round videos downloaded so far
+            # Transcribe what TRANSCRIPTION_TYPES names and every file whose button was pressed
             await self._drain_transcriptions()
 
         except Exception as e:
@@ -1625,7 +1625,7 @@ class TelegramBackup:
                 logger.warning(f"Failed to clear backup_in_progress flag: {e}")
 
     async def _drain_transcriptions(self) -> None:
-        """Send new voice messages and round videos to the transcription server.
+        """Send new media of TRANSCRIPTION_TYPES, and every pressed file, to the transcription server.
 
         Runs after the two media sweeps so a file downloaded this run is
         transcribed this run (docs/TRANSCRIPTION.md). A transcription problem

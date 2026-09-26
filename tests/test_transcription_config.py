@@ -54,6 +54,7 @@ class TestTranscriptionConfig(unittest.TestCase):
         # Voice messages ahead of time, like the official apps; the rest one file at a time.
         self.assertEqual(config.transcription_types, {"voice"})
         self.assertEqual(config.transcription_max_seconds, 1800)
+        self.assertEqual(config.transcription_max_upload_mb, 500)
         self.assertEqual(config.transcription_language, "")
         self.assertEqual(config.transcription_callback_url, "")
         self.assertEqual(config.transcription_webhook_secret, "")
@@ -75,6 +76,7 @@ class TestTranscriptionConfig(unittest.TestCase):
             TRANSCRIPTION_PRESET="Best",
             TRANSCRIPTION_TYPES=" voice, Audio ",
             TRANSCRIPTION_MAX_SECONDS="600",
+            TRANSCRIPTION_MAX_UPLOAD_MB="64",
             TRANSCRIPTION_LANGUAGE="es",
             TRANSCRIPTION_CALLBACK_URL="https://viewer.example.test/api/transcriptions/callback",
             TRANSCRIPTION_WEBHOOK_SECRET=SECRET,
@@ -86,6 +88,7 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_preset, "best")
         self.assertEqual(config.transcription_types, {"voice", "audio"})
         self.assertEqual(config.transcription_max_seconds, 600)
+        self.assertEqual(config.transcription_max_upload_mb, 64)
         self.assertEqual(config.transcription_language, "es")
         self.assertEqual(config.transcription_callback_url, "https://viewer.example.test/api/transcriptions/callback")
         self.assertEqual(config.transcription_webhook_secret, SECRET)

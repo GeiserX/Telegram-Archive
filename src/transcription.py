@@ -41,10 +41,11 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, BinaryIO
 
 import httpx
 
@@ -96,8 +97,29 @@ FFPROBE_TIMEOUT_SECONDS = 30
 # ``media_transcripts.error`` of a file ffprobe found no audio stream in.
 NO_AUDIO_TRACK = "no_audio_track"
 
-# One warning per process when ffprobe is missing or fails; debug after that.
-_probe_warned = False
+# ``media_transcripts.error`` of a file bigger than TRANSCRIPTION_MAX_UPLOAD_MB
+# as it would be sent, after its audio track is extracted.
+TOO_LARGE = "too_large"
+
+# Voice messages and music are sent as stored: they are audio already and
+# small. Everything else (a video, a round video, a file sent as a document)
+# is sent as its audio track alone, extracted by ffmpeg, which shrinks a
+# 4 GB video to tens of megabytes. Extracting reads the whole file, so it
+# gets far longer than ffprobe.
+SENT_AS_STORED = frozenset({"voice", "audio"})
+EXTRACT_TIMEOUT_SECONDS = 900
+
+# One warning per process and tool when ffprobe or ffmpeg is missing or
+# fails; debug after that.
+_warned: set[str] = set()
+
+
+def _warn_once(tool: str, message: str) -> None:
+    if tool in _warned:
+        logger.debug(message)
+    else:
+        _warned.add(tool)
+        logger.warning(message)
 
 
 class TranscriptionError(Exception):
@@ -257,7 +279,9 @@ class TranscriptionClient:
             retain_days=retain_days,
         )
 
-    async def transcribe(self, audio: bytes, filename: str, *, model: str, prompt: str | None = None) -> dict[str, Any]:
+    async def transcribe(
+        self, audio: bytes | BinaryIO, filename: str, *, model: str, prompt: str | None = None
+    ) -> dict[str, Any]:
         """``POST /v1/audio/transcriptions`` and return the ``verbose_json`` answer.
 
         Multipart with ``model`` (see ``sync_model``), ``response_format=verbose_json``
@@ -330,7 +354,7 @@ class TranscriptionClient:
 
     async def submit_job(
         self,
-        audio: bytes,
+        audio: bytes | BinaryIO,
         filename: str,
         *,
         content_hash: str,
@@ -465,9 +489,13 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
     }
 
 
-def _read_file(path: str) -> bytes:
+def _file_sha256(path: str) -> str:
+    """The SHA-256 of a file, read in chunks: a video can be gigabytes."""
+    digest = hashlib.sha256()
     with open(path, "rb") as handle:
-        return handle.read()
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -509,6 +537,8 @@ def _run_ffprobe(path: str) -> AudioProbe | None:
         return None
     if not isinstance(payload, dict):
         return None
+    if not isinstance(payload.get("streams"), list):
+        return None  # nothing said about the streams: unknown, not "no audio"
     streams = _dicts(payload.get("streams"))
     fmt = payload.get("format")
     duration = None
@@ -528,7 +558,6 @@ async def probe_audio(path: str) -> AudioProbe | None:
     Logs one warning per process when ffprobe is missing or fails, never
     the path (the exception strings of subprocess carry the full argv).
     """
-    global _probe_warned
     try:
         probe = await asyncio.to_thread(_run_ffprobe, path)
         reason = "failed"
@@ -537,13 +566,78 @@ async def probe_audio(path: str) -> AudioProbe | None:
     except (OSError, subprocess.SubprocessError) as e:
         probe, reason = None, type(e).__name__
     if probe is None:
-        message = f"Transcription: ffprobe {reason}; sending the file without the audio check"
-        if _probe_warned:
-            logger.debug(message)
-        else:
-            _probe_warned = True
-            logger.warning(message)
+        _warn_once("ffprobe", f"Transcription: ffprobe {reason}; sending the file without the audio check")
     return probe
+
+
+def _run_extract(path: str, dest: str) -> bool:
+    """ffmpeg writes the audio track of ``path`` to ``dest`` as 16 kHz mono Opus; True when it did.
+
+    A fixed argument list and no shell, like ``_run_ffprobe``. The bitexact
+    flags make the output the same on every run of the same ffmpeg build:
+    the Ogg muxer otherwise picks a random stream serial.
+    """
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            path,
+            "-vn",
+            "-sn",
+            "-dn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "libopus",
+            "-fflags",
+            "+bitexact",
+            "-flags:a",
+            "+bitexact",
+            "-f",
+            "ogg",
+            dest,
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=EXTRACT_TIMEOUT_SECONDS,
+        check=False,
+    )
+    return result.returncode == 0 and os.path.getsize(dest) > 0
+
+
+async def extract_audio(path: str) -> str | None:
+    """The audio track of ``path`` in a temporary ``.ogg`` file, or None to send the stored file.
+
+    Runs off the event loop; the caller deletes the file. A missing or
+    failing ffmpeg logs one warning per process, never the path, and the
+    stored file goes out instead, under the same size limit.
+    """
+    fd, dest = tempfile.mkstemp(prefix="transcription-", suffix=".ogg")
+    os.close(fd)
+    try:
+        if await asyncio.to_thread(_run_extract, path, dest):
+            return dest
+        reason = "failed"
+    except FileNotFoundError:
+        reason = "not installed"
+    except (OSError, subprocess.SubprocessError) as e:
+        reason = type(e).__name__
+    _remove(dest)
+    _warn_once("ffmpeg", f"Transcription: ffmpeg {reason}; sending the stored file instead of its audio track")
+    return None
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 async def _notify(notifier, media: dict[str, Any], transcript_id: int, status: str, account_id: int) -> None:
@@ -619,7 +713,7 @@ async def _submit_job(
     db,
     media: dict[str, Any],
     row: dict[str, Any],
-    audio: bytes,
+    audio: bytes | BinaryIO,
     filename: str,
     idempotency_key: str,
     *,
@@ -627,8 +721,15 @@ async def _submit_job(
     client: TranscriptionClient,
     server: ServerInfo,
     notifier,
+    upload_key: str | None = None,
 ) -> str:
     """``POST /v1/jobs`` for one queued row and branch on the answer's ``status``.
+
+    ``idempotency_key`` is the stored file's hash: ``metadata.content_hash``
+    and the row are matched on it. ``upload_key`` is the hash of the bytes
+    sent when they are an extracted audio track, and the ``Idempotency-Key``
+    header derives from it: akou refuses a key it has seen with another
+    file, and another ffmpeg build may extract other bytes from the same file.
 
     ``queued`` or ``running``: the row stores the job id and that status,
     and the result comes later by the callback, the event feed or the
@@ -653,7 +754,7 @@ async def _submit_job(
             filename,
             content_hash=idempotency_key,
             callback_url=callback_url if isinstance(callback_url, str) and callback_url else None,
-            idempotency_key=attempt_key(idempotency_key, earlier),
+            idempotency_key=attempt_key(upload_key or idempotency_key, earlier),
         )
     except TranscriptionError as e:
         if e.transient:
@@ -851,10 +952,11 @@ async def transcribe_media(
     too_long = f"longer than the {max_seconds} second limit"
     if max_seconds is not None and duration is not None and duration > max_seconds:
         return await skip(too_long)
-    if path and os.path.isfile(path):
-        # A video with no sound, or a document that only claims an audio or
-        # video mime type, is never sent. Documents and many videos carry no
-        # stored duration, so ffprobe's is what the limit reads for them.
+    known_voice = media.get("type") == "voice" and duration is not None
+    if path and os.path.isfile(path) and not known_voice:
+        # A video with no sound is never sent. Documents and many videos
+        # carry no stored duration, so ffprobe's is what the limit reads for
+        # them. A voice message with a stored duration needs neither answer.
         probe = await probe_audio(path)
         if probe is not None:
             if duration is None:
@@ -893,7 +995,9 @@ async def transcribe_media(
         await _notify(notifier, media, row["id"], "failed", account_id)
         return "failed"
     try:
-        audio = await asyncio.to_thread(_read_file, path)
+        # Imported rows carry no hash: computed here, stored on the transcript
+        # row only, never written back to media.
+        idempotency_key = content_hash or await asyncio.to_thread(_file_sha256, path)
     except OSError:
         # Unreadable (permissions, a disk error): an answer about this file,
         # not an outage, so it spends a failed row instead of stopping the run.
@@ -902,15 +1006,59 @@ async def transcribe_media(
         )
         await _notify(notifier, media, row["id"], "failed", account_id)
         return "failed"
-    idempotency_key = content_hash
-    if idempotency_key is None:
-        # Imported rows carry no hash: computed here, stored on the transcript
-        # row only, never written back to media.
-        idempotency_key = hashlib.sha256(audio).hexdigest()
     if not row.get("idempotency_key"):
         # An ask-now row, or a row for an imported media with no hash.
         await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
 
+    extracted = None if media.get("type") in SENT_AS_STORED else await extract_audio(path)
+    try:
+        upload_path = extracted or path
+        max_mb = getattr(config, "transcription_max_upload_mb", 500)
+        if not isinstance(max_mb, int) or isinstance(max_mb, bool):
+            max_mb = 500
+        if os.path.getsize(upload_path) > max_mb * 1024 * 1024:
+            return await skip(TOO_LARGE)
+        upload_key = await asyncio.to_thread(_file_sha256, extracted) if extracted else None
+        stem = os.path.splitext(os.path.basename(path))[0]
+        filename = f"{stem}.ogg" if extracted else os.path.basename(path)
+        # Streamed from disk: httpx reads the open file in chunks and rewinds
+        # it on a retry, so a large file never sits in memory.
+        with open(upload_path, "rb") as upload:
+            return await _send(
+                config,
+                db,
+                media,
+                row,
+                upload,
+                filename,
+                idempotency_key,
+                upload_key,
+                account_id=account_id,
+                client=client,
+                server=server,
+                notifier=notifier,
+            )
+    finally:
+        if extracted:
+            _remove(extracted)
+
+
+async def _send(
+    config,
+    db,
+    media: dict[str, Any],
+    row: dict[str, Any],
+    upload: BinaryIO,
+    filename: str,
+    idempotency_key: str,
+    upload_key: str | None,
+    *,
+    account_id: int,
+    client: TranscriptionClient,
+    server: ServerInfo | None,
+    notifier,
+) -> str:
+    """Detect the server if the caller has not, then the job path or the synchronous request."""
     if server is None:
         try:
             server = await client.detect_server()
@@ -925,18 +1073,19 @@ async def transcribe_media(
             db,
             media,
             row,
-            audio,
-            os.path.basename(path),
+            upload,
+            filename,
             idempotency_key,
             account_id=account_id,
             client=client,
             server=server,
             notifier=notifier,
+            upload_key=upload_key,
         )
 
     model = client.sync_model(server)
     try:
-        payload = await client.transcribe(audio, os.path.basename(path), model=model, prompt=_prompt_for(config))
+        payload = await client.transcribe(upload, filename, model=model, prompt=_prompt_for(config))
     except TranscriptionError as e:
         if e.transient and not e.stalled:
             # Same as above: an outage is not an answer and spends no failed row.
