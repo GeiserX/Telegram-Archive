@@ -280,6 +280,25 @@ def test_the_voice_tab_shows_the_first_line_and_filters_by_transcript() -> None:
     )
 
 
+def test_the_voice_filter_starts_empty_when_the_gallery_opens_in_another_chat() -> None:
+    _run_node(
+        _script(
+            """
+            resetGalleryFilterForChat('refA')
+            mediaGalleryFilter.value = 'harbour'
+            resetGalleryFilterForChat('refA')
+            assert.equal(mediaGalleryFilter.value, 'harbour', 'reopened in the same chat: kept')
+            resetGalleryFilterForChat('refB')
+            assert.equal(mediaGalleryFilter.value, '', 'opened in another chat: cleared')
+            """
+        )
+    )
+    html = _html()
+    opened = html[html.index("watch(showMediaGallery, async (val) => {") :]
+    opened = opened[: opened.index("} else {")]
+    assert "resetGalleryFilterForChat(selectedChat.value?.ref ?? null)" in opened
+
+
 def test_the_markup_uses_what_the_setup_returns() -> None:
     html = _html()
     voice_tab = html[html.index("<template v-else-if=\"mediaGalleryTab === 'voice'\">") :]

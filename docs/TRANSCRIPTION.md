@@ -54,7 +54,7 @@ A round video keeps its circle. The button sits over the bottom corner of the ci
 
 ### Open state and expand all
 
-Open or closed is remembered per message in `localStorage`. The chat header menu gains "Expand all transcripts" for the chat, also remembered.
+Open or closed is remembered per message in `localStorage`, for the 500 messages pressed most recently. The chat header menu gains "Expand all transcripts" for the chat, also remembered.
 
 ### Search hits
 
@@ -70,7 +70,7 @@ Transcription is on by default, so a fresh install has it enabled with no server
 
 ### Media gallery
 
-The Voice tab of the gallery, `typeMap.voice` in [index.html](../src/web/templates/index.html), shows the first line of the newest transcript under each item. The tab had no filter box, so it gains one: it matches the file name and the text of every finished transcript, case-insensitively, over the items loaded so far. Searching every transcript of a chat is the chat search's job.
+The Voice tab of the gallery, `typeMap.voice` in [index.html](../src/web/templates/index.html), shows the first line of the newest transcript under each item. The tab had no filter box, so it gains one: it matches the file name and the text of every finished transcript, case-insensitively, over the items loaded so far, and starts empty when the gallery opens in another chat. Searching every transcript of a chat is the chat search's job.
 
 ### Accessibility
 

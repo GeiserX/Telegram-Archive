@@ -250,6 +250,28 @@ def test_open_state_is_remembered_per_message_and_survives_a_reload() -> None:
     )
 
 
+def test_the_open_state_map_keeps_the_most_recent_500_entries() -> None:
+    old = {f"refA:{n}": True for n in range(600)}
+    _run_node(
+        _script(
+            """
+            transcriptionState.value = { enabled: true, configured: true }
+            // Pressing an old entry again makes it the newest one.
+            await pressTranscript(voice(5, [done(4)]))
+            const kept = JSON.parse(stored.get('transcriptOpen'))
+            const keys = Object.keys(kept)
+            assert.equal(keys.length, 500)
+            assert.equal(keys[keys.length - 1], 'refA:5')
+            assert.equal(kept['refA:5'], false)
+            assert.equal(keys[0], 'refA:101', 'the oldest entries went first')
+            assert.equal('refA:100' in kept, false)
+            assert.equal(Object.keys(transcriptOpen.value).length, 500)
+            """,
+            stored={"transcriptOpen": json.dumps(old)},
+        )
+    )
+
+
 def test_expand_all_is_per_chat_remembered_and_wins_over_hand_set_states() -> None:
     _run_node(
         _script(

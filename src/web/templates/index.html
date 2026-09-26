@@ -6216,6 +6216,7 @@
                 // chat, both in localStorage. The viewer never talks to the server.
                 const transcriptionState = ref({ enabled: false, configured: false, server_name: null, server_version: null })
                 const TRANSCRIPT_OPEN_KEY = 'transcriptOpen'
+                const TRANSCRIPT_OPEN_MAX = 500
                 const TRANSCRIPT_EXPAND_ALL_KEY = 'transcriptExpandAll'
                 const TRANSCRIPT_NUDGE_KEY = 'transcriptNudgeDismissed'
                 const TRANSCRIPT_MIN_LOADING_MS = 350
@@ -6293,7 +6294,13 @@
                 }
                 const showTranscriptText = (msg) => isTranscriptExpanded(msg) && !transcriptBusy.value[transcriptKey(msg)]
                 const setTranscriptOpen = (msg, open) => {
-                    transcriptOpen.value = { ...transcriptOpen.value, [transcriptKey(msg)]: open }
+                    // Newest last, and only the most recent entries are kept, so the
+                    // stored map cannot grow with every bubble ever pressed.
+                    const key = transcriptKey(msg)
+                    const rest = { ...transcriptOpen.value }
+                    delete rest[key]
+                    const entries = Object.entries({ ...rest, [key]: open })
+                    transcriptOpen.value = Object.fromEntries(entries.slice(-TRANSCRIPT_OPEN_MAX))
                     writeTranscriptMap(TRANSCRIPT_OPEN_KEY, transcriptOpen.value)
                 }
                 const selectedTranscript = (msg) => {
@@ -6448,6 +6455,13 @@
                 // each item, and a filter box over the loaded items that matches the file
                 // name and the text of every finished transcript, case-insensitively.
                 const mediaGalleryFilter = ref('')
+                // The filter belongs to the chat it was typed in: the gallery opening
+                // in another chat starts with an empty box.
+                let mediaGalleryFilterChat = null
+                const resetGalleryFilterForChat = (chatRef) => {
+                    if (chatRef !== mediaGalleryFilterChat) mediaGalleryFilter.value = ''
+                    mediaGalleryFilterChat = chatRef
+                }
                 const galleryTranscriptLine = (item) => {
                     const text = item?.transcript?.text || ''
                     return text.split('\n').map(line => line.trim()).find(Boolean) || ''
@@ -6865,6 +6879,7 @@
                         mediaGalleryItems.value = []
                         mediaGalleryCounts.value = {}
                         mediaGalleryHasMore.value = true
+                        resetGalleryFilterForChat(selectedChat.value?.ref ?? null)
                         loadMediaGallery()
                         loadMediaCounts()
                     } else {
