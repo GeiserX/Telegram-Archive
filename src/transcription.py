@@ -70,6 +70,7 @@ from .transcription_contract import (
     job_outcome,
     language_tag,
     parse_events_page,
+    real_speaker_label,
 )
 from .transcription_providers import NATIVE_PROVIDERS
 from .transcription_providers import load as load_provider
@@ -107,6 +108,10 @@ MAX_EVENT_PAGES = 20
 # ffprobe reads a file's stream headers, not its samples; a file it cannot
 # read in this long is sent as if there were no ffprobe.
 FFPROBE_TIMEOUT_SECONDS = 30
+
+# ``media_transcripts.error`` of a job akou answered with other options than
+# the request asked for (another preset or diarize value).
+OPTIONS_MISMATCH = "options_mismatch"
 
 # ``media_transcripts.error`` of a file ffprobe found no audio stream in.
 NO_AUDIO_TRACK = "no_audio_track"
@@ -284,6 +289,10 @@ class TranscriptionClient:
     @property
     def configured(self) -> bool:
         return bool(self._base_url)
+
+    def job_options(self) -> dict[str, Any]:
+        """The options a job request sends, exactly as sent: the form fields and the key both read this."""
+        return {"preset": self.preset or "auto", "language": self.language or "auto", "diarize": self.diarize}
 
     def sync_model(self, server: ServerInfo) -> str:
         """The synchronous ``model``: the preset for akou, else TRANSCRIPTION_MODEL or the provider's default."""
@@ -464,16 +473,17 @@ class TranscriptionClient:
         the body carries one (``callback_not_allowed``,
         ``idempotency_conflict``), otherwise ``HTTP <code>``.
         """
+        options = self.job_options()
         data = {
-            "preset": self.preset or "auto",
-            "language": self.language or "auto",
+            "preset": options["preset"],
+            "language": options["language"],
             "metadata": json.dumps({"content_hash": content_hash}),
         }
         if callback_url:
             data["callback_url"] = callback_url
         # Always stated, false included: the archive's setting is global and
         # must win over any server-side default akou may have.
-        data["diarize"] = "true" if self.diarize else "false"
+        data["diarize"] = "true" if options["diarize"] else "false"
         files = {"file": (filename, audio, "application/octet-stream")}
         timeout = httpx.Timeout(self.UPLOAD_TIMEOUT_SECONDS, connect=self.CONNECT_TIMEOUT_SECONDS)
         response = await self._send(
@@ -839,6 +849,24 @@ async def _store_job_outcome(
     return filled
 
 
+def _options_disagree(job: dict[str, Any], sent: dict[str, Any]) -> bool:
+    """True when akou's job answer names other options than the request sent.
+
+    ``diarize`` is compared as a boolean: akou answers a JSON boolean, and a
+    string form is read as one. The preset is compared only when the request
+    named one: akou resolves ``auto`` to the preset it will run before it
+    stores the job, so an ``auto`` request answered with ``fast`` agrees. An
+    answer that carries neither field (an older akou) never disagrees.
+    """
+    answered = job.get("diarize")
+    if isinstance(answered, str):
+        answered = answered.strip().lower() == "true"
+    if isinstance(answered, bool) and answered != bool(sent["diarize"]):
+        return True
+    preset = job.get("preset")
+    return sent["preset"] != "auto" and isinstance(preset, str) and preset != sent["preset"]
+
+
 async def _submit_job(
     config,
     db,
@@ -885,7 +913,7 @@ async def _submit_job(
             filename,
             content_hash=idempotency_key,
             callback_url=callback_url if isinstance(callback_url, str) and callback_url else None,
-            idempotency_key=attempt_key(upload_key or idempotency_key, earlier),
+            idempotency_key=attempt_key(upload_key or idempotency_key, earlier, client.job_options()),
         )
     except TranscriptionError as e:
         if e.transient:
@@ -912,6 +940,15 @@ async def _submit_job(
     if not isinstance(job_id, str) or not job_id:
         await db.fill_media_transcript(row["id"], status="failed", error="invalid_job", source=SOURCE_AKOU)
         await _notify(notifier, media, row["id"], "failed", account_id)
+        return "failed"
+    if _options_disagree(job, client.job_options()):
+        # akou answered a job made with other options, an old one under a
+        # reused key: storing it would label an undiarized answer as
+        # diarized, or one preset's answer as another's. A failed row, so the
+        # retry sends the next key and names a new job.
+        await db.fill_media_transcript(row["id"], status="failed", error=OPTIONS_MISMATCH, source=SOURCE_AKOU)
+        await _notify(notifier, media, row["id"], "failed", account_id)
+        logger.warning("Transcription job answered with other options than asked; stored as failed")
         return "failed"
     status = data.get("status")
     if status == "done" and not isinstance(data.get("text"), str):
@@ -1095,6 +1132,13 @@ async def _copy_transcript(
         **lookup,
     )
     if found is None:
+        return None
+    if found.get("diarize") is True and not any(
+        real_speaker_label(segment.get("speaker")) for segment in _dicts(found.get("segments"))
+    ):
+        # Marked diarized with no speaker in it: 8.16.0 stored an undiarized
+        # job that way under a reused key. It stays as it is, but is not
+        # reused as a diarized answer; the file goes to the server instead.
         return None
     if any(row["status"] == "done" for row in await db.list_media_transcripts(media["id"], account_id=account_id)):
         return None

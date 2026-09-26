@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.16.1] - 2026-09-26
+
+Three fixes to transcription from a real diarization test against akou. Upgrading needs no manual steps and no migration.
+
+### Fixed
+- **A diarized request no longer gets an old answer without speakers.** The key the archive sends with each akou job covered only the audio, so audio sent again with diarization on, another preset or another language hint got akou's earlier job back, stored as if it had speakers. The key now names those options too, and an answer made with other options than asked is stored as failed and retried instead of kept. Transcripts that 8.16.0 stored as diarized without any speaker stay as they are, but are no longer reused for other files. ([#490](https://github.com/GeiserX/Telegram-Archive/pull/490))
+- **A one-speaker note no longer shows a fake "Speaker 2".** akou marks a piece it could not place with any speaker as `s?`; the bubble now joins that piece to the turn around it instead of counting it as another speaker. ([#490](https://github.com/GeiserX/Telegram-Archive/pull/490))
+- **A voice note forwarded within one account gets speakers too.** It used to reuse the account's earlier transcript even when that one was made without diarization or by another server. It now reuses it only when it matches, as across accounts, and is sent otherwise. ([#490](https://github.com/GeiserX/Telegram-Archive/pull/490))
+
 ## [8.16.0] - 2026-09-26
 
 Voice messages can now be read and searched. The archive sends audio to a transcription server, [akou](https://github.com/GeiserX/akou) or any OpenAI-compatible one, keeps the text beside the audio, and shows it in the bubble behind a button like Telegram's own apps.
