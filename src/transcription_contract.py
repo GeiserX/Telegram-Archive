@@ -16,6 +16,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import re
 import time
 from typing import Any
@@ -407,16 +408,27 @@ async def apply_job_outcome(
     return await db.fill_open_transcripts_by_key(key, job_id=job_id, status=status, **columns)
 
 
-def attempt_key(content_hash: str, earlier_attempts: int) -> str:
-    """The ``Idempotency-Key`` of one submit: the audio's SHA-256, then ``.<n>`` from the second attempt on.
+def options_tag(options: dict[str, Any]) -> str:
+    """12 hex characters naming a job's options (preset, language, diarize) in a canonical form."""
+    canonical = json.dumps(options, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
-    akou keeps a key as long as its job and answers the same job for the
-    same key in whatever state it is (SV-J2), so a failed or cancelled job
-    would come back on every retry. ``earlier_attempts`` counts this
-    media's rows that already ended ``done`` or ``failed``: a first attempt
-    sends the bare hash, so the same audio under two media rows still
-    shares one job, and every later attempt names a new job. Assumed: akou
-    accepts any opaque string up to 255 characters as a key, since SV-J2
-    names no format.
+
+def attempt_key(content_hash: str, earlier_attempts: int, options: dict[str, Any] | None = None) -> str:
+    """The ``Idempotency-Key`` of one submit: ``<sha256>.<options>``, then ``.<n>`` from the second attempt on.
+
+    akou keys a job by the API key and this header, compares only the
+    uploaded file on a repeat, never the options, and answers the same job
+    for the same key in whatever state it is (SV-J2). So the key names
+    everything that changes the result: the audio's hash and, through
+    ``options_tag``, the options the request sends. The same audio sent with
+    ``diarize`` on after it went out without, or with another preset or
+    language hint, gets a new job instead of the old answer. The same audio
+    and options under two media rows still share one job. ``earlier_attempts``
+    counts this media's rows that already ended ``done`` or ``failed``: a
+    failed or cancelled job would otherwise come back on every retry, so
+    every later attempt names a new job. At most 64 + 13 + a few characters,
+    well inside akou's 1 to 255 printable characters.
     """
-    return content_hash if earlier_attempts <= 0 else f"{content_hash}.{earlier_attempts}"
+    key = f"{content_hash}.{options_tag(options)}" if options else content_hash
+    return key if earlier_attempts <= 0 else f"{key}.{earlier_attempts}"

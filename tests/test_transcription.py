@@ -39,7 +39,7 @@ from src.transcription import (
     result_columns,
     transcribe_media,
 )
-from src.transcription_contract import parse_events_page
+from src.transcription_contract import attempt_key, parse_events_page
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -1159,6 +1159,7 @@ class AkouServer(FakeServer):
         self.page_size = page_size
         self.jobs: dict[str, dict] = {}
         self.by_key: dict[str, str] = {}
+        self.by_hash: dict[str, str] = {}
         self.events: list[dict] = []
         self.issued = 0  # job ids are never reused, even after a job is deleted
         self.nest_result = True  # a done job answer carries its result under "result"
@@ -1168,8 +1169,20 @@ class AkouServer(FakeServer):
 
     # -- what the tests drive -------------------------------------------------
 
-    def add_job(self, content_hash: str, status: str = "running", audio: bytes = AUDIO, key: str | None = None) -> str:
-        """A job for ``content_hash``, found again by ``key`` (the hash unless the submit sent another)."""
+    def add_job(
+        self,
+        content_hash: str,
+        status: str = "running",
+        audio: bytes = AUDIO,
+        key: str | None = None,
+        options: dict | None = None,
+    ) -> str:
+        """A job for ``content_hash``, found again by ``key`` (``_key(content_hash)`` unless given).
+
+        ``options`` (preset, language, diarize) are echoed in the job answer as
+        akou does; without them the answer carries none, like an older akou.
+        ``by_hash`` finds the newest job of an audio whatever its key.
+        """
         self.issued += 1
         job_id = f"job_{self.issued:04d}"
         self.jobs[job_id] = {
@@ -1177,8 +1190,10 @@ class AkouServer(FakeServer):
             "hash": content_hash,
             "file_sha": hashlib.sha256(audio).hexdigest(),
             "error": None,
+            "options": options,
         }
-        self.by_key[key or content_hash] = job_id
+        self.by_key[key or _key(content_hash)] = job_id
+        self.by_hash[content_hash] = job_id
         return job_id
 
     def finish(self, job_id: str, *, text: str = "hola desde akou", emit: bool = True) -> None:
@@ -1245,6 +1260,7 @@ class AkouServer(FakeServer):
             "status": job["status"],
             "created_at": "2026-01-02T03:04:05Z",
             "links": {"self": f"/v1/jobs/{job_id}", "result": f"/v1/jobs/{job_id}/result"},
+            **(job["options"] or {}),
         }
         if job["status"] == "done" and self.nest_result:
             result = _akou_result(job_id, job["hash"], job["text"])
@@ -1310,7 +1326,18 @@ class AkouServer(FakeServer):
             if self.jobs[job_id]["file_sha"] != file_sha:
                 return httpx.Response(422, json={"error": "idempotency_conflict", "message": "another file"})
             return httpx.Response(200, json=self._job_answer(job_id))
-        job_id = self.add_job(json.loads(fields["metadata"])["content_hash"], status="queued", key=key)
+        options = {
+            "preset": fields.get("preset"),
+            "language": fields.get("language"),
+            "diarize": fields.get("diarize") == "true",
+        }
+        job_id = self.add_job(
+            json.loads(fields["metadata"])["content_hash"],
+            status="queued",
+            audio=fields["file"].encode("latin-1"),
+            key=key,
+            options=options,
+        )
         return httpx.Response(202, json=self._job_answer(job_id))
 
 
@@ -1346,6 +1373,11 @@ async def _akou_drain(config, adapter, server: AkouServer, notifier=None) -> dic
 SHA = hashlib.sha256(AUDIO).hexdigest()
 
 
+def _key(content_hash: str, attempt: int = 0, *, preset="auto", language="auto", diarize=False) -> str:
+    """The ``Idempotency-Key`` the archive sends for this audio and these options (``_akou_config``'s by default)."""
+    return attempt_key(content_hash, attempt, {"preset": preset, "language": language, "diarize": diarize})
+
+
 class TestJobPath:
     async def test_submit_sends_the_documented_fields_and_stores_the_job_id(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -1356,7 +1388,7 @@ class TestJobPath:
         assert server.transcribe_requests == []  # the job path, never the OpenAI route
         request = server.submits[0]
         assert request.url.query == b""  # never ``wait``: akou refuses unknown parameters
-        assert request.headers["idempotency-key"] == SHA
+        assert request.headers["idempotency-key"] == _key(SHA, preset="fast")
         assert request.headers["authorization"] == f"Bearer {KEY}"
         fields = dict(_PART.findall(request.content.decode("latin-1")))
         assert fields["preset"] == "fast"
@@ -1377,7 +1409,7 @@ class TestJobPath:
         await _akou_drain(_akou_config(tmp_path), real_adapter, server)
         fields = dict(_PART.findall(server.submits[-1].content.decode("latin-1")))
         assert "callback_url" not in fields
-        assert server.submits[-1].headers["idempotency-key"] == "d" * 64
+        assert server.submits[-1].headers["idempotency-key"] == _key("d" * 64)
 
     async def test_a_200_with_the_existing_running_job_stores_that_job(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -1464,10 +1496,80 @@ class TestJobPath:
         assert (await _drain_all(config, real_adapter, server))["done"] == 1
         assert "diarize" not in dict(_PART.findall(server.transcribe_requests[0].content.decode("latin-1")))
 
+    async def test_the_key_names_the_options_so_new_options_get_a_new_job(self, real_adapter, tmp_path):
+        """akou compares only the file on a repeated key, so the options have to be in the key."""
+        audio = "e" * 64
+        server = AkouServer()
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash=audio)
+        await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        # The same audio under another media, same options: the same key, the same job.
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash=audio)
+        await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        # Diarization turned on, then another preset: a new key and a new job each time.
+        await _media(real_adapter, tmp_path, "m_3_voice", content_hash=audio)
+        await _akou_drain(_akou_config(tmp_path, transcription_diarize=True), real_adapter, server)
+        await _media(real_adapter, tmp_path, "m_4_voice", content_hash=audio)
+        await _akou_drain(_akou_config(tmp_path, transcription_preset="best"), real_adapter, server)
+
+        keys = [r.headers["idempotency-key"] for r in server.submits]
+        assert keys == [_key(audio), _key(audio), _key(audio, diarize=True), _key(audio, preset="best")]
+        assert len(set(keys)) == 3
+        assert all(len(key) <= 255 and key.isprintable() for key in keys)
+        assert len(server.jobs) == 3
+        job_of = {m: (await _rows(real_adapter, m))[0]["job_id"] for m in ("m_1_voice", "m_2_voice", "m_3_voice")}
+        assert job_of["m_1_voice"] == job_of["m_2_voice"] != job_of["m_3_voice"]
+        assert server.jobs[job_of["m_3_voice"]]["options"]["diarize"] is True
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert row["idempotency_key"] == audio, "the row keeps the stored file's hash"
+        assert json.loads(dict(_PART.findall(server.submits[2].content.decode("latin-1")))["metadata"]) == {
+            "content_hash": audio
+        }
+
+    async def test_an_answer_made_with_other_options_is_failed_not_stored(self, real_adapter, tmp_path):
+        """akou handing back an older job for the key: never stored as a diarized row with no speakers."""
+        audio = "f" * 64
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash=audio)
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="7" * 64)
+        server = AkouServer()
+        server.add_job(
+            audio,
+            status="done",
+            key=_key(audio, diarize=True),
+            options={"preset": "auto", "language": "auto", "diarize": False},
+        )
+        server.jobs[server.by_hash[audio]]["text"] = "sin hablantes"
+        server.add_job(
+            "7" * 64,
+            status="queued",
+            key=_key("7" * 64, diarize=True),
+            options={"preset": "best", "language": "auto", "diarize": True},
+        )
+        config = _akou_config(tmp_path, transcription_diarize=True)
+
+        stats = await _akou_drain(config, real_adapter, server)
+
+        assert stats["failed"] == 2
+        for media_id in ("m_1_voice", "m_2_voice"):
+            [row] = await _rows(real_adapter, media_id)
+            assert (row["status"], row["error"], row["job_id"], row["text"]) == (
+                "failed",
+                "options_mismatch",
+                None,
+                None,
+            ), media_id
+        # The retry names a new job with the options asked for.
+        await _akou_drain(config, real_adapter, server)
+        assert server.submits[-1].headers["idempotency-key"] in {
+            _key(audio, 1, diarize=True),
+            _key("7" * 64, 1, diarize=True),
+        }
+        newest = (await _rows(real_adapter, "m_1_voice"))[0]
+        assert newest["status"] == "queued" and server.jobs[newest["job_id"]]["options"]["diarize"] is True
+
     async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)
         server = AkouServer()
-        server.add_job("9" * 64, audio=b"some other file")
+        server.add_job("9" * 64, audio=b"some other file", key=_key("9" * 64))
         stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
         assert stats["failed"] == 1
         [row] = await _rows(real_adapter, "m_1_voice")
@@ -1504,8 +1606,8 @@ class TestJobPath:
         server = AkouServer()
         config = _akou_config(tmp_path)
         await _akou_drain(config, real_adapter, server)
-        server.fail(server.by_key["a" * 64])
-        server.cancel(server.by_key["b" * 64])
+        server.fail(server.by_hash["a" * 64])
+        server.cancel(server.by_hash["b" * 64])
         stats = await _akou_drain(config, real_adapter, server)
         assert stats["reconciled"] == 2
         failed = (await _rows(real_adapter, "m_1_voice"))[-1]
@@ -1518,7 +1620,7 @@ class TestJobPath:
         server = AkouServer(page_size=2)
         config = _akou_config(tmp_path)
         await _akou_drain(config, real_adapter, server)
-        job_id = server.by_key[SHA]
+        job_id = server.by_hash[SHA]
         # Shaped like a finished result, so only its type keeps it out of the row.
         server.add_event(
             "transcription.previewed",
@@ -1542,7 +1644,7 @@ class TestJobPath:
         server = AkouServer()
         config = _akou_config(tmp_path)
         await _akou_drain(config, real_adapter, server)
-        job_id = server.by_key[SHA]
+        job_id = server.by_hash[SHA]
         server.jobs[job_id]["status"] = "done"
         server.add_event("transcription.completed", {"job_id": job_id, "status": "done", "deleted": True})
         reads = len(server.job_reads)
@@ -1563,8 +1665,8 @@ class TestJobPath:
         server.nest_result = False
         config = _akou_config(tmp_path)
         await _akou_drain(config, real_adapter, server)
-        server.finish(server.by_key["1" * 64], text="por sondeo", emit=False)
-        server.jobs[server.by_key["2" * 64]]["status"] = "running"
+        server.finish(server.by_hash["1" * 64], text="por sondeo", emit=False)
+        server.jobs[server.by_hash["2" * 64]]["status"] = "running"
 
         # Younger than ten minutes: not polled yet.
         await _akou_drain(config, real_adapter, server)
@@ -1577,7 +1679,7 @@ class TestJobPath:
         assert (done["status"], done["text"]) == ("done", "por sondeo")
         running = (await _rows(real_adapter, "m_2_voice"))[0]
         assert running["status"] == "running"
-        done_job, running_job = server.by_key["1" * 64], server.by_key["2" * 64]
+        done_job, running_job = server.by_hash["1" * 64], server.by_hash["2" * 64]
         paths = sorted(r.url.path.rsplit("/v1/", 1)[1] for r in server.job_reads)
         assert paths == sorted([f"jobs/{done_job}", f"jobs/{done_job}/result", f"jobs/{running_job}"])
 
@@ -1589,7 +1691,7 @@ class TestJobPath:
         [first] = await _rows(real_adapter, "m_1_voice")
         # akou deleted the job and its key after its retention window.
         del server.jobs[first["job_id"]]
-        del server.by_key[SHA]
+        del server.by_key[_key(SHA)]
         await _backdate(real_adapter, days=2, minutes=1)
 
         stats = await _akou_drain(config, real_adapter, server)
@@ -1644,7 +1746,7 @@ class TestJobPath:
         await _akou_drain(config, real_adapter, server)
         [first] = await _rows(real_adapter, "m_1_voice")
         server.jobs[first["job_id"]]["status"] = "running"
-        server.by_key[f"{SHA}.1"] = first["job_id"]  # the worst case: the same live job for the retry key
+        server.by_key[_key(SHA, 1)] = first["job_id"]  # the worst case: the same live job for the retry key
         await _backdate(real_adapter, days=2, minutes=1)
 
         stats = await _akou_drain(config, real_adapter, server)  # expires the row, resubmits
@@ -1652,7 +1754,7 @@ class TestJobPath:
         newest, expired = await _rows(real_adapter, "m_1_voice")
         assert (expired["status"], expired["error"], expired["job_id"]) == ("failed", "expired", first["job_id"])
         assert (newest["status"], newest["job_id"]) == ("queued", None)
-        assert [r.headers["idempotency-key"] for r in server.submits] == [SHA, f"{SHA}.1"]
+        assert [r.headers["idempotency-key"] for r in server.submits] == [_key(SHA), _key(SHA, 1)]
 
     async def test_two_media_with_the_same_audio_share_one_job_and_both_fill(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -1706,7 +1808,7 @@ class TestJobPath:
         stats = await _akou_drain(config, real_adapter, server)
         assert (stats["reconciled"], stats["submitted"]) == (1, 1)
         assert list(server.jobs) == ["job_0001", "job_0002"]
-        assert [r.headers["idempotency-key"] for r in server.submits] == [SHA, f"{SHA}.1"]
+        assert [r.headers["idempotency-key"] for r in server.submits] == [_key(SHA), _key(SHA, 1)]
         fields = dict(_PART.findall(server.submits[-1].content.decode("latin-1")))
         assert json.loads(fields["metadata"]) == {"content_hash": SHA}
         newest, cancelled = await _rows(real_adapter, "m_1_voice")
@@ -1727,8 +1829,8 @@ class TestJobPath:
         config = _akou_config(tmp_path)
         await _akou_drain(config, real_adapter, server)
         before = await real_adapter.get_transcription_events_cursor()
-        server.finish(server.by_key["1" * 64], text="primera")
-        server.finish(server.by_key["2" * 64], text="segunda")
+        server.finish(server.by_hash["1" * 64], text="primera")
+        server.finish(server.by_hash["2" * 64], text="segunda")
 
         real_fill = real_adapter.fill_open_transcripts_by_key
         calls = 0
@@ -1809,7 +1911,7 @@ class TestJobPath:
         server = AkouServer()
         config = _akou_config(tmp_path, transcription_backfill_per_run=1)
         await _akou_drain(config, real_adapter, server)
-        job_id = server.by_key[SHA]
+        job_id = server.by_hash[SHA]
         server.add_event(
             "transcription.completed", {**_akou_result(job_id, SHA, "palabras raras"), "words": 5, "segments": 7}
         )
@@ -1836,7 +1938,7 @@ class TestJobPath:
         assert len(server.submits) == 2
         assert len(await real_adapter.get_open_job_transcripts(account_id=1)) == 2
 
-        server.finish(server.by_key["5" * 64])  # the newest download went first
+        server.finish(server.by_hash["5" * 64])  # the newest download went first
         stats = await _akou_drain(config, real_adapter, server)
         assert (stats["reconciled"], stats["submitted"]) == (1, 1)
         assert len(await real_adapter.get_open_job_transcripts(account_id=1)) == 2
@@ -2134,6 +2236,38 @@ class TestCopyAcrossAccounts:
         [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
         assert row["copied_from_id"] == source["id"]
 
+    async def test_a_twin_in_the_same_account_is_copied_when_it_matches(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 1, "m_2_video", media_type="voice")
+        source = await _done_source(real_adapter, 1, "m_1_video")
+        server = FakeServer()
+        config = _config(str(tmp_path))
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(copied=1)
+        assert server.transcribe_requests == []
+        [row] = await real_adapter.list_media_transcripts("m_2_video", account_id=1)
+        assert row["copied_from_id"] == source["id"]
+
+    async def test_a_twin_made_before_diarization_was_on_is_sent_again(self, real_adapter, tmp_path):
+        """A voice note forwarded within one account gets speakers once diarization is on."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 1, "m_2_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video", source="akou", engine_name="akou")
+        server = AkouServer()
+        config = _akou_config(tmp_path, transcription_diarize=True)
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["submitted"]) == (0, 1)
+        [row] = await real_adapter.list_media_transcripts("m_2_video", account_id=1)
+        assert (row["diarize"], row["copied_from_id"]) == (True, None)
+
     async def test_a_waiting_press_is_answered_with_the_copy(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video")
@@ -2342,7 +2476,7 @@ class TestUpload:
         assert (await _akou_drain(config, real_adapter, server))["unreachable"] == 1
         [first] = server.submits
         first_bytes = _sent_file(first)
-        assert first.headers["idempotency-key"] == hashlib.sha256(first_bytes).hexdigest()
+        assert first.headers["idempotency-key"] == _key(hashlib.sha256(first_bytes).hexdigest())
         assert json.loads(dict(_PART.findall(first.content.decode("latin-1")))["metadata"]) == {
             "content_hash": stored_hash
         }
@@ -2355,7 +2489,7 @@ class TestUpload:
         assert (stats["submitted"], stats["failed"]) == (1, 0)
         second = server.submits[-1]
         assert _sent_file(second) != first_bytes
-        assert second.headers["idempotency-key"] == hashlib.sha256(_sent_file(second)).hexdigest()
+        assert second.headers["idempotency-key"] == _key(hashlib.sha256(_sent_file(second)).hexdigest())
         [row] = await _rows(real_adapter, "m_1_video")
         assert (row["status"], row["idempotency_key"]) == ("queued", stored_hash)
 

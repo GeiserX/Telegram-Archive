@@ -3232,27 +3232,49 @@ _TRANSCRIPT_VIEW_FIELDS = (
 )
 
 
+# Speaker labels that name nobody: akou's "s?" (no diarization span near
+# that piece) and the OpenAI route's "unknown".
+_NO_SPEAKER_LABELS = frozenset({"unknown", "none", "null"})
+
+
+def _real_speaker(label: Any) -> str | None:
+    """``label`` when it names a speaker (akou's ``s0``, ``SPEAKER_01``), else None."""
+    if not isinstance(label, str) or not label.strip() or "?" in label:
+        return None
+    return None if label.strip().lower() in _NO_SPEAKER_LABELS else label.strip()
+
+
 def _speaker_turns(segments: Any) -> list[dict] | None:
-    """The text as speaker turns when the segments name more than one speaker, else None.
+    """The text as speaker turns when the segments name more than one real speaker, else None.
 
     Speakers are numbered 1, 2, ... in the order they first speak, and a
-    run of segments by one speaker is one turn. A segment with no speaker
-    joins the turn before it. The text stays plain; the bubble escapes it.
+    run of segments by one speaker is one turn. A segment whose label names
+    nobody (no label, akou's ``s?``, ``unknown``) joins the turn before it,
+    or the first turn when it comes first; only real labels count toward
+    "more than one speaker". The text stays plain; the bubble escapes it.
     """
     if not isinstance(segments, list):
         return None
     numbers: dict[str, int] = {}
     turns: list[dict] = []
+    leading: list[str] = []
     for segment in segments:
         text = segment.get("text") if isinstance(segment, dict) else None
         if not isinstance(text, str) or not text.strip():
             continue
-        speaker = segment.get("speaker")
-        number = numbers.setdefault(speaker, len(numbers) + 1) if isinstance(speaker, str) and speaker else None
-        if turns and (number is None or turns[-1]["speaker"] == number):
+        speaker = _real_speaker(segment.get("speaker"))
+        if speaker is None:
+            if turns:
+                turns[-1]["text"] += " " + text.strip()
+            else:
+                leading.append(text.strip())
+            continue
+        number = numbers.setdefault(speaker, len(numbers) + 1)
+        if turns and turns[-1]["speaker"] == number:
             turns[-1]["text"] += " " + text.strip()
         else:
-            turns.append({"speaker": number, "text": text.strip()})
+            turns.append({"speaker": number, "text": " ".join([*leading, text.strip()])})
+            leading = []
     return turns if len(numbers) > 1 else None
 
 
