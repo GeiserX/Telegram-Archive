@@ -16,15 +16,19 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
+from .transcription_contract import TRANSCRIBABLE_TYPES
+
 # Load environment variables from .env file if it exists
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Automatic voice transcription (docs/TRANSCRIPTION.md). ``audio`` and
-# ``video`` are opt-in: music and long videos are wasted work by default.
-TRANSCRIPTION_DEFAULT_TYPES = frozenset({"voice", "video_note"})
-TRANSCRIPTION_VALID_TYPES = frozenset({"voice", "video_note", "audio", "video"})
+# Automatic transcription (docs/TRANSCRIPTION.md). TRANSCRIPTION_TYPES is what
+# the drain transcribes ahead of time: voice messages by default, like the
+# official apps. Any media with sound can be named, and any of it can still be
+# transcribed one file at a time from its bubble.
+TRANSCRIPTION_DEFAULT_TYPES = frozenset({"voice"})
+TRANSCRIPTION_VALID_TYPES = TRANSCRIBABLE_TYPES
 TRANSCRIPTION_PRESETS = frozenset({"lite", "fast", "best", "fusion", "auto"})
 TRANSCRIPTION_SECRET_PREFIX = "whsec_"
 
@@ -999,6 +1003,7 @@ class Config:
         self.transcription_preset = os.getenv("TRANSCRIPTION_PRESET", "auto").strip().lower() or "auto"
         self.transcription_types: set[str] = set(TRANSCRIPTION_DEFAULT_TYPES)
         self.transcription_max_seconds = 1800
+        self.transcription_max_upload_mb = 500
         self.transcription_language = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip()
         self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
         self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
@@ -1007,6 +1012,7 @@ class Config:
             # Parsed only when on: a typo in a setting of a feature the
             # operator turned off must not stop the archiver.
             self.transcription_max_seconds = _parse_int_env("TRANSCRIPTION_MAX_SECONDS", 1800)
+            self.transcription_max_upload_mb = _parse_int_env("TRANSCRIPTION_MAX_UPLOAD_MB", 500)
             self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
             self._validate_transcription()
 
@@ -1381,7 +1387,7 @@ class Config:
             if unknown:
                 logger.warning(
                     f"TRANSCRIPTION_TYPES dropped {len(unknown)} unknown name(s) - "
-                    "valid names are voice, video_note, audio and video"
+                    "valid names are voice, video_note, audio, video and document"
                 )
             accepted = requested & TRANSCRIPTION_VALID_TYPES
             self.transcription_types = accepted or set(TRANSCRIPTION_DEFAULT_TYPES)

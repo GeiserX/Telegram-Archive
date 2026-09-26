@@ -23,6 +23,25 @@ from typing import Any
 # ``media_transcripts.source`` of the akou job path.
 SOURCE_AKOU = "akou"
 
+# What can be transcribed: every media that carries sound. The bubble shows
+# its button on all of it and the ask-now routes accept all of it; the drain
+# and the listener pick up on their own only the TRANSCRIPTION_TYPES subset.
+# ``document`` counts only when its stored mime_type is audio or video: a
+# .wav, .flac or .mkv sent as a file. ``animation`` never does: Telegram's
+# GIF-style clips have no sound.
+TRANSCRIBABLE_TYPES = frozenset({"voice", "video_note", "audio", "video", "document"})
+TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES = ("audio/", "video/")
+
+
+def is_transcribable(media_type: Any, mime_type: Any, types: Any = TRANSCRIBABLE_TYPES) -> bool:
+    """True when a media of ``media_type`` and ``mime_type`` is in ``types`` and carries sound."""
+    if media_type not in TRANSCRIBABLE_TYPES or media_type not in types:
+        return False
+    if media_type == "document":
+        return isinstance(mime_type, str) and mime_type.lower().startswith(TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES)
+    return True
+
+
 # The event types of akou's feed and callback (SERVER.md SV-E1). Any other
 # type is skipped and the cursor still moves past it.
 EVENT_COMPLETED = "transcription.completed"
@@ -36,6 +55,144 @@ _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 # The Standard Webhooks rules of the callback (SERVER.md SV-E2).
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
 WEBHOOK_SECRET_PREFIX = "whsec_"
+
+
+# A language is stored only as a BCP-47 tag ("es", "pt-BR", "yue"), at most
+# 16 characters to fit ``media_transcripts.language``. OpenAI's endpoint
+# answers Whisper's English names instead ("spanish"), which map to their
+# codes below. Anything else, akou's OpenAI route answering "unknown" among
+# it, is stored as NULL rather than as a code nothing could filter on.
+_LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*")
+LANGUAGE_TAG_MAX = 16
+
+# Whisper's language names (openai/whisper, tokenizer.py: LANGUAGES and the
+# aliases of TO_LANGUAGE_CODE) to their codes. Javanese is "jv", its BCP-47
+# code, where Whisper itself says "jw".
+WHISPER_LANGUAGE_CODES = {
+    "english": "en",
+    "chinese": "zh",
+    "german": "de",
+    "spanish": "es",
+    "russian": "ru",
+    "korean": "ko",
+    "french": "fr",
+    "japanese": "ja",
+    "portuguese": "pt",
+    "turkish": "tr",
+    "polish": "pl",
+    "catalan": "ca",
+    "dutch": "nl",
+    "arabic": "ar",
+    "swedish": "sv",
+    "italian": "it",
+    "indonesian": "id",
+    "hindi": "hi",
+    "finnish": "fi",
+    "vietnamese": "vi",
+    "hebrew": "he",
+    "ukrainian": "uk",
+    "greek": "el",
+    "malay": "ms",
+    "czech": "cs",
+    "romanian": "ro",
+    "danish": "da",
+    "hungarian": "hu",
+    "tamil": "ta",
+    "norwegian": "no",
+    "thai": "th",
+    "urdu": "ur",
+    "croatian": "hr",
+    "bulgarian": "bg",
+    "lithuanian": "lt",
+    "latin": "la",
+    "maori": "mi",
+    "malayalam": "ml",
+    "welsh": "cy",
+    "slovak": "sk",
+    "telugu": "te",
+    "persian": "fa",
+    "latvian": "lv",
+    "bengali": "bn",
+    "serbian": "sr",
+    "azerbaijani": "az",
+    "slovenian": "sl",
+    "kannada": "kn",
+    "estonian": "et",
+    "macedonian": "mk",
+    "breton": "br",
+    "basque": "eu",
+    "icelandic": "is",
+    "armenian": "hy",
+    "nepali": "ne",
+    "mongolian": "mn",
+    "bosnian": "bs",
+    "kazakh": "kk",
+    "albanian": "sq",
+    "swahili": "sw",
+    "galician": "gl",
+    "marathi": "mr",
+    "punjabi": "pa",
+    "sinhala": "si",
+    "khmer": "km",
+    "shona": "sn",
+    "yoruba": "yo",
+    "somali": "so",
+    "afrikaans": "af",
+    "occitan": "oc",
+    "georgian": "ka",
+    "belarusian": "be",
+    "tajik": "tg",
+    "sindhi": "sd",
+    "gujarati": "gu",
+    "amharic": "am",
+    "yiddish": "yi",
+    "lao": "lo",
+    "uzbek": "uz",
+    "faroese": "fo",
+    "haitian creole": "ht",
+    "pashto": "ps",
+    "turkmen": "tk",
+    "nynorsk": "nn",
+    "maltese": "mt",
+    "sanskrit": "sa",
+    "luxembourgish": "lb",
+    "myanmar": "my",
+    "tibetan": "bo",
+    "tagalog": "tl",
+    "malagasy": "mg",
+    "assamese": "as",
+    "tatar": "tt",
+    "hawaiian": "haw",
+    "lingala": "ln",
+    "hausa": "ha",
+    "bashkir": "ba",
+    "javanese": "jv",
+    "sundanese": "su",
+    "cantonese": "yue",
+    "burmese": "my",
+    "valencian": "ca",
+    "flemish": "nl",
+    "haitian": "ht",
+    "letzeburgesch": "lb",
+    "pushto": "ps",
+    "panjabi": "pa",
+    "moldavian": "ro",
+    "moldovan": "ro",
+    "sinhalese": "si",
+    "castilian": "es",
+    "mandarin": "zh",
+}
+
+
+def language_tag(value: Any) -> str | None:
+    """A BCP-47 tag for ``value``: the tag itself, the code of a Whisper language name, or None."""
+    if not isinstance(value, str):
+        return None
+    # Names first: "lao" is Whisper's name for Lao and would also pass as a tag.
+    code = WHISPER_LANGUAGE_CODES.get(value.strip().lower())
+    if code is not None:
+        return code
+    return value if len(value) <= LANGUAGE_TAG_MAX and _LANGUAGE_TAG.fullmatch(value) else None
 
 
 def _number(value: Any) -> float | None:
@@ -146,10 +303,9 @@ def job_outcome(data: dict[str, Any], *, engine_version: str | None = None) -> t
         }
         for seg in _dicts(data.get("segments"))
     ]
-    language = data.get("language")
     return "done", {
         "text": data["text"],
-        "language": language if isinstance(language, str) and language else None,
+        "language": language_tag(data.get("language")),
         "language_confidence": _number(data.get("language_confidence")),
         "duration_s": _number(data.get("duration_s")),
         "confidence": _number(data.get("confidence")),
@@ -168,14 +324,17 @@ def event_data(event: dict[str, Any]) -> dict[str, Any] | None:
     The same body arrives by the callback and by the event feed:
     ``{type, timestamp, data}`` (SERVER.md SV-E3). The status comes from
     the type, so a ``transcription.cancelled`` event stores ``cancelled``
-    whatever its data says.
+    whatever its data says. A scrubbed event (``data.deleted`` true, SV-J6:
+    akou keeps only the job id and the final state after a delete or its
+    retention) is None too: its result is gone, and a completed event
+    without text must never be read as an empty transcript.
     """
     event_type = event.get("type")
     statuses = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}
     # A list or an object as the type is unhashable: read it as unknown, never raise.
     status = statuses.get(event_type) if isinstance(event_type, str) else None
     data = event.get("data")
-    if status is None or not isinstance(data, dict):
+    if status is None or not isinstance(data, dict) or data.get("deleted") is True:
         return None
     return {**data, "status": status}
 

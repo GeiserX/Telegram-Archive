@@ -51,8 +51,10 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_url, "")
         self.assertEqual(config.transcription_api_key, "")
         self.assertEqual(config.transcription_preset, "auto")
-        self.assertEqual(config.transcription_types, {"voice", "video_note"})
+        # Voice messages ahead of time, like the official apps; the rest one file at a time.
+        self.assertEqual(config.transcription_types, {"voice"})
         self.assertEqual(config.transcription_max_seconds, 1800)
+        self.assertEqual(config.transcription_max_upload_mb, 500)
         self.assertEqual(config.transcription_language, "")
         self.assertEqual(config.transcription_callback_url, "")
         self.assertEqual(config.transcription_webhook_secret, "")
@@ -74,6 +76,7 @@ class TestTranscriptionConfig(unittest.TestCase):
             TRANSCRIPTION_PRESET="Best",
             TRANSCRIPTION_TYPES=" voice, Audio ",
             TRANSCRIPTION_MAX_SECONDS="600",
+            TRANSCRIPTION_MAX_UPLOAD_MB="64",
             TRANSCRIPTION_LANGUAGE="es",
             TRANSCRIPTION_CALLBACK_URL="https://viewer.example.test/api/transcriptions/callback",
             TRANSCRIPTION_WEBHOOK_SECRET=SECRET,
@@ -85,6 +88,7 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_preset, "best")
         self.assertEqual(config.transcription_types, {"voice", "audio"})
         self.assertEqual(config.transcription_max_seconds, 600)
+        self.assertEqual(config.transcription_max_upload_mb, 64)
         self.assertEqual(config.transcription_language, "es")
         self.assertEqual(config.transcription_callback_url, "https://viewer.example.test/api/transcriptions/callback")
         self.assertEqual(config.transcription_webhook_secret, SECRET)
@@ -144,7 +148,18 @@ class TestTranscriptionConfig(unittest.TestCase):
     def test_only_unknown_types_keeps_the_default(self):
         with self.assertLogs("src.config", level="WARNING"):
             config = self._config(TRANSCRIPTION_TYPES="sticker")
-        self.assertEqual(config.transcription_types, {"voice", "video_note"})
+        self.assertEqual(config.transcription_types, {"voice"})
+
+    def test_document_is_a_type_name_and_animation_is_not(self):
+        """``document`` means an audio or video file sent as a document; GIF-style clips have no sound."""
+        config = self._config(TRANSCRIPTION_TYPES="Document, voice")
+        self.assertEqual(config.transcription_types, {"document", "voice"})
+        every = "voice,video_note,audio,video,document"
+        self.assertEqual(self._config(TRANSCRIPTION_TYPES=every).transcription_types, set(every.split(",")))
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(TRANSCRIPTION_TYPES="document,animation")
+        self.assertEqual(config.transcription_types, {"document"})
+        self.assertTrue(any("video and document" in line for line in logs.output))
 
     def test_bad_callback_url_drops_the_callback_and_keeps_the_feature(self):
         with self.assertLogs("src.config", level="WARNING") as logs:

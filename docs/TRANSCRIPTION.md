@@ -1,12 +1,12 @@
 # Automatic voice transcription
 
-Every voice message and round video the archive downloads gets a transcript, written beside the audio and shown inside the bubble. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too.
+Every voice message the archive downloads gets a transcript, written beside the audio and shown inside the bubble. Every other file with sound, round videos, music, videos, and audio or video files sent as documents, gets one when its button is pressed, or ahead of time when the operator lists its type. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too.
 
 Implemented in this branch, slices 1 to 7 of the rollout section at the end. Where the code deliberately differs from the first design, the text below says what it does.
 
 ## The simple version
 
-- On by default. The backup process finds every downloaded voice message and round video without a transcript and sends the audio to the configured server. Until a server is configured the viewer shows a one-line nudge and nothing fails.
+- On by default. The backup process finds every downloaded voice message without a transcript, plus every file whose button was pressed, and sends it to the configured server. `TRANSCRIPTION_TYPES` adds other types to what goes ahead of time. Until a server is configured the viewer shows a one-line nudge and nothing fails.
 - A transcript is a new row in a new table, never a change to the media row. A second transcript with another engine or preset is another row. On its own the feature deletes nothing, and the one value it changes after writing it is a row's `status`, which only moves forward. The operator's flag-gated removal paths take transcripts with their media, as listed under [what this feature deletes](#what-this-feature-deletes-overwrites-and-forgets).
 - The viewer shows the official Telegram pattern: a small button beside the waveform that swaps the text in under it. The text is searchable from the chat search box and the global search.
 - Only the backup process talks to the server. The viewer never makes an outbound request for this feature; it receives the signed callback and serves rows.
@@ -39,6 +39,7 @@ The text sits at full bubble width in the normal message font, with `dir="auto"`
 | Queued or running | "->A" with a stroke looping around the button outline | Nothing |
 | Done, collapsed | "->A" | Nothing |
 | Done, expanded | The glyph flips to "A->" | The text, then the attribution line |
+| Done with no text (silence) | The glyph flips to "A->" | "No speech detected" in small grey text, then the attribution line |
 | Failed or skipped | "->A" | Small grey text with the stored reason, for example "Longer than the 30 minute limit" |
 | No server configured | "->A" | Pressing it opens the nudge below |
 
@@ -51,6 +52,10 @@ Under the text, in small grey type: the engine name linking to the akou reposito
 ### Round videos
 
 A round video keeps its circle. The button sits over the bottom corner of the circle, right for incoming and left for outgoing, and hides while the video plays enlarged. Expanding it turns the circle into the voice bubble above with the text under a placeholder waveform, the same as the official apps do. The round video block is at [index.html](../src/web/templates/index.html#L2066).
+
+### Videos and files
+
+A video carries the same button over the bottom corner of the player, and the text opens under it. An audio file sent as a document already renders as the audio bubble and gets the button beside the waveform. A video sent as a document gets the button beside its file name, with the text under that row.
 
 ### Open state and expand all
 
@@ -86,8 +91,9 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_URL` | empty | B/V | Base URL of akou or any OpenAI-compatible transcription server. Empty with the feature on is the "no server configured" state. The viewer reads it for display only and never connects to it |
 | `TRANSCRIPTION_API_KEY` | empty | B | Bearer key for the server. Treated as a secret, never logged |
 | `TRANSCRIPTION_PRESET` | `auto` | B | `lite`, `fast`, `best`, `fusion` or `auto`. Passed through to akou; ignored by other servers |
-| `TRANSCRIPTION_TYPES` | `voice,video_note` | B | Media types to transcribe. `audio` and `video` are opt-in because music and long videos are wasted work by default |
-| `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason |
+| `TRANSCRIPTION_TYPES` | `voice` | B | Media types transcribed ahead of time, like the official apps do for voice messages. Also accepts `video_note`, `audio`, `video` and `document`, where `document` means only a document whose stored `mime_type` starts with `audio/` or `video/`. `animation` is never eligible: Telegram's GIF-style clips have no sound. The list does not limit the button: any file with sound can be asked for one at a time |
+| `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored `duration`, or ffprobe's when the media row has none |
+| `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large` |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
 | `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | V | The `whsec_` secret akou printed for the key. The callback route exists only when this is set. Never logged |
@@ -101,7 +107,7 @@ A `_validate_transcription` method next to [`_validate_event_webhook`](../src/co
 
 - `TRANSCRIPTION_URL` must be `http://` or `https://` with a hostname, or empty. A bad value disables the feature with one warning that names the variable and not the value.
 - `TRANSCRIPTION_CALLBACK_URL` must be `http://` or `https://` with a hostname, or empty. A bad value drops the callback with a warning and keeps polling. Polling always works.
-- `TRANSCRIPTION_TYPES` accepts only `voice`, `video_note`, `audio` and `video`. Unknown names are dropped with a warning.
+- `TRANSCRIPTION_TYPES` accepts only `voice`, `video_note`, `audio`, `video` and `document`. Unknown names are dropped with a warning.
 - `TRANSCRIPTION_PRESET` outside the five names falls back to `auto` with a warning.
 
 [`log_summary`](../src/config.py#L1078) prints one line: enabled or not, the URL's scheme and host only, the preset and the types. The key and the secret never appear in logs. The master-only [`/api/admin/settings`](../src/web/main.py#L4341) dumps every `app_settings` row, so the two rows this feature stores there, the event cursor and the detected server name and version, appear in that dump. Neither is a secret.
@@ -128,7 +134,7 @@ Migration `032` adds one append-only table. It follows [`AvatarHistory`](../src/
 | `engine_version` | string | |
 | `preset` | string(16) | The preset requested |
 | `models` | text | JSON list of model ids, stored as text like [`raw_data`](../src/db/models.py#L180) |
-| `language` | string(16) | BCP-47 |
+| `language` | string(16) | BCP-47, at most 16 characters. Whisper's English names, which OpenAI's endpoint answers (`spanish`), are mapped to their codes. Anything else that is not a tag, akou's OpenAI route answering `unknown` among it, is stored as NULL |
 | `language_confidence` | float | Nullable |
 | `text` | text | The transcript |
 | `words` | text | JSON `[{w, s, e, c}]`, may be empty |
@@ -214,15 +220,29 @@ One exception for speed: when the listener downloads a voice message immediately
 The backup process owns the drain. It runs at the end of [`backup_all`](../src/telegram_backup.py#L1046), right after the [two media sweeps](../src/telegram_backup.py#L1604). One drain does four things in order:
 
 1. Detect the server. `GET {TRANSCRIPTION_URL}/v1/server` once per run. The backup reads `name`, `version` and `capabilities.jobs` and ignores any other field or flag it does not know. `name: "akou"` with `capabilities.jobs` true selects the job path; any other answer or a 404 selects the synchronous path. The name and version go into `app_settings` for the viewer's settings row.
-2. Reconcile. On the job path, `GET /v1/events?after=<cursor>`, where the cursor is akou's integer sequence number from the page's `cursor` field, never an event's `msg_` id. It is stored in [`app_settings`](../src/db/models.py#L765) under `transcription.events_cursor`. Every `transcription.completed` or `transcription.failed` event whose row is not yet `done` or `failed` gets written now. A `transcription.cancelled` event stores `failed` with reason `cancelled`, and the drain query retries it. Any event type the backup does not know is skipped and the cursor still advances past it. This is what makes an unreachable callback URL harmless.
+2. Reconcile. On the job path, `GET /v1/events?after=<cursor>`, where the cursor is akou's integer sequence number from the page's `cursor` field, never an event's `msg_` id. It is stored in [`app_settings`](../src/db/models.py#L765) under `transcription.events_cursor`. Every `transcription.completed` or `transcription.failed` event whose row is not yet `done` or `failed` gets written now. A `transcription.cancelled` event stores `failed` with reason `cancelled`, and the drain query retries it. Any event type the backup does not know is skipped and the cursor still advances past it. So is an event akou has scrubbed (`data.deleted` true, which it writes after a delete or at the end of its retention window): its result is gone, so it is never fetched and never read as an empty transcript. This is what makes an unreachable callback URL harmless.
 3. Poll stragglers. Rows `queued` or `running` whose `job_id` was stored more than ten minutes ago get `GET /v1/jobs/{id}`, and `GET /v1/jobs/{id}/result` when the status is `done`. The poll stops after the server's retention window; a row still open `retain_days` after its job id was stored is marked `failed` with reason `expired`, and the drain query then retries it. Both ages count from `job_stored_at`, not from the insert, because a row can wait `queued` through an outage before it is submitted. The retry sends the next per-attempt key and gets a new job; if a server ever answered with the job the expired row still holds, the new row stays `queued` without it, since one media cannot hold one job twice.
 4. Submit. Run the drain query, insert-if-absent a `queued` row per media with `job_id` NULL, and send. On the job path the run submits at most `TRANSCRIPTION_BACKFILL_PER_RUN` minus the account's rows that still hold an open job, so a server slower than the backlog never grows the open rows or the straggler poll. A refusal about the file (`idempotency_conflict`, or a job akou ran and failed) marks that row `failed` with akou's code, so it counts toward the cap of three failed rows per media. A refusal about the server or its configuration is not about the file and spends nothing: a wrong or rotated key (401, 403), a rate limit (429), a preset akou cannot run yet (409 `preset_unavailable`, which akou also answers while it downloads its models), a callback host off the key's allowlist (422 `callback_not_allowed`), and a 5xx after the client's attempts. The row stays `queued`, the drain logs one warning and ends the run, and the ten-minute branch resubmits it once the cause is fixed. The same answers from the event feed or the straggler poll end the run before the submit step. A process that dies between the insert and the submit leaves the row `queued` with `job_id` NULL; the ten-minute branch of the drain query resubmits on that same row, since nothing was stored for it, and that path has no cap because it adds no rows.
 
-Media longer than `TRANSCRIPTION_MAX_SECONDS`, by the `duration` the archive already stores, gets a `skipped` row with the reason and is never sent.
+### What counts as transcribable
+
+Two questions, kept apart. Can this file be transcribed at all? One rule, `is_transcribable` in [src/transcription_contract.py](../src/transcription_contract.py), answers: `voice`, `video_note`, `audio` and `video`, and a `document` only when its stored `mime_type` starts with `audio/` or `video/`, which is a `.wav`, `.flac`, `.opus`, `.mkv` or `.avi` sent as a file. `animation` never is. The bubble shows its button on every such file and the ask-now routes accept every such file; the bubble's copy of the rule in the template names it as its source.
+
+Is it transcribed ahead of time? That is `TRANSCRIPTION_TYPES`, `voice` by default, read through the same rule: the drain query's own pick-up and the listener's immediate enqueue take only those types, and a listed `document` still needs an audio or video mime type. A press on any other file with sound inserts the ask-now row, which the drain query reads with no type filter, so the next drain sends that one file.
+
+Before the upload the drain runs `ffprobe` on the stored file, off the event loop, with a fixed argument list, no shell and a 30-second timeout. A voice message with a stored duration skips it, since it has sound and its length is known. A file ffprobe reads and finds no audio stream in, a silent video for example, gets a `skipped` row with reason `no_audio_track` and nothing is sent. A file ffprobe cannot read at all, such as a document whose mime type names a format it does not hold, makes ffprobe fail, and an answer that lists no streams counts the same: the check is unknown, not negative, and the file is sent. When ffprobe is missing or fails, the drain logs one warning per process and sends the file anyway, so a missing ffprobe never blocks transcription. Both images install ffmpeg, which ships ffprobe.
+
+### What is uploaded
+
+Voice messages and music (`audio`) are sent as stored: they are audio already and small. Everything else, a video, a round video or a file sent as a document, is sent as its audio track alone. ffmpeg extracts it to a temporary 16 kHz mono Opus file (`-vn -ac 1 -ar 16000 -c:a libopus`, bitexact so the same build writes the same bytes), off the event loop, with a fixed argument list, no shell and a 15-minute timeout, and the file is deleted after the request. A 4 GB video becomes tens of megabytes. When ffmpeg is missing or fails, the drain logs one warning per process and sends the stored file instead.
+
+The upload is streamed from disk: the file is never read into memory, and a retry rewinds it. What is sent must fit `TRANSCRIPTION_MAX_UPLOAD_MB` (500 by default, under akou's 512 MiB cap); a bigger upload gets a `skipped` row with reason `too_large` and is never sent. The limit reads the bytes actually uploaded, so a large video whose audio track is small goes through. Without it, an upload akou cuts off with a connection reset would read as an outage, be sent again on every drain and hold up everything behind it.
+
+Media longer than `TRANSCRIPTION_MAX_SECONDS` gets a `skipped` row with the reason and is never sent. The length is the `duration` the archive already stores, or the one ffprobe reads when the row has none, which is the case for documents and for many videos.
 
 ### Submitting to akou
 
-Before the upload the drain needs the audio's SHA-256. When [`media.content_hash`](../src/db/models.py#L390) is set it is that value. Imported rows have none, so the drain hashes the file and stores the result on the transcript row only.
+Before the upload the drain needs the stored file's SHA-256. When [`media.content_hash`](../src/db/models.py#L390) is set it is that value. Imported rows have none, so the drain hashes the file, in chunks from disk, and stores the result on the transcript row only. That hash is the row's `idempotency_key` and the job's `metadata.content_hash`, which every outcome is matched on. When the upload is an extracted audio track, the `Idempotency-Key` header derives from the hash of the bytes sent instead, with the same `.<n>` suffix per attempt: akou refuses a key it has seen with another file, and another ffmpeg build may extract other bytes from the same file, so keying on the stored file would turn such a retry into `422 idempotency_conflict`.
 
 ```
 POST {TRANSCRIPTION_URL}/v1/jobs
@@ -330,7 +350,7 @@ We do not send chat titles, sender names, message text or ids to the server. `me
 | Chat and global search | `matched_in` on each hit |
 | `/api/changes` at [main.py](../src/web/main.py#L3046) | A `transcript` kind beside the `deleted` and `edited` kinds, dated by `completed_at` and carrying `text` and `language`, so pollers see new transcripts. Like the other kinds it lists one row per event: two accounts holding one channel list its transcript once, matched by text |
 | CLI export in [export_backup.py](../src/export_backup.py#L50) and the viewer export | Every transcript row, all columns, newest first, under `transcripts` on the message whose media it transcribes. Neither export has a media object to put it in, so it sits on the message; the CLI export's `statistics` gains `total_transcripts` |
-| `POST /api/chats/{ref}/media/{message_id}_{type}/transcripts` and `POST /api/media/{media_id}/transcripts` | New. The first is what the button calls to ask now, the second the same for a client that holds the storage id. Inserts a `queued` row with `job_id` NULL and no preset if the newest row is not already `queued` or `running`, and returns the row. The next drain submits it first, whatever `TRANSCRIPTION_TYPES` says, since the viewer does not know that list. A media that is not downloaded yet, or whose type is not voice, video_note, audio or video, is a 409 and gets no row, because the drain would never send it. The viewer makes no request to the server |
+| `POST /api/chats/{ref}/media/{message_id}_{type}/transcripts` and `POST /api/media/{media_id}/transcripts` | New. The first is what the button calls to ask now, the second the same for a client that holds the storage id. Inserts a `queued` row with `job_id` NULL and no preset if the newest row is not already `queued` or `running`, and returns the row. The next drain submits it first, whatever `TRANSCRIPTION_TYPES` says, since the viewer does not know that list. A media that is not downloaded yet, or that `is_transcribable` refuses (a photo, an animation, a document with no audio or video mime type), is a 409 and gets no row, because the drain would never send it. The viewer makes no request to the server |
 | `GET /api/chats/{ref}/media/{message_id}_{type}/transcripts` | New. The bubble's rows, newest first, without the hashes, the job id or the storage media id. What the browser fetches on a realtime event |
 | `GET /api/transcription/status` | New. `enabled`, `configured`, and the server name and version from the `app_settings` row, for the button, the nudge and the settings row |
 | The MCP server and the n8n node, in their own repositories | No change. Both pass message JSON through, so `media.transcript` arrives as soon as the viewer sends it |
@@ -350,6 +370,6 @@ Each slice is one PR, ships on its own, and leaves the archive working if the ne
 ## Open points
 
 - The contract names two compose files. This repository has one, [docker-compose.yml](../docker-compose.yml), with the PostgreSQL variant as a commented block inside it. The optional akou service goes in as another commented block in that file.
-- `TRANSCRIPTION_TYPES` including `audio` sends every music file a chat shares. The default excludes it. A per-chat override would fit the existing chat filtering model but is not in scope.
+- Listing `audio` or `video` in `TRANSCRIPTION_TYPES` sends every music file or video a chat shares. That is why the default is `voice` and the rest goes one press at a time. A per-chat override would fit the existing chat filtering model but is not in scope.
 - The ask-now route and the drain can both insert for the same media from two processes. The partial unique index on open rows makes the second insert fail, and the loser treats that as success. The server's idempotency key makes a double submit return the same job.
 - Telegram's own transcription through `messages.transcribeAudio` is not part of this design. It needs a Premium account or the weekly free quota, returns text only, and would be a fourth `source` value with no other change.

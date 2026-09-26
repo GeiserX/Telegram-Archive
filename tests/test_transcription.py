@@ -17,7 +17,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import urllib.parse
 from datetime import datetime
 from types import SimpleNamespace
@@ -327,6 +330,36 @@ class TestClient:
         assert not TranscriptionClient(_config(str(tmp_path), transcription_url="ftp://x")).configured
         assert not TranscriptionClient(MagicMock()).configured  # a bare mock reads truthy; the type check holds
 
+    def test_a_language_is_stored_only_as_a_bcp47_tag(self):
+        """Tags are kept, Whisper's English names map to their codes, "unknown" and the rest become NULL."""
+        from src.transcription_contract import job_outcome
+
+        cases = {
+            "es": "es",
+            "pt-BR": "pt-BR",
+            "yue": "yue",
+            "zh-Hant-TW": "zh-Hant-TW",
+            "spanish": "es",
+            "Haitian Creole": "ht",
+            "javanese": "jv",
+            "lao": "lo",
+            "castilian": "es",
+            "unknown": None,
+            "klingon": None,
+            "": None,
+            "e": None,
+            "es_ES": None,
+            "1a": None,
+            # Longer than media_transcripts.language (String(16)) holds.
+            "en-abcdefgh-ijklmnop": None,
+            None: None,
+            7: None,
+        }
+        for value, want in cases.items():
+            assert result_columns({"text": "x", "language": value}, model="auto")["language"] == want, value
+            _status, columns = job_outcome({"status": "done", "text": "x", "language": value})
+            assert columns["language"] == want, value
+
     def test_verbose_json_maps_onto_the_columns(self):
         columns = result_columns(VERBOSE_JSON, model="auto")
         assert columns["text"] == "hola, te llamo luego"
@@ -509,16 +542,16 @@ class TestDrain:
         await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
         asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
         assert asked["preset"] is None
-        real_read = __import__("src.transcription", fromlist=["_read_file"])._read_file
+        real_hash = __import__("src.transcription", fromlist=["_file_sha256"])._file_sha256
 
         def read(path):
             if "m_1_voice" in path:
                 raise PermissionError("denied")
-            return real_read(path)
+            return real_hash(path)
 
         server = FakeServer()
         config = _config(str(tmp_path))
-        with patch("src.transcription._read_file", side_effect=read):
+        with patch("src.transcription._file_sha256", side_effect=read):
             stats = await drain_transcriptions(
                 config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
             )
@@ -815,6 +848,223 @@ class TestDrain:
         assert "token=" not in joined
         assert "akou.example.test" not in joined
         assert str(CHAT) not in joined
+
+
+# ============================================================================
+# The audio check before the upload (ffprobe)
+# ============================================================================
+
+HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg and ffprobe not installed")
+
+FIXED_ARGV = ["-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", "-i"]
+
+
+def _ffmpeg(path, *inputs: str) -> None:
+    """A real media file made by ffmpeg from its built-in test sources."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, str(path)], check=True, capture_output=True, timeout=60)
+
+
+async def _file_media(adapter, path, media_id: str, *, media_type: str, mime_type=None, duration=None) -> dict:
+    """A media row for a file already on disk, with the given type, mime type and stored duration."""
+    row = {
+        "id": media_id,
+        "message_id": int(media_id.split("_")[1]),
+        "chat_id": CHAT,
+        "type": media_type,
+        "file_path": str(path),
+        "downloaded": True,
+        "duration": duration,
+        "mime_type": mime_type,
+        "download_date": datetime(2026, 1, 2, 3, 4, 5),
+    }
+    await adapter.upsert_chat({"id": CHAT, "type": "group", "title": "fixture chat"}, account_id=1)
+    await adapter.insert_message(
+        {"id": row["message_id"], "chat_id": CHAT, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}},
+        account_id=1,
+    )
+    await adapter.insert_media(row, account_id=1)
+    return row
+
+
+def _fake_ffprobe(tmp_path, monkeypatch, script: str) -> None:
+    """Put an ``ffprobe`` shell script first on PATH; ``script`` is its body."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    probe = bin_dir / "ffprobe"
+    probe.write_text("#!/bin/sh\n" + script)
+    probe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+async def _drain_all(config, adapter, server: FakeServer) -> dict:
+    return await drain_transcriptions(
+        config, adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+    )
+
+
+class TestAudioCheck:
+    async def test_no_audio_stream_stores_a_skipped_row_and_sends_nothing(self, real_adapter, tmp_path, monkeypatch):
+        """Whatever the type says, ffprobe finding no audio stream ends it; the argument list is fixed."""
+        argv = tmp_path / "argv.txt"
+        _fake_ffprobe(
+            tmp_path,
+            monkeypatch,
+            f'printf "%s\\n" "$@" >> "{argv}"\necho \'{{"streams": [{{"codec_type": "video"}}], "format": {{}}}}\'\n',
+        )
+        path = tmp_path / str(CHAT) / "clip.mkv"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not decoded by the fake")
+        await _file_media(real_adapter, path, "m_1_document", media_type="document", mime_type="video/x-matroska")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"document"})
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(skipped=1)
+        assert server.transcribe_requests == []
+        [row] = await _rows(real_adapter, "m_1_document")
+        assert (row["status"], row["error"], row["job_id"]) == ("skipped", "no_audio_track", None)
+        assert argv.read_text().splitlines() == [*FIXED_ARGV, str(path)]
+        # The skipped row ends the loop, the archive keeps it.
+        await _drain_all(config, real_adapter, server)
+        assert server.transcribe_requests == []
+        assert len(await _rows(real_adapter, "m_1_document")) == 1
+
+    async def test_an_answer_with_no_streams_list_is_unknown_not_silent(self, real_adapter, tmp_path, monkeypatch):
+        """ffprobe saying nothing about the streams is not ffprobe finding no audio: the file is sent."""
+        _fake_ffprobe(tmp_path, monkeypatch, 'echo \'{"format": {"duration": "5.0"}}\'\n')
+        monkeypatch.setattr("src.transcription._warned", set())
+        path = tmp_path / str(CHAT) / "clip.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(AUDIO)
+        await _file_media(real_adapter, path, "m_1_video", media_type="video", mime_type="video/mp4")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1)
+        assert len(server.transcribe_requests) == 1
+
+    async def test_a_voice_message_with_a_stored_duration_skips_ffprobe(self, real_adapter, tmp_path, monkeypatch):
+        calls = tmp_path / "ffprobe-calls"
+        _fake_ffprobe(
+            tmp_path, monkeypatch, f'echo "$@" >> "{calls}"\n' + 'echo \'{"streams": [{"codec_type": "audio"}]}\'\n'
+        )
+        await _media(real_adapter, tmp_path, "m_1_voice", duration=12)
+        await _media(real_adapter, tmp_path, "m_2_voice", duration=None)
+        server = FakeServer()
+
+        stats = await _drain_all(_config(str(tmp_path)), real_adapter, server)
+
+        assert stats == _stats(done=2)
+        probed = calls.read_text().splitlines()
+        assert len(probed) == 1 and probed[0].endswith("m_2_voice.ogg")
+
+    async def test_ffprobes_duration_feeds_the_limit_when_the_row_has_none(self, real_adapter, tmp_path, monkeypatch):
+        _fake_ffprobe(
+            tmp_path,
+            monkeypatch,
+            'echo \'{"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {"duration": "95.5"}}\'\n',
+        )
+        for media_id, duration in (("m_1_video", None), ("m_2_video", 60)):
+            path = tmp_path / str(CHAT) / f"{media_id}.mp4"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(AUDIO)
+            await _file_media(
+                real_adapter, path, media_id, media_type="video", mime_type="video/mp4", duration=duration
+            )
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"}, transcription_max_seconds=90)
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1, skipped=1)
+        [skipped] = await _rows(real_adapter, "m_1_video")
+        assert (skipped["status"], skipped["error"]) == ("skipped", "longer than the 90 second limit")
+        assert skipped["duration_s"] == 95.5
+        # A stored duration wins over ffprobe's: 60 s is under the limit and is sent.
+        assert (await _rows(real_adapter, "m_2_video"))[0]["status"] == "done"
+        assert len(server.transcribe_requests) == 1
+
+    async def test_a_missing_ffprobe_sends_the_file_anyway_and_warns_once(
+        self, real_adapter, tmp_path, monkeypatch, caplog
+    ):
+        empty = tmp_path / "empty-bin"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        monkeypatch.setattr("src.transcription._warned", set())
+        # No stored duration, so ffprobe is asked (a voice message with one skips it).
+        await _media(real_adapter, tmp_path, "m_1_voice", duration=None)
+        await _media(real_adapter, tmp_path, "m_2_voice", duration=None)
+        server = FakeServer()
+        config = _config(str(tmp_path))
+
+        with caplog.at_level(logging.DEBUG, logger="src.transcription"):
+            stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=2)
+        assert len(server.transcribe_requests) == 2
+        probe_lines = [r for r in caplog.records if "ffprobe" in r.getMessage()]
+        assert [r.levelno for r in probe_lines] == [logging.WARNING, logging.DEBUG]
+        assert "not installed" in probe_lines[0].getMessage()
+        assert not any(str(tmp_path) in r.getMessage() for r in caplog.records), "no path in any log line"
+
+    async def test_an_ffprobe_that_hangs_is_cut_off_and_the_file_is_sent(self, real_adapter, tmp_path, monkeypatch):
+        _fake_ffprobe(tmp_path, monkeypatch, "sleep 20\n")
+        monkeypatch.setattr("src.transcription.FFPROBE_TIMEOUT_SECONDS", 0.5)
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = FakeServer()
+        config = _config(str(tmp_path))
+
+        started = asyncio.get_running_loop().time()
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert asyncio.get_running_loop().time() - started < 10
+        assert stats == _stats(done=1)
+        assert len(server.transcribe_requests) == 1
+
+    @needs_ffmpeg
+    async def test_real_files_a_silent_video_is_skipped_and_a_real_audio_file_is_sent(self, real_adapter, tmp_path):
+        work = tmp_path / str(CHAT)
+        silent = work / "silent.mp4"
+        tone = work / "tone.wav"
+        _ffmpeg(silent, "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10", "-an", "-c:v", "mpeg4")
+        _ffmpeg(tone, "-f", "lavfi", "-i", "sine=frequency=440:duration=1")
+        await _file_media(real_adapter, silent, "m_1_video", media_type="video", mime_type="video/mp4", duration=1)
+        await _file_media(real_adapter, silent, "m_2_document", media_type="document", mime_type="video/mp4")
+        await _file_media(real_adapter, tone, "m_3_document", media_type="document", mime_type="audio/x-wav")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video", "document"})
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1, skipped=2)
+        assert len(server.transcribe_requests) == 1
+        # A file sent as a document goes out as its extracted audio track.
+        assert 'filename="tone.ogg"' in server.transcribe_requests[0].content.decode("latin-1")
+        for media_id in ("m_1_video", "m_2_document"):
+            [row] = await _rows(real_adapter, media_id)
+            assert (row["status"], row["error"]) == ("skipped", "no_audio_track")
+        assert (await _rows(real_adapter, "m_3_document"))[0]["status"] == "done"
+
+    @needs_ffmpeg
+    async def test_real_files_ffprobes_duration_skips_a_long_audio_document(self, real_adapter, tmp_path):
+        tone = tmp_path / str(CHAT) / "long.wav"
+        _ffmpeg(tone, "-f", "lavfi", "-i", "sine=frequency=440:duration=3")
+        await _file_media(real_adapter, tone, "m_1_document", media_type="document", mime_type="audio/wav")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"document"}, transcription_max_seconds=2)
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(skipped=1)
+        assert server.transcribe_requests == []
+        [row] = await _rows(real_adapter, "m_1_document")
+        assert (row["status"], row["error"]) == ("skipped", "longer than the 2 second limit")
+        assert row["duration_s"] == pytest.approx(3.0, abs=0.1)
 
 
 # ============================================================================
@@ -1223,6 +1473,28 @@ class TestJobPath:
         assert await real_adapter.get_transcription_events_cursor() == "4"
         assert [r.url.params.get("after") for r in server.event_reads[-3:]] == ["0", "2", "4"]
 
+    async def test_a_scrubbed_event_is_skipped_without_a_fetch_and_the_cursor_moves_past_it(
+        self, real_adapter, tmp_path
+    ):
+        """SV-J6: after a delete or the retention window akou keeps only the job id and the final state."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        job_id = server.by_key[SHA]
+        server.jobs[job_id]["status"] = "done"
+        server.add_event("transcription.completed", {"job_id": job_id, "status": "done", "deleted": True})
+        reads = len(server.job_reads)
+
+        stats = await _akou_drain(config, real_adapter, server)
+
+        assert stats["reconciled"] == 0
+        assert server.job_reads[reads:] == [], "no result fetch for a scrubbed event"
+        assert await real_adapter.get_transcription_events_cursor() == "1"
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert row["status"] in ("queued", "running")
+        assert row["text"] is None
+
     async def test_the_straggler_poll_finishes_a_job_the_feed_never_reported(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
         await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
@@ -1519,6 +1791,201 @@ class TestJobPath:
 
 
 # ============================================================================
+# What is uploaded: the audio track alone, streamed from disk, under a size cap
+# ============================================================================
+
+
+def _fake_tool(tmp_path, monkeypatch, name: str, script: str) -> None:
+    """Put a shell script called ``name`` first on PATH; ``script`` is its body."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir(exist_ok=True)
+    tool = bin_dir / name
+    tool.write_text("#!/bin/sh\n" + script)
+    tool.chmod(0o755)
+    path = os.environ.get("PATH", "")
+    if not path.startswith(f"{bin_dir}{os.pathsep}"):
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{path}")
+
+
+# ffmpeg's last argument is the output file; this one writes bytes that differ on every run,
+# as a different ffmpeg build extracting the same file might.
+FAKE_FFMPEG = 'for a; do last="$a"; done\nprintf "OggS extracted by run %s" "$$" > "$last"\n'
+AUDIO_STREAM = 'echo \'{"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {}}\'\n'
+
+
+def _sent_file(request: httpx.Request) -> bytes:
+    return dict(_PART.findall(request.content.decode("latin-1")))["file"].encode("latin-1")
+
+
+async def _video_on_disk(adapter, tmp_path, media_id: str, content: bytes = AUDIO, media_type: str = "video") -> str:
+    path = tmp_path / str(CHAT) / f"{media_id}.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    await _file_media(adapter, path, media_id, media_type=media_type, mime_type="video/mp4")
+    return str(path)
+
+
+class TestUpload:
+    async def test_a_video_goes_out_as_its_audio_track_from_disk_and_the_temp_file_is_removed(
+        self, real_adapter, tmp_path, monkeypatch
+    ):
+        _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", FAKE_FFMPEG)
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        await _video_on_disk(real_adapter, tmp_path, "m_1_video", content=b"\x00" * 4096)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+        sent_types = []
+        real_transcribe = TranscriptionClient.transcribe
+
+        async def spy(self, audio, filename, **kwargs):
+            sent_types.append(type(audio))
+            return await real_transcribe(self, audio, filename, **kwargs)
+
+        with patch.object(TranscriptionClient, "transcribe", spy):
+            stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1)
+        [request] = server.transcribe_requests
+        assert 'filename="m_1_video.ogg"' in request.content.decode("latin-1")
+        assert _sent_file(request).startswith(b"OggS extracted by run ")
+        assert sent_types and all(t is not bytes for t in sent_types), "the upload is an open file, not bytes"
+        assert list(scratch.iterdir()) == [], "the extracted file is deleted"
+        [row] = await _rows(real_adapter, "m_1_video")
+        assert row["idempotency_key"] == hashlib.sha256(b"\x00" * 4096).hexdigest(), "the stored file's hash"
+
+    async def test_voice_and_music_go_out_as_stored_without_ffmpeg(self, real_adapter, tmp_path, monkeypatch):
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", "echo called >> " + str(tmp_path / "ffmpeg-calls") + "\nexit 1\n")
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        path = tmp_path / str(CHAT) / "song.mp3"
+        path.write_bytes(AUDIO)
+        await _file_media(real_adapter, path, "m_2_audio", media_type="audio", mime_type="audio/mpeg", duration=3)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"voice", "audio"})
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=2)
+        assert sorted(_sent_file(r) for r in server.transcribe_requests) == [AUDIO, AUDIO]
+        assert not (tmp_path / "ffmpeg-calls").exists()
+
+    async def test_a_missing_ffmpeg_sends_the_stored_file_and_warns_once(
+        self, real_adapter, tmp_path, monkeypatch, caplog
+    ):
+        _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
+        # PATH holds the fake ffprobe and nothing else, so there is no ffmpeg.
+        monkeypatch.setenv("PATH", str(tmp_path / "fake-bin"))
+        monkeypatch.setattr("src.transcription._warned", set())
+        await _video_on_disk(real_adapter, tmp_path, "m_1_video")
+        await _video_on_disk(real_adapter, tmp_path, "m_2_video")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+
+        with caplog.at_level(logging.DEBUG, logger="src.transcription"):
+            stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=2)
+        assert [_sent_file(r) for r in server.transcribe_requests] == [AUDIO, AUDIO]
+        lines = [r for r in caplog.records if "ffmpeg" in r.getMessage()]
+        assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG]
+        assert "not installed" in lines[0].getMessage()
+
+    async def test_the_size_limit_reads_the_bytes_actually_sent(self, real_adapter, tmp_path, monkeypatch):
+        _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", FAKE_FFMPEG)
+        big = b"\x01" * (2 * 1024 * 1024)
+        # A 2 MB voice message is sent as stored: over a 1 MB limit.
+        path = tmp_path / str(CHAT) / "long.ogg"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(big)
+        await _file_media(real_adapter, path, "m_1_voice", media_type="voice", duration=5)
+        # A 2 MB video whose audio track is a few bytes: under it.
+        await _video_on_disk(real_adapter, tmp_path, "m_2_video", content=big)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"voice", "video"}, transcription_max_upload_mb=1)
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1, skipped=1)
+        [skipped] = await _rows(real_adapter, "m_1_voice")
+        assert (skipped["status"], skipped["error"]) == ("skipped", "too_large")
+        assert (await _rows(real_adapter, "m_2_video"))[0]["status"] == "done"
+        assert len(server.transcribe_requests) == 1
+
+    async def test_a_reextraction_with_other_bytes_never_conflicts_and_the_outcome_still_matches(
+        self, real_adapter, tmp_path, monkeypatch
+    ):
+        """The header key is the sent bytes' hash; metadata and the row keep the stored file's hash."""
+        _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", FAKE_FFMPEG)
+        stored = b"\x02" * 4096
+        stored_hash = hashlib.sha256(stored).hexdigest()
+        await _video_on_disk(real_adapter, tmp_path, "m_1_video", content=stored)
+        server = AkouServer()
+        config = _akou_config(tmp_path, transcription_types={"video"})
+
+        # The first submit reaches akou, which makes the job, and the answer is lost.
+        server.submit_timeout = True
+        assert (await _akou_drain(config, real_adapter, server))["unreachable"] == 1
+        [first] = server.submits
+        first_bytes = _sent_file(first)
+        assert first.headers["idempotency-key"] == hashlib.sha256(first_bytes).hexdigest()
+        assert json.loads(dict(_PART.findall(first.content.decode("latin-1")))["metadata"]) == {
+            "content_hash": stored_hash
+        }
+        server.add_job(stored_hash, status="queued", audio=first_bytes, key=first.headers["idempotency-key"])
+
+        # The retry extracts other bytes: a new key and a new job, never 422.
+        server.submit_timeout = False
+        await _make_stale(real_adapter)
+        stats = await _akou_drain(config, real_adapter, server)
+        assert (stats["submitted"], stats["failed"]) == (1, 0)
+        second = server.submits[-1]
+        assert _sent_file(second) != first_bytes
+        assert second.headers["idempotency-key"] == hashlib.sha256(_sent_file(second)).hexdigest()
+        [row] = await _rows(real_adapter, "m_1_video")
+        assert (row["status"], row["idempotency_key"]) == ("queued", stored_hash)
+
+        # The outcome is matched on the stored file's hash.
+        server.finish(row["job_id"], text="del vídeo")
+        await _akou_drain(config, real_adapter, server)
+        [row] = await _rows(real_adapter, "m_1_video")
+        assert (row["status"], row["text"]) == ("done", "del vídeo")
+
+    @needs_ffmpeg
+    async def test_real_files_a_video_with_sound_is_sent_as_a_smaller_opus_track(self, real_adapter, tmp_path):
+        clip = tmp_path / str(CHAT) / "clip.mp4"
+        _ffmpeg(
+            clip,
+            "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=25",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+            "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", "-shortest",
+        )  # fmt: skip
+        await _file_media(real_adapter, clip, "m_1_video", media_type="video", mime_type="video/mp4", duration=3)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1)
+        sent = _sent_file(server.transcribe_requests[0])
+        assert sent.startswith(b"OggS") and b"OpusHead" in sent[:200]
+        assert len(sent) < clip.stat().st_size / 3
+        # The same build extracts the same bytes, so a retry keeps its key.
+        from src.transcription import extract_audio
+
+        once, twice = await extract_audio(str(clip)), await extract_audio(str(clip))
+        try:
+            with open(once, "rb") as first, open(twice, "rb") as second:
+                assert first.read() == second.read()
+        finally:
+            os.remove(once)
+            os.remove(twice)
+
+
+# ============================================================================
 # The listener's immediate enqueue
 # ============================================================================
 
@@ -1574,6 +2041,25 @@ class TestListenerEnqueue:
                 await asyncio.gather(*listener._transcription_tasks)
             db.insert_media.assert_called_once()
             transcribe.assert_not_awaited()
+
+    async def test_an_audio_or_video_document_is_enqueued_and_a_pdf_is_not(self):
+        from test_listener_extended import _make_listener_with_handlers
+
+        listener, _, _, _ = _make_listener_with_handlers(
+            transcription_enabled=True, transcription_url=URL, transcription_types={"voice", "document"}
+        )
+        rows = [
+            {"id": "m_1_document", "type": "document", "mime_type": "audio/flac"},
+            {"id": "m_2_document", "type": "document", "mime_type": "video/x-matroska"},
+            {"id": "m_3_document", "type": "document", "mime_type": "application/pdf"},
+            {"id": "m_4_document", "type": "document", "mime_type": None},
+            {"id": "m_5_video", "type": "video", "mime_type": "video/mp4"},  # not in the configured types
+        ]
+        with patch("src.listener.transcribe_media", new=AsyncMock(return_value="done")) as transcribe:
+            for row in rows:
+                listener._enqueue_transcription(row)
+            await asyncio.gather(*listener._transcription_tasks)
+        assert [call.args[2]["id"] for call in transcribe.await_args_list] == ["m_1_document", "m_2_document"]
 
     async def test_a_transcription_error_never_reaches_the_handler(self):
         from telethon import events
