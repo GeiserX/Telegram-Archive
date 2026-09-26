@@ -122,6 +122,7 @@ TRANSCRIPT_FILL_COLUMNS = frozenset(
         "error",
         "completed_at",
         "copied_from_id",
+        "diarize",
     }
 )
 # app_settings keys the backup writes for the viewer's settings row and for
@@ -6521,6 +6522,7 @@ class DatabaseAdapter:
             "created_at": row.created_at,
             "job_stored_at": row.job_stored_at,
             "copied_from_id": row.copied_from_id,
+            "diarize": row.diarize,
         }
 
     @staticmethod
@@ -6680,13 +6682,23 @@ class DatabaseAdapter:
             return self._transcript_to_dict(row)
 
     async def find_copyable_transcript(
-        self, content_hash: str, preset: str, *, account_id: int, media_id: str
+        self,
+        content_hash: str,
+        preset: str,
+        *,
+        account_id: int,
+        media_id: str,
+        diarize: bool,
+        source: str | None = None,
+        engine_name: str | None = None,
     ) -> dict[str, Any] | None:
-        """The newest ``done`` row, in any account, of the same stored audio made with ``preset``.
+        """The newest ``done`` row, in any account, of the same stored audio the drain would get again.
 
-        The audio is matched on ``idempotency_key``, the stored file's hash.
-        Rows of the media asking are left out: a press after a done row asks
-        for a new transcript, not a copy of the old one.
+        The audio is matched on ``idempotency_key``, the stored file's hash,
+        and the answer on ``preset``, on whether speakers were asked for
+        (``diarize``; a row from before the column counts as not) and, when
+        given, on the server's ``source`` and ``engine_name``. Rows of the
+        media asking are left out.
         """
         if not content_hash or not preset:
             return None
@@ -6698,12 +6710,19 @@ class DatabaseAdapter:
                         MediaTranscript.idempotency_key == content_hash,
                         MediaTranscript.status == "done",
                         MediaTranscript.preset == preset,
+                        MediaTranscript.diarize.is_(True)
+                        if diarize
+                        else or_(MediaTranscript.diarize.is_(None), MediaTranscript.diarize.is_(False)),
                         ~and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id),
                     )
                 )
                 .order_by(MediaTranscript.id.desc())
                 .limit(1)
             )
+            if source is not None:
+                stmt = stmt.where(MediaTranscript.source == source)
+            if engine_name is not None:
+                stmt = stmt.where(MediaTranscript.engine_name == engine_name)
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._transcript_to_dict(row) if row is not None else None
 
@@ -6834,6 +6853,9 @@ class DatabaseAdapter:
             rows = []
             for transcript, media_chat_id, message_id in await session.execute(stmt):
                 row = self._transcript_to_dict(transcript)
+                # The source of a copy may sit in an account the export's
+                # reader is not entitled to: its id stays out.
+                row.pop("copied_from_id", None)
                 for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
                     if isinstance(row[key], datetime):
                         row[key] = row[key].isoformat()

@@ -26,6 +26,7 @@ from datetime import datetime
 from sqlalchemy import (
     DDL,
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -383,6 +384,9 @@ class MediaTranscript(Base):
     # another account (or under another media row): the text was reused and
     # nothing was sent to the server.
     copied_from_id: Mapped[int | None] = mapped_column(Integer)
+    # Whether the request asked for speaker labels (akou's diarize=true),
+    # written when the row is sent. NULL on rows from before the column.
+    diarize: Mapped[bool | None] = mapped_column(Boolean)
 
     __table_args__ = (
         Index("uq_media_transcripts_account_media_job", "account_id", "media_id", "job_id", unique=True),

@@ -1917,15 +1917,26 @@ async def _media_in_account(adapter, tmp_path, account_id: int, media_id: str, *
     )
 
 
-async def _done_source(adapter, account_id: int, media_id: str, *, preset: str = "auto") -> dict:
+async def _done_source(
+    adapter,
+    account_id: int,
+    media_id: str,
+    *,
+    preset: str = "auto",
+    source: str = "openai",
+    engine_name: str = "openai",
+    diarize: bool | None = None,
+) -> dict:
+    """A done row of ``HASH``; the defaults are what ``FakeServer``'s synchronous path writes."""
     row = await adapter.enqueue_media_transcript(
         media_id, account_id=account_id, content_hash=HASH, idempotency_key=HASH, preset=preset
     )
     await adapter.fill_media_transcript(
         row["id"],
         status="done",
-        source="akou",
-        engine_name="akou",
+        source=source,
+        engine_name=engine_name,
+        diarize=diarize,
         engine_version="0.3.0",
         models=["parakeet-v3"],
         language="es",
@@ -1973,6 +1984,7 @@ class TestCopyAcrossAccounts:
             "engine_version",
             "confidence",
             "duration_s",
+            "diarize",
         ):
             assert copy[name] == source[name], name
         assert (copy["preset"], copy["idempotency_key"], copy["job_id"]) == ("auto", HASH, None)
@@ -1982,6 +1994,7 @@ class TestCopyAcrossAccounts:
         assert [m["id"] for m in page] == [7]
         exported = await real_adapter.get_transcripts_for_export(account_id=2)
         assert [(r["id"], r["message_id"]) for r in exported] == [(copy["id"], 7)]
+        assert "copied_from_id" not in exported[0], "the source's id may name a row the reader cannot see"
 
     async def test_another_preset_or_the_same_media_asking_again_is_sent(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
@@ -2005,6 +2018,121 @@ class TestCopyAcrossAccounts:
         assert len(server.transcribe_requests) == 1
         newest = (await real_adapter.list_media_transcripts("m_7_video", account_id=2))[0]
         assert newest["id"] != own["id"] and newest["copied_from_id"] is None
+
+    async def test_a_press_after_done_asks_the_server_even_when_a_twin_holds_a_copy(self, real_adapter, tmp_path):
+        """X transcribed, Y (the same audio forwarded elsewhere) copied from X, then a press on X."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        server = FakeServer()
+        config = _config(str(tmp_path))
+        assert (
+            await drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+            )
+        )["done"] == 1
+        assert (
+            await drain_transcriptions(
+                config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+            )
+        )["copied"] == 1
+        await real_adapter.enqueue_media_transcript("m_1_video", account_id=1, force=True)  # the press on X
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(done=1)
+        assert len(server.transcribe_requests) == 2
+        newest, first = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (newest["status"], newest["copied_from_id"]) == ("done", None)
+        assert newest["id"] != first["id"]
+
+    async def test_only_an_answer_from_the_same_server_is_copied(self, real_adapter, tmp_path):
+        """Rows another server wrote are not what the OpenAI-path server here would answer now."""
+        for media_id, source, engine in (
+            ("m_1_video", "akou", "akou"),  # akou's job path
+            ("m_2_video", "openai", "speaches"),  # another OpenAI-compatible server
+            ("m_3_video", "akou", "openai"),  # the right engine name, the wrong path
+        ):
+            await _media_in_account(real_adapter, tmp_path, 1, media_id, media_type="voice")
+            await _done_source(real_adapter, 1, media_id, source=source, engine_name=engine)
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        server = FakeServer()
+        config = _config(str(tmp_path))
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(done=1)
+        assert len(server.transcribe_requests) == 1
+
+    async def test_with_diarize_on_an_answer_made_without_it_is_not_copied(self, real_adapter, tmp_path):
+        """Made before diarization was turned on: sent again, asking for speakers."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video", source="akou", engine_name="akou")
+        config = _akou_config(tmp_path, transcription_diarize=True)
+        server = AkouServer()
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["submitted"]) == (0, 1)
+        [submit] = server.submits
+        assert dict(_PART.findall(submit.content.decode("latin-1")))["diarize"] == "true"
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert (row["diarize"], row["copied_from_id"]) == (True, None), "the row records that it asked for speakers"
+
+    async def test_with_diarize_on_a_diarized_akou_answer_is_copied(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        source = await _done_source(real_adapter, 1, "m_1_video", source="akou", engine_name="akou", diarize=True)
+        config = _akou_config(tmp_path, transcription_diarize=True)
+        server = AkouServer()
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["submitted"]) == (1, 0)
+        assert server.submits == []
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert (row["diarize"], row["copied_from_id"]) == (True, source["id"])
+
+    async def test_diarize_on_with_a_server_that_cannot_diarize_copies_a_plain_answer(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        source = await _done_source(real_adapter, 1, "m_1_video", diarize=False)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_diarize=True)
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(copied=1)
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert row["copied_from_id"] == source["id"]
+
+    async def test_the_listener_path_asks_the_server_before_copying(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        source = await _done_source(real_adapter, 1, "m_1_video")
+        server = FakeServer()
+        config = _config(str(tmp_path))
+        # What the listener passes: the row it just inserted, hash included.
+        media = {**await real_adapter.get_media_by_id("m_7_video", account_id=2), "content_hash": HASH}
+
+        outcome = await transcribe_media(
+            config, real_adapter, media, account_id=2, client=_client(config, server), notifier=AsyncMock()
+        )
+
+        assert outcome == "copied"
+        assert [r.url.path for r in server.requests] == ["/base/v1/server"]
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert row["copied_from_id"] == source["id"]
 
     async def test_a_waiting_press_is_answered_with_the_copy(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")
