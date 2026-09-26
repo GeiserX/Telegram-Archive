@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.16.0] - 2026-09-26
+
+Voice messages can now be read and searched. The archive sends audio to a transcription server, [akou](https://github.com/GeiserX/akou) or any OpenAI-compatible one, keeps the text beside the audio, and shows it in the bubble behind a button like Telegram's own apps.
+
+### Added
+- **Automatic voice transcription.** With `TRANSCRIPTION_URL` pointing at a server, every voice message is transcribed on its own, and the text appears under the waveform behind a →A button, with the engine, model, language and date under it. The backup sends new and older audio after its media sweeps, and the listener sends a downloaded voice message at once. Until a server is set, the only visible effect is a banner pointing at akou. ([#484](https://github.com/GeiserX/Telegram-Archive/pull/484))
+- **Every file with sound can be transcribed.** Round videos, videos, audio files, and audio or video sent as a document get the same button, and a press transcribes that one file. `TRANSCRIPTION_TYPES` lists the types transcribed ahead of time; the default is `voice`, like Telegram's apps. Files with no audio track are skipped before any upload, and a video uploads only its audio track, under `TRANSCRIPTION_MAX_UPLOAD_MB`. ([#485](https://github.com/GeiserX/Telegram-Archive/pull/485))
+- **Search by what was said.** Chat search and global search find a message by its transcript and open the bubble on the match. Transcripts also appear in the message API, both exports, the changes feed and the gallery's voice tab. ([#484](https://github.com/GeiserX/Telegram-Archive/pull/484))
+- **akou's job API with a signed callback.** With akou, the backup submits a job keyed by the audio's hash and collects the result by a [Standard Webhooks](https://www.standardwebhooks.com/) callback to the viewer (`TRANSCRIPTION_CALLBACK_URL`, `TRANSCRIPTION_WEBHOOK_SECRET`), by akou's event feed, or by polling, so an archive akou cannot reach still gets every transcript. ([#484](https://github.com/GeiserX/Telegram-Archive/pull/484))
+- **Priority chats, one transcription per audio, and speaker labels.** `TRANSCRIPTION_PRIORITY_CHAT_IDS` sends the listed chats first. The same audio held by another media or another account is copied from its finished transcript instead of being sent again. `TRANSCRIPTION_DIARIZE` asks akou to label speakers, and the bubble then shows who said what. ([#486](https://github.com/GeiserX/Telegram-Archive/pull/486))
+
+### Changed
+- **Moving from SQLite to PostgreSQL copies transcripts.** ([#484](https://github.com/GeiserX/Telegram-Archive/pull/484))
+- **Logins with downloads disabled see no transcript text,** since the text is the audio's content. ([#484](https://github.com/GeiserX/Telegram-Archive/pull/484))
+
+### What this release deletes, overwrites and forgets
+Transcripts are append-only rows (migration 032): a retranscription adds a row. They are removed only together with their media, on the removal paths an operator already turns on by setting (`DELETION_MODE=hard`, `EXCLUDE_DELETE_EXISTING`, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`). The archive keeps only the error code of a failed server answer, not its message.
+
+Upgrading runs migration 032 automatically. Nothing changes until `TRANSCRIPTION_URL` is set; set `TRANSCRIPTION_ENABLED=false` to hide the banner. See [docs/TRANSCRIPTION.md](TRANSCRIPTION.md).
+
 ## [8.15.1] - 2026-09-24
 
 Two viewer corrections to 8.15.0.
