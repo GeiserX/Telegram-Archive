@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from src.db.adapter import ChatScope
 from src.db.models import MediaTranscript
@@ -137,6 +137,83 @@ class TestDeletePaths:
         )
         assert await real_adapter.delete_voice_note_audio_twins(account_id=1) == 1
         assert await _transcript_keys(real_adapter) == {(1, audio)}
+
+
+AUDIO_HASH = "5" * 64
+
+
+async def _twin_cleanup(adapter, *, account_id: int = 1, text: str = "said once") -> str:
+    """An audio row transcribed, then removed by the voice/audio twin cleanup; the surviving voice row's id."""
+    audio = await _voice(adapter, 5, None, media_type="audio", file_path="fixture/5.ogg", account_id=account_id)
+    await adapter.insert_media(
+        {"id": audio, "message_id": 5, "chat_id": CHAT, "type": "audio", "content_hash": AUDIO_HASH},
+        account_id=account_id,
+    )
+    [row] = await adapter.list_media_transcripts(audio, account_id=account_id)
+    await adapter.fill_media_transcript(row["id"], status="done", text=text, idempotency_key=AUDIO_HASH)
+    voice = f"{CHAT}_5_voice"
+    await adapter.insert_media(
+        {
+            "id": voice,
+            "message_id": 5,
+            "chat_id": CHAT,
+            "type": "voice",
+            "file_path": "fixture/5.ogg",
+            "downloaded": True,
+            "content_hash": AUDIO_HASH,
+        },
+        account_id=account_id,
+    )
+    assert await adapter.delete_voice_note_audio_twins(account_id=account_id) == 1
+    return voice
+
+
+async def _drain_ids(adapter, *, account_id: int = 1) -> list[str]:
+    rows = await adapter.get_media_awaiting_transcription(
+        account_id=account_id, types=("voice", "video_note"), per_run=50, stale_before=datetime(2000, 1, 1)
+    )
+    return [row["id"] for row in rows]
+
+
+class TestTwinReattach:
+    """The archive principle: nothing is copied or moved, the viewer decides what to show."""
+
+    async def test_the_surviving_row_shows_the_removed_twins_done_rows(self, real_adapter):
+        voice = await _twin_cleanup(real_adapter)
+        assert await real_adapter.list_media_transcripts(voice, account_id=1) == []  # nothing was moved
+        assert await real_adapter.list_transcripts_for_media_ids([voice], account_id=1) == {}
+        shown = await real_adapter.list_transcripts_for_media_ids([voice], account_id=1, with_twins=True)
+        assert [(r["status"], r["text"]) for r in shown[voice]] == [("done", "said once")]
+
+    async def test_only_done_rows_of_the_same_account_and_only_without_rows_of_its_own(self, real_adapter):
+        voice = await _twin_cleanup(real_adapter)
+        other_account = await _twin_cleanup(real_adapter, account_id=2, text="the other account")
+        shown = await real_adapter.list_transcripts_for_media_ids([voice], account_id=1, with_twins=True)
+        assert [r["text"] for r in shown[voice]] == ["said once"]
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(
+                update(MediaTranscript).where(MediaTranscript.account_id == 2).values(status="failed")
+            )
+            await session.commit()
+        assert await real_adapter.list_transcripts_for_media_ids([other_account], account_id=2, with_twins=True) == {}
+
+        # Once the media has a row of its own, only its own rows show.
+        own = await real_adapter.enqueue_media_transcript(voice, account_id=1, preset="auto")
+        shown = await real_adapter.list_transcripts_for_media_ids([voice], account_id=1, with_twins=True)
+        assert [r["id"] for r in shown[voice]] == [own["id"]]
+
+    async def test_the_drain_skips_a_media_whose_audio_its_account_already_transcribed(self, real_adapter):
+        voice = await _twin_cleanup(real_adapter)
+        assert voice not in await _drain_ids(real_adapter)
+        # Another account holding the same audio still gets its own transcript.
+        other = await _twin_cleanup(real_adapter, account_id=2)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(delete(MediaTranscript).where(MediaTranscript.account_id == 2))
+            await session.commit()
+        assert other in await _drain_ids(real_adapter, account_id=2)
+        # A user's ask-now on the media is still sent.
+        await real_adapter.enqueue_media_transcript(voice, account_id=1, force=True)
+        assert voice in await _drain_ids(real_adapter)
 
 
 class TestChangesFeed:
@@ -335,6 +412,18 @@ class TestRoutes:
         assert items["2_voice"]["transcript"] is None
         assert [row["status"] for row in items["2_voice"]["transcripts"]] == ["queued"]
         assert media_id not in resp.text, "the rows carry no storage media id"
+
+    async def test_a_surviving_twin_shows_the_transcript_on_the_page_and_the_bubble_route(self, real_adapter):
+        await _twin_cleanup(real_adapter, text="the voice twin's words")
+        ref = (await real_adapter.get_chat_by_id(CHAT, account_id=1))["ref"]
+        async with AsyncClient(transport=ASGITransport(app=web_main.app), base_url="http://test") as client:
+            page = await client.get(f"/api/chats/{ref}/messages")
+            rows = await client.get(f"/api/chats/{ref}/media/5_voice/transcripts")
+        assert page.status_code == 200, page.text
+        [message] = [m for m in page.json() if m["id"] == 5]
+        assert message["media"]["transcript"]["text"] == "the voice twin's words"
+        assert rows.status_code == 200, rows.text
+        assert [(r["status"], r["text"]) for r in rows.json()] == [("done", "the voice twin's words")]
 
     async def test_the_changes_route_reports_the_transcript_kind(self, real_adapter):
         await _voice(real_adapter, 1, "feed words")

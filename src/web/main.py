@@ -3256,7 +3256,9 @@ async def _attach_media_transcripts(media_dicts: list, chat: ChatContext) -> Non
     if not pages:
         return
     try:
-        by_media = await db.list_transcripts_for_media_ids([media["id"] for media in pages], account_id=chat.account_id)
+        by_media = await db.list_transcripts_for_media_ids(
+            [media["id"] for media in pages], account_id=chat.account_id, with_twins=True
+        )
     except Exception as e:
         logger.debug(f"Transcripts not attached: {type(e).__name__}")
         return
@@ -3363,10 +3365,10 @@ async def get_chat_media_transcripts(media_key: str, chat: ChatContext = Depends
     """
     media = await _entitled_media_row(chat, media_key)
     try:
-        rows = await db.list_media_transcripts(media["id"], account_id=chat.account_id)
+        by_media = await db.list_transcripts_for_media_ids([media["id"]], account_id=chat.account_id, with_twins=True)
     except Exception as e:
         _raise_for_transcript_error(e, "fetching")
-    return [_transcript_view(row) for row in rows]
+    return [_transcript_view(row) for row in by_media.get(media["id"], [])]
 
 
 @app.post("/api/chats/{chat_ref}/media/{media_key}/transcripts")

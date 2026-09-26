@@ -3141,8 +3141,8 @@ class DatabaseAdapter:
         remains. Returns the number of rows deleted.
 
         Transcripts are left alone: a transcript of the removed row stays in
-        its table, shown nowhere, and the voice twin gets its own on the next
-        drain (docs/TRANSCRIPTION.md).
+        its table, and the viewer shows it on the voice twin, which holds the
+        same audio, until that twin has rows of its own (docs/TRANSCRIPTION.md).
         """
         twin = aliased(Media)
         async with self.db_manager.async_session_factory() as session:
@@ -6692,13 +6692,20 @@ class DatabaseAdapter:
             return [self._transcript_to_dict(row) for row in result.scalars()]
 
     async def list_transcripts_for_media_ids(
-        self, media_ids: Collection[str], *, account_id: int
+        self, media_ids: Collection[str], *, account_id: int, with_twins: bool = False
     ) -> dict[str, list[dict[str, Any]]]:
         """Every transcript row for a page of media ids, newest first per media.
 
         One query for the whole page, so the message list carries its
         transcripts without a request per bubble. Media with no rows are
         absent from the result.
+
+        ``with_twins`` is the viewer's read path: a media with no rows of its
+        own gets the ``done`` rows of the same account whose
+        ``idempotency_key`` is its ``content_hash``, the same audio held by
+        another media row. That is how a transcript whose media row the
+        voice/audio twin cleanup removed is still shown on the row that
+        survived. Nothing is copied or moved; the rows stay where they are.
         """
         wanted = sorted({m for m in media_ids if isinstance(m, str) and m})
         if not wanted:
@@ -6713,6 +6720,33 @@ class DatabaseAdapter:
             by_media: dict[str, list[dict[str, Any]]] = {}
             for row in result.scalars():
                 by_media.setdefault(row.media_id, []).append(self._transcript_to_dict(row))
+            missing = [media_id for media_id in wanted if media_id not in by_media]
+            if not with_twins or not missing:
+                return by_media
+            hashes = await session.execute(
+                select(Media.id, Media.content_hash).where(
+                    and_(Media.account_id == account_id, Media.id.in_(missing), Media.content_hash.is_not(None))
+                )
+            )
+            by_hash: dict[str, list[str]] = {}
+            for media_id, content_hash in hashes:
+                by_hash.setdefault(content_hash, []).append(media_id)
+            if not by_hash:
+                return by_media
+            twins = await session.execute(
+                select(MediaTranscript)
+                .where(
+                    and_(
+                        MediaTranscript.account_id == account_id,
+                        MediaTranscript.status == "done",
+                        MediaTranscript.idempotency_key.in_(sorted(by_hash)),
+                    )
+                )
+                .order_by(MediaTranscript.id.desc())
+            )
+            for row in twins.scalars():
+                for media_id in by_hash[row.idempotency_key]:
+                    by_media.setdefault(media_id, []).append(self._transcript_to_dict(row))
             return by_media
 
     async def get_transcripts_for_export(
@@ -6786,6 +6820,10 @@ class DatabaseAdapter:
         or is ``failed`` while fewer than three failed rows exist for it. A
         ``done`` or ``skipped`` newest row ends the loop for that media.
 
+        A media with no row of its own is left out when its account already
+        holds a ``done`` transcript of the same audio (``idempotency_key``
+        equal to its ``content_hash``): the viewer shows that one on it.
+
         A ``queued`` row with no ``job_id`` and no ``preset`` is a user's
         ask-now from the viewer, which never knows the preset: the backup
         fills it when it picks the row up. Such a row qualifies at once,
@@ -6819,6 +6857,18 @@ class DatabaseAdapter:
             .scalar_subquery()
         )
         asked_now = and_(newest.status == "queued", newest.job_id.is_(None), newest.preset.is_(None))
+        twin_done = (
+            select(MediaTranscript.id)
+            .where(
+                and_(
+                    MediaTranscript.account_id == Media.account_id,
+                    MediaTranscript.idempotency_key == Media.content_hash,
+                    MediaTranscript.status == "done",
+                )
+            )
+            .correlate(Media)
+            .exists()
+        )
         stmt = (
             select(Media, newest.id, newest.status, newest.job_id)
             .outerjoin(
@@ -6831,7 +6881,7 @@ class DatabaseAdapter:
                     Media.downloaded == 1,
                     or_(Media.type.in_(wanted), asked_now),
                     or_(
-                        newest.id.is_(None),
+                        and_(newest.id.is_(None), ~twin_done),
                         asked_now,
                         and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
                         and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
