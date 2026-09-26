@@ -20,9 +20,9 @@ this package with a module-level ``PROVIDER`` object:
 A provider sends through ``client.request_json`` (or ``client.transcribe``
 for the OpenAI shape), which already retries, never follows redirects,
 logs no URL and raises ``TranscriptionError`` with the HTTP status, so the
-drain's rules apply unchanged: an outage or a 401, 402, 403 or 429 keeps
-the row queued, a 413 is ``too_large``, any other 4xx is an answer about
-the file once the server has transcribed something in the run. Adding one
+drain's rules apply unchanged: an outage, a 401, 402, 403, 404 or 429, and
+a 413 (the server's or a proxy's upload limit) keep the row queued and end
+the run; any other 4xx is an answer about the file and spends a failed row. Adding one
 is a module here and its name in ``TRANSCRIPTION_PROVIDERS`` in
 ``src/config.py``, the one list both read.
 

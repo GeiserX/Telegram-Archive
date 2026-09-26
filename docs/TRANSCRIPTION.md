@@ -98,7 +98,7 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_PRESET` | `auto` | B | `lite`, `fast`, `best`, `fusion` or `auto`. Passed through to akou; ignored by other servers |
 | `TRANSCRIPTION_TYPES` | `voice` | B | Media types transcribed ahead of time, like the official apps do for voice messages. Also accepts `video_note`, `audio`, `video` and `document`, where `document` means only a document whose stored `mime_type` starts with `audio/` or `video/`. `animation` is never eligible: Telegram's GIF-style clips have no sound. The list does not limit the button: any file with sound can be asked for one at a time |
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored `duration`, or ffprobe's when the media row has none |
-| `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large`, and so does a file the server itself refuses with 413. `0` means no limit; a negative value warns and means the same. Set `25` for OpenAI, Groq's free tier and vLLM's default |
+| `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large`. A 413 from the server or a proxy means its limit is lower than this setting: the row stays `queued`, the run ends, and the log says to lower the setting. `0` means no limit; a negative value warns and means the same. Set `25` for OpenAI, Groq's free tier and vLLM's default |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
 | `TRANSCRIPTION_DIARIZE` | `false` | B | Sends `diarize=true` with each akou job, which then returns segments with speaker labels. Off sends `diarize=false`, so this global setting always wins over any server-side default in akou. Deepgram, AssemblyAI and ElevenLabs label speakers with it too. The OpenAI endpoint has no such field and does not diarize |
 | `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
@@ -296,12 +296,12 @@ file=<bytes> model=<the preset when the server is akou, else TRANSCRIPTION_MODEL
 What an answer costs:
 
 - A server that cannot be reached at all is an outage, not an answer: the row stays `queued`, the run ends there, and the ten-minute branch of the drain query resubmits on the same row, so an outage never spends the cap of three failed rows.
-- A wrong key, no credit or a rate limit (401, 402, 403, 429) is not about the file: the row stays `queued` and the run ends.
-- A 413 is the server's own size limit: a `skipped` row with reason `too_large`, the same as the archive's own limit.
-- Any other 4xx is about the file only once the server has transcribed a file in the same run. Before that it may just as well be about the server: an unknown model answers 404 and a codec the server cannot decode answers 400, for every file. So a refusal before the run's first transcript stores nothing and the row stays `queued`; when a later file of the run is transcribed, the held refusals are stored as `failed` rows, and when two files are refused before any is transcribed, the run ends with one warning and every row stays `queued`. Fixing the server's setup loses no voice message. After the first transcript of the run, a 4xx is a `failed` row at once.
+- A wrong key, no credit, an unknown model or a wrong URL, or a rate limit (401, 402, 403, 404, 429) is about the server's setup, not the file: the row stays `queued` and the run ends. Fixing the setup loses no voice message.
+- A 413 is a limit on the way lower than `TRANSCRIPTION_MAX_UPLOAD_MB`, since the archive never sends more than that: the row stays `queued`, the run ends, and the log names the setting to lower. The same holds on akou's job path.
+- Any other 4xx is an answer about the file: a `failed` row, and the run goes on with the next file.
 - A 5xx after the client's attempts gets a `failed` row, since this server decodes the file inside the request and the file may be the cause, and it ends the run. So does a request the server took and never answered, a read or write timeout: that request is sent once, never retried, because another attempt would wait out the same timeout and hand the server the same work again.
 
-The listener's immediate call knows nothing of the run: a 4xx there leaves the row `queued` for the next drain.
+The listener's immediate call follows the same rules.
 
 ### Completion
 

@@ -31,10 +31,10 @@ path), ends the run the same way and also leaves the row ``queued``. Any
 other HTTP error is an answer about the file and is stored as a ``failed``
 row, and so is a synchronous request the server took and never answered
 (a read or write timeout, or a 5xx after every attempt), which also ends
-the run. On the synchronous path a 4xx counts as an answer about the file
-only once the server has transcribed a file in the same run: a server that
-refuses every file (an unknown model, a codec it cannot read) is set up
-wrong, and its refusals keep the rows queued instead of spending them.
+the run. On the synchronous path a 404 is about the server too (an unknown
+model or a wrong URL). A 413 is the server's or a proxy's upload limit,
+lower than TRANSCRIPTION_MAX_UPLOAD_MB since the archive never sends more:
+the row stays queued, the run ends and the log says to lower the setting.
 
 PII rule: this module never logs a URL (httpx exception strings embed it,
 so exceptions log as class names), the bearer key, a media id (it carries
@@ -276,10 +276,8 @@ class TranscriptionClient:
         self.backoffs = self.BACKOFFS
         self.poll_interval = PROVIDER_POLL_SECONDS
         self._transport = transport
-        # Per run: the OpenAI endpoint still takes verbose_json (see the openai
-        # provider), and this server has transcribed a file (see ``_send``).
+        # Per run: the OpenAI endpoint still takes verbose_json (see the openai provider).
         self.verbose = True
-        self.transcribed = False
 
     @property
     def sync_source(self) -> str:
@@ -919,6 +917,8 @@ async def _submit_job(
         if e.transient:
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
+        if e.status == 413:
+            return _upload_refused(config)
         if _server_refused(e) or _server_failed(e):
             # Every other submit of this run would get the same answer, and
             # none of it is about this file: no failed row, the run ends.
@@ -1173,12 +1173,11 @@ async def transcribe_media(
     client: TranscriptionClient | None = None,
     server: ServerInfo | None = None,
     notifier: RealtimeNotifier | None = None,
-    held: list[dict[str, Any]] | None = None,
 ) -> str:
     """One media to the server; the drain and the listener both call this.
 
     Returns ``done``, ``failed``, ``skipped``, ``submitted``, ``refused``,
-    ``unreachable``, ``stalled``, ``rejected`` or ``noop``. The queued row is inserted first
+    ``unreachable``, ``stalled``, ``copied`` or ``noop``. The queued row is inserted first
     (insert-if-absent, so a second call while one is open reuses it), the
     audio is hashed when the media row carries no hash, and the answer
     fills the same row: at once on the synchronous path, or with the job
@@ -1190,12 +1189,9 @@ async def transcribe_media(
     the server took and gave no usable answer (a timeout, or a 5xx after
     every attempt): the row is failed, so the cap of three applies, and the
     drain ends the run. ``refused`` is a refusal about the server or its
-    configuration (see ``_server_refused``; on the job path a 5xx too): the
+    configuration (see ``_server_refused``; on the synchronous path a 404,
+    on the job path a 5xx, and on both a 413, see ``_upload_refused``): the
     row stays queued, no failed row is spent, and the drain ends the run.
-    ``rejected`` is a 4xx on the synchronous path from a server that has not
-    transcribed a file in this run yet: the row stays queued and, when the
-    caller passes ``held``, the refusal is appended there for the drain to
-    store as failed once the server proves it can transcribe (see ``_send``).
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -1288,9 +1284,7 @@ async def transcribe_media(
         # An ask-now row, or a row for an imported media with no hash.
         await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
 
-    max_mb = getattr(config, "transcription_max_upload_mb", 500)
-    if not isinstance(max_mb, int) or isinstance(max_mb, bool):
-        max_mb = 500
+    max_mb = _upload_limit_mb(config)
     limit = max_mb * 1024 * 1024 if max_mb > 0 else None  # 0 or less: no limit
     # A voice message or music file over the limit is not skipped yet: its
     # audio extracted to Opus is usually a fraction of it.
@@ -1320,7 +1314,6 @@ async def transcribe_media(
                 client=client,
                 server=server,
                 notifier=notifier,
-                held=held,
             )
     finally:
         if extracted:
@@ -1341,18 +1334,14 @@ async def _send(
     client: TranscriptionClient,
     server: ServerInfo | None,
     notifier,
-    held: list[dict[str, Any]] | None = None,
 ) -> str:
     """Detect the server if the caller has not, then the job path or the synchronous request.
 
-    On the synchronous path a 4xx is an answer about the file only once
-    this server has transcribed a file in the run (``client.transcribed``).
-    Before that it may just as well be about the server: an unknown model
-    (404), a codec it cannot decode (400) or any setup that refuses every
-    file. Such a refusal stores nothing: the row stays queued (``rejected``)
-    and, with ``held``, the drain stores it as failed when a later file of
-    the same run is transcribed. A 413 is the server's own size limit: a
-    ``skipped`` row with reason ``too_large``, like the archive's own limit.
+    On the synchronous path a refusal about the server's setup (401, 402,
+    403, 404 for an unknown model or a wrong URL, 429) stores nothing: the
+    row stays queued and the run ends (``refused``). So does a 413, the
+    server's or a proxy's upload limit (``_upload_refused``). Any other 4xx
+    is an answer about this file and spends a failed row; the run goes on.
     """
     if server is None:
         try:
@@ -1391,20 +1380,12 @@ async def _send(
             # Same as above: an outage is not an answer and spends no failed row.
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
-        if _server_refused(e):
+        if _server_refused(e) or e.status == 404:
+            # A 404 here is an unknown model or a wrong URL: the same for every file.
             logger.warning(f"Transcription server refused the request ({e.reason}); the media stays queued")
             return "refused"
         if e.status == 413:
-            skipped = await db.mark_media_transcript_skipped(
-                media["id"],
-                account_id=account_id,
-                reason=TOO_LARGE,
-                content_hash=media.get("content_hash"),
-                duration_s=_number(media.get("duration")),
-            )
-            if skipped is not None:
-                await _notify(notifier, media, skipped["id"], "skipped", account_id)
-            return "skipped"
+            return _upload_refused(config)
         failed = {
             "row_id": row["id"],
             "media": media,
@@ -1414,10 +1395,6 @@ async def _send(
             "engine_name": server.name or None,
             "engine_version": server.version or None,
         }
-        if e.status is not None and e.status < 500 and not client.transcribed:
-            if held is not None:
-                held.append(failed)
-            return "rejected"
         await _store_failed(db, notifier, failed)
         # A server that took the request and never answered, or failed it with
         # a 5xx after every attempt, would do the same to every later media: the
@@ -1425,7 +1402,6 @@ async def _send(
         # server decodes the file inside the request and the file may be the cause.
         return "stalled" if e.stalled or _server_failed(e) else "failed"
 
-    client.transcribed = True
     await db.fill_media_transcript(
         row["id"],
         status="done",
@@ -1444,6 +1420,29 @@ _NOT_AKOU = (
     "Transcription: TRANSCRIPTION_PROVIDER=akou but the server did not answer as akou with jobs; "
     "nothing sent, the media stays queued"
 )
+
+
+def _upload_limit_mb(config) -> int:
+    """TRANSCRIPTION_MAX_UPLOAD_MB; 0 or less means no limit."""
+    max_mb = getattr(config, "transcription_max_upload_mb", 500)
+    return max_mb if isinstance(max_mb, int) and not isinstance(max_mb, bool) else 500
+
+
+def _upload_refused(config) -> str:
+    """A 413: the server's or a proxy's limit, never this file's fault.
+
+    The archive skips a file over TRANSCRIPTION_MAX_UPLOAD_MB before sending
+    it, so a 413 means a limit on the way is lower than the setting. The row
+    stays queued and the run ends, so no file is spent on it; the log says
+    what to change.
+    """
+    max_mb = _upload_limit_mb(config)
+    setting = f"{max_mb} MB" if max_mb > 0 else "no limit"
+    logger.warning(
+        "Transcription server refused an upload as too large (HTTP 413): its limit, or a proxy's, is lower than "
+        f"TRANSCRIPTION_MAX_UPLOAD_MB ({setting}). Lower the setting to that limit; the media stays queued"
+    )
+    return "refused"
 
 
 async def _store_failed(db, notifier, failed: dict[str, Any]) -> None:
@@ -1560,32 +1559,15 @@ async def drain_transcriptions(
     if not media_rows:
         logger.debug("Transcription: nothing to send")
         return stats
-    held: list[dict[str, Any]] = []
     for media in media_rows:
         outcome = await transcribe_media(
-            config, db, media, account_id=account_id, client=client, server=server, notifier=notifier, held=held
+            config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
         )
-        if outcome == "rejected":
-            # Counted below, once the run knows whether the server transcribes at all.
-            if len(held) >= 2:
-                break  # two files refused, none transcribed: the server, not the files
-            continue
         stats[outcome] = stats.get(outcome, 0) + 1
         if outcome in ("unreachable", "stalled", "refused"):
             # transcribe_media warned once; every media after this one would
             # wait out the same timeouts, or get the same refusal.
             break
-    if held and client.transcribed:
-        # The server transcribed another file of this run: the refusals were about their files.
-        for failed in held:
-            await _store_failed(db, notifier, failed)
-        stats["failed"] += len(held)
-    elif held:
-        stats["refused"] += len(held)
-        logger.warning(
-            f"Transcription server refused {len(held)} file(s) ({held[-1]['error']}) and transcribed none this run; "
-            "they stay queued. Check TRANSCRIPTION_MODEL and the server's setup"
-        )
     logger.info(
         "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable "
         "of %d media; %d filled from the event feed, %d from the poll",

@@ -2,9 +2,9 @@
 
 ``auto`` still picks akou's job path when the server says so; ``akou``
 insists on it; ``openai`` skips the question and sends TRANSCRIPTION_MODEL.
-A server that refuses every file (an unknown model, a codec it cannot
-read) keeps the rows queued instead of spending them, and a 4xx becomes a
-failed row only once the server has transcribed a file in the run. Each
+A refusal about the server's setup (a wrong key, no credit, an unknown
+model, a rate limit) or a 413 from a limit on the way keeps the rows queued
+and ends the run; any other 4xx is that file's failed row. Each
 native adapter (Deepgram, AssemblyAI, ElevenLabs) runs against a fake built
 from its official request and response examples, with its auth header and
 its failure shapes. No log line carries the key or the URL.
@@ -216,56 +216,47 @@ def _refusing(status: int, body: dict | None = None, *, good: set[int] | None = 
 
 
 class TestRefusedEveryFile:
-    @pytest.mark.parametrize("status", [400, 404, 422])
-    async def test_a_server_that_transcribes_nothing_spends_no_failed_row(self, real_adapter, tmp_path, status):
+    @pytest.mark.parametrize("status", [401, 403, 404, 429])
+    async def test_a_refusal_about_the_servers_setup_ends_the_run_and_spends_no_file(
+        self, real_adapter, tmp_path, status
+    ):
+        """A wrong key, no access, an unknown model or a wrong URL, a rate limit: the same for every file."""
         for n in range(1, 4):
             await _media(real_adapter, tmp_path, f"m_{n}_voice")
         config = _config(str(tmp_path))
         for _ in range(4):  # more runs than the cap of three failed rows
             client, requests = _provider_client(config, _refusing(status))
             stats = await _drain(config, real_adapter, client)
-            # Two different files refused the same run: the run ends there.
-            assert stats == _stats(refused=2)
-            # A 400 is asked once more for plain json before it counts as refused.
-            assert len([r for r in requests if r.method == "POST"]) == (4 if status == 400 else 2)
+            assert stats == _stats(refused=1)
+            # The client asks three times on a 429 before it gives up on the run.
+            assert len([r for r in requests if r.method == "POST"]) == (3 if status == 429 else 1)
             await _make_stale(real_adapter)
-        for n in range(1, 4):
-            assert all(r["status"] == "queued" for r in await _rows(real_adapter, f"m_{n}_voice"))
+        assert not [
+            r for n in range(1, 4) for r in await _rows(real_adapter, f"m_{n}_voice") if r["status"] != "queued"
+        ]
 
         client, _ = _provider_client(config, _refusing(status, good={1, 2, 3}))
-        stats = await _drain(config, real_adapter, client)
-        assert stats["done"] == 3
-        for n in range(1, 4):
-            assert [r["status"] for r in await _rows(real_adapter, f"m_{n}_voice")] == ["done"]
+        assert (await _drain(config, real_adapter, client))["done"] == 3
 
-    async def test_a_refusal_before_the_first_transcript_is_stored_once_another_file_is_done(
-        self, real_adapter, tmp_path
-    ):
-        from datetime import datetime
-
-        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 3))
-        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 2))
-        config = _config(str(tmp_path))
-        notifier = AsyncMock()
-        client, _ = _provider_client(config, _refusing(422, good={2}))
-        stats = await drain_transcriptions(config, real_adapter, account_id=1, notifier=notifier, client=client)
-        assert (stats["done"], stats["failed"], stats["refused"]) == (1, 1, 0)
-        [bad] = await _rows(real_adapter, "m_1_voice")
-        assert (bad["status"], bad["error"], bad["source"]) == ("failed", "HTTP 422", "openai")
-        assert [r["status"] for r in await _rows(real_adapter, "m_2_voice")] == ["done"]
-        assert sorted(call.args[2]["status"] for call in notifier.notify.await_args_list) == ["done", "failed"]
-
-    async def test_after_a_transcript_a_refusal_is_a_failed_row_at_once(self, real_adapter, tmp_path):
+    @pytest.mark.parametrize("status", [400, 422])
+    async def test_a_4xx_about_a_file_fails_that_file_and_the_run_goes_on(self, real_adapter, tmp_path, status):
+        """Two files the server refuses first never block the rest (the default auto setting)."""
         from datetime import datetime
 
         for n, day in ((1, 4), (2, 3), (3, 2)):
             await _media(real_adapter, tmp_path, f"m_{n}_voice", download_date=datetime(2026, 1, day))
         config = _config(str(tmp_path))
-        client, requests = _provider_client(config, _refusing(422, good={1}))
+        # A 400 is asked once more for plain json before it counts, so the good upload is the fifth.
+        good = {5} if status == 400 else {3}
+        client, _ = _provider_client(config, _refusing(status, {"error": {"message": "no", "code": None}}, good=good))
+
         stats = await _drain(config, real_adapter, client)
-        # Neither refusal ends the run: the server transcribes, the files are the problem.
-        assert (stats["done"], stats["failed"]) == (1, 2)
-        assert len([r for r in requests if r.method == "POST"]) == 3
+
+        assert (stats["done"], stats["failed"], stats["refused"]) == (1, 2, 0)
+        for n in (1, 2):
+            [bad] = await _rows(real_adapter, f"m_{n}_voice")
+            assert (bad["status"], bad["error"], bad["source"]) == ("failed", f"HTTP {status}", "openai")
+        assert [r["status"] for r in await _rows(real_adapter, "m_3_voice")] == ["done"]
 
     async def test_the_listener_path_leaves_a_refused_row_queued_for_the_drain(self, real_adapter, tmp_path):
         from src.transcription import transcribe_media
@@ -273,17 +264,25 @@ class TestRefusedEveryFile:
         media = await _media(real_adapter, tmp_path, "m_1_voice")
         config = _config(str(tmp_path))
         client, _ = _provider_client(config, _refusing(404))
-        assert await transcribe_media(config, real_adapter, media, account_id=1, client=client) == "rejected"
+        assert await transcribe_media(config, real_adapter, media, account_id=1, client=client) == "refused"
         assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == ["queued"]
 
-    async def test_a_413_is_the_servers_size_limit_a_skipped_row(self, real_adapter, tmp_path):
-        await _media(real_adapter, tmp_path, "m_1_voice")
-        config = _config(str(tmp_path))
-        client, _ = _provider_client(config, _refusing(413, {"error": {"message": "too big", "code": None}}))
-        stats = await _drain(config, real_adapter, client)
-        assert stats["skipped"] == 1
-        [row] = await _rows(real_adapter, "m_1_voice")
-        assert (row["status"], row["error"]) == ("skipped", "too_large")
+    async def test_a_413_is_a_limit_on_the_way_it_ends_the_run_and_spends_no_file(self, real_adapter, tmp_path, caplog):
+        """The archive never sends more than TRANSCRIPTION_MAX_UPLOAD_MB, so a 413 is a lower limit elsewhere."""
+        for n in (1, 2):
+            await _media(real_adapter, tmp_path, f"m_{n}_voice")
+        config = _config(str(tmp_path), transcription_max_upload_mb=500)
+        client, requests = _provider_client(config, _refusing(413, {"error": {"message": "too big", "code": None}}))
+
+        with caplog.at_level(logging.WARNING, logger="src.transcription"):
+            stats = await _drain(config, real_adapter, client)
+
+        assert stats == _stats(refused=1)
+        assert len([r for r in requests if r.method == "POST"]) == 1
+        [row] = await _rows(real_adapter, "m_1_voice") or await _rows(real_adapter, "m_2_voice")
+        assert (row["status"], row["error"]) == ("queued", None)
+        [line] = [r.getMessage() for r in caplog.records if "413" in r.getMessage()]
+        assert "TRANSCRIPTION_MAX_UPLOAD_MB (500 MB)" in line and "lower" in line
 
     async def test_a_402_no_credit_keeps_the_row_queued_even_after_a_transcript(self, real_adapter, tmp_path):
         """No credit is about the account, never the file: the run ends and nothing is spent."""
@@ -513,17 +512,18 @@ class TestDeepgram:
                 _stats(refused=1),
             ),
             (403, {"err_code": "FORBIDDEN", "err_msg": "no access to the model"}, _stats(refused=1)),
-            (400, {"err_code": "Bad Request", "err_msg": "corrupt or unsupported data"}, _stats(refused=1)),
+            (400, {"err_code": "Bad Request", "err_msg": "corrupt or unsupported data"}, _stats(failed=1)),
         ],
     )
-    async def test_failures_spend_no_failed_row_before_a_transcript(
+    async def test_account_refusals_spend_no_row_and_a_bad_file_spends_its_own(
         self, real_adapter, tmp_path, status, body, outcome
     ):
         await _media(real_adapter, tmp_path, "m_1_voice")
         config = _config(str(tmp_path), transcription_provider="deepgram")
         client, _ = _provider_client(config, _deepgram(status, body))
         assert await _drain(config, real_adapter, client) == outcome
-        assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == ["queued"]
+        expected = "failed" if status == 400 else "queued"
+        assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == [expected]
 
 
 # ============================================================================

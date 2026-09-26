@@ -1600,6 +1600,20 @@ class TestJobPath:
                 None,
             ), media_id
 
+    async def test_a_413_on_the_job_path_ends_the_run_and_spends_no_file(self, real_adapter, tmp_path):
+        """akou, or a proxy in front of it, with a lower upload limit than TRANSCRIPTION_MAX_UPLOAD_MB."""
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
+        server = AkouServer()
+        server.submit_refusal = (413, {"error": "file_too_large", "message": "server text"})
+
+        stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+
+        assert (stats["refused"], stats["failed"], stats["skipped"]) == (1, 0, 0)
+        assert len(server.submits) == 1
+        rows = await _rows(real_adapter, "m_1_voice") or await _rows(real_adapter, "m_2_voice")
+        assert [(r["status"], r["error"]) for r in rows] == [("queued", None)]
+
     async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)
         server = AkouServer()
