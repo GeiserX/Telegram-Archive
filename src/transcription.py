@@ -69,6 +69,7 @@ from .transcription_contract import (
     flat_job,
     job_outcome,
     language_tag,
+    options_tag,
     parse_events_page,
     real_speaker_label,
 )
@@ -291,6 +292,23 @@ class TranscriptionClient:
     def job_options(self) -> dict[str, Any]:
         """The options a job request sends, exactly as sent: the form fields and the key both read this."""
         return {"preset": self.preset or "auto", "language": self.language or "auto", "diarize": self.diarize}
+
+    def request_options(self, server: ServerInfo, config) -> dict[str, Any]:
+        """Every option this server's answer depends on, the base of a row's ``options_tag``.
+
+        On akou's job path what the job sends and its key names; on the
+        synchronous path and the adapters the provider, model, language
+        hint, diarize flag and hotword prompt.
+        """
+        if server.job_path:
+            return self.job_options()
+        return {
+            "provider": self.provider.name,
+            "model": self.sync_model(server),
+            "language": self.language or "auto",
+            "diarize": self.diarize and server.diarizes,
+            "prompt": _prompt_for(config) or "",
+        }
 
     def sync_model(self, server: ServerInfo) -> str:
         """The synchronous ``model``: the preset for akou, else TRANSCRIPTION_MODEL or the provider's default."""
@@ -1081,6 +1099,7 @@ COPIED_COLUMNS = (
     "confidence",
     "duration_s",
     "diarize",
+    "options_tag",
 )
 
 
@@ -1092,6 +1111,7 @@ def _answer_origin(server: ServerInfo) -> tuple[str, str]:
 
 
 async def _copy_transcript(
+    config,
     db,
     media: dict[str, Any],
     content_hash: str,
@@ -1129,6 +1149,7 @@ async def _copy_transcript(
         diarize=client.diarize and server.diarizes,
         source=source,
         engine_name=engine_name,
+        options_tag=options_tag(client.request_options(server, config)),
         **lookup,
     )
     if found is None:
@@ -1202,7 +1223,7 @@ async def transcribe_media(
         content_hash = None
     if content_hash is not None:
         copied = await _copy_transcript(
-            db, media, content_hash, account_id=account_id, client=client, server=server, notifier=notifier
+            config, db, media, content_hash, account_id=account_id, client=client, server=server, notifier=notifier
         )
         if copied is not None:
             return copied
@@ -1355,7 +1376,12 @@ async def _send(
         return "refused"
 
     # What this request asks for, so a later copy reuses only a like answer.
-    await db.fill_media_transcript(row["id"], status="queued", diarize=client.diarize and server.diarizes)
+    await db.fill_media_transcript(
+        row["id"],
+        status="queued",
+        diarize=client.diarize and server.diarizes,
+        options_tag=options_tag(client.request_options(server, config)),
+    )
     if server.job_path:
         return await _submit_job(
             config,

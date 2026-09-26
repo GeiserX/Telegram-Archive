@@ -2077,8 +2077,23 @@ async def _done_source(
     engine_name: str = "openai",
     diarize: bool | None = None,
     speakers: tuple = (None,),
+    options_tag: str | None = "default",
 ) -> dict:
-    """A done row of ``HASH``; the defaults are what ``FakeServer``'s synchronous path writes."""
+    """A done row of ``HASH``; the defaults are what ``FakeServer``'s synchronous path writes.
+
+    ``options_tag`` defaults to the tag the drain computes for such a row with
+    the tests' default options (``_config``): akou's job options for an akou
+    row, the OpenAI endpoint's otherwise. ``None`` makes a row from before 033.
+    """
+    if options_tag == "default":
+        from src.transcription_contract import options_tag as tag
+
+        if source == "akou":
+            options_tag = tag({"preset": preset, "language": "auto", "diarize": bool(diarize)})
+        else:
+            options_tag = tag(
+                {"provider": "openai", "model": "whisper-1", "language": "auto", "diarize": False, "prompt": ""}
+            )
     row = await adapter.enqueue_media_transcript(
         media_id, account_id=account_id, content_hash=HASH, idempotency_key=HASH, preset=preset
     )
@@ -2088,6 +2103,7 @@ async def _done_source(
         source=source,
         engine_name=engine_name,
         diarize=diarize,
+        options_tag=options_tag,
         engine_version="0.3.0",
         models=["parakeet-v3"],
         language="es",
@@ -2346,6 +2362,75 @@ class TestCopyAcrossAccounts:
         assert (stats["copied"], stats["submitted"]) == (0, 1)
         [row] = await real_adapter.list_media_transcripts("m_2_video", account_id=1)
         assert (row["diarize"], row["copied_from_id"]) == (True, None)
+
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            {"transcription_model": "large-v3"},
+            {"transcription_language": "es"},
+            {"transcription_hotwords": ["Kubernetes"]},
+        ],
+        ids=["model", "language", "hotwords"],
+    )
+    async def test_an_answer_made_with_other_options_is_never_copied(self, real_adapter, tmp_path, changed):
+        """The copy rule's equivalent of the option-aware key: every option the answer depends on."""
+        from src.transcription_contract import options_tag
+
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video")  # made with the default options
+        server = FakeServer()
+        config = _config(str(tmp_path), **changed)
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["done"]) == (0, 1)
+        assert len(server.transcribe_requests) == 1
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        expected = {
+            "provider": "openai",
+            "model": changed.get("transcription_model", "whisper-1"),
+            "language": changed.get("transcription_language", "auto"),
+            "diarize": False,
+            "prompt": ", ".join(changed.get("transcription_hotwords", [])),
+        }
+        assert (row["copied_from_id"], row["options_tag"]) == (None, options_tag(expected)), "it records its own"
+
+    async def test_on_akous_job_path_another_language_hint_is_not_copied(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video", source="akou", engine_name="akou")
+        server = AkouServer()
+
+        same = await drain_transcriptions(
+            _akou_config(tmp_path),
+            real_adapter,
+            account_id=2,
+            notifier=AsyncMock(),
+            client=_client(_akou_config(tmp_path), server),
+        )
+        assert same["copied"] == 1, "the same options copy"
+        await _media_in_account(real_adapter, tmp_path, 2, "m_8_video", media_type="voice")
+        config = _akou_config(tmp_path, transcription_language="es")
+        other = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+        assert (other["copied"], other["submitted"]) == (0, 1)
+
+    async def test_a_row_from_before_the_options_tag_is_never_copied(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video", options_tag=None)
+        server = FakeServer()
+        config = _config(str(tmp_path))
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["done"]) == (0, 1)
 
     async def test_a_waiting_press_is_answered_with_the_copy(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")

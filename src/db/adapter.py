@@ -123,6 +123,7 @@ TRANSCRIPT_FILL_COLUMNS = frozenset(
         "completed_at",
         "copied_from_id",
         "diarize",
+        "options_tag",
     }
 )
 # app_settings keys the backup writes for the viewer's settings row and for
@@ -6523,6 +6524,7 @@ class DatabaseAdapter:
             "job_stored_at": row.job_stored_at,
             "copied_from_id": row.copied_from_id,
             "diarize": row.diarize,
+            "options_tag": row.options_tag,
         }
 
     @staticmethod
@@ -6691,6 +6693,7 @@ class DatabaseAdapter:
         diarize: bool,
         source: str | None = None,
         engine_name: str | None = None,
+        options_tag: str | None = None,
     ) -> dict[str, Any] | None:
         """The newest ``done`` row, in any account, of the same stored audio the drain would get again.
 
@@ -6723,6 +6726,9 @@ class DatabaseAdapter:
                 stmt = stmt.where(MediaTranscript.source == source)
             if engine_name is not None:
                 stmt = stmt.where(MediaTranscript.engine_name == engine_name)
+            if options_tag is not None:
+                # A row from before the tag (NULL) never matches: its options are unknown.
+                stmt = stmt.where(MediaTranscript.options_tag == options_tag)
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._transcript_to_dict(row) if row is not None else None
 
