@@ -49,6 +49,7 @@ EXPECTED_COLUMNS = {
     "completed_at",
     "created_at",
     "job_stored_at",
+    "copied_from_id",
 }
 EXPECTED_INDEXES = {
     "uq_media_transcripts_account_media_job": (["account_id", "media_id", "job_id"], True),
@@ -146,6 +147,19 @@ class TestMigration032:
             _run(conn, migration_032.upgrade)
             assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
             assert conn.execute(sa.text("SELECT text, job_stored_at FROM media_transcripts")).all() == [("kept", None)]
+            _run(conn, migration_032.upgrade)  # and a re-run is still a no-op
+            assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
+
+    def test_a_table_from_before_copied_from_id_gets_the_column_and_keeps_its_rows(self):
+        engine = sa.create_engine("sqlite://")
+        with engine.connect() as conn:
+            _run(conn, migration_032.upgrade)
+            _insert(conn, "m1", "done", "kept")
+            _run(conn, lambda: migration_032.op.drop_column(TABLE, "copied_from_id"))
+            assert "copied_from_id" not in {c["name"] for c in sa.inspect(conn).get_columns(TABLE)}
+            _run(conn, migration_032.upgrade)
+            assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
+            assert conn.execute(sa.text("SELECT text, copied_from_id FROM media_transcripts")).all() == [("kept", None)]
             _run(conn, migration_032.upgrade)  # and a re-run is still a no-op
             assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
 

@@ -166,7 +166,19 @@ async def _media(
 def _stats(**counts: int) -> dict[str, int]:
     """A drain's counts: every key at zero except the ones named."""
     stats = dict.fromkeys(
-        ("done", "failed", "skipped", "submitted", "refused", "unreachable", "stalled", "noop", "reconciled", "polled"),
+        (
+            "done",
+            "failed",
+            "skipped",
+            "submitted",
+            "refused",
+            "unreachable",
+            "stalled",
+            "noop",
+            "reconciled",
+            "polled",
+            "copied",
+        ),
         0,
     )
     stats.update(counts)
@@ -1854,6 +1866,143 @@ async def _video_on_disk(adapter, tmp_path, media_id: str, content: bytes = AUDI
     path.write_bytes(content)
     await _file_media(adapter, path, media_id, media_type=media_type, mime_type="video/mp4")
     return str(path)
+
+
+HASH = "c" * 64
+
+
+async def _media_in_account(adapter, tmp_path, account_id: int, media_id: str, *, media_type="video") -> None:
+    """A downloaded media row of the shared audio ``HASH`` in ``account_id``."""
+    path = tmp_path / f"account{account_id}" / f"{media_id}.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(AUDIO)
+    message_id = int(media_id.split("_")[1])
+    await adapter.upsert_chat({"id": CHAT, "type": "group", "title": "fixture chat"}, account_id=account_id)
+    await adapter.insert_message(
+        {"id": message_id, "chat_id": CHAT, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}},
+        account_id=account_id,
+    )
+    await adapter.insert_media(
+        {
+            "id": media_id,
+            "message_id": message_id,
+            "chat_id": CHAT,
+            "type": media_type,
+            "mime_type": "video/mp4",
+            "file_path": str(path),
+            "downloaded": True,
+            "duration": 12,
+            "content_hash": HASH,
+            "download_date": datetime(2026, 1, 2),
+        },
+        account_id=account_id,
+    )
+
+
+async def _done_source(adapter, account_id: int, media_id: str, *, preset: str = "auto") -> dict:
+    row = await adapter.enqueue_media_transcript(
+        media_id, account_id=account_id, content_hash=HASH, idempotency_key=HASH, preset=preset
+    )
+    await adapter.fill_media_transcript(
+        row["id"],
+        status="done",
+        source="akou",
+        engine_name="akou",
+        engine_version="0.3.0",
+        models=["parakeet-v3"],
+        language="es",
+        language_confidence=0.97,
+        text="hola desde la otra cuenta",
+        words=[{"w": "hola", "s": 0.0, "e": 0.4, "c": 0.9}],
+        segments=[{"s": 0.0, "e": 2.0, "text": "hola desde la otra cuenta", "speaker": None}],
+        confidence=0.91,
+        duration_s=2.0,
+    )
+    return await adapter.get_media_transcript(row["id"])
+
+
+class TestCopyAcrossAccounts:
+    async def test_the_same_audio_in_another_account_is_copied_and_nothing_is_probed_or_sent(
+        self, real_adapter, tmp_path, monkeypatch
+    ):
+        calls = tmp_path / "tool-calls"
+        _fake_tool(tmp_path, monkeypatch, "ffprobe", f'echo ffprobe >> "{calls}"\nexit 1\n')
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", f'echo ffmpeg >> "{calls}"\nexit 1\n')
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video")
+        source = await _done_source(real_adapter, 1, "m_1_video")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(copied=1)
+        assert server.transcribe_requests == []
+        assert not calls.exists(), "no ffprobe, no ffmpeg"
+        [copy] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert (copy["status"], copy["copied_from_id"], copy["account_id"]) == ("done", source["id"], 2)
+        for name in (
+            "text",
+            "language",
+            "language_confidence",
+            "words",
+            "segments",
+            "models",
+            "source",
+            "engine_name",
+            "engine_version",
+            "confidence",
+            "duration_s",
+        ):
+            assert copy[name] == source[name], name
+        assert (copy["preset"], copy["idempotency_key"], copy["job_id"]) == ("auto", HASH, None)
+        assert await real_adapter.get_media_transcript(source["id"]) == source, "the source is untouched"
+        # Search and the export find the copy under its own account.
+        page = await real_adapter.get_messages_paginated(chat_id=CHAT, search="otra cuenta", limit=5, account_id=2)
+        assert [m["id"] for m in page] == [7]
+        exported = await real_adapter.get_transcripts_for_export(account_id=2)
+        assert [(r["id"], r["message_id"]) for r in exported] == [(copy["id"], 7)]
+
+    async def test_another_preset_or_the_same_media_asking_again_is_sent(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video", preset="best")
+        # The same audio is also still in flight in account 1 with this preset: not an answer yet.
+        await _media_in_account(real_adapter, tmp_path, 1, "m_2_video", media_type="voice")
+        await real_adapter.enqueue_media_transcript(
+            "m_2_video", account_id=1, content_hash=HASH, idempotency_key=HASH, preset="auto"
+        )
+        own = await _done_source(real_adapter, 2, "m_7_video", preset="auto")
+        await real_adapter.enqueue_media_transcript("m_7_video", account_id=2, force=True)  # a press after done
+        server = FakeServer()
+        config = _config(str(tmp_path))
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(done=1)
+        assert len(server.transcribe_requests) == 1
+        newest = (await real_adapter.list_media_transcripts("m_7_video", account_id=2))[0]
+        assert newest["id"] != own["id"] and newest["copied_from_id"] is None
+
+    async def test_a_waiting_press_is_answered_with_the_copy(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video")
+        source = await _done_source(real_adapter, 1, "m_1_video")
+        asked = await real_adapter.enqueue_media_transcript("m_7_video", account_id=2, force=True)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"voice"})  # video is not automatic
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(copied=1)
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert (row["id"], row["status"], row["copied_from_id"]) == (asked["id"], "done", source["id"])
 
 
 class TestUpload:

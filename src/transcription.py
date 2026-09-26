@@ -923,6 +923,64 @@ async def poll_stragglers(
     return finished
 
 
+# What a copy takes from the row it copies: the answer, never the job.
+COPIED_COLUMNS = (
+    "source",
+    "engine_name",
+    "engine_version",
+    "models",
+    "language",
+    "language_confidence",
+    "text",
+    "words",
+    "segments",
+    "confidence",
+    "duration_s",
+)
+
+
+async def _copy_transcript(
+    db,
+    media: dict[str, Any],
+    content_hash: str,
+    *,
+    account_id: int,
+    client: TranscriptionClient,
+    notifier,
+) -> str | None:
+    """Store this media's transcript as a copy of the same audio's, from any account; None when there is none.
+
+    A ``done`` row for the same stored file made with the preset this drain
+    would send is the answer the server would give again, so it is copied
+    and nothing is probed, extracted or sent. The copy is this media's own
+    row (the open one when a press is waiting), under its own account, so
+    search and exports find it there; ``copied_from_id`` names the source.
+    """
+    found = await db.find_copyable_transcript(content_hash, client.preset, account_id=account_id, media_id=media["id"])
+    if found is None:
+        return None
+    row = await db.enqueue_media_transcript(
+        media["id"],
+        account_id=account_id,
+        content_hash=content_hash,
+        idempotency_key=content_hash,
+        preset=client.preset,
+    )
+    if row is None or row["status"] != "queued" or row.get("job_id"):
+        return "noop"
+    await db.fill_media_transcript(
+        row["id"],
+        status="done",
+        preset=client.preset,
+        content_hash=content_hash,
+        idempotency_key=content_hash,
+        copied_from_id=found["id"],
+        **{name: found[name] for name in COPIED_COLUMNS},
+    )
+    await _notify(notifier, media, row["id"], "done", account_id)
+    return "copied"
+
+
 async def transcribe_media(
     config,
     db,
@@ -955,6 +1013,15 @@ async def transcribe_media(
     if not client.configured:
         return "noop"
     media_id = media["id"]
+    content_hash = media.get("content_hash")
+    if not isinstance(content_hash, str) or not content_hash:
+        content_hash = None
+    if content_hash is not None:
+        copied = await _copy_transcript(
+            db, media, content_hash, account_id=account_id, client=client, notifier=notifier
+        )
+        if copied is not None:
+            return copied
     max_seconds = getattr(config, "transcription_max_seconds", 1800)
     if not isinstance(max_seconds, int) or isinstance(max_seconds, bool):
         max_seconds = None
@@ -990,9 +1057,6 @@ async def transcribe_media(
             if max_seconds is not None and duration is not None and duration > max_seconds:
                 return await skip(too_long)
 
-    content_hash = media.get("content_hash")
-    if not isinstance(content_hash, str) or not content_hash:
-        content_hash = None
     # The source is written once; before the server is known (the
     # listener's call) it is left for the answer to fill.
     source = None if server is None else (SOURCE_AKOU if server.job_path else SOURCE_SYNC)
@@ -1185,6 +1249,7 @@ async def drain_transcriptions(
         "noop": 0,
         "reconciled": 0,
         "polled": 0,
+        "copied": 0,
     }
     if getattr(config, "transcription_enabled", False) is not True:
         return stats
@@ -1257,9 +1322,10 @@ async def drain_transcriptions(
             # wait out the same timeouts, or get the same refusal.
             break
     logger.info(
-        "Transcription drain: %d done, %d failed, %d skipped, %d submitted, %d refused, %d unreachable of %d media; "
-        "%d filled from the event feed, %d from the poll",
+        "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable "
+        "of %d media; %d filled from the event feed, %d from the poll",
         stats["done"],
+        stats["copied"],
         stats["failed"] + stats["stalled"],
         stats["skipped"],
         stats["submitted"],

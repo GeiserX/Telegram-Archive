@@ -379,6 +379,10 @@ class MediaTranscript(Base):
     # retention expiry count from here, not from the row's insert time, since
     # a row can wait queued through an outage before it is submitted.
     job_stored_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # The row this one copies when the same audio was already transcribed in
+    # another account (or under another media row): the text was reused and
+    # nothing was sent to the server.
+    copied_from_id: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
         Index("uq_media_transcripts_account_media_job", "account_id", "media_id", "job_id", unique=True),

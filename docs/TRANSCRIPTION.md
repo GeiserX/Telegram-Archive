@@ -149,6 +149,7 @@ Migration `032` adds one append-only table. It follows [`AvatarHistory`](../src/
 | `completed_at` | datetime | Nullable |
 | `created_at` | datetime | Row insert time |
 | `job_stored_at` | datetime | When `job_id` was first written, nullable. The straggler poll and the retention expiry count from here |
+| `copied_from_id` | int | The row this one copies, nullable. Set when the same audio was already transcribed with the same preset, in any account, and the answer was reused instead of sent |
 
 Unique index on `(account_id, media_id, job_id)`. A partial unique index on `(account_id, media_id)` where `status IN ('queued', 'running')`, which both databases support, so the ask-now route in the viewer and the drain in the backup can never leave two open rows for one media even when they race across processes. Plain indexes on `(account_id, media_id)`, `idempotency_key` and `status`. `skipped` rows and synchronous-server rows have `job_id` NULL and are outside the first unique index; for them the drain's insert-if-absent is the duplicate guard, and it checks the newest row's status before inserting. The parity snapshot compares columns and uniqueness, so the partial index passes it.
 
@@ -238,6 +239,12 @@ Before the upload the drain runs `ffprobe` on the stored file, off the event loo
 Voice messages and music (`audio`) are sent as stored: they are audio already and small. One over `TRANSCRIPTION_MAX_UPLOAD_MB` is extracted like the rest instead of being skipped. Everything else, a video, a round video or a file sent as a document, is sent as its audio track alone. ffmpeg extracts it to a temporary 16 kHz mono Opus file (`-vn -ac 1 -ar 16000 -c:a libopus`, bitexact so the same build writes the same bytes), off the event loop, with a fixed argument list, no shell and a 15-minute timeout, and the file is deleted after the request, on a cancellation too. A 4 GB video becomes tens of megabytes. At most two ffprobe or ffmpeg runs happen at once, shared by the drain and the listener's immediate path, so a burst of videos cannot take every thread of the executor they run in. When ffmpeg is missing or fails, the drain logs one warning per process and sends the stored file instead.
 
 The upload is streamed from disk: the file is never read into memory, and a retry rewinds it. What is sent must fit `TRANSCRIPTION_MAX_UPLOAD_MB` (500 by default, under akou's 512 MiB cap); a bigger upload gets a `skipped` row with reason `too_large` and is never sent, and `0` turns the limit off. The limit reads the bytes actually uploaded, so a large video whose audio track is small goes through. Without it, an upload akou cuts off with a connection reset would read as an outage, be sent again on every drain and hold up everything behind it.
+
+### The same audio in two accounts
+
+Before any ffprobe, extraction or upload, the drain looks for a `done` row, in any account, whose `idempotency_key` is this media's `content_hash` and whose preset is the one it would send. When there is one, this media gets its own row, `done`, with that row's text, language, words, segments, models, engine, confidence and duration copied, and `copied_from_id` naming the source; a press waiting on this media is the row that gets filled. Nothing goes to the server, and nothing is deleted or overwritten. Rows of the asking media itself never count, so a press after a done transcript still asks for a new one. A media without a stored hash is sent as before.
+
+The copy lives under this media's account, so search and the exports find it there. A viewer restricted to one account sees a transcript only through media that account holds: the source row in another account is never shown to it.
 
 Media longer than `TRANSCRIPTION_MAX_SECONDS` gets a `skipped` row with the reason and is never sent. The length is the `duration` the archive already stores, or the one ffprobe reads when the row has none, which is the case for documents and for many videos.
 

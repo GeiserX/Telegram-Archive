@@ -121,6 +121,7 @@ TRANSCRIPT_FILL_COLUMNS = frozenset(
         "job_id",
         "error",
         "completed_at",
+        "copied_from_id",
     }
 )
 # app_settings keys the backup writes for the viewer's settings row and for
@@ -6519,6 +6520,7 @@ class DatabaseAdapter:
             "completed_at": row.completed_at,
             "created_at": row.created_at,
             "job_stored_at": row.job_stored_at,
+            "copied_from_id": row.copied_from_id,
         }
 
     @staticmethod
@@ -6676,6 +6678,34 @@ class DatabaseAdapter:
             await session.commit()
             await session.refresh(row)
             return self._transcript_to_dict(row)
+
+    async def find_copyable_transcript(
+        self, content_hash: str, preset: str, *, account_id: int, media_id: str
+    ) -> dict[str, Any] | None:
+        """The newest ``done`` row, in any account, of the same stored audio made with ``preset``.
+
+        The audio is matched on ``idempotency_key``, the stored file's hash.
+        Rows of the media asking are left out: a press after a done row asks
+        for a new transcript, not a copy of the old one.
+        """
+        if not content_hash or not preset:
+            return None
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(
+                    and_(
+                        MediaTranscript.idempotency_key == content_hash,
+                        MediaTranscript.status == "done",
+                        MediaTranscript.preset == preset,
+                        ~and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id),
+                    )
+                )
+                .order_by(MediaTranscript.id.desc())
+                .limit(1)
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._transcript_to_dict(row) if row is not None else None
 
     async def get_media_chat_pairs(self, media_id: str) -> list[dict[str, Any]]:
         """``{account_id, chat_id, message_id}`` of every account's row for one media id.
