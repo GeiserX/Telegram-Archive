@@ -17,8 +17,11 @@ a GIN index. The FTS5 rebuild that indexes existing rows runs only when this
 pass created the FTS table, so a re-run does nothing.
 
 ``job_stored_at`` records when a row got its job id, so the straggler poll
-and the retention expiry count from the submit, not from the insert. A table
-made before the column existed gets it added.
+and the retention expiry count from the submit, not from the insert.
+``copied_from_id`` points at the row a transcript was copied from when the
+same audio was already transcribed elsewhere, and ``diarize`` records whether
+a row's request asked for speaker labels. A table made before any of these
+columns existed gets it added.
 
 Idempotent: the entrypoint stamping ladder is frozen at 018, a create_all()
 database already has every object, and every step is guarded by the
@@ -132,12 +135,20 @@ def upgrade() -> None:
             sa.Column("completed_at", sa.DateTime(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("job_stored_at", sa.DateTime(), nullable=True),
+            sa.Column("copied_from_id", sa.Integer(), nullable=True),
+            sa.Column("diarize", sa.Boolean(), nullable=True),
             sa.PrimaryKeyConstraint("id"),
         )
         inspector = sa.inspect(conn)
-    elif "job_stored_at" not in {c["name"] for c in inspector.get_columns(TABLE_NAME)}:
+    else:
         # A table made by an earlier build of this unreleased migration.
-        op.add_column(TABLE_NAME, sa.Column("job_stored_at", sa.DateTime(), nullable=True))
+        present = {c["name"] for c in inspector.get_columns(TABLE_NAME)}
+        if "job_stored_at" not in present:
+            op.add_column(TABLE_NAME, sa.Column("job_stored_at", sa.DateTime(), nullable=True))
+        if "copied_from_id" not in present:
+            op.add_column(TABLE_NAME, sa.Column("copied_from_id", sa.Integer(), nullable=True))
+        if "diarize" not in present:
+            op.add_column(TABLE_NAME, sa.Column("diarize", sa.Boolean(), nullable=True))
         inspector = sa.inspect(conn)
 
     existing = {idx["name"] for idx in inspector.get_indexes(TABLE_NAME)}

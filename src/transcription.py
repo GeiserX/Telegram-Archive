@@ -43,6 +43,7 @@ import os
 import subprocess
 import tempfile
 import urllib.parse
+import weakref
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, BinaryIO
@@ -112,6 +113,20 @@ EXTRACT_TIMEOUT_SECONDS = 900
 # One warning per process and tool when ffprobe or ffmpeg is missing or
 # fails; debug after that.
 _warned: set[str] = set()
+
+# ffprobe and ffmpeg run in the default executor. At most this many run at
+# once, shared by the drain and the listener's immediate path, so a burst of
+# videos cannot take every executor thread. One semaphore per event loop.
+MEDIA_TOOL_SLOTS = 2
+_tool_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+
+
+def _media_tool_slot() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slot = _tool_slots.get(loop)
+    if slot is None:
+        slot = _tool_slots[loop] = asyncio.Semaphore(MEDIA_TOOL_SLOTS)
+    return slot
 
 
 def _warn_once(tool: str, message: str) -> None:
@@ -222,6 +237,7 @@ class TranscriptionClient:
         self.preset = preset if isinstance(preset, str) else "auto"
         language = getattr(config, "transcription_language", None)
         self.language = language if isinstance(language, str) else ""
+        self.diarize = getattr(config, "transcription_diarize", None) is True
         self.backoffs = self.BACKOFFS
         self._transport = transport
 
@@ -380,6 +396,8 @@ class TranscriptionClient:
         }
         if callback_url:
             data["callback_url"] = callback_url
+        if self.diarize:
+            data["diarize"] = "true"
         files = {"file": (filename, audio, "application/octet-stream")}
         timeout = httpx.Timeout(self.UPLOAD_TIMEOUT_SECONDS, connect=self.CONNECT_TIMEOUT_SECONDS)
         response = await self._send(
@@ -559,7 +577,8 @@ async def probe_audio(path: str) -> AudioProbe | None:
     the path (the exception strings of subprocess carry the full argv).
     """
     try:
-        probe = await asyncio.to_thread(_run_ffprobe, path)
+        async with _media_tool_slot():
+            probe = await asyncio.to_thread(_run_ffprobe, path)
         reason = "failed"
     except FileNotFoundError:
         probe, reason = None, "not installed"
@@ -620,17 +639,25 @@ async def extract_audio(path: str) -> str | None:
     """
     fd, dest = tempfile.mkstemp(prefix="transcription-", suffix=".ogg")
     os.close(fd)
+    kept = False
     try:
-        if await asyncio.to_thread(_run_extract, path, dest):
-            return dest
-        reason = "failed"
-    except FileNotFoundError:
-        reason = "not installed"
-    except (OSError, subprocess.SubprocessError) as e:
-        reason = type(e).__name__
-    _remove(dest)
-    _warn_once("ffmpeg", f"Transcription: ffmpeg {reason}; sending the stored file instead of its audio track")
-    return None
+        try:
+            async with _media_tool_slot():
+                extracted = await asyncio.to_thread(_run_extract, path, dest)
+            if extracted:
+                kept = True
+                return dest
+            reason = "failed"
+        except FileNotFoundError:
+            reason = "not installed"
+        except (OSError, subprocess.SubprocessError) as e:
+            reason = type(e).__name__
+        _warn_once("ffmpeg", f"Transcription: ffmpeg {reason}; sending the stored file instead of its audio track")
+        return None
+    finally:
+        # Also on cancellation, which none of the handlers above catch.
+        if not kept:
+            _remove(dest)
 
 
 def _remove(path: str) -> None:
@@ -899,6 +926,96 @@ async def poll_stragglers(
     return finished
 
 
+# What a copy takes from the row it copies: the answer, never the job.
+COPIED_COLUMNS = (
+    "source",
+    "engine_name",
+    "engine_version",
+    "models",
+    "language",
+    "language_confidence",
+    "text",
+    "words",
+    "segments",
+    "confidence",
+    "duration_s",
+    "diarize",
+)
+
+
+def _answer_origin(server: ServerInfo) -> tuple[str, str]:
+    """The ``source`` and ``engine_name`` a row gets from this server, on either path."""
+    if server.job_path:
+        return SOURCE_AKOU, SOURCE_AKOU
+    return SOURCE_SYNC, server.name or SOURCE_SYNC
+
+
+async def _copy_transcript(
+    db,
+    media: dict[str, Any],
+    content_hash: str,
+    *,
+    account_id: int,
+    client: TranscriptionClient,
+    server: ServerInfo | None,
+    notifier,
+) -> str | None:
+    """Store this media's transcript as a copy of the same audio's, from any account; None when there is none.
+
+    A ``done`` row for the same stored file that this server would give
+    again (same source and engine, same preset, speakers asked for or not
+    alike) is copied, and nothing is probed, extracted or sent. The copy is
+    this media's own row (the open one when a press is waiting), under its
+    own account, so search and exports find it there; ``copied_from_id``
+    names the source. A media with a done row of its own is never copied
+    into: a press after a done transcript asks the server for a new one,
+    even when a twin under another media holds a copy of the old one.
+    """
+    lookup = {"account_id": account_id, "media_id": media["id"]}
+    if server is None:
+        # The listener's call, before the server is known: ask it only when
+        # some row could be copied at all.
+        if await db.find_copyable_transcript(content_hash, client.preset, diarize=client.diarize, **lookup) is None:
+            return None
+        try:
+            server = await client.detect_server()
+        except TranscriptionError:
+            return None  # the send path below meets the same outage and says so
+    source, engine_name = _answer_origin(server)
+    found = await db.find_copyable_transcript(
+        content_hash,
+        client.preset,
+        diarize=client.diarize and server.job_path,
+        source=source,
+        engine_name=engine_name,
+        **lookup,
+    )
+    if found is None:
+        return None
+    if any(row["status"] == "done" for row in await db.list_media_transcripts(media["id"], account_id=account_id)):
+        return None
+    row = await db.enqueue_media_transcript(
+        media["id"],
+        account_id=account_id,
+        content_hash=content_hash,
+        idempotency_key=content_hash,
+        preset=client.preset,
+    )
+    if row is None or row["status"] != "queued" or row.get("job_id"):
+        return "noop"
+    await db.fill_media_transcript(
+        row["id"],
+        status="done",
+        preset=client.preset,
+        content_hash=content_hash,
+        idempotency_key=content_hash,
+        copied_from_id=found["id"],
+        **{name: found[name] for name in COPIED_COLUMNS},
+    )
+    await _notify(notifier, media, row["id"], "done", account_id)
+    return "copied"
+
+
 async def transcribe_media(
     config,
     db,
@@ -931,6 +1048,15 @@ async def transcribe_media(
     if not client.configured:
         return "noop"
     media_id = media["id"]
+    content_hash = media.get("content_hash")
+    if not isinstance(content_hash, str) or not content_hash:
+        content_hash = None
+    if content_hash is not None:
+        copied = await _copy_transcript(
+            db, media, content_hash, account_id=account_id, client=client, server=server, notifier=notifier
+        )
+        if copied is not None:
+            return copied
     max_seconds = getattr(config, "transcription_max_seconds", 1800)
     if not isinstance(max_seconds, int) or isinstance(max_seconds, bool):
         max_seconds = None
@@ -966,9 +1092,6 @@ async def transcribe_media(
             if max_seconds is not None and duration is not None and duration > max_seconds:
                 return await skip(too_long)
 
-    content_hash = media.get("content_hash")
-    if not isinstance(content_hash, str) or not content_hash:
-        content_hash = None
     # The source is written once; before the server is known (the
     # listener's call) it is left for the answer to fill.
     source = None if server is None else (SOURCE_AKOU if server.job_path else SOURCE_SYNC)
@@ -1010,13 +1133,18 @@ async def transcribe_media(
         # An ask-now row, or a row for an imported media with no hash.
         await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
 
-    extracted = None if media.get("type") in SENT_AS_STORED else await extract_audio(path)
+    max_mb = getattr(config, "transcription_max_upload_mb", 500)
+    if not isinstance(max_mb, int) or isinstance(max_mb, bool):
+        max_mb = 500
+    limit = max_mb * 1024 * 1024 if max_mb > 0 else None  # 0 or less: no limit
+    # A voice message or music file over the limit is not skipped yet: its
+    # audio extracted to Opus is usually a fraction of it.
+    over_limit = limit is not None and os.path.getsize(path) > limit
+    extract = media.get("type") not in SENT_AS_STORED or over_limit
+    extracted = await extract_audio(path) if extract else None
     try:
         upload_path = extracted or path
-        max_mb = getattr(config, "transcription_max_upload_mb", 500)
-        if not isinstance(max_mb, int) or isinstance(max_mb, bool):
-            max_mb = 500
-        if os.path.getsize(upload_path) > max_mb * 1024 * 1024:
+        if limit is not None and os.path.getsize(upload_path) > limit:
             return await skip(TOO_LARGE)
         upload_key = await asyncio.to_thread(_file_sha256, extracted) if extracted else None
         stem = os.path.splitext(os.path.basename(path))[0]
@@ -1067,6 +1195,8 @@ async def _send(
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
 
+    # What this request asks for, so a later copy reuses only a like answer.
+    await db.fill_media_transcript(row["id"], status="queued", diarize=client.diarize and server.job_path)
     if server.job_path:
         return await _submit_job(
             config,
@@ -1156,6 +1286,7 @@ async def drain_transcriptions(
         "noop": 0,
         "reconciled": 0,
         "polled": 0,
+        "copied": 0,
     }
     if getattr(config, "transcription_enabled", False) is not True:
         return stats
@@ -1205,8 +1336,15 @@ async def drain_transcriptions(
         # Jobs still open count against the run: a server slower than per_run
         # per backup would otherwise grow the open rows, and the poll, without end.
         per_run -= len(await db.get_open_job_transcripts(account_id=account_id))
+    priority = getattr(config, "transcription_priority_chat_ids", None)
+    if not isinstance(priority, (list, tuple)):
+        priority = ()
     media_rows = await db.get_media_awaiting_transcription(
-        account_id=account_id, types=types, per_run=per_run, stale_before=utcnow_naive() - STALE_QUEUED
+        account_id=account_id,
+        types=types,
+        per_run=per_run,
+        stale_before=utcnow_naive() - STALE_QUEUED,
+        priority_chat_ids=priority,
     )
     if not media_rows:
         logger.debug("Transcription: nothing to send")
@@ -1221,9 +1359,10 @@ async def drain_transcriptions(
             # wait out the same timeouts, or get the same refusal.
             break
     logger.info(
-        "Transcription drain: %d done, %d failed, %d skipped, %d submitted, %d refused, %d unreachable of %d media; "
-        "%d filled from the event feed, %d from the poll",
+        "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable "
+        "of %d media; %d filled from the event feed, %d from the poll",
         stats["done"],
+        stats["copied"],
         stats["failed"] + stats["stalled"],
         stats["skipped"],
         stats["submitted"],

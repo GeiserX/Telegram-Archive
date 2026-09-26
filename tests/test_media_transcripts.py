@@ -273,6 +273,58 @@ class TestDrainQuery:
         await _age(real_adapter, asked["id"], minutes=11)
         assert await _drain(real_adapter, types=("voice",)) == ["m_1_video"]
 
+    async def test_priority_chats_come_first_in_list_order_after_the_asks(self, real_adapter):
+        """TRANSCRIPTION_PRIORITY_CHAT_IDS orders the pick-up; it never makes anything eligible."""
+        chat_a, chat_b, chat_c = -100500600001, -100500600002, -100500600003
+
+        async def media_in(media_id: str, chat_id: int, day: int, media_type: str = "voice") -> None:
+            await real_adapter.upsert_chat({"id": chat_id, "type": "group", "title": "fixture chat"}, account_id=1)
+            message_id = int(media_id.split("_")[1])
+            await real_adapter.insert_message(
+                {"id": message_id, "chat_id": chat_id, "text": "", "date": datetime(2026, 9, 1), "raw_data": {}},
+                account_id=1,
+            )
+            await real_adapter.insert_media(
+                {
+                    "id": media_id,
+                    "message_id": message_id,
+                    "chat_id": chat_id,
+                    "type": media_type,
+                    "file_path": f"{chat_id}/{media_id}.ogg",
+                    "downloaded": True,
+                    "duration": 12,
+                    "download_date": datetime(2026, 1, day),
+                },
+                account_id=1,
+            )
+
+        await media_in("m_1_voice", chat_a, 2)
+        await media_in("m_2_voice", chat_b, 3)
+        await media_in("m_3_voice", chat_c, 5)
+        await media_in("m_4_voice", chat_c, 1)
+        await media_in("m_5_voice", chat_a, 1)
+        await media_in("m_6_video", chat_b, 9, media_type="video")  # a priority chat, not an automatic type
+        await real_adapter.enqueue_media_transcript("m_5_voice", account_id=1, force=True)  # an ask-now
+
+        async def drain(**kwargs) -> list[str]:
+            rows = await real_adapter.get_media_awaiting_transcription(
+                account_id=1, types=("voice",), stale_before=utcnow_naive() - timedelta(minutes=10), **kwargs
+            )
+            return [row["id"] for row in rows]
+
+        assert await drain(per_run=50) == ["m_5_voice", "m_3_voice", "m_2_voice", "m_1_voice", "m_4_voice"]
+        prioritised = await drain(per_run=50, priority_chat_ids=[chat_b, chat_a])
+        assert prioritised == ["m_5_voice", "m_2_voice", "m_1_voice", "m_3_voice", "m_4_voice"]
+        assert await drain(per_run=3, priority_chat_ids=[chat_b, chat_a]) == prioritised[:3]
+        # A chat listed twice keeps its first place; an id no chat has changes nothing.
+        assert await drain(per_run=50, priority_chat_ids=[chat_a, -100500600009, chat_b, chat_a]) == [
+            "m_5_voice",
+            "m_1_voice",
+            "m_2_voice",
+            "m_3_voice",
+            "m_4_voice",
+        ]
+
     async def test_newest_done_row_ends_the_loop(self, real_adapter):
         await _media(real_adapter, "m_1_voice")
         row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1)

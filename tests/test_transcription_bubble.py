@@ -198,6 +198,7 @@ class TestBubbleMarkup(unittest.TestCase):
             "pickTranscript",
             "transcriptCaption",
             "transcriptErrorText",
+            "transcriptHtml",
             "pressTranscript",
             "transcriptsExpandedForChat",
             "toggleExpandAllTranscripts",
@@ -303,6 +304,31 @@ def test_the_bubble_rule_is_the_drains_rule() -> None:
             transcriptionState.value = {{ enabled: true, configured: true }}
             const media = {json.dumps(media)}
             assert.deepEqual(media.map(hasTranscriptButton), {json.dumps(expected)})
+            """
+        )
+    )
+
+
+def test_two_speakers_read_as_turns_and_the_text_stays_escaped() -> None:
+    _run_node(
+        _script(
+            """
+            transcriptionState.value = { enabled: true, configured: true }
+            const turns = [{ speaker: 1, text: 'hola <b>tú</b>' }, { speaker: 2, text: "qué tal & 'bien'" },
+                { speaker: 1, text: 'vale' }]
+            const two = voice(1, [done(4, { text: 'hola <b>tú</b> qué tal vale', turns })])
+            assert.equal(transcriptHtml(two), [
+                '<span class="text-xs font-bold">Speaker 1:</span> hola &lt;b&gt;tú&lt;/b&gt;',
+                '<span class="text-xs font-bold">Speaker 2:</span> qué tal &amp; &#39;bien&#39;',
+                '<span class="text-xs font-bold">Speaker 1:</span> vale',
+            ].join('\\n'))
+            // One speaker, or no turns at all: the plain text, escaped, as before.
+            const one = voice(2, [done(5, { text: 'solo <i>yo</i>', turns: null })])
+            assert.equal(transcriptHtml(one), 'solo &lt;i&gt;yo&lt;/i&gt;')
+            // A leading turn with no speaker carries no label.
+            const unlabelled = voice(3, [done(6, { turns: [{ speaker: null, text: 'eh' }, { speaker: 1, text: 'sí' },
+                { speaker: 2, text: 'no' }] })])
+            assert.ok(transcriptHtml(unlabelled).startsWith('eh\\n<span class="text-xs font-bold">Speaker 1:</span> sí'))
             """
         )
     )
@@ -601,6 +627,24 @@ def _client() -> AsyncClient:
 
 async def _chat_ref(adapter) -> str:
     return (await adapter.get_chat_by_id(CHAT, account_id=1))["ref"]
+
+
+class TestSpeakerTurns:
+    def test_turns_only_when_more_than_one_speaker_speaks(self):
+        seg = lambda text, speaker: {"s": 0.0, "e": 1.0, "text": text, "speaker": speaker}  # noqa: E731
+        segments = [seg(" hola ", "SPEAKER_07"), seg("¿qué tal?", "SPEAKER_07"), seg("bien", "SPEAKER_02"),
+                    seg("", "SPEAKER_09"), seg("y tú", None), seg("genial", "SPEAKER_07")]  # fmt: skip
+        assert web_main._speaker_turns(segments) == [
+            {"speaker": 1, "text": "hola ¿qué tal?"},
+            {"speaker": 2, "text": "bien y tú"},
+            {"speaker": 1, "text": "genial"},
+        ]
+        assert web_main._speaker_turns([seg("hola", "SPEAKER_00"), seg("adiós", "SPEAKER_00")]) is None
+        assert web_main._speaker_turns([seg("hola", None)]) is None
+        assert web_main._speaker_turns("not a list") is None
+        view = web_main._transcript_view({"id": 1, "status": "done", "text": "a b", "segments": segments})
+        assert view["turns"][1] == {"speaker": 2, "text": "bien y tú"}
+        assert "segments" not in view
 
 
 class TestAskNowRoute:
