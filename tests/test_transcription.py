@@ -1513,12 +1513,21 @@ class TestJobPath:
         await _akou_drain(_akou_config(tmp_path, transcription_diarize=True), real_adapter, server)
         await _media(real_adapter, tmp_path, "m_4_voice", content_hash=audio)
         await _akou_drain(_akou_config(tmp_path, transcription_preset="best"), real_adapter, server)
+        # And a language hint: a new key and a new job too.
+        await _media(real_adapter, tmp_path, "m_5_voice", content_hash=audio)
+        await _akou_drain(_akou_config(tmp_path, transcription_language="es"), real_adapter, server)
 
         keys = [r.headers["idempotency-key"] for r in server.submits]
-        assert keys == [_key(audio), _key(audio), _key(audio, diarize=True), _key(audio, preset="best")]
-        assert len(set(keys)) == 3
+        assert keys == [
+            _key(audio),
+            _key(audio),
+            _key(audio, diarize=True),
+            _key(audio, preset="best"),
+            _key(audio, language="es"),
+        ]
+        assert len(set(keys)) == 4
         assert all(len(key) <= 255 and key.isprintable() for key in keys)
-        assert len(server.jobs) == 3
+        assert len(server.jobs) == 4
         job_of = {m: (await _rows(real_adapter, m))[0]["job_id"] for m in ("m_1_voice", "m_2_voice", "m_3_voice")}
         assert job_of["m_1_voice"] == job_of["m_2_voice"] != job_of["m_3_voice"]
         assert server.jobs[job_of["m_3_voice"]]["options"]["diarize"] is True
@@ -2051,6 +2060,7 @@ async def _done_source(
     source: str = "openai",
     engine_name: str = "openai",
     diarize: bool | None = None,
+    speakers: tuple = (None,),
 ) -> dict:
     """A done row of ``HASH``; the defaults are what ``FakeServer``'s synchronous path writes."""
     row = await adapter.enqueue_media_transcript(
@@ -2068,7 +2078,10 @@ async def _done_source(
         language_confidence=0.97,
         text="hola desde la otra cuenta",
         words=[{"w": "hola", "s": 0.0, "e": 0.4, "c": 0.9}],
-        segments=[{"s": 0.0, "e": 2.0, "text": "hola desde la otra cuenta", "speaker": None}],
+        segments=[
+            {"s": float(i), "e": float(i + 1), "text": "hola desde la otra cuenta", "speaker": speaker}
+            for i, speaker in enumerate(speakers)
+        ],
         confidence=0.91,
         duration_s=2.0,
     )
@@ -2213,7 +2226,9 @@ class TestCopyAcrossAccounts:
     async def test_with_diarize_on_a_diarized_akou_answer_is_copied(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
-        source = await _done_source(real_adapter, 1, "m_1_video", source="akou", engine_name="akou", diarize=True)
+        source = await _done_source(
+            real_adapter, 1, "m_1_video", source="akou", engine_name="akou", diarize=True, speakers=("s0", "s?")
+        )
         config = _akou_config(tmp_path, transcription_diarize=True)
         server = AkouServer()
 
@@ -2225,6 +2240,31 @@ class TestCopyAcrossAccounts:
         assert server.submits == []
         [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
         assert (row["diarize"], row["copied_from_id"]) == (True, source["id"])
+
+    async def test_a_row_marked_diarized_with_no_real_speaker_is_not_copied(self, real_adapter, tmp_path):
+        """What 8.16.0 stored under the reused key: kept as it is, never reused as a diarized answer."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        poisoned = await _done_source(
+            real_adapter,
+            1,
+            "m_1_video",
+            source="akou",
+            engine_name="akou",
+            diarize=True,
+            speakers=(None, "s?", "unknown", "none", "null"),
+        )
+        config = _akou_config(tmp_path, transcription_diarize=True)
+        server = AkouServer()
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["submitted"]) == (0, 1)
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert (row["copied_from_id"], row["diarize"]) == (None, True)
+        assert await real_adapter.get_media_transcript(poisoned["id"]) == poisoned, "the old row stays as it is"
 
     async def test_diarize_on_with_a_server_that_cannot_diarize_copies_a_plain_answer(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")

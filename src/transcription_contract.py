@@ -196,6 +196,19 @@ def language_tag(value: Any) -> str | None:
     return value if len(value) <= LANGUAGE_TAG_MAX and _LANGUAGE_TAG.fullmatch(value) else None
 
 
+# Speaker labels that name nobody: akou's "s?" (no diarization span near
+# that piece) and the OpenAI route's "unknown". The bubble's speaker turns
+# and the copy rule both read ``real_speaker_label``.
+_NO_SPEAKER_LABELS = frozenset({"unknown", "none", "null"})
+
+
+def real_speaker_label(label: Any) -> str | None:
+    """``label`` when it names a speaker (akou's ``s0``, ``SPEAKER_01``), else None."""
+    if not isinstance(label, str) or not label.strip() or "?" in label:
+        return None
+    return None if label.strip().lower() in _NO_SPEAKER_LABELS else label.strip()
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None

@@ -64,6 +64,7 @@ from .transcription_contract import (
     job_outcome,
     language_tag,
     parse_events_page,
+    real_speaker_label,
 )
 from .web.media_utils import resolve_stored_media_path
 
@@ -1028,6 +1029,13 @@ async def _copy_transcript(
         **lookup,
     )
     if found is None:
+        return None
+    if found.get("diarize") is True and not any(
+        real_speaker_label(segment.get("speaker")) for segment in _dicts(found.get("segments"))
+    ):
+        # Marked diarized with no speaker in it: 8.16.0 stored an undiarized
+        # job that way under a reused key. It stays as it is, but is not
+        # reused as a diarized answer; the file goes to the server instead.
         return None
     if any(row["status"] == "done" for row in await db.list_media_transcripts(media["id"], account_id=account_id)):
         return None

@@ -47,7 +47,14 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
-from ..transcription_contract import apply_job_outcome, event_data, is_transcribable, verify_webhook, webhook_key
+from ..transcription_contract import (
+    apply_job_outcome,
+    event_data,
+    is_transcribable,
+    real_speaker_label,
+    verify_webhook,
+    webhook_key,
+)
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -3232,18 +3239,6 @@ _TRANSCRIPT_VIEW_FIELDS = (
 )
 
 
-# Speaker labels that name nobody: akou's "s?" (no diarization span near
-# that piece) and the OpenAI route's "unknown".
-_NO_SPEAKER_LABELS = frozenset({"unknown", "none", "null"})
-
-
-def _real_speaker(label: Any) -> str | None:
-    """``label`` when it names a speaker (akou's ``s0``, ``SPEAKER_01``), else None."""
-    if not isinstance(label, str) or not label.strip() or "?" in label:
-        return None
-    return None if label.strip().lower() in _NO_SPEAKER_LABELS else label.strip()
-
-
 def _speaker_turns(segments: Any) -> list[dict] | None:
     """The text as speaker turns when the segments name more than one real speaker, else None.
 
@@ -3262,7 +3257,7 @@ def _speaker_turns(segments: Any) -> list[dict] | None:
         text = segment.get("text") if isinstance(segment, dict) else None
         if not isinstance(text, str) or not text.strip():
             continue
-        speaker = _real_speaker(segment.get("speaker"))
+        speaker = real_speaker_label(segment.get("speaker"))
         if speaker is None:
             if turns:
                 turns[-1]["text"] += " " + text.strip()
