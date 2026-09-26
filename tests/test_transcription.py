@@ -496,6 +496,37 @@ class TestDrain:
         assert len(await _rows(real_adapter, "m_1_voice")) == 3
         assert all(call.args[2]["status"] == "failed" for call in notifier.notify.await_args_list)
 
+    async def test_the_drain_sends_the_priority_chats_first(self, real_adapter, tmp_path):
+        """With room for one media, the one from TRANSCRIPTION_PRIORITY_CHAT_IDS goes, not the newest."""
+        other = -100500600007
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 1))
+        path = tmp_path / str(other) / "m_2_voice.ogg"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(AUDIO)
+        await real_adapter.upsert_chat({"id": other, "type": "group", "title": "fixture chat"}, account_id=1)
+        await real_adapter.insert_message(
+            {"id": 2, "chat_id": other, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}}, account_id=1
+        )
+        await real_adapter.insert_media(
+            {
+                "id": "m_2_voice",
+                "message_id": 2,
+                "chat_id": other,
+                "type": "voice",
+                "file_path": str(path),
+                "downloaded": True,
+                "duration": 12,
+                "download_date": datetime(2026, 1, 9),
+            },
+            account_id=1,
+        )
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_backfill_per_run=1, transcription_priority_chat_ids=[CHAT])
+
+        assert (await _drain_all(config, real_adapter, server))["done"] == 1
+        assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == ["done"]
+        assert await _rows(real_adapter, "m_2_voice") == []
+
     async def test_media_over_the_limit_gets_a_skipped_row_and_no_request(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", duration=1801)
         await _media(real_adapter, tmp_path, "m_2_voice", duration=1800)

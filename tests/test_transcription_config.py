@@ -141,6 +141,13 @@ class TestTranscriptionConfig(unittest.TestCase):
         with self.assertNoLogs("src.config", level="WARNING"):
             self.assertEqual(self._config(TRANSCRIPTION_MAX_UPLOAD_MB="0").transcription_max_upload_mb, 0)
 
+    def test_priority_chat_ids_keep_their_order(self):
+        self.assertEqual(self._config().transcription_priority_chat_ids, [])
+        config = self._config(TRANSCRIPTION_PRIORITY_CHAT_IDS=" -100500600002, -100500600001,,-100500600002 ")
+        self.assertEqual(config.transcription_priority_chat_ids, [-100500600002, -100500600001])
+        off = self._config(TRANSCRIPTION_ENABLED="false", TRANSCRIPTION_PRIORITY_CHAT_IDS="not-an-id")
+        self.assertEqual(off.transcription_priority_chat_ids, [])
+
     def test_bad_preset_falls_back_to_auto(self):
         with self.assertLogs("src.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_PRESET="turbo")

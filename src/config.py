@@ -1008,12 +1008,18 @@ class Config:
         self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
         self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
         self.transcription_backfill_per_run = 50
+        # Chats whose media the drain sends first, in this order, in every
+        # account. A list, not a set: the order is the point.
+        self.transcription_priority_chat_ids: list[int] = []
         if self.transcription_enabled:
             # Parsed only when on: a typo in a setting of a feature the
             # operator turned off must not stop the archiver.
             self.transcription_max_seconds = _parse_int_env("TRANSCRIPTION_MAX_SECONDS", 1800)
             self.transcription_max_upload_mb = _parse_int_env("TRANSCRIPTION_MAX_UPLOAD_MB", 500)
             self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
+            self.transcription_priority_chat_ids = self._parse_ordered_id_list(
+                os.getenv("TRANSCRIPTION_PRIORITY_CHAT_IDS", "")
+            )
             self._validate_transcription()
 
         # =====================================================================
@@ -1301,6 +1307,14 @@ class Config:
         if not id_str or not id_str.strip():
             return set()
         return {int(id.strip()) for id in id_str.split(",") if id.strip()}
+
+    def _parse_ordered_id_list(self, id_str: str) -> list[int]:
+        """Parse a comma-separated ID string into a list of integers, in order, repeats dropped."""
+        ids: list[int] = []
+        for part in (id_str or "").split(","):
+            if part.strip() and int(part.strip()) not in ids:
+                ids.append(int(part.strip()))
+        return ids
 
     def _validate_event_webhook(self) -> None:
         """Validate EVENT_WEBHOOK_* sub-options; on any problem warn + disable (#336).

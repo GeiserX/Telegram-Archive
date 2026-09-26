@@ -6822,7 +6822,13 @@ class DatabaseAdapter:
             return self._transcript_to_dict(row) if row is not None else None
 
     async def get_media_awaiting_transcription(
-        self, *, account_id: int, types: Collection[str], per_run: int, stale_before: datetime
+        self,
+        *,
+        account_id: int,
+        types: Collection[str],
+        per_run: int,
+        stale_before: datetime,
+        priority_chat_ids: Sequence[int] = (),
     ) -> list[dict[str, Any]]:
         """The drain query: downloaded media of ``types`` that still needs a transcript.
 
@@ -6859,6 +6865,11 @@ class DatabaseAdapter:
         open transcript rows. OR-ing them into the type filter of the main
         query would keep PostgreSQL off ``idx_media_type`` and read every
         media row of every type on each drain.
+
+        ``priority_chat_ids`` (TRANSCRIPTION_PRIORITY_CHAT_IDS) orders the
+        main query only: media of those chats first, in list order, then
+        the rest. It never widens what qualifies, and the ask-now rows still
+        come before all of it.
         """
         wanted = sorted({t for t in types if isinstance(t, str) and t in TRANSCRIBABLE_TYPES})
         if not wanted or per_run <= 0:
@@ -6901,6 +6912,11 @@ class DatabaseAdapter:
         )
         # Newest download first in both queries.
         order = (nulls_last(Media.download_date.desc()), Media.id.desc())
+        ranks: dict[int, int] = {}
+        for chat_id in priority_chat_ids:
+            if isinstance(chat_id, int) and not isinstance(chat_id, bool):
+                ranks.setdefault(chat_id, len(ranks))
+        main_order = (case(ranks, value=Media.chat_id, else_=len(ranks)), *order) if ranks else order
         asked_stmt = (
             select(Media, newest.id, newest.status, newest.job_id)
             .join(newest, and_(newest.account_id == Media.account_id, newest.media_id == Media.id))
@@ -6936,7 +6952,7 @@ class DatabaseAdapter:
                     ),
                 )
             )
-            .order_by(*order)
+            .order_by(*main_order)
             .limit(per_run)
         )
         async with self.db_manager.async_session_factory() as session:

@@ -351,6 +351,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `TRANSCRIPTION_CALLBACK_URL` | — | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the key's callback allowlist in akou. Empty means the backup polls instead, which loses nothing |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | — | V | The `whsec_` secret akou printed for the key. The callback route exists only when it is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media one backup run sends, newest first. With akou it also caps the jobs open at once per account |
+| `TRANSCRIPTION_PRIORITY_CHAT_IDS` | — | B | Comma-separated chat ids whose media a backup run sends first, in the order listed, in every account; the files whose button was pressed still go before them. It changes the order only: what is transcribed ahead of time still follows `TRANSCRIPTION_TYPES`. Empty means newest first |
 | **Database** | | | See [Database Configuration](#database-configuration) below |
 | `DATABASE_URL` | - | B/V | Full database URL (highest priority, overrides all below) |
 | `DB_TYPE` | `sqlite` | B/V | Database engine: `sqlite` or `postgresql` |

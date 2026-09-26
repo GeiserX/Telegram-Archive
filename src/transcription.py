@@ -1234,8 +1234,15 @@ async def drain_transcriptions(
         # Jobs still open count against the run: a server slower than per_run
         # per backup would otherwise grow the open rows, and the poll, without end.
         per_run -= len(await db.get_open_job_transcripts(account_id=account_id))
+    priority = getattr(config, "transcription_priority_chat_ids", None)
+    if not isinstance(priority, (list, tuple)):
+        priority = ()
     media_rows = await db.get_media_awaiting_transcription(
-        account_id=account_id, types=types, per_run=per_run, stale_before=utcnow_naive() - STALE_QUEUED
+        account_id=account_id,
+        types=types,
+        per_run=per_run,
+        stale_before=utcnow_naive() - STALE_QUEUED,
+        priority_chat_ids=priority,
     )
     if not media_rows:
         logger.debug("Transcription: nothing to send")
