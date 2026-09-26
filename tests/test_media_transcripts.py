@@ -174,6 +174,22 @@ class TestFill:
         assert stored["engine_name"] == "akou"
         assert stored["engine_version"] == "0.2"
 
+    async def test_the_first_job_id_stamps_job_stored_at_once(self, real_adapter):
+        row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1)
+        await real_adapter.fill_media_transcript(row["id"], status="queued", preset="auto")
+        assert (await real_adapter.get_media_transcript(row["id"]))["job_stored_at"] is None
+        await real_adapter.fill_media_transcript(row["id"], status="queued", job_id="job-1")
+        stamped = (await real_adapter.get_media_transcript(row["id"]))["job_stored_at"]
+        assert isinstance(stamped, datetime)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(update(MediaTranscript).values(job_stored_at=stamped - timedelta(days=1)))
+            await session.commit()
+        # A later fill naming a job, the same or another, never moves it.
+        await real_adapter.fill_media_transcript(row["id"], status="running", job_id="job-2")
+        await real_adapter.fill_media_transcript(row["id"], status="done", job_id="job-1", text="hola")
+        stored = await real_adapter.get_media_transcript(row["id"])
+        assert (stored["job_id"], stored["job_stored_at"]) == ("job-1", stamped - timedelta(days=1))
+
     async def test_status_never_moves_backwards(self, real_adapter):
         row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1)
         await real_adapter.fill_media_transcript(row["id"], status="running")

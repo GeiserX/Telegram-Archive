@@ -6506,6 +6506,7 @@ class DatabaseAdapter:
             "requested_at": row.requested_at,
             "completed_at": row.completed_at,
             "created_at": row.created_at,
+            "job_stored_at": row.job_stored_at,
         }
 
     @staticmethod
@@ -6581,7 +6582,9 @@ class DatabaseAdapter:
         so a repeated delivery of the same result changes nothing. Every other
         column is written once: a value lands only where the column is still
         NULL (COALESCE), which is the archive rule that nothing captured is
-        overwritten. JSON columns take a list or a ready string.
+        overwritten. JSON columns take a list or a ready string. The first
+        ``job_id`` written also stamps ``job_stored_at``, the time the
+        straggler poll and the retention expiry count from.
         """
         if status not in TRANSCRIPT_STATUS_RANK:
             raise ValueError(f"unknown transcript status: {status}")
@@ -6597,6 +6600,10 @@ class DatabaseAdapter:
             values[name] = func.coalesce(getattr(MediaTranscript, name), value)
         if status in TRANSCRIPT_TERMINAL_STATUSES and "completed_at" not in values:
             values["completed_at"] = func.coalesce(MediaTranscript.completed_at, utcnow_naive())
+        if "job_id" in values:
+            values["job_stored_at"] = case(
+                (MediaTranscript.job_id.is_(None), utcnow_naive()), else_=MediaTranscript.job_stored_at
+            )
         rank = TRANSCRIPT_STATUS_RANK[status]
         allowed_from = [
             name
@@ -6751,7 +6758,7 @@ class DatabaseAdapter:
             rows = []
             for transcript, media_chat_id, message_id in await session.execute(stmt):
                 row = self._transcript_to_dict(transcript)
-                for key in ("requested_at", "completed_at", "created_at"):
+                for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
                     if isinstance(row[key], datetime):
                         row[key] = row[key].isoformat()
                 row["chat_id"] = media_chat_id
@@ -6917,8 +6924,11 @@ class DatabaseAdapter:
                 filled.append({"id": row_id, "account_id": account_id, "media_id": media_id, "status": status})
         return filled
 
-    async def get_open_job_transcripts(self, *, account_id: int, requested_before: datetime) -> list[dict[str, Any]]:
-        """Open rows of one account submitted as a job before ``requested_before``: the stragglers."""
+    async def get_open_job_transcripts(self, *, account_id: int, stored_before: datetime) -> list[dict[str, Any]]:
+        """Open rows of one account whose job id was stored before ``stored_before``: the stragglers.
+
+        A row from before ``job_stored_at`` existed counts from its insert time.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(MediaTranscript)
@@ -6927,7 +6937,7 @@ class DatabaseAdapter:
                         MediaTranscript.account_id == account_id,
                         MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
                         MediaTranscript.job_id.is_not(None),
-                        MediaTranscript.requested_at < requested_before,
+                        func.coalesce(MediaTranscript.job_stored_at, MediaTranscript.requested_at) < stored_before,
                     )
                 )
                 .order_by(MediaTranscript.id)

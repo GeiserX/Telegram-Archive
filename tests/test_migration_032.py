@@ -48,6 +48,7 @@ EXPECTED_COLUMNS = {
     "requested_at",
     "completed_at",
     "created_at",
+    "job_stored_at",
 }
 EXPECTED_INDEXES = {
     "uq_media_transcripts_account_media_job": (["account_id", "media_id", "job_id"], True),
@@ -134,6 +135,19 @@ class TestMigration032:
             assert SQLITE_TRANSCRIPT_FTS_TABLE in _sqlite_objects(conn, "table")
             _run(conn, migration_032.upgrade)
             assert _indexes(conn) == EXPECTED_INDEXES
+
+    def test_a_table_from_before_job_stored_at_gets_the_column_and_keeps_its_rows(self):
+        engine = sa.create_engine("sqlite://")
+        with engine.connect() as conn:
+            _run(conn, migration_032.upgrade)
+            _insert(conn, "m1", "done", "kept")
+            _run(conn, lambda: migration_032.op.drop_column(TABLE, "job_stored_at"))
+            assert "job_stored_at" not in {c["name"] for c in sa.inspect(conn).get_columns(TABLE)}
+            _run(conn, migration_032.upgrade)
+            assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
+            assert conn.execute(sa.text("SELECT text, job_stored_at FROM media_transcripts")).all() == [("kept", None)]
+            _run(conn, migration_032.upgrade)  # and a re-run is still a no-op
+            assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
 
     def test_existing_rows_are_indexed_once_and_new_rows_arrive_through_the_triggers(self):
         """The rebuild runs only when this pass created the FTS table (028's rule)."""

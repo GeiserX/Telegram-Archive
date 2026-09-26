@@ -917,7 +917,7 @@ class AkouServer(FakeServer):
 
 
 async def _backdate(adapter, **delta) -> None:
-    """Move every open row's request time back by ``delta``."""
+    """Move every open job row's request time and job time back by ``delta``."""
     from datetime import timedelta
 
     from sqlalchemy import update
@@ -925,11 +925,12 @@ async def _backdate(adapter, **delta) -> None:
     from src.db.models import MediaTranscript
     from src.message_utils import utcnow_naive
 
+    when = utcnow_naive() - timedelta(**delta)
     async with adapter.db_manager.async_session_factory() as session:
         await session.execute(
             update(MediaTranscript)
-            .where(MediaTranscript.status.in_(("queued", "running")))
-            .values(requested_at=utcnow_naive() - timedelta(**delta))
+            .where(MediaTranscript.status.in_(("queued", "running")), MediaTranscript.job_id.is_not(None))
+            .values(requested_at=when, job_stored_at=when)
         )
         await session.commit()
 
@@ -1156,6 +1157,61 @@ class TestJobPath:
         assert (expired["id"], expired["status"], expired["error"]) == (first["id"], "failed", "expired")
         assert (newest["status"], newest["job_id"]) == ("queued", "job_0002")
         assert stats["submitted"] == 1
+
+    async def test_expiry_counts_from_the_job_not_from_the_insert(self, real_adapter, tmp_path):
+        """A row that waited queued through an outage longer than the retention is not
+        expired the moment it gets its job: the poll asks akou and finishes it."""
+        from datetime import timedelta
+
+        from sqlalchemy import update
+
+        from src.db.models import MediaTranscript
+        from src.message_utils import utcnow_naive
+
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        asked_long_ago = utcnow_naive() - timedelta(days=9)
+        await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, idempotency_key=SHA, preset="auto")
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(update(MediaTranscript).values(requested_at=asked_long_ago))
+            await session.commit()
+        server = AkouServer(retain_days=2)
+        server.nest_result = False
+        config = _akou_config(tmp_path)
+        assert (await _akou_drain(config, real_adapter, server))["submitted"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert row["requested_at"] == asked_long_ago  # the insert time is never rewritten
+        assert row["job_stored_at"] > asked_long_ago + timedelta(days=8)
+        await _akou_drain(config, real_adapter, server)
+        assert server.job_reads == []  # submitted a moment ago: not a straggler yet
+
+        # Eleven minutes after the submit the row is a straggler, nine days after its insert.
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(update(MediaTranscript).values(job_stored_at=utcnow_naive() - timedelta(minutes=11)))
+            await session.commit()
+        server.finish(row["job_id"], text="llegó tarde", emit=False)
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["polled"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"], row["text"]) == ("done", None, "llegó tarde")
+
+    async def test_a_resubmit_after_expiry_never_collides_with_the_expired_row(self, real_adapter, tmp_path):
+        """Even an akou that answers the expired row's job again, for the new key, cannot make
+        the drain write that job id a second time for the same media."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer(retain_days=2)
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        [first] = await _rows(real_adapter, "m_1_voice")
+        server.jobs[first["job_id"]]["status"] = "running"
+        server.by_key[f"{SHA}.1"] = first["job_id"]  # the worst case: the same live job for the retry key
+        await _backdate(real_adapter, days=2, minutes=1)
+
+        stats = await _akou_drain(config, real_adapter, server)  # expires the row, resubmits
+        assert stats["submitted"] == 1
+        newest, expired = await _rows(real_adapter, "m_1_voice")
+        assert (expired["status"], expired["error"], expired["job_id"]) == ("failed", "expired", first["job_id"])
+        assert (newest["status"], newest["job_id"]) == ("queued", None)
+        assert [r.headers["idempotency-key"] for r in server.submits] == [SHA, f"{SHA}.1"]
 
     async def test_two_media_with_the_same_audio_share_one_job_and_both_fill(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")

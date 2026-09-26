@@ -192,7 +192,7 @@ class TestExports:
     async def test_the_viewer_export_carries_every_row_on_its_message(self, real_adapter):
         media_id = await _voice(real_adapter, 1, "first take")
         again = await real_adapter.enqueue_media_transcript(media_id, account_id=1, force=True)
-        await real_adapter.fill_media_transcript(again["id"], status="done", text="second take")
+        await real_adapter.fill_media_transcript(again["id"], status="done", text="second take", job_id="job_0001")
         await real_adapter.insert_message(
             {"id": 2, "chat_id": CHAT, "text": "plain", "date": WHEN, "raw_data": {}}, account_id=1
         )
@@ -201,6 +201,7 @@ class TestExports:
         assert [row["text"] for row in exported[1]["transcripts"]] == ["second take", "first take"]
         assert exported[1]["transcripts"][0]["media_id"] == media_id
         assert isinstance(exported[1]["transcripts"][0]["created_at"], str)
+        assert isinstance(exported[1]["transcripts"][0]["job_stored_at"], str)
         assert "transcripts" not in exported[2]
         json.dumps(exported[1])  # serialisable as the route streams it
 

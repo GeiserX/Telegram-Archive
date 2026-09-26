@@ -447,6 +447,20 @@ async def _notify_rows(db, notifier, rows: list[dict[str, Any]]) -> None:
             await _notify(notifier, media, row["id"], row["status"], row["account_id"])
 
 
+async def _free_job_id(db, row: dict[str, Any], job_id: str | None) -> str | None:
+    """``job_id``, or None when another row of the same media already holds it.
+
+    The unique index on ``(account_id, media_id, job_id)`` refuses a second
+    row with the same job, and a refused write would abort the drain.
+    """
+    if not job_id:
+        return None
+    siblings = await db.list_media_transcripts(row["media_id"], account_id=row["account_id"])
+    if any(s["job_id"] == job_id and s["id"] != row["id"] for s in siblings):
+        return None
+    return job_id
+
+
 async def _store_job_outcome(
     db, row: dict[str, Any], data: dict[str, Any], *, idempotency_key: str, server: ServerInfo
 ) -> list[dict[str, Any]]:
@@ -467,10 +481,7 @@ async def _store_job_outcome(
     if any(r["id"] == row["id"] for r in filled):
         return filled
     status, columns = outcome
-    job_id = data.get("job_id") if isinstance(data.get("job_id"), str) else None
-    siblings = await db.list_media_transcripts(row["media_id"], account_id=row["account_id"])
-    if job_id and any(s["job_id"] == job_id and s["id"] != row["id"] for s in siblings):
-        job_id = None
+    job_id = await _free_job_id(db, row, data.get("job_id") if isinstance(data.get("job_id"), str) else None)
     if await db.fill_media_transcript(row["id"], status=status, job_id=job_id, **columns):
         filled.append({"id": row["id"], "account_id": row["account_id"], "media_id": row["media_id"], "status": status})
     return filled
@@ -543,15 +554,19 @@ async def _submit_job(
         except TranscriptionError as e:
             # The straggler poll fetches it on a later drain.
             logger.warning(f"Transcription result not read yet ({e.reason})")
-            await db.fill_media_transcript(row["id"], status="running", job_id=job_id, source=SOURCE_AKOU)
+            if await _free_job_id(db, row, job_id):
+                await db.fill_media_transcript(row["id"], status="running", job_id=job_id, source=SOURCE_AKOU)
             return "submitted"
     outcome = job_outcome(data, engine_version=server.version)
     if outcome is None:
         # Still open, or a status this client does not know: keep the job id
         # and let the callback, the event feed or the straggler poll finish it.
-        await db.fill_media_transcript(
-            row["id"], status="running" if status == "running" else "queued", job_id=job_id, source=SOURCE_AKOU
-        )
+        # A job an earlier row of this media already holds is left to that
+        # row; this one stays queued without it and is resubmitted later.
+        if await _free_job_id(db, row, job_id):
+            await db.fill_media_transcript(
+                row["id"], status="running" if status == "running" else "queued", job_id=job_id, source=SOURCE_AKOU
+            )
         return "submitted"
     filled = await _store_job_outcome(
         db, row, {**data, "job_id": job_id}, idempotency_key=idempotency_key, server=server
@@ -606,10 +621,12 @@ async def reconcile_events(db, client: TranscriptionClient, server: ServerInfo, 
 async def poll_stragglers(
     db, client: TranscriptionClient, server: ServerInfo, *, account_id: int, notifier=None
 ) -> int:
-    """Ask akou about every open job older than ten minutes; the rows finished.
+    """Ask akou about every job stored more than ten minutes ago; the rows finished.
 
-    A row older than the server's retention is marked failed with reason
-    ``expired`` without a request, since akou has deleted the job by then,
+    Both ages count from ``job_stored_at``, when the row got its job id, not
+    from the insert: a row can wait queued through an outage first. A job
+    stored longer ago than the server's retention is marked failed with
+    reason ``expired`` without a request, since akou has deleted it by then,
     and the drain query retries it. A job akou no longer knows is failed
     with reason ``not_found`` and retried the same way. A ``done`` job
     whose answer carries no result is read from the result route.
@@ -617,8 +634,8 @@ async def poll_stragglers(
     now = utcnow_naive()
     expired_before = now - timedelta(days=server.retain_days)
     finished = 0
-    for row in await db.get_open_job_transcripts(account_id=account_id, requested_before=now - STALE_QUEUED):
-        if row["requested_at"] < expired_before:
+    for row in await db.get_open_job_transcripts(account_id=account_id, stored_before=now - STALE_QUEUED):
+        if (row.get("job_stored_at") or row["requested_at"]) < expired_before:
             if await db.fill_media_transcript(row["id"], status="failed", error="expired"):
                 finished += 1
                 await _notify_rows(db, notifier, [{**row, "status": "failed"}])

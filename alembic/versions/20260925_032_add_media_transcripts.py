@@ -16,6 +16,10 @@ table kept in sync by triggers, PostgreSQL a stored generated tsvector with
 a GIN index. The FTS5 rebuild that indexes existing rows runs only when this
 pass created the FTS table, so a re-run does nothing.
 
+``job_stored_at`` records when a row got its job id, so the straggler poll
+and the retention expiry count from the submit, not from the insert. A table
+made before the column existed gets it added.
+
 Idempotent: the entrypoint stamping ladder is frozen at 018, a create_all()
 database already has every object, and every step is guarded by the
 inspector or by IF NOT EXISTS.
@@ -127,8 +131,13 @@ def upgrade() -> None:
             sa.Column("requested_at", sa.DateTime(), nullable=False),
             sa.Column("completed_at", sa.DateTime(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("job_stored_at", sa.DateTime(), nullable=True),
             sa.PrimaryKeyConstraint("id"),
         )
+        inspector = sa.inspect(conn)
+    elif "job_stored_at" not in {c["name"] for c in inspector.get_columns(TABLE_NAME)}:
+        # A table made by an earlier build of this unreleased migration.
+        op.add_column(TABLE_NAME, sa.Column("job_stored_at", sa.DateTime(), nullable=True))
         inspector = sa.inspect(conn)
 
     existing = {idx["name"] for idx in inspector.get_indexes(TABLE_NAME)}

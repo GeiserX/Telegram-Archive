@@ -3148,7 +3148,7 @@ async def get_chat_avatar_history(chat: ChatContext = Depends(require_chat)):
 def _transcript_payload(row: dict) -> dict:
     """One transcript row for the API: datetimes as ISO strings, nothing dropped."""
     payload = dict(row)
-    for key in ("requested_at", "completed_at", "created_at"):
+    for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
         value = payload.get(key)
         payload[key] = value.isoformat() if isinstance(value, datetime) else value
     return payload

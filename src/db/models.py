@@ -375,6 +375,10 @@ class MediaTranscript(Base):
     requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    # When ``job_id`` was first written. The straggler poll and the
+    # retention expiry count from here, not from the row's insert time, since
+    # a row can wait queued through an outage before it is submitted.
+    job_stored_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     __table_args__ = (
         Index("uq_media_transcripts_account_media_job", "account_id", "media_id", "job_id", unique=True),
