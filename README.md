@@ -349,7 +349,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `TRANSCRIPTION_LANGUAGE` | — | B | Optional language hint; empty lets the server detect it |
 | `TRANSCRIPTION_CALLBACK_URL` | — | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the key's callback allowlist in akou. Empty means the backup polls instead, which loses nothing |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | — | V | The `whsec_` secret akou printed for the key. The callback route exists only when it is set. Never logged |
-| `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media one backup run sends, newest first |
+| `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media one backup run sends, newest first. With akou it also caps the jobs open at once per account |
 | **Database** | | | See [Database Configuration](#database-configuration) below |
 | `DATABASE_URL` | - | B/V | Full database URL (highest priority, overrides all below) |
 | `DB_TYPE` | `sqlite` | B/V | Database engine: `sqlite` or `postgresql` |
@@ -584,7 +584,7 @@ TRANSCRIPTION_WEBHOOK_SECRET: "whsec_..."      # viewer only
 
 **Archive rules:** a transcript is a new row, never a change to the media row, and a second transcript with another engine or preset is another row. Transcripts are searchable from the chat search box and the global search (a hit found only in a transcript opens that bubble), appear in the Voice tab of Shared Media, in `/api/changes` as a `transcript` change, and in both JSON exports. The only paths that remove them are the flag-gated deletes above (`DELETION_MODE=hard`, `EXCLUDE_DELETE_EXISTING`, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`), which take the transcripts of the media they remove.
 
-**Privacy:** the audio is the only content that leaves the archive, and only to the configured host. No chat titles, names, message text or ids are sent. The full design is in [docs/TRANSCRIPTION.md](docs/TRANSCRIPTION.md).
+**Privacy:** the audio is the only content that leaves the archive, and only to the configured host. No chat titles, names, message text or ids are sent. A viewer login with downloads disabled sees no transcripts, since a transcript is the audio's content. The full design is in [docs/TRANSCRIPTION.md](docs/TRANSCRIPTION.md).
 
 ### Group → supergroup migrations
 

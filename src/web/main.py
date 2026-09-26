@@ -1403,7 +1403,11 @@ async def require_chat(chat_ref: str, user: UserContext = Depends(require_auth))
 
 
 def _strip_original_media_paths(messages: list[dict]) -> None:
-    """Remove original media file paths and URLs from API responses for no-download sessions."""
+    """Remove original media file paths, URLs and transcripts from API responses for no-download sessions.
+
+    A transcript is the content of the audio in text form, so a login that
+    may not hear the audio does not read it either (docs/TRANSCRIPTION.md).
+    """
     for message in messages:
         media = message.get("media")
         if isinstance(media, dict):
@@ -1411,6 +1415,8 @@ def _strip_original_media_paths(messages: list[dict]) -> None:
             media["url"] = None
             media["downloaded"] = False
             media["no_download"] = True
+            media.pop("transcript", None)
+            media.pop("transcripts", None)
         media_items = message.get("media_items")
         if isinstance(media_items, list):
             for item in media_items:
@@ -1419,6 +1425,8 @@ def _strip_original_media_paths(messages: list[dict]) -> None:
                     item["url"] = None
                     item["downloaded"] = False
                     item["no_download"] = True
+                    item.pop("transcript", None)
+                    item.pop("transcripts", None)
 
 
 def _export_chat_metadata(chat: dict) -> dict:
@@ -2019,7 +2027,13 @@ async def search_messages(
         raise HTTPException(status_code=503, detail="Database not available")
     try:
         payload = await db.search_messages_global(
-            q, scope=_chat_scope(user), limit=limit, offset=offset, fold_shared=True
+            q,
+            scope=_chat_scope(user),
+            limit=limit,
+            offset=offset,
+            fold_shared=True,
+            # A hit through a transcript would tell a no-download login what the audio says.
+            with_transcripts=not user.no_download,
         )
     except Exception as e:
         # Type name only: SQLAlchemy exception text can echo statement
@@ -2983,6 +2997,7 @@ async def get_messages(
             after_id=after_id,
             topic_id=topic_id,
             account_id=chat.account_id,
+            with_transcripts=not user.no_download,
         )
         # get_messages_paginated returns a list of message dicts; guard so an
         # unexpected shape can never turn a read into a 500.
@@ -3081,7 +3096,11 @@ async def get_recent_changes(
     parsed_before = _parse_changes_bound(before, "before") if before else None
     try:
         changes = await db.get_recent_changes(
-            since=parsed_since, before=parsed_before, limit=limit, scope=_chat_scope(user)
+            since=parsed_since,
+            before=parsed_before,
+            limit=limit,
+            scope=_chat_scope(user),
+            with_transcripts=not user.no_download,
         )
         next_cursor = changes[-1]["date"] if len(changes) == limit else None
         return JSONResponse(
@@ -3166,6 +3185,8 @@ async def get_media_transcripts(media_id: str, user: UserContext = Depends(requi
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     try:
         rows: list[dict] = []
         visible = False
@@ -3337,6 +3358,8 @@ async def ask_media_transcript(media_id: str, user: UserContext = Depends(requir
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     if not _transcription_on():
         raise HTTPException(status_code=409, detail="Transcription is off")
     try:
@@ -3357,12 +3380,16 @@ async def ask_media_transcript(media_id: str, user: UserContext = Depends(requir
 
 
 @app.get("/api/chats/{chat_ref}/media/{media_key}/transcripts")
-async def get_chat_media_transcripts(media_key: str, chat: ChatContext = Depends(require_chat)):
+async def get_chat_media_transcripts(
+    media_key: str, chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)
+):
     """The bubble's rows, addressed by chat ref + ``{message_id}_{type}``, newest first.
 
     What the browser fetches on a realtime ``transcript`` frame: it never
     holds a storage media id, which spells the chat id.
     """
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     media = await _entitled_media_row(chat, media_key)
     try:
         by_media = await db.list_transcripts_for_media_ids([media["id"]], account_id=chat.account_id, with_twins=True)
@@ -3372,8 +3399,12 @@ async def get_chat_media_transcripts(media_key: str, chat: ChatContext = Depends
 
 
 @app.post("/api/chats/{chat_ref}/media/{media_key}/transcripts")
-async def ask_chat_media_transcript(media_key: str, chat: ChatContext = Depends(require_chat)):
+async def ask_chat_media_transcript(
+    media_key: str, chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)
+):
     """The bubble's ask-now, the same insert-only rule as ``POST /api/media/{media_id}/transcripts``."""
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     if not _transcription_on():
         raise HTTPException(status_code=409, detail="Transcription is off")
     media = await _entitled_media_row(chat, media_key)
@@ -3457,7 +3488,9 @@ async def get_chat_media(
             account_id=chat.account_id,
         )
         # Before the id below becomes the chat-free key: the lookup needs the storage id.
-        await _attach_media_transcripts(result["items"], chat)
+        # A no-download login does not read what the audio says either.
+        if not user.no_download:
+            await _attach_media_transcripts(result["items"], chat)
         for item in result["items"]:
             media_key = _url_media_key(item.get("message_id"), item.get("type"))
             item["id"] = media_key

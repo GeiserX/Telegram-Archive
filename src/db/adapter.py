@@ -2234,6 +2234,7 @@ class DatabaseAdapter:
         before: datetime | None = None,
         limit: int = 50,
         scope: ChatScope | None = None,
+        with_transcripts: bool = True,
     ) -> list[dict[str, Any]]:
         """The what-changed feed: deletions, edits and transcripts the archive captured.
 
@@ -2247,7 +2248,8 @@ class DatabaseAdapter:
           plus the message's CURRENT text.
         * ``transcript`` — finished voice transcripts, dated by
           ``completed_at``, carrying the transcript text and its language, so
-          a poller sees new transcripts (docs/TRANSCRIPTION.md).
+          a poller sees new transcripts (docs/TRANSCRIPTION.md). Left out
+          when ``with_transcripts`` is False, for a no-download login.
 
         Newest first. ``before`` is an exclusive keyset cursor over the
         per-row date: pass the last row's ``date`` back to page. Rows sharing
@@ -2451,7 +2453,8 @@ class DatabaseAdapter:
                         "new_text": row.new_text,
                     }
                 )
-            for row in (await session.execute(transcript_stmt)).all():
+            transcript_rows = (await session.execute(transcript_stmt)).all() if with_transcripts else []
+            for row in transcript_rows:
                 changes.append(
                     {
                         "kind": "transcript",
@@ -4558,6 +4561,7 @@ class DatabaseAdapter:
         dense_hits: int | None = None,
         walk_timeout_ms: int | None = None,
         fold_shared: bool = False,
+        with_transcripts: bool = True,
     ) -> dict[str, Any]:
         """Messages whose text matches ``search`` in ANY entitled chat, newest first.
 
@@ -4593,8 +4597,9 @@ class DatabaseAdapter:
         the message predicate, which would turn every page into a scan. Each
         row's ``matched_in`` is ``transcript`` when only the transcript side
         produced its key, else ``message``. Without the transcript search
-        objects (SQLite without FTS5, or a database not yet at 032) the
-        transcript side is absent.
+        objects (SQLite without FTS5, or a database not yet at 032), or with
+        ``with_transcripts`` False (a no-download login), the transcript side
+        is absent.
 
         Returns ``{"results": [...], "has_more": bool, "indexed": bool}``; one
         extra row is fetched to answer ``has_more``.
@@ -4612,7 +4617,9 @@ class DatabaseAdapter:
                 return {"results": [], "has_more": False, "indexed": False}
             sides = {
                 "fold_shared": fold_shared,
-                "transcript_predicate": await self._transcript_search_predicate(session, search),
+                "transcript_predicate": (
+                    await self._transcript_search_predicate(session, search) if with_transcripts else None
+                ),
             }
 
             if (
@@ -4966,9 +4973,13 @@ class DatabaseAdapter:
         topic_id: int | None = None,
         *,
         account_id: int | None = None,
+        with_transcripts: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
+
+        ``with_transcripts`` False keeps a search on message text only, for a
+        no-download login that may not learn what a voice message says.
 
         ``account_id=None`` is unscoped until phase 4 (viewer entitlements).
 
@@ -5034,7 +5045,7 @@ class DatabaseAdapter:
             fts_predicate = transcript_predicate = None
             if search:
                 fts_predicate = await self._text_search_predicate(session, search)
-                if fts_predicate is not None:
+                if fts_predicate is not None and with_transcripts:
                     transcript_predicate = await self._transcript_search_predicate(session, search)
                 if transcript_predicate is not None:
                     message_keys = select(Message.account_id, Message.id).where(
@@ -6833,6 +6844,11 @@ class DatabaseAdapter:
         first, at most ``per_run`` rows. Each result carries the media
         columns and ``transcript``: the newest row's id, status and job_id,
         or None.
+
+        The ask-now rows are read by a query of their own, from the few
+        open transcript rows. OR-ing them into the type filter of the main
+        query would keep PostgreSQL off ``idx_media_type`` and read every
+        media row of every type on each drain.
         """
         wanted = sorted({t for t in types if isinstance(t, str) and t})
         if not wanted or per_run <= 0:
@@ -6856,7 +6872,6 @@ class DatabaseAdapter:
             .correlate(Media)
             .scalar_subquery()
         )
-        asked_now = and_(newest.status == "queued", newest.job_id.is_(None), newest.preset.is_(None))
         twin_done = (
             select(MediaTranscript.id)
             .where(
@@ -6869,6 +6884,24 @@ class DatabaseAdapter:
             .correlate(Media)
             .exists()
         )
+        # Newest download first in both queries.
+        order = (nulls_last(Media.download_date.desc()), Media.id.desc())
+        asked_stmt = (
+            select(Media, newest.id, newest.status, newest.job_id)
+            .join(newest, and_(newest.account_id == Media.account_id, newest.media_id == Media.id))
+            .where(
+                and_(
+                    newest.account_id == account_id,
+                    newest.status == "queued",
+                    newest.job_id.is_(None),
+                    newest.preset.is_(None),
+                    newest.id == newest_id,
+                    Media.downloaded == 1,
+                )
+            )
+            .order_by(*order)
+            .limit(per_run)
+        )
         stmt = (
             select(Media, newest.id, newest.status, newest.job_id)
             .outerjoin(
@@ -6879,26 +6912,26 @@ class DatabaseAdapter:
                 and_(
                     Media.account_id == account_id,
                     Media.downloaded == 1,
-                    or_(Media.type.in_(wanted), asked_now),
+                    Media.type.in_(wanted),
                     or_(
                         and_(newest.id.is_(None), ~twin_done),
-                        asked_now,
                         and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
                         and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
                     ),
                 )
             )
-            .order_by(
-                case((asked_now, 0), else_=1),
-                nulls_last(Media.download_date.desc()),
-                Media.id.desc(),
-            )
+            .order_by(*order)
             .limit(per_run)
         )
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(stmt)
+            found = list(await session.execute(asked_stmt))
+            if len(found) < per_run:
+                asked_ids = {media.id for media, *_ in found}
+                for match in await session.execute(stmt):
+                    if match[0].id not in asked_ids:
+                        found.append(match)
             rows = []
-            for media, transcript_id, transcript_status, transcript_job_id in result:
+            for media, transcript_id, transcript_status, transcript_job_id in found[:per_run]:
                 rows.append(
                     {
                         "id": media.id,
@@ -6974,24 +7007,26 @@ class DatabaseAdapter:
                 filled.append({"id": row_id, "account_id": account_id, "media_id": media_id, "status": status})
         return filled
 
-    async def get_open_job_transcripts(self, *, account_id: int, stored_before: datetime) -> list[dict[str, Any]]:
-        """Open rows of one account whose job id was stored before ``stored_before``: the stragglers.
+    async def get_open_job_transcripts(
+        self, *, account_id: int, stored_before: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Open rows of one account that hold a job id; with ``stored_before``, only the stragglers.
 
-        A row from before ``job_stored_at`` existed counts from its insert time.
+        Without ``stored_before`` every job still in flight, which the drain
+        counts against its per-run limit. A row from before ``job_stored_at``
+        existed counts from its insert time.
         """
-        async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                select(MediaTranscript)
-                .where(
-                    and_(
-                        MediaTranscript.account_id == account_id,
-                        MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
-                        MediaTranscript.job_id.is_not(None),
-                        func.coalesce(MediaTranscript.job_stored_at, MediaTranscript.requested_at) < stored_before,
-                    )
-                )
-                .order_by(MediaTranscript.id)
+        conditions = [
+            MediaTranscript.account_id == account_id,
+            MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
+            MediaTranscript.job_id.is_not(None),
+        ]
+        if stored_before is not None:
+            conditions.append(
+                func.coalesce(MediaTranscript.job_stored_at, MediaTranscript.requested_at) < stored_before
             )
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(MediaTranscript).where(and_(*conditions)).order_by(MediaTranscript.id)
             result = await session.execute(stmt)
             return [self._transcript_to_dict(row) for row in result.scalars()]
 

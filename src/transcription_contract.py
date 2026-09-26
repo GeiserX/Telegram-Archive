@@ -44,6 +44,15 @@ def _number(value: Any) -> float | None:
     return float(value)
 
 
+def _dicts(value: Any) -> list[dict[str, Any]]:
+    """The objects of a list field; anything that is not a list reads as empty.
+
+    One event with ``words: 5`` must not raise: the feed's cursor is saved
+    only after a whole page, so an exception here would stop it for good.
+    """
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def parse_events_page(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
     """One page of ``GET /v1/events``: the events and the cursor to read after them.
 
@@ -126,8 +135,7 @@ def job_outcome(data: dict[str, Any], *, engine_version: str | None = None) -> t
     models = [m for m in raw_models if isinstance(m, str)] if isinstance(raw_models, list) else []
     words = [
         {"w": w.get("w"), "s": _number(w.get("s")), "e": _number(w.get("e")), "c": _number(w.get("c"))}
-        for w in data.get("words") or []
-        if isinstance(w, dict)
+        for w in _dicts(data.get("words"))
     ]
     segments = [
         {
@@ -136,8 +144,7 @@ def job_outcome(data: dict[str, Any], *, engine_version: str | None = None) -> t
             "text": seg.get("text") if isinstance(seg.get("text"), str) else "",
             "speaker": seg.get("speaker") if isinstance(seg.get("speaker"), str) else None,
         }
-        for seg in data.get("segments") or []
-        if isinstance(seg, dict)
+        for seg in _dicts(data.get("segments"))
     ]
     language = data.get("language")
     return "done", {
@@ -163,7 +170,10 @@ def event_data(event: dict[str, Any]) -> dict[str, Any] | None:
     the type, so a ``transcription.cancelled`` event stores ``cancelled``
     whatever its data says.
     """
-    status = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}.get(event.get("type"))
+    event_type = event.get("type")
+    statuses = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}
+    # A list or an object as the type is unhashable: read it as unknown, never raise.
+    status = statuses.get(event_type) if isinstance(event_type, str) else None
     data = event.get("data")
     if status is None or not isinstance(data, dict):
         return None

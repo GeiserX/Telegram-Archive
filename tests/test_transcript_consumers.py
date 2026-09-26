@@ -431,3 +431,55 @@ class TestRoutes:
             resp = await client.get("/api/changes")
         assert resp.status_code == 200, resp.text
         assert [(c["kind"], c["text"]) for c in resp.json()["changes"]] == [("transcript", "feed words")]
+
+    async def test_a_no_download_login_reads_no_transcript_anywhere(self, real_adapter):
+        """The audio bytes are refused to a no-download login, so the text of the audio is too."""
+        media_id = await _voice(real_adapter, 1, "the lighthouse words")
+        ref = (await real_adapter.get_chat_by_id(CHAT, account_id=1))["ref"]
+        reads = (
+            f"/api/chats/{ref}/messages",
+            f"/api/chats/{ref}/messages?search=lighthouse",
+            f"/api/chats/{ref}/media?types=voice",
+            "/api/search/messages?q=lighthouse",
+            "/api/changes",
+        )
+        transcript_routes = (
+            ("GET", f"/api/chats/{ref}/media/1_voice/transcripts"),
+            ("GET", f"/api/media/{media_id}/transcripts"),
+            ("POST", f"/api/chats/{ref}/media/1_voice/transcripts"),
+            ("POST", f"/api/media/{media_id}/transcripts"),
+        )
+
+        async def fetch_all():
+            async with AsyncClient(transport=ASGITransport(app=web_main.app), base_url="http://test") as client:
+                pages = [await client.get(url) for url in reads]
+                routes = [await client.request(method, url) for method, url in transcript_routes]
+            return pages, routes
+
+        def login(no_download: bool) -> None:
+            web_main.app.dependency_overrides[web_main.require_auth] = lambda: web_main.UserContext(
+                username="viewer-test", role="viewer", no_download=no_download
+            )
+
+        # What each read shows when the transcript reaches it; both searches carry
+        # the hit and say it matched in the transcript.
+        hit = '"matched_in":"transcript"'
+        markers = ["lighthouse words", hit, "lighthouse words", hit, "lighthouse words"]
+
+        # The control: the same login without the restriction reads it everywhere.
+        login(False)
+        pages, routes = await fetch_all()
+        assert [resp.status_code for resp in pages] == [200] * len(reads)
+        for url, marker, resp in zip(reads, markers, pages, strict=True):
+            assert marker in resp.text.replace('": "', '":"'), url
+        assert [resp.status_code for resp in routes] == [200] * len(transcript_routes)
+        asked = await real_adapter.list_media_transcripts(media_id, account_id=1)
+
+        login(True)
+        pages, routes = await fetch_all()
+        assert [resp.status_code for resp in pages] == [200] * len(reads)
+        for url, marker, resp in zip(reads, markers, pages, strict=True):
+            assert marker not in resp.text.replace('": "', '":"'), url
+        assert [resp.status_code for resp in routes] == [403] * len(transcript_routes)
+        # The refused ask-now wrote nothing.
+        assert await real_adapter.list_media_transcripts(media_id, account_id=1) == asked

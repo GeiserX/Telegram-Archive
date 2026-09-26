@@ -21,9 +21,14 @@ HTTP client.
 
 A server that cannot be reached is transient: the row stays ``queued`` and
 the ten-minute branch of the drain query resubmits on it, so an outage
-never spends the cap of three failed rows. An HTTP error is an answer and
-is stored as a ``failed`` row, and so is a synchronous request the server
-took and never answered (a read or write timeout).
+never spends the cap of three failed rows. A refusal about the server or
+its configuration, not about the file (401, 403, 429, akou's
+``preset_unavailable`` and ``callback_not_allowed``, and a 5xx on the job
+path), ends the run the same way and also leaves the row ``queued``. Any
+other HTTP error is an answer about the file and is stored as a ``failed``
+row, and so is a synchronous request the server took and never answered
+(a read or write timeout, or a 5xx after every attempt), which also ends
+the run.
 
 PII rule: this module never logs a URL (httpx exception strings embed it,
 so exceptions log as class names), the bearer key, a media id (it carries
@@ -47,6 +52,7 @@ from .realtime import NotificationType, RealtimeNotifier
 from .transcription_contract import (
     _SAFE_CODE,
     SOURCE_AKOU,
+    _dicts,
     _number,
     apply_job_outcome,
     attempt_key,
@@ -94,11 +100,14 @@ class TranscriptionError(Exception):
     resubmit with the same ``Idempotency-Key`` finds any job akou made.
     """
 
-    def __init__(self, reason: str, *, transient: bool = False, stalled: bool = False) -> None:
+    def __init__(
+        self, reason: str, *, transient: bool = False, stalled: bool = False, status: int | None = None
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.transient = transient
         self.stalled = stalled
+        self.status = status  # the HTTP status of the answer, None when none came
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,25 @@ class ServerInfo:
 # httpx.TransportError came after the connection was made: ``stalled``.
 _UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
+# akou's refusals about its configuration, never about one file: a preset it
+# cannot run yet (also while it downloads its models) and a callback host off
+# the key's allowlist.
+_CONFIG_REFUSALS = frozenset({"preset_unavailable", "callback_not_allowed"})
+
+
+def _server_refused(e: TranscriptionError) -> bool:
+    """A refusal about the server or its configuration: a wrong key, a rate limit, a preset, a callback host.
+
+    Every media of the run would get the same answer, so none of them
+    spends a failed row: the row stays queued and the run ends.
+    """
+    return e.status in (401, 403, 429) or e.reason in _CONFIG_REFUSALS
+
+
+def _server_failed(e: TranscriptionError) -> bool:
+    """A 5xx after every attempt: the server, or a proxy in front of it, is failing."""
+    return e.status is not None and e.status >= 500
+
 
 def _base_url(raw: Any) -> str:
     """Scheme, host and path of the configured URL; query and fragment dropped."""
@@ -134,7 +162,8 @@ class TranscriptionClient:
     """The HTTP client: the shape of ``EventWebhookSender`` with its own timeouts.
 
     A bounded number of attempts, retrying transport errors, HTTP 429 and
-    5xx; any other status is a permanent answer. Redirects are never
+    5xx, except a POST the server took and never answered, which is sent
+    once; any other status is a permanent answer. Redirects are never
     followed: following one would re-send the bearer key and the audio to a
     host the operator never configured. The upload gets 120 seconds and the
     synchronous answer up to 600, since a long voice message takes a while
@@ -220,12 +249,18 @@ class TranscriptionClient:
         """``POST /v1/audio/transcriptions`` and return the ``verbose_json`` answer.
 
         Multipart with ``model`` (see ``sync_model``), ``response_format=verbose_json``
-        and ``timestamp_granularities[]=word``, plus the configured language
+        and ``timestamp_granularities[]`` as both ``word`` and ``segment`` (a
+        server that follows OpenAI's rule returns segments only when asked),
+        plus the configured language
         and the hotword prompt when any. Raises ``TranscriptionError`` with
         a reason that names no URL; it is transient when every attempt was
         a transport failure, permanent when the server answered.
         """
-        data = {"model": model, "response_format": "verbose_json", "timestamp_granularities[]": "word"}
+        data: dict[str, Any] = {
+            "model": model,
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": ["word", "segment"],
+        }
         if self.language:
             data["language"] = self.language
         if prompt:
@@ -239,20 +274,23 @@ class TranscriptionClient:
         response = await self._send("POST", "/v1/audio/transcriptions", timeout=timeout, data=data, files=files)
         if response.status_code >= 300:
             # Permanent (4xx) - a redirect (3xx) lands here too.
-            raise TranscriptionError(f"HTTP {response.status_code}")
+            raise TranscriptionError(_error_code(response), status=response.status_code)
         return _json_object(response)
 
     async def _send(self, method: str, path: str, *, timeout: float | httpx.Timeout, **kwargs) -> httpx.Response:
         """One request with bounded attempts; the first answer that is not 429 or 5xx.
 
-        Transport errors, 429 and 5xx are retried. Raises a transient
-        ``TranscriptionError`` when every attempt failed to connect, and a
-        permanent one (``HTTP <code>``) when the last answer was 429 or 5xx.
-        Any other answer, a 2xx, a 3xx or a 4xx, is returned for the caller
-        to read.
+        Transport errors, 429 and 5xx are retried, except a POST the server
+        took and never answered: another attempt would wait out the same
+        timeout and hand the server the same work again. Raises a transient
+        ``TranscriptionError`` when every attempt failed to connect or the
+        POST stalled, and a permanent one (``HTTP <code>``, with ``status``)
+        when the last answer was 429 or 5xx. Any other answer, a 2xx, a 3xx
+        or a 4xx, is returned for the caller to read.
         """
         reason = "unknown"
         transient = stalled = False
+        status = None
         async with self._client(timeout) as client:
             for attempt in range(self.ATTEMPTS):
                 try:
@@ -261,14 +299,18 @@ class TranscriptionClient:
                     reason = type(e).__name__
                     transient = True
                     stalled = not isinstance(e, _UNREACHABLE)
+                    status = None
+                    if stalled and method == "POST":
+                        break
                 else:
                     transient = stalled = False
                     if response.status_code != 429 and response.status_code < 500:
                         return response
-                    reason = f"HTTP {response.status_code}"
+                    status = response.status_code
+                    reason = f"HTTP {status}"
                 if attempt < self.ATTEMPTS - 1:
                     await asyncio.sleep(self.backoffs[attempt])
-        raise TranscriptionError(reason, transient=transient, stalled=stalled)
+        raise TranscriptionError(reason, transient=transient, stalled=stalled, status=status)
 
     # ------------------------------------------------------------------
     # The akou job path (SERVER.md sections 5 and 6)
@@ -313,7 +355,7 @@ class TranscriptionClient:
             headers={"Idempotency-Key": idempotency_key or content_hash},
         )
         if response.status_code >= 300:
-            raise TranscriptionError(_error_code(response))
+            raise TranscriptionError(_error_code(response), status=response.status_code)
         return _json_object(response)
 
     async def get_job(self, job_id: str) -> dict[str, Any]:
@@ -336,9 +378,9 @@ class TranscriptionClient:
         timeout = httpx.Timeout(self.POLL_TIMEOUT_SECONDS, connect=self.CONNECT_TIMEOUT_SECONDS)
         response = await self._send("GET", path, timeout=timeout, **kwargs)
         if response.status_code == 404:
-            raise TranscriptionError("not_found")
+            raise TranscriptionError("not_found", status=404)
         if response.status_code >= 300:
-            raise TranscriptionError(_error_code(response))
+            raise TranscriptionError(_error_code(response), status=response.status_code)
         return _json_object(response)
 
 
@@ -389,8 +431,7 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
             "e": _number(w.get("end")),
             "c": _number(w.get("probability")),
         }
-        for w in payload.get("words") or []
-        if isinstance(w, dict)
+        for w in _dicts(payload.get("words"))
     ]
     segments = [
         {
@@ -399,8 +440,7 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
             "text": seg.get("text") if isinstance(seg.get("text"), str) else "",
             "speaker": seg.get("speaker") if isinstance(seg.get("speaker"), str) else None,
         }
-        for seg in payload.get("segments") or []
-        if isinstance(seg, dict)
+        for seg in _dicts(payload.get("segments"))
     ]
     text = payload.get("text")
     language = payload.get("language")
@@ -509,6 +549,9 @@ async def _submit_job(
     behind the cursor and no callback will come, so the row is stored now
     from the nested result, or from the result route when the answer
     carries none. ``failed`` or ``cancelled``: a failed row with the reason.
+    A refusal about the server or its configuration, or a 5xx, stores
+    nothing: the row stays queued and the run ends (``refused``). Only an
+    answer about this file spends a failed row.
     """
     row = {**row, "account_id": account_id, "media_id": media["id"]}
     callback_url = getattr(config, "transcription_callback_url", None)
@@ -529,15 +572,19 @@ async def _submit_job(
         if e.transient:
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
+        if _server_refused(e) or _server_failed(e):
+            # Every other submit of this run would get the same answer, and
+            # none of it is about this file: no failed row, the run ends.
+            if e.reason == "callback_not_allowed":
+                logger.warning(
+                    "Transcription: akou refused TRANSCRIPTION_CALLBACK_URL (callback_not_allowed); "
+                    "add its host to the key's callback-host allowlist or unset it. Ending this run"
+                )
+            else:
+                logger.warning(f"Transcription server refused the job ({e.reason}); the media stays queued")
+            return "refused"
         await db.fill_media_transcript(row["id"], status="failed", error=e.reason, source=SOURCE_AKOU)
         await _notify(notifier, media, row["id"], "failed", account_id)
-        if e.reason == "callback_not_allowed":
-            # Every other submit of this run would be refused the same way.
-            logger.warning(
-                "Transcription: akou refused TRANSCRIPTION_CALLBACK_URL (callback_not_allowed); "
-                "add its host to the key's callback-host allowlist or unset it. Ending this run"
-            )
-            return "refused"
         logger.warning(f"Transcription job refused ({e.reason})")
         return "failed"
 
@@ -602,7 +649,7 @@ async def reconcile_events(db, client: TranscriptionClient, server: ServerInfo, 
                 try:
                     result = await client.get_result(data["job_id"])
                 except TranscriptionError as e:
-                    if e.transient:
+                    if e.transient or _server_refused(e) or _server_failed(e):
                         raise
                     continue  # gone or unreadable; the straggler poll or expiry ends the row
                 data = {**result, "status": "done", "metadata": result.get("metadata") or data.get("metadata")}
@@ -645,7 +692,7 @@ async def poll_stragglers(
             if data.get("status") == "done" and not isinstance(data.get("text"), str):
                 data = await client.get_result(row["job_id"])
         except TranscriptionError as e:
-            if e.transient:
+            if e.transient or _server_refused(e) or _server_failed(e):
                 raise
             if e.reason == "not_found" and await db.fill_media_transcript(
                 row["id"], status="failed", error="not_found"
@@ -686,9 +733,11 @@ async def transcribe_media(
     process that dies mid-request, and a server that cannot be reached
     (``unreachable``), both leave a row the next drain resubmits after ten
     minutes, with no failed row added. ``stalled`` is a synchronous request
-    the server took and never answered: the row is failed, so the cap of
-    three applies, and the drain ends the run. ``refused`` is akou's
-    ``callback_not_allowed``: the row is failed and the drain ends the run.
+    the server took and gave no usable answer (a timeout, or a 5xx after
+    every attempt): the row is failed, so the cap of three applies, and the
+    drain ends the run. ``refused`` is a refusal about the server or its
+    configuration (see ``_server_refused``; on the job path a 5xx too): the
+    row stays queued, no failed row is spent, and the drain ends the run.
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -788,6 +837,9 @@ async def transcribe_media(
             # Same as above: an outage is not an answer and spends no failed row.
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
+        if _server_refused(e):
+            logger.warning(f"Transcription server refused the request ({e.reason}); the media stays queued")
+            return "refused"
         await db.fill_media_transcript(
             row["id"],
             status="failed",
@@ -798,9 +850,11 @@ async def transcribe_media(
         )
         await _notify(notifier, media, row["id"], "failed", account_id)
         logger.warning(f"Transcription failed ({e.reason})")
-        # A server that took the request and never answered would make every
-        # later media wait out the same timeouts: the run ends here.
-        return "stalled" if e.stalled else "failed"
+        # A server that took the request and never answered, or failed it with
+        # a 5xx after every attempt, would do the same to every later media: the
+        # run ends here. A 5xx still spends a failed row on this path, since the
+        # server decodes the file inside the request and the file may be the cause.
+        return "stalled" if e.stalled or _server_failed(e) else "failed"
 
     await db.fill_media_transcript(
         row["id"],
@@ -830,8 +884,12 @@ async def drain_transcriptions(
     counts of what this run did. Never raises for a server problem: an
     unreachable server is one warning and no rows, whether it is down at
     detection or goes down mid-run, in which case the run ends there and
-    the rest waits for the next one. akou refusing the callback URL ends
-    the run the same way, after one failed row and one warning.
+    the rest waits for the next one. A refusal about the server or its
+    configuration (a wrong key, a rate limit, a preset akou cannot run, a
+    callback host off the allowlist, a 5xx on the job path) ends the run the
+    same way, with one warning and no failed row. On the job path at most
+    ``per_run`` jobs are in flight per account: a drain submits only as many
+    new media as the open job rows leave room for.
     """
     stats = {
         "done": 0,
@@ -876,6 +934,9 @@ async def drain_transcriptions(
             if e.transient:
                 logger.warning(f"Transcription server unreachable ({e.reason}); skipping this run")
                 return stats
+            if _server_refused(e) or _server_failed(e):
+                logger.warning(f"Transcription server refused the feed or the poll ({e.reason}); skipping this run")
+                return stats
             # An answer this client cannot use; the submit step still runs.
             logger.warning(f"Transcription reconcile stopped ({e.reason})")
 
@@ -886,6 +947,10 @@ async def drain_transcriptions(
     per_run = getattr(config, "transcription_backfill_per_run", 50)
     if not isinstance(per_run, int) or isinstance(per_run, bool) or per_run < 1:
         per_run = 50
+    if server.job_path:
+        # Jobs still open count against the run: a server slower than per_run
+        # per backup would otherwise grow the open rows, and the poll, without end.
+        per_run -= len(await db.get_open_job_transcripts(account_id=account_id))
     media_rows = await db.get_media_awaiting_transcription(
         account_id=account_id, types=types, per_run=per_run, stale_before=utcnow_naive() - STALE_QUEUED
     )
@@ -902,12 +967,13 @@ async def drain_transcriptions(
             # wait out the same timeouts, or get the same refusal.
             break
     logger.info(
-        "Transcription drain: %d done, %d failed, %d skipped, %d submitted, %d unreachable of %d media; "
+        "Transcription drain: %d done, %d failed, %d skipped, %d submitted, %d refused, %d unreachable of %d media; "
         "%d filled from the event feed, %d from the poll",
         stats["done"],
-        stats["failed"] + stats["stalled"] + stats["refused"],
+        stats["failed"] + stats["stalled"],
         stats["skipped"],
         stats["submitted"],
+        stats["refused"],
         stats["unreachable"],
         len(media_rows),
         stats["reconciled"],

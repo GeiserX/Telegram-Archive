@@ -6256,6 +6256,8 @@
                 const doneTranscripts = (msg) => transcriptRows(msg).filter(row => row.status === 'done')
                 const hasTranscriptButton = (msg) => {
                     if (!transcriptionState.value.enabled || !msg?.media) return false
+                    // A no-download login reads no transcript: the routes answer 403.
+                    if (msg.media.no_download) return false
                     const type = msg.media.type
                     return type === 'voice' || type === 'video_note' || transcriptRows(msg).length > 0
                 }

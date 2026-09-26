@@ -211,6 +211,8 @@ def test_the_states_follow_the_design_table() -> None:
             assert.equal(hasTranscriptButton({ id: 8, media: { id: '8_audio', type: 'audio' } }), false)
             assert.equal(hasTranscriptButton({ id: 9, media: { id: '9_audio', type: 'audio', transcripts: [done(1)] } }), true)
             assert.equal(hasTranscriptButton({ id: 10, media: { id: '10_video_note', type: 'video_note' } }), true)
+            // A no-download login reads no transcript; the routes would answer 403.
+            assert.equal(hasTranscriptButton({ id: 13, media: { id: '13_voice', type: 'voice', no_download: true } }), false)
             """
         )
     )

@@ -65,6 +65,65 @@ class TestMigrationModelsRegistry(unittest.TestCase):
 
         assert MIGRATION_MODELS[0] is Account
 
+    def test_every_orm_table_is_copied_or_named_as_left_behind(self) -> None:
+        """A table missing from both lists would vanish on the move while verify still said every table matched."""
+        from src.db.migrate import MIGRATION_EXCLUDED
+        from src.db.models import Base
+
+        copied = {model.__tablename__ for model in MIGRATION_MODELS}
+        assert set(Base.metadata.tables) - copied == set(MIGRATION_EXCLUDED)
+        assert "media_transcripts" in copied
+
+
+# ============================================================
+# The move on real engines: transcripts arrive, and the next insert works
+# ============================================================
+
+
+async def test_transcripts_move_to_postgresql_and_new_ones_still_insert(
+    tmp_path, make_postgres_database, require_postgres
+):
+    from datetime import datetime
+
+    from src.db.adapter import DatabaseAdapter
+    from src.db.base import DatabaseManager
+
+    chat = -420900001
+    source = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'source.db'}")
+    await source.init()
+    adapter = DatabaseAdapter(source)
+    await adapter.upsert_chat({"id": chat, "type": "group", "title": "fixture chat"}, account_id=1)
+    for message_id in (1, 2, 3):
+        await adapter.insert_message(
+            {"id": message_id, "chat_id": chat, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}},
+            account_id=1,
+        )
+        await adapter.insert_media(
+            {"id": f"m_{message_id}_voice", "message_id": message_id, "chat_id": chat, "type": "voice"},
+            account_id=1,
+        )
+    for media_id in ("m_1_voice", "m_2_voice"):
+        row = await adapter.enqueue_media_transcript(media_id, account_id=1, preset="auto")
+        await adapter.fill_media_transcript(row["id"], status="done", text="fixture words")
+    await source.close()
+
+    target_url, _ = make_postgres_database("telegram_archive_pytest_move")
+    counts = await migrate_sqlite_to_postgres(sqlite_path=str(tmp_path / "source.db"), postgres_url=target_url)
+    assert counts["media_transcripts"] == 2
+    verified = await verify_migration(sqlite_path=str(tmp_path / "source.db"), postgres_url=target_url)
+    assert verified["media_transcripts"] == {"sqlite": 2, "postgres": 2, "match": True}
+
+    target = DatabaseManager(target_url)
+    await target.init()
+    try:
+        moved = DatabaseAdapter(target)
+        assert [r["text"] for r in await moved.list_media_transcripts("m_1_voice", account_id=1)] == ["fixture words"]
+        # The copied ids 1 and 2 stay taken; the next row gets 3, not a collision.
+        fresh = await moved.enqueue_media_transcript("m_3_voice", account_id=1, preset="auto")
+        assert (fresh["id"], fresh["status"]) == (3, "queued")
+    finally:
+        await target.close()
+
 
 # ============================================================
 # migrate_sqlite_to_postgres: path resolution

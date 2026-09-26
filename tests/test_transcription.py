@@ -93,7 +93,9 @@ class FakeServer:
                 return httpx.Response(200, json=VERBOSE_JSON)
             if self.transcribe_status == 302:
                 return httpx.Response(302, headers={"Location": "http://elsewhere.example.test/"})
-            return httpx.Response(self.transcribe_status, json={"error": "nope"})
+            # OpenAI's error shape; ``code`` is null, so the reason stays ``HTTP <code>``.
+            error = {"message": "nope", "type": "invalid_request_error", "code": None}
+            return httpx.Response(self.transcribe_status, json={"error": error})
         return httpx.Response(404)
 
     @property
@@ -172,6 +174,24 @@ async def _rows(adapter, media_id: str) -> list[dict]:
     return await adapter.list_media_transcripts(media_id, account_id=1)
 
 
+async def _make_stale(adapter) -> None:
+    """Move every queued row without a job past the ten-minute window, as the next backup would find it."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from src.db.models import MediaTranscript
+    from src.message_utils import utcnow_naive
+
+    async with adapter.db_manager.async_session_factory() as session:
+        await session.execute(
+            update(MediaTranscript)
+            .where(MediaTranscript.status == "queued", MediaTranscript.job_id.is_(None))
+            .values(requested_at=utcnow_naive() - STALE_QUEUED - timedelta(minutes=1))
+        )
+        await session.commit()
+
+
 # ============================================================================
 # The client
 # ============================================================================
@@ -225,6 +245,8 @@ class TestClient:
             ("model", "auto"),
             ("response_format", "verbose_json"),
             ("timestamp_granularities[]", "word"),
+            # OpenAI's rule, which akou follows: segments come back only when asked for.
+            ("timestamp_granularities[]", "segment"),
             ("language", "es"),
             ("prompt", "Neutral, akou"),
         ):
@@ -287,7 +309,9 @@ class TestClient:
         with pytest.raises(TranscriptionError) as excinfo:
             await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg", model="auto")
         assert (excinfo.value.reason, excinfo.value.transient, excinfo.value.stalled) == ("ReadTimeout", True, True)
-        assert len(server.transcribe_requests) == 3
+        # Sent once: a second attempt would wait out the same timeout and hand
+        # the server the same work again.
+        assert len(server.transcribe_requests) == 1
 
         def connect_timeout(request):
             raise httpx.ConnectTimeout(f"cannot reach {URL}")
@@ -315,6 +339,25 @@ class TestClient:
         assert columns["segments"] == [{"s": 0.0, "e": 2.5, "text": "hola, te llamo luego", "speaker": None}]
         assert columns["models"] == ["auto"]
         assert result_columns({"text": 7, "words": "nope"}, model="m")["text"] == ""
+        # A list field that is not a list reads as empty instead of raising.
+        hostile = result_columns({"text": "x", "words": 5, "segments": 7}, model="m")
+        assert (hostile["words"], hostile["segments"]) == ([], [])
+
+    async def test_a_stalled_get_is_still_retried(self, tmp_path):
+        """Only a stalled POST is sent once; a GET carries no work and is retried."""
+
+        calls = []
+
+        def stall(request):
+            calls.append(request)
+            raise httpx.ReadTimeout(f"no answer from {URL}")
+
+        client = TranscriptionClient(_config(str(tmp_path)), transport=httpx.MockTransport(stall))
+        client.backoffs = (0.0, 0.0)
+        with pytest.raises(TranscriptionError) as excinfo:
+            await client.get_job("job_0001")
+        assert (excinfo.value.transient, excinfo.value.stalled) == (True, True)
+        assert len(calls) == 3
 
 
 # ============================================================================
@@ -405,7 +448,9 @@ class TestDrain:
             stats = await drain_transcriptions(
                 config, real_adapter, account_id=1, notifier=notifier, client=_client(config, server)
             )
-            assert stats["failed"] == 1, f"drain {drain}"
+            # The server decodes the file inside the request, so a 5xx may be about
+            # this file: a failed row, and the run ends (``stalled``).
+            assert stats["stalled"] == 1, f"drain {drain}"
             rows = await _rows(real_adapter, "m_1_voice")
             assert [r["status"] for r in rows] == ["failed"] * drain
             assert rows[0]["error"] == "HTTP 500"
@@ -413,7 +458,7 @@ class TestDrain:
         stats = await drain_transcriptions(
             config, real_adapter, account_id=1, notifier=notifier, client=_client(config, server)
         )
-        assert stats["failed"] == 0
+        assert stats == _stats()
         assert len(server.transcribe_requests) == sent_before
         assert len(await _rows(real_adapter, "m_1_voice")) == 3
         assert all(call.args[2]["status"] == "failed" for call in notifier.notify.await_args_list)
@@ -575,7 +620,7 @@ class TestDrain:
             config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, slow)
         )
         assert stats == _stats(stalled=1)
-        assert len(slow.transcribe_requests) == 3  # one media, then the run ends
+        assert len(slow.transcribe_requests) == 1  # one media, one attempt, then the run ends
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["status"], row["error"]) == ("failed", "ReadTimeout")
         assert await _rows(real_adapter, "m_2_voice") == []
@@ -591,6 +636,60 @@ class TestDrain:
             config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, slow)
         )
         assert len(slow.transcribe_requests) == sent  # the cap holds: nothing is resent
+
+    @pytest.mark.parametrize("status", [401, 403, 429])
+    async def test_a_refusal_about_the_key_keeps_the_row_queued_and_ends_the_run(self, real_adapter, tmp_path, status):
+        """A wrong key or a rate limit is not about the file: no failed row, and the fixed server finishes it."""
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 2))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
+        config = _config(str(tmp_path))
+        for _ in range(4):  # more runs than the cap of three failed rows
+            stats = await drain_transcriptions(
+                config,
+                real_adapter,
+                account_id=1,
+                notifier=AsyncMock(),
+                client=_client(config, FakeServer(transcribe_status=status)),
+            )
+            assert stats == _stats(refused=1)
+            await _make_stale(real_adapter)
+        assert [(r["status"], r["error"]) for r in await _rows(real_adapter, "m_1_voice")] == [("queued", None)]
+        assert await _rows(real_adapter, "m_2_voice") == []
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, FakeServer())
+        )
+        assert stats["done"] == 2
+        assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == ["done"]
+
+    async def test_akou_without_jobs_refusing_the_preset_keeps_the_row_queued(self, real_adapter, tmp_path):
+        """akou in app mode answers the OpenAI route too, and 409 preset_unavailable is its configuration."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+
+        def akou_app(request):
+            if request.url.path.endswith("/v1/server"):
+                return httpx.Response(200, json={"name": "akou", "version": "0.3.0", "capabilities": {"jobs": False}})
+            return httpx.Response(409, json={"error": "preset_unavailable", "message": "not built"})
+
+        config = _config(str(tmp_path), transcription_preset="best")
+        client = TranscriptionClient(config, transport=httpx.MockTransport(akou_app))
+        stats = await drain_transcriptions(config, real_adapter, account_id=1, notifier=AsyncMock(), client=client)
+        assert stats == _stats(refused=1)
+        assert [(r["status"], r["error"]) for r in await _rows(real_adapter, "m_1_voice")] == [("queued", None)]
+
+    async def test_a_5xx_spends_a_failed_row_and_ends_the_run(self, real_adapter, tmp_path):
+        """Every later media would get the same 5xx and the same backoffs: one failed row, then the run ends."""
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 2))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
+        server = FakeServer(transcribe_status=502)
+        config = _config(str(tmp_path))
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+        assert stats == _stats(stalled=1)
+        assert len(server.transcribe_requests) == 3  # a 5xx is retried, then the run ends
+        assert [(r["status"], r["error"]) for r in await _rows(real_adapter, "m_1_voice")] == [("failed", "HTTP 502")]
+        assert await _rows(real_adapter, "m_2_voice") == []
 
     async def test_the_server_row_is_written_only_when_the_server_names_itself(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -771,6 +870,8 @@ class AkouServer(FakeServer):
         self.issued = 0  # job ids are never reused, even after a job is deleted
         self.nest_result = True  # a done job answer carries its result under "result"
         self.submit_timeout = False  # POST /v1/jobs connects, then the answer never comes
+        self.submit_refusal: tuple[int, dict] | None = None  # (status, body) for every POST /v1/jobs
+        self.feed_refusal: tuple[int, dict] | None = None  # (status, body) for every GET /v1/events
 
     # -- what the tests drive -------------------------------------------------
 
@@ -865,9 +966,13 @@ class AkouServer(FakeServer):
             self.requests.append(request)
             if self.submit_timeout:
                 raise httpx.ReadTimeout(f"no answer from {URL}")
+            if self.submit_refusal:
+                return httpx.Response(self.submit_refusal[0], json=self.submit_refusal[1])
             return self._submit(request)
         if request.method == "GET" and path.endswith("/v1/events"):
             self.requests.append(request)
+            if self.feed_refusal:
+                return httpx.Response(self.feed_refusal[0], json=self.feed_refusal[1])
             unknown = set(request.url.params) - {"after", "wait"}
             if unknown:
                 return httpx.Response(400, json={"error": "unknown_parameter"})
@@ -1020,7 +1125,9 @@ class TestJobPath:
             notifier.notify.assert_awaited_once()
             assert notifier.notify.await_args.args[2]["status"] == "done"
 
-    async def test_callback_not_allowed_fails_the_row_warns_once_and_ends_the_run(self, real_adapter, tmp_path, caplog):
+    async def test_callback_not_allowed_keeps_the_row_queued_warns_once_and_ends_the_run(
+        self, real_adapter, tmp_path, caplog
+    ):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64, download_date=datetime(2026, 1, 3))
         await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64, download_date=datetime(2026, 1, 2))
         server = AkouServer(callback_hosts=())
@@ -1030,7 +1137,7 @@ class TestJobPath:
         assert stats["refused"] == 1
         assert len(server.submits) == 1  # the second media was never sent
         [row] = await _rows(real_adapter, "m_1_voice")
-        assert (row["status"], row["error"]) == ("failed", "callback_not_allowed")
+        assert (row["status"], row["error"]) == ("queued", None)  # the config, not the file: no failed row
         assert await _rows(real_adapter, "m_2_voice") == []
         assert sum("callback_not_allowed" in r.getMessage() for r in caplog.records) == 1
         assert all(CALLBACK not in r.getMessage() for r in caplog.records)
@@ -1042,6 +1149,7 @@ class TestJobPath:
         server.submit_timeout = True
         stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
         assert stats == _stats(unreachable=1)
+        assert len(server.submits) == 1  # never re-sent in the same run
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["status"], row["job_id"], row["error"]) == ("queued", None, None)
 
@@ -1313,6 +1421,92 @@ class TestJobPath:
             [row] = await _rows(real_adapter, media_id)
             assert (row["status"], row["text"]) == ("done", text)
         assert await real_adapter.get_transcription_events_cursor() == "2"
+
+    @pytest.mark.parametrize(
+        ("status", "body", "attempts"),
+        [
+            (401, {"error": "unauthorized", "message": "a valid bearer token is required"}, 1),
+            (403, {"error": "forbidden", "message": "refused"}, 1),
+            (409, {"error": "preset_unavailable", "message": "the speech models are not downloaded"}, 1),
+            (422, {"error": "callback_not_allowed", "message": "host not allowed"}, 1),
+            (429, {"error": "rate_limited", "message": "slow down"}, 3),
+            (502, {}, 3),
+            (503, {"error": "quitting", "message": "akou is quitting"}, 3),
+        ],
+    )
+    async def test_a_refusal_not_about_the_file_spends_no_failed_row(
+        self, real_adapter, tmp_path, status, body, attempts
+    ):
+        """A wrong key, a preset akou cannot run yet, a callback host, a rate limit or a 5xx: the row
+        stays queued however many runs it lasts, the run ends at the first media, and the fixed
+        server gets every media."""
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64, download_date=datetime(2026, 1, 3))
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64, download_date=datetime(2026, 1, 2))
+        server = AkouServer()
+        server.submit_refusal = (status, body)
+        config = _akou_config(tmp_path)
+        for run in range(4):  # more runs than the cap of three failed rows
+            stats = await _akou_drain(config, real_adapter, server)
+            assert stats == _stats(refused=1), f"run {run}"
+            assert len(server.submits) == attempts * (run + 1)
+            await _make_stale(real_adapter)
+        assert [(r["status"], r["error"]) for r in await _rows(real_adapter, "m_1_voice")] == [("queued", None)]
+        assert await _rows(real_adapter, "m_2_voice") == []
+
+        server.submit_refusal = None
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["submitted"] == 2
+        for media_id in ("m_1_voice", "m_2_voice"):
+            assert [r["status"] for r in await _rows(real_adapter, media_id)] == ["queued"]
+            assert (await _rows(real_adapter, media_id))[0]["job_id"] is not None
+
+    @pytest.mark.parametrize("status", [401, 502])
+    async def test_a_refused_event_feed_ends_the_run_before_any_submit(self, real_adapter, tmp_path, status):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        server.feed_refusal = (status, {"error": "unauthorized"} if status == 401 else {})
+        stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        assert stats == _stats()
+        assert server.submits == []
+        assert await _rows(real_adapter, "m_1_voice") == []
+
+    async def test_a_poison_event_neither_raises_nor_stops_the_feed(self, real_adapter, tmp_path):
+        """``words`` that is not a list, or a type that is not a string: the cursor still moves and the submit step runs."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path, transcription_backfill_per_run=1)
+        await _akou_drain(config, real_adapter, server)
+        job_id = server.by_key[SHA]
+        server.add_event(
+            "transcription.completed", {**_akou_result(job_id, SHA, "palabras raras"), "words": 5, "segments": 7}
+        )
+        server.add_event(["transcription.completed"], _akou_result(job_id, SHA))
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
+
+        stats = await _akou_drain(config, real_adapter, server)
+        assert (stats["reconciled"], stats["submitted"]) == (1, 1)
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["text"], row["words"], row["segments"]) == ("done", "palabras raras", [], [])
+        assert await real_adapter.get_transcription_events_cursor() == "2"
+
+    async def test_open_jobs_count_against_the_run(self, real_adapter, tmp_path):
+        """A server slower than per_run per backup: the open rows stay at per_run instead of growing."""
+        for n in range(1, 6):
+            await _media(real_adapter, tmp_path, f"m_{n}_voice", content_hash=f"{n}" * 64)
+        server = AkouServer()
+        config = _akou_config(tmp_path, transcription_backfill_per_run=2)
+        assert (await _akou_drain(config, real_adapter, server))["submitted"] == 2
+        for _ in range(3):
+            await _backdate(real_adapter, hours=1)
+            stats = await _akou_drain(config, real_adapter, server)
+            assert (stats["submitted"], stats["polled"]) == (0, 0)
+        assert len(server.submits) == 2
+        assert len(await real_adapter.get_open_job_transcripts(account_id=1)) == 2
+
+        server.finish(server.by_key["5" * 64])  # the newest download went first
+        stats = await _akou_drain(config, real_adapter, server)
+        assert (stats["reconciled"], stats["submitted"]) == (1, 1)
+        assert len(await real_adapter.get_open_job_transcripts(account_id=1)) == 2
 
     async def test_a_server_without_jobs_keeps_the_synchronous_path(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -1701,6 +1895,24 @@ class TestCallbackRoute:
             [row] = await _rows(real_adapter, media_id)
             assert (row["status"], row["text"], row["job_id"]) == ("done", "dos filas, un callback", "job_0001")
         assert callback_route.await_count == 2
+
+    async def test_hostile_list_fields_and_types_are_a_204_not_a_500(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        body = json.dumps({"type": ["transcription.completed"], "data": _akou_result("job_0001", SHA)}).encode()
+        timestamp = str(int(time.time()))
+        headers = {
+            "webhook-id": "msg_0002",
+            "webhook-timestamp": timestamp,
+            "webhook-signature": _sign("msg_0002", timestamp, body),
+            "content-type": "application/json",
+        }
+        assert (await _post(body, headers)).status_code == 204
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"  # an unknown type writes nothing
+
+        body, headers = _delivery({**_akou_result("job_0001", SHA, "con palabras rotas"), "words": 5, "segments": 7})
+        assert (await _post(body, headers)).status_code == 204
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["text"], row["words"], row["segments"]) == ("done", "con palabras rotas", [], [])
 
     async def test_a_stale_timestamp_is_refused(self, real_adapter, tmp_path, callback_route):
         await _running_row(real_adapter, tmp_path)

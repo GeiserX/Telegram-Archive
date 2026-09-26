@@ -281,6 +281,19 @@ class TestDrainQuery:
         assert await _drain(real_adapter) == ["m_1_voice", "m_2_voice"]
         assert await _drain(real_adapter, per_run=1) == ["m_1_voice"]
 
+    async def test_an_ask_now_row_is_listed_once_with_its_row_even_when_it_is_also_stale(self, real_adapter):
+        """The ask-now rows come from a query of their own; a stale one also matches the main query."""
+        await _media(real_adapter, "m_1_voice", download_date=datetime(2026, 1, 1))
+        await _media(real_adapter, "m_2_voice", download_date=datetime(2026, 1, 3))
+        asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        await _age(real_adapter, asked["id"], minutes=11)
+        rows = await real_adapter.get_media_awaiting_transcription(
+            account_id=1, types=TYPES, per_run=10, stale_before=utcnow_naive() - timedelta(minutes=10)
+        )
+        assert [r["id"] for r in rows] == ["m_1_voice", "m_2_voice"]
+        assert rows[0]["transcript"] == {"id": asked["id"], "status": "queued", "job_id": None}
+        assert rows[1]["transcript"] is None
+
     async def test_an_ask_now_row_picked_up_by_the_backup_waits_like_any_other(self, real_adapter):
         await _media(real_adapter, "m_1_voice")
         asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
@@ -322,6 +335,56 @@ class TestDrainQuery:
         assert rows[0]["message_id"] == 1
         assert rows[0]["chat_id"] == CHAT
         assert rows[0]["transcript"] is None
+
+
+class TestDrainQueryPlan:
+    async def test_the_type_filter_reads_idx_media_type_on_postgresql(self, real_adapter):
+        """The ask-now test OR-ed into the type filter kept PostgreSQL off ``idx_media_type``: every
+        media row of every type was read on each drain. Sequential scans are priced out, so the
+        plan shows whether the type filter CAN use the index."""
+        from sqlalchemy import event
+
+        if real_adapter._is_sqlite:
+            return  # a PostgreSQL access path; SQLite has no planner switch to price scans out
+        # One voice row in a hundred, then fresh statistics: the planner then prices the
+        # type index against the primary key the way it would on a real archive.
+        await _media(real_adapter, "m_1_voice")
+        async with real_adapter.db_manager.engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO messages (account_id, chat_id, id, text, date, is_outgoing, is_pinned) "
+                    "SELECT 1, :chat, g, '', :date, 0, 0 FROM generate_series(2, 2000) g"
+                ),
+                {"chat": CHAT, "date": datetime(2026, 9, 1, 12)},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO media (account_id, id, message_id, chat_id, type, downloaded) "
+                    "SELECT 1, 'm_' || g || '_x', g, :chat, "
+                    "CASE WHEN g % 100 = 0 THEN 'voice' ELSE 'photo' END, 1 FROM generate_series(2, 2000) g"
+                ),
+                {"chat": CHAT},
+            )
+            await conn.execute(text("ANALYZE media"))
+        engine = real_adapter.db_manager.engine
+        captured = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            if context.compiled is not None and "media.type IN" in statement:
+                captured.append(context.compiled.statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", capture)
+        try:
+            assert len(await _drain(real_adapter)) == 21
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", capture)
+        assert len(captured) == 1
+        sql = str(captured[0].compile(dialect=engine.dialect, compile_kwargs={"literal_binds": True}))
+        async with real_adapter.db_manager.async_session_factory() as session:
+            connection = await session.connection()
+            await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+            plan = "\n".join((await connection.exec_driver_sql(f"EXPLAIN {sql}")).scalars().all())
+        assert "idx_media_type" in plan, plan
 
 
 class TestAppSettingsHelpers:
