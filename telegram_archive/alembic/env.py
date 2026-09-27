@@ -17,6 +17,10 @@ from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+# Loads .env as an import side effect, so a migration reads the same settings
+# as every other command. The models do not import it.
+import telegram_archive.config  # noqa: F401
+
 # Import our models - this registers them with the Base metadata
 from telegram_archive.db.models import Base
 
