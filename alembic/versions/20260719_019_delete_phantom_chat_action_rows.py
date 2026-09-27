@@ -116,7 +116,7 @@ def upgrade() -> None:
     # counts messages: the "cached_stats" key in the metadata key-value table
     # (written by adapter.calculate_and_store_statistics). "stats_calculated_at"
     # must go WITH it: the viewer's lifespan hook only runs the immediate initial
-    # recompute when that marker is absent (src/web/main.py), so dropping the blob
+    # recompute when that marker is absent (telegram_archive/web/main.py), so dropping the blob
     # alone would leave the dashboard showing zeros for up to a day until the
     # scheduled recompute. Deleting both makes the next viewer start recompute
     # fresh stats right away. Per-chat stats (get_chat_stats) are computed on

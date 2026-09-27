@@ -32,11 +32,11 @@ from telethon.tl.types import MessageMediaPhoto
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.__main__ import run_backfill_topics
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Chat, Media, SyncStatus
-from src.telegram_backup import TelegramBackup
+from telegram_archive.__main__ import run_backfill_topics
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Chat, Media, SyncStatus
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001
 OTHER_CHAT_ID = -1002
@@ -343,8 +343,8 @@ class TestBackfillTopicsCommand(unittest.TestCase):
         backup_main = MagicMock(return_value=0)
         with (
             mock.patch.dict(os.environ, {}, clear=False),
-            mock.patch("src.db.create_adapter", new=fake_create),
-            mock.patch("src.telegram_backup.main", new=backup_main),
+            mock.patch("telegram_archive.db.create_adapter", new=fake_create),
+            mock.patch("telegram_archive.telegram_backup.main", new=backup_main),
         ):
             result = run_backfill_topics(SimpleNamespace(chat_id=CHAT_ID))
 
@@ -362,8 +362,8 @@ class TestBackfillTopicsCommand(unittest.TestCase):
         stderr = io.StringIO()
         with (
             mock.patch.dict(os.environ, {}, clear=False),
-            mock.patch("src.db.create_adapter", new=broken_create_adapter),
-            mock.patch("src.telegram_backup.main", new=backup_main),
+            mock.patch("telegram_archive.db.create_adapter", new=broken_create_adapter),
+            mock.patch("telegram_archive.telegram_backup.main", new=backup_main),
             contextlib.redirect_stderr(stderr),
         ):
             result = run_backfill_topics(SimpleNamespace(chat_id=CHAT_ID))
@@ -377,8 +377,8 @@ class TestBackfillTopicsCommand(unittest.TestCase):
         backup_main = MagicMock(return_value=0)
         with (
             mock.patch.dict(os.environ, {}, clear=False),
-            mock.patch("src.db.create_adapter", new=fake_create),
-            mock.patch("src.telegram_backup.main", new=backup_main),
+            mock.patch("telegram_archive.db.create_adapter", new=fake_create),
+            mock.patch("telegram_archive.telegram_backup.main", new=backup_main),
         ):
             result = run_backfill_topics(SimpleNamespace(chat_id=CHAT_ID))
             pinned = {

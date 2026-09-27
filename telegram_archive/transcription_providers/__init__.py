@@ -1,7 +1,7 @@
 """Speech-to-text providers of the synchronous path (docs/TRANSCRIPTION.md, "Providers").
 
 ``TRANSCRIPTION_PROVIDER`` picks one. ``auto`` and ``akou`` keep akou's job
-path in ``src/transcription.py``; everything that is not akou's job path
+path in ``telegram_archive/transcription.py``; everything that is not akou's job path
 goes through one of the providers here, and a provider is one module in
 this package with a module-level ``PROVIDER`` object:
 
@@ -24,9 +24,9 @@ drain's rules apply unchanged: an outage, a 401, 402, 403, 404 or 429, and
 a 413 (the server's or a proxy's upload limit) keep the row queued and end
 the run; any other 4xx is an answer about the file and spends a failed row. Adding one
 is a module here and its name in ``TRANSCRIPTION_PROVIDERS`` in
-``src/config.py``, the one list both read.
+``telegram_archive/config.py``, the one list both read.
 
-This package imports nothing from ``src.transcription`` at import time,
+This package imports nothing from ``telegram_archive.transcription`` at import time,
 so that module can import it; the provider modules do, and are loaded
 lazily by ``load``. The viewer image copies neither.
 """
@@ -56,7 +56,7 @@ class Provider(Protocol):
 
 
 def load(name: str) -> Provider:
-    """The ``PROVIDER`` of ``src/transcription_providers/<name>.py``; ``openai`` for ``auto`` and ``akou``."""
+    """The ``PROVIDER`` of ``telegram_archive/transcription_providers/<name>.py``; ``openai`` for ``auto`` and ``akou``."""
     module = name if name in NATIVE_PROVIDERS else "openai"
     return importlib.import_module(f"{__name__}.{module}").PROVIDER
 

@@ -1,6 +1,6 @@
 """Regression tests for the viewer's access-control and media-serving hardening.
 
-Each class pins one defect found by the security audit of src/web/main.py:
+Each class pins one defect found by the security audit of telegram_archive/web/main.py:
 
 - /ws/updates admitted credential-less sockets, and gave authenticated viewers a
   socket with NO chat ACL, whenever AUTH_PROXY_HEADER and VIEWER_USERNAME/
@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 
 try:
     os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_acl_"))
-    from src.web import main as web_main
+    from telegram_archive.web import main as web_main
 
     _WEB_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only on installs without fastapi
@@ -205,7 +205,7 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
         """Every multi-segment traversal spelling dies before any code runs."""
         cookies = self._session("tv-restricted", allowed_chat_refs={self.ALLOWED_REF})
         generated = AsyncMock(return_value=(Path(self.tmp.name) / "thumb.webp", "-1002"))
-        with patch("src.web.thumbnails.ensure_thumbnail", generated):
+        with patch("telegram_archive.web.thumbnails.ensure_thumbnail", generated):
             async with self._client() as client:
                 for url in (
                     f"/media/thumb/200/{self.ALLOWED_REF}/%2e%2e/-1002/secret.jpg",
@@ -225,7 +225,7 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
             return_value={"id": "-1001_9_photo", "file_path": "-1001/../-1002/secret.jpg", "file_name": "secret.jpg"}
         )
         generated = AsyncMock(return_value=(Path(self.tmp.name) / "thumb.webp", "-1001"))
-        with patch("src.web.thumbnails.ensure_thumbnail", generated):
+        with patch("telegram_archive.web.thumbnails.ensure_thumbnail", generated):
             async with self._client() as client:
                 thumb = await client.get(f"/media/thumb/200/{self.ALLOWED_REF}/9_photo", cookies=cookies)
                 media = await client.get(f"/media/{self.ALLOWED_REF}/9_photo", cookies=cookies)
@@ -257,7 +257,7 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
         """The no_download rule fires before any row or file work."""
         cookies = self._session("tv-nodl", allowed_chat_refs={self.ALLOWED_REF}, no_download=True)
         generated = AsyncMock(return_value=(Path(self.tmp.name) / "thumb.webp", "-1001"))
-        with patch("src.web.thumbnails.ensure_thumbnail", generated):
+        with patch("telegram_archive.web.thumbnails.ensure_thumbnail", generated):
             async with self._client() as client:
                 resp = await client.get(f"/media/thumb/200/{self.ALLOWED_REF}/9_photo", cookies=cookies)
         self.assertEqual(403, resp.status_code)
@@ -271,7 +271,7 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
         web_main.db.get_media_for_message = AsyncMock(
             return_value={"id": "-1001_9_photo", "file_path": "-1001/9_photo.jpg", "file_name": "9_photo.jpg"}
         )
-        with patch("src.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(thumb, "-1001"))):
+        with patch("telegram_archive.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(thumb, "-1001"))):
             async with self._client() as client:
                 resp = await client.get(f"/media/thumb/200/{self.ALLOWED_REF}/9_photo", cookies=cookies)
         self.assertEqual(200, resp.status_code)
@@ -470,7 +470,7 @@ class TestMediaServingHeaders(unittest.IsolatedAsyncioTestCase):
         saved_cache_dir = web_main._thumb_cache_dir
         web_main._thumb_cache_dir = self.root / "thumbs"
         try:
-            with patch("src.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(thumb, "-1001"))):
+            with patch("telegram_archive.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(thumb, "-1001"))):
                 async with self._client() as client:
                     resp = await client.get(f"/media/thumb/200/{self.REF}/77_photo")
         finally:
@@ -534,8 +534,8 @@ class TestExceptionHandlerRedaction(unittest.TestCase):
         client = TestClient(web_main.app, raise_server_exceptions=False)
         url = f"/media/thumb/200/{self.CHAT_REF}/{self.FILE_NAME}"
         with (
-            patch("src.web.thumbnails.ensure_thumbnail", AsyncMock(side_effect=failure)),
-            self.assertLogs("src.web.main", level=logging.ERROR) as captured,
+            patch("telegram_archive.web.thumbnails.ensure_thumbnail", AsyncMock(side_effect=failure)),
+            self.assertLogs("telegram_archive.web.main", level=logging.ERROR) as captured,
         ):
             response = client.get(url)
         # captured.output is the FORMATTED record — unlike getMessage(), it
@@ -660,7 +660,7 @@ class TestUnhandledExceptionNeverReachesTheServer(unittest.TestCase):
         client = TestClient(web_main.app, raise_server_exceptions=True)
         url = f"/media/thumb/200/{self.CHAT_REF}/{self.FILE_NAME}"
 
-        # Capture BOTH 'src.web.main' and 'uvicorn.error' by attaching a handler
+        # Capture BOTH 'telegram_archive.web.main' and 'uvicorn.error' by attaching a handler
         # to the ROOT logger (both propagate there), and FORMAT each record so an
         # exc_info traceback — if any code path ever attached one — would show up
         # in the captured text, which is exactly where the leak would hide.
@@ -675,7 +675,7 @@ class TestUnhandledExceptionNeverReachesTheServer(unittest.TestCase):
         root = logging.getLogger()
         root.addHandler(handler)
         try:
-            with patch("src.web.thumbnails.ensure_thumbnail", AsyncMock(side_effect=failure)):
+            with patch("telegram_archive.web.thumbnails.ensure_thumbnail", AsyncMock(side_effect=failure)):
                 response = client.get(url)
         finally:
             root.removeHandler(handler)

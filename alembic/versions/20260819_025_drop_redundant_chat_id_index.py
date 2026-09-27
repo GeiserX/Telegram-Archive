@@ -8,7 +8,7 @@ through ``idx_messages_chat_id_id`` (chat_id, id, added 017) or
 ``idx_messages_chat_date_desc`` (chat_id, date DESC, added 005) - both are a
 superset of this index's leading column, so the planner can use either for a
 bare chat_id predicate too. Checked every ``Message.chat_id ==`` /
-``Message.chat_id.__eq__`` site in src/db/adapter.py (get_messages_paginated,
+``Message.chat_id.__eq__`` site in telegram_archive/db/adapter.py (get_messages_paginated,
 get_pinned_messages, toggle_pinned, delete_chat_messages, the per-day
 export branches): none of them stop at chat_id alone without also ordering
 or bounding by date/id/is_pinned.

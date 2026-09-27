@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.telegram_backup import TelegramBackup
+from telegram_archive.telegram_backup import TelegramBackup
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Symlinks require administrator privileges on Windows")
 
@@ -593,7 +593,7 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         self.media_path = os.path.join(self.temp_dir, "media")
         os.makedirs(self.media_path)
 
-        from src.listener import TelegramListener
+        from telegram_archive.listener import TelegramListener
 
         self.listener = TelegramListener.__new__(TelegramListener)
         self.listener.config = MagicMock()

@@ -22,8 +22,8 @@ from telethon.tl.types import (
     MessageActionChatJoinedByLink,
 )
 
-from src.listener import TelegramListener
-from src.message_utils import service_message_text
+from telegram_archive.listener import TelegramListener
+from telegram_archive.message_utils import service_message_text
 
 TRACKED = -1001234567890
 ACTOR_ID = 777

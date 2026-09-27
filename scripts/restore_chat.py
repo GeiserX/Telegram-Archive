@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SlowModeWaitError
 
-from src.config import build_telegram_client_kwargs
+from telegram_archive.config import build_telegram_client_kwargs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 async def get_db_adapter():
     """Initialize and return database adapter."""
-    from src.db import DatabaseAdapter, init_database
+    from telegram_archive.db import DatabaseAdapter, init_database
 
     db_manager = await init_database()
     return DatabaseAdapter(db_manager)

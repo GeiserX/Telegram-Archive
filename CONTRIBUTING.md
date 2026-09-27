@@ -117,7 +117,7 @@ See the [AGENTS.md](AGENTS.md) for detailed consistency rules.
 python -m pytest tests/ -v
 
 # Run with coverage
-python -m pytest tests/ --cov=src --cov-report=term-missing
+python -m pytest tests/ --cov=telegram_archive --cov-report=term-missing
 
 # Run a specific test file
 python -m pytest tests/test_db_adapter.py -v
@@ -133,7 +133,7 @@ python -m pytest tests/test_db_adapter.py -v
 ## Project Structure
 
 ```
-src/
+telegram_archive/
 ├── __main__.py         # Entry point
 ├── config.py           # Environment variable handling
 ├── telegram_backup.py  # Core backup logic

@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.telegram_import import (
+from telegram_archive.telegram_import import (
     TelegramImporter,
     _build_service_text,
     _detect_media,
@@ -627,7 +627,7 @@ class TestTelegramImporterRun(unittest.TestCase):
                 raise OSError("simulated copy failure")
             return real_copy2(source, destination)
 
-        with patch("src.telegram_import.shutil.copy2", side_effect=fail_first_copy):
+        with patch("telegram_archive.telegram_import.shutil.copy2", side_effect=fail_first_copy):
             summary = self._run(importer.run(self.export_dir))
 
         self.assertEqual(summary["total_messages"], 2)
@@ -671,7 +671,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
-        with patch("src.telegram_import.BATCH_SIZE", 1):
+        with patch("telegram_archive.telegram_import.BATCH_SIZE", 1):
             summary = self._run(importer.run(self.export_dir))
 
         # Backend-independent invariants only: ijson's C backend sanitizes
@@ -1538,7 +1538,7 @@ class TestImportCursorGuard(unittest.TestCase):
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
 
-        with self.assertLogs("src.telegram_import", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_import", level="WARNING") as cm:
             summary = self._run(
                 TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1).run(self.export_dir)
             )

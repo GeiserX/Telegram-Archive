@@ -11,7 +11,7 @@ TypeError-backed 500.
 
 The deployed MCP server (telegram-archive-mcp, a separate repo) fronts these
 same HTTP endpoints, so this file is also the MCP-surface baseline: no MCP
-module exists under ``src/``.
+module exists under ``telegram_archive/``.
 """
 
 import hashlib
@@ -39,10 +39,10 @@ from alembic import command
 if not os.environ.get("BACKUP_PATH"):
     os.environ["BACKUP_PATH"] = tempfile.mkdtemp(prefix="ta_test_v8_viewer_")
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Chat, Media, Message, MessageVersion, Reaction, ViewerAccount
-from src.web import main as web_main
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Chat, Media, Message, MessageVersion, Reaction, ViewerAccount
+from telegram_archive.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,7 +56,7 @@ VIEWER_SALT = "stage-verify-salt"
 
 # The 21 OPTIONAL-UNSCOPED reads from the 8.0 contract manifest. Every method
 # here must keep ``account_id`` keyword-only WITH default None: the moment one
-# grows a required account_id, src/web/ (and the deployed MCP server fronting
+# grows a required account_id, telegram_archive/web/ (and the deployed MCP server fronting
 # it) breaks without any web code having changed.
 OPTIONAL_UNSCOPED_METHODS = (
     "get_all_chats",

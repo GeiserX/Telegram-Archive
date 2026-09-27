@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.event_webhook import (
+from telegram_archive.event_webhook import (
     DEFAULT_BODY_TEMPLATE,
     EventWebhookSender,
     auto_filter_for,
@@ -171,7 +171,7 @@ class _StubAsyncClient:
 @pytest.fixture(autouse=True)
 def _reset_stub(monkeypatch):
     _StubAsyncClient.instances = []
-    monkeypatch.setattr("src.event_webhook.httpx.AsyncClient", _StubAsyncClient)
+    monkeypatch.setattr("telegram_archive.event_webhook.httpx.AsyncClient", _StubAsyncClient)
     monkeypatch.setattr(EventWebhookSender, "BACKOFFS", (0.0, 0.0))
     yield
 
@@ -241,7 +241,7 @@ class TestEventWebhookSender:
         stats: dict = {}
         sender = EventWebhookSender(_config(), stats)
         _StubAsyncClient.script = [_response(404)]
-        with caplog.at_level(logging.WARNING, logger="src.event_webhook"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.event_webhook"):
             await _fire_and_wait(sender, "message_edited", {"event": "message_edited", "chat_id": 1})
         assert stats.get("webhook_failed") == 1
         assert stats.get("webhook_sent") is None
@@ -260,7 +260,7 @@ class TestEventWebhookSender:
         stats: dict = {}
         sender = EventWebhookSender(_config(), stats)
         _StubAsyncClient.script = [httpx.ReadTimeout("t"), _response(503), httpx.ConnectError("c")]
-        with caplog.at_level(logging.WARNING, logger="src.event_webhook"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.event_webhook"):
             await _fire_and_wait(sender, "message_edited", {"event": "message_edited", "chat_id": 1})
         assert stats.get("webhook_failed") == 1
         assert len(_StubAsyncClient.instances[0].requests) == 3
@@ -292,7 +292,7 @@ class TestEventWebhookSender:
         stats: dict = {}
         sender = EventWebhookSender(_config(), stats)
         _StubAsyncClient.script = [httpx.ConnectError(f"cannot reach {SECRET_URL}"), _response(500), _response(503)]
-        with caplog.at_level(logging.DEBUG, logger="src.event_webhook"):
+        with caplog.at_level(logging.DEBUG, logger="telegram_archive.event_webhook"):
             await _fire_and_wait(
                 sender, "message_edited", {"event": "message_edited", "chat_id": -100555, "text": "secret message body"}
             )
@@ -312,7 +312,7 @@ class TestEventWebhookSender:
             raise RuntimeError(f"leaky {SECRET_URL}")
 
         sender._deliver = boom
-        with caplog.at_level(logging.WARNING, logger="src.event_webhook"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.event_webhook"):
             sender.fire("message_edited", {"event": "message_edited", "chat_id": 1})
             while sender._tasks:
                 await asyncio.sleep(0)

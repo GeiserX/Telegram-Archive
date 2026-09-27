@@ -16,7 +16,7 @@ indexes took that query from >20 minutes to 39 ms, measured on the archive
 that reported it.
 
 How a declared index goes missing without anything noticing:
-``Base.metadata.create_all(checkfirst=True)`` — which src/db/migrate.py uses
+``Base.metadata.create_all(checkfirst=True)`` — which telegram_archive/db/migrate.py uses
 to build the target schema when moving SQLite to PostgreSQL — skips a table
 *and every index on it* when the table already exists. ``checkfirst`` is
 per-table, not per-index. An index added to models.py after a database was

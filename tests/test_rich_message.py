@@ -56,7 +56,7 @@ from telethon.tl.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.message_utils import (  # noqa: E402
+from telegram_archive.message_utils import (  # noqa: E402
     _json_safe,
     message_entities,
     message_plain_text,
@@ -64,7 +64,7 @@ from src.message_utils import (  # noqa: E402
     rich_message_of,
     rich_message_payload,
 )
-from src.telegram_backup import TelegramBackup  # noqa: E402
+from telegram_archive.telegram_backup import TelegramBackup  # noqa: E402
 
 CHAT_ID = -1001234567890
 

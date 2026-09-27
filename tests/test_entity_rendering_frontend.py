@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 
 def _extract_between(html: str, start: str, end: str) -> str:
@@ -241,7 +241,7 @@ def test_rich_text_editor_output_renders_through_the_same_path() -> None:
         TextUrl,
     )
 
-    from src.message_utils import render_rich_message
+    from telegram_archive.message_utils import render_rich_message
 
     rich = RichMessage(
         blocks=[

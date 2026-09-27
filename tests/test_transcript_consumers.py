@@ -15,9 +15,9 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import delete, select, update
 
-from src.db.adapter import ChatScope
-from src.db.models import MediaTranscript
-from src.export_backup import BackupExporter
+from telegram_archive.db.adapter import ChatScope
+from telegram_archive.db.models import MediaTranscript
+from telegram_archive.export_backup import BackupExporter
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -289,7 +289,7 @@ class TestExports:
         await _voice(real_adapter, 2, "before the window")
         await _voice(real_adapter, 3, "after the window")
         async with real_adapter.db_manager.async_session_factory() as session:
-            from src.db.models import Message
+            from telegram_archive.db.models import Message
 
             for message_id, when in ((2, WHEN - timedelta(days=2)), (3, WHEN + timedelta(days=2))):
                 await session.execute(update(Message).where(Message.id == message_id).values(date=when))

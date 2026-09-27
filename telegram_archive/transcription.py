@@ -14,7 +14,7 @@ event feed the next drain reads, or by the straggler poll. Every other server ta
 the OpenAI transcription endpoint (``POST /v1/audio/transcriptions``),
 whose answer is stored at once. ``akou`` insists on the job path,
 ``openai`` skips the question, and a provider with an adapter of its own
-(``src/transcription_providers``) replaces the OpenAI request with its own.
+(``telegram_archive/transcription_providers``) replaces the OpenAI request with its own.
 
 Where akou's documents leave a shape open, the shape assumed is written
 once: ``ServerInfo``'s ``retain_days`` and ``_error_code`` here, the event

@@ -165,7 +165,7 @@ class DatabaseManager:
         # runs `upgrade head` before this process starts, on SQLite whether or not
         # the file existed. This create_all is only a fallback for a process that
         # never passes through that entrypoint — the viewer image, which ships no
-        # alembic/ directory, or a direct `python -m src` run — and it is limited
+        # alembic/ directory, or a direct `python -m telegram_archive` run — and it is limited
         # to SQLite because on PostgreSQL it would race a concurrently migrating
         # container into a deadlock. tests/test_schema_parity.py builds both
         # schemas on both backends and fails on any difference, so the fallback

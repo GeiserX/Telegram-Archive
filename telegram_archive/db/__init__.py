@@ -5,7 +5,7 @@ Provides async database access using SQLAlchemy for both SQLite and PostgreSQL.
 
 Usage:
     # Initialize database (call once at startup)
-    from src.db import init_database, get_adapter
+    from telegram_archive.db import init_database, get_adapter
 
     db_manager = await init_database()
     db = await get_adapter()

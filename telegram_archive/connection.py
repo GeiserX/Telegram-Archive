@@ -292,7 +292,7 @@ class TelegramConnection:
             logger.error("❌ Session not authorized!")
             logger.error("Please run the authentication setup first:")
             logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
-            logger.error("  Local:  python -m src.setup_auth")
+            logger.error("  Local:  python -m telegram_archive.setup_auth")
             logger.error("  Non-interactive: python scripts/auth_noninteractive.py send")
             raise RuntimeError("Session not authorized. Please run authentication setup.")
 

@@ -21,7 +21,7 @@ from conftest import NO_POSTGRES_REASON, REAL_BACKENDS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.db.models import CHAT_REF_LENGTH, DEFAULT_ACCOUNT_ID, Base, new_chat_ref  # noqa: E402
+from telegram_archive.db.models import CHAT_REF_LENGTH, DEFAULT_ACCOUNT_ID, Base, new_chat_ref  # noqa: E402
 
 WHEN = datetime(2026, 8, 15, 12, 0, 0)
 CHAT_ID = -1001234567890
@@ -169,7 +169,7 @@ class TestCollisionsTheOldKeysWouldHaveCaused:
         differently and be re-inserted as a duplicate of itself. This pins the
         digest so that cannot happen by accident.
         """
-        from src.db.adapter import _message_version_hash
+        from telegram_archive.db.adapter import _message_version_hash
 
         digest = _message_version_hash(CHAT_ID, 500, "before the edit", WHEN)
         assert digest == "423d89b27bd1db2065c717a6c4559d43df148704718bb685837c50cdbf82e177"
@@ -424,7 +424,7 @@ class TestTheQuietOne:
 class TestChatRef:
     def test_a_ref_is_minted_on_insert_without_anyone_asking(self, schema_engine):
         """The ORM's own default does it, so an existing writer needs no change."""
-        from src.db.models import Chat
+        from telegram_archive.db.models import Chat
 
         with schema_engine.begin() as conn:
             _insert(conn, "accounts", id=DEFAULT_ACCOUNT_ID, label="personal")
@@ -442,7 +442,7 @@ class TestChatRef:
         the Python-side default gives exactly that for free: it applies to the
         INSERT and to nothing else.
         """
-        from src.db.models import Chat
+        from telegram_archive.db.models import Chat
 
         with schema_engine.begin() as conn:
             _insert(conn, "accounts", id=DEFAULT_ACCOUNT_ID, label="personal")
@@ -613,7 +613,7 @@ def test_the_mappers_configure_without_a_relationship_warning():
     script = (
         "import warnings, sqlalchemy.orm as orm;"
         "warnings.simplefilter('error', orm.exc.sa_exc.SAWarning);"
-        "import src.db.models;"
+        "import telegram_archive.db.models;"
         "orm.configure_mappers()"
     )
     result = subprocess.run(
@@ -626,7 +626,7 @@ def test_the_mappers_configure_without_a_relationship_warning():
 
     # And the reason it is quiet, stated directly: exactly one relationship on
     # the membership row may persist its columns.
-    from src.db.models import ChatFolderMember
+    from telegram_archive.db.models import ChatFolderMember
 
     writers = sorted(rel.key for rel in sa.inspect(ChatFolderMember).relationships if not rel.viewonly)
     assert writers == ["folder"]

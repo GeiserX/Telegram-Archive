@@ -1,7 +1,7 @@
 """The akou contract in one place: the event page, a job's outcome, the webhook signature.
 
-The backup (``src/transcription.py``) and the viewer's callback route
-(``src/web/main.py``) both read these. Standard library only, on purpose:
+The backup (``telegram_archive/transcription.py``) and the viewer's callback route
+(``telegram_archive/web/main.py``) both read these. Standard library only, on purpose:
 the viewer image installs the ``viewer-runtime`` dependency group, which
 has no HTTP client, and copies this file but not ``transcription.py``.
 

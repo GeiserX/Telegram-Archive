@@ -71,7 +71,7 @@ A new or wider removal path needs a config flag that defaults to keeping data, a
 ### ✅ Always (do without asking)
 
 - Read any file in the project
-- Modify files in src/ or lib/
+- Modify files in telegram_archive/ or lib/
 - Run build, test, and lint commands
 - Create test files
 - Fix linting errors automatically
@@ -132,11 +132,11 @@ Follow these conventions:
 
 ### Module Structure
 
-- **`src/telegram_backup.py`** — Scheduled backup flow: `backup_all()` → `_backup_dialog()` → iterates messages → `_process_message()` → `_commit_batch()`. Gap filling: `_fill_gaps()` → `_fill_gap_range()`. Forum topics: `_backup_forum_topics()`.
-- **`src/listener.py`** — Real-time event handlers: `on_new_message`, `on_message_edited`, `on_message_deleted`, `on_chat_action`, `on_pinned_messages`. Instantiated with `TelegramListener(config, db, client)`.
-- **`src/config.py`** — All config from env vars. The backup requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or indexed `TG_ACCOUNT_<N>_*` accounts since 8.0); the viewer runs without credentials. Properties are lazy-parsed from env.
-- **`src/message_utils.py`** — Shared utility module. Contains `extract_topic_id(message)` used by both backup and listener.
-- **`src/db/adapter.py`** — Database operations. `src/db/models.py` — SQLAlchemy models. `src/db/base.py` — DB manager.
+- **`telegram_archive/telegram_backup.py`** — Scheduled backup flow: `backup_all()` → `_backup_dialog()` → iterates messages → `_process_message()` → `_commit_batch()`. Gap filling: `_fill_gaps()` → `_fill_gap_range()`. Forum topics: `_backup_forum_topics()`.
+- **`telegram_archive/listener.py`** — Real-time event handlers: `on_new_message`, `on_message_edited`, `on_message_deleted`, `on_chat_action`, `on_pinned_messages`. Instantiated with `TelegramListener(config, db, client)`.
+- **`telegram_archive/config.py`** — All config from env vars. The backup requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or indexed `TG_ACCOUNT_<N>_*` accounts since 8.0); the viewer runs without credentials. Properties are lazy-parsed from env.
+- **`telegram_archive/message_utils.py`** — Shared utility module. Contains `extract_topic_id(message)` used by both backup and listener.
+- **`telegram_archive/db/adapter.py`** — Database operations. `telegram_archive/db/models.py` — SQLAlchemy models. `telegram_archive/db/base.py` — DB manager.
 
 ### Forum Topic Filtering
 
@@ -168,7 +168,7 @@ declining Telegram's attachment is the whole mechanism.
 ### Logging Rules
 
 - **Never log chat IDs, topic IDs, or topic titles** — these are considered PII per the project's guidelines. Log only aggregated counts (e.g., "skipping N topics across M chats").
-- **The one exception is `chat_title_for_log(entity, config)`** (`src/message_utils.py`), the opt-in `LOG_CHAT_TITLES` gate from #439. It is the only sanctioned route a chat title has, it is called inline at exactly two progress lines, and `tests/test_no_account_pii_in_logs.py` exempts that one callee name and nothing else. Do not add a second caller, do not rebind the name, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead — the guard is meant to fire.
+- **The one exception is `chat_title_for_log(entity, config)`** (`telegram_archive/message_utils.py`), the opt-in `LOG_CHAT_TITLES` gate from #439. It is the only sanctioned route a chat title has, it is called inline at exactly two progress lines, and `tests/test_no_account_pii_in_logs.py` exempts that one callee name and nothing else. Do not add a second caller, do not rebind the name, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead — the guard is meant to fire.
 - **Never log message content** — same PII rule applies.
 
 ## CI/CD Pipeline
@@ -182,7 +182,7 @@ python3 -m ruff check . && python3 -m ruff format --check .
 
 ### Test Workflow (`.github/workflows/tests.yml`)
 
-- Runs `pytest tests/` with `--cov=src --cov-report=xml`
+- Runs `pytest tests/` with `--cov=telegram_archive --cov-report=xml`
 - Uploads to Codecov
 - Python 3.14 on Ubuntu
 - Web tests (test_database_viewer, test_multi_user_auth, test_v720_features) require FastAPI/pydantic — may fail locally if versions mismatch
@@ -237,7 +237,7 @@ Use: pytest, pytest-asyncio, pytest-cov
 
 ### Version Files
 
-Both `pyproject.toml` AND `src/__init__.py` must be updated together when bumping versions — plus `uv.lock` and the image pins in `docker-compose.yml`, `README.md` and `scripts/migrate-sqlite-to-postgres.py` (`tests/test_release_pins.py` fails the release PR until every pin names the new version).
+Both `pyproject.toml` AND `telegram_archive/__init__.py` must be updated together when bumping versions — plus `uv.lock` and the image pins in `docker-compose.yml`, `README.md` and `scripts/migrate-sqlite-to-postgres.py` (`tests/test_release_pins.py` fails the release PR until every pin names the new version).
 
 ### Release Workflow
 

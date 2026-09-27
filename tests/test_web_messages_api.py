@@ -93,31 +93,31 @@ class TestDatabaseAdapterWebMethods(unittest.TestCase):
 
     def test_get_messages_paginated_method_exists(self):
         """Verify get_messages_paginated method exists."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         self.assertTrue(hasattr(DatabaseAdapter, "get_messages_paginated"))
 
     def test_find_message_by_date_method_exists(self):
         """Verify find_message_by_date_with_joins method exists."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         self.assertTrue(hasattr(DatabaseAdapter, "find_message_by_date_with_joins"))
 
     def test_get_messages_for_export_method_exists(self):
         """Verify get_messages_for_export method exists."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         self.assertTrue(hasattr(DatabaseAdapter, "get_messages_for_export"))
 
     def test_get_message_versions_method_exists(self):
         """Verify get_message_versions method exists."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         self.assertTrue(hasattr(DatabaseAdapter, "get_message_versions"))
 
     def test_get_message_versions_by_date_range_method_exists(self):
         """Verify export message-versions method exists."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         self.assertTrue(hasattr(DatabaseAdapter, "get_message_versions_by_date_range"))
 
@@ -130,8 +130,8 @@ class TestWebAppStructure(unittest.TestCase):
         # Import would require database init, so just check the module
         import importlib.util
 
-        spec = importlib.util.find_spec("src.web.main")
-        self.assertIsNotNone(spec, "src.web.main module should exist")
+        spec = importlib.util.find_spec("telegram_archive.web.main")
+        self.assertIsNotNone(spec, "telegram_archive.web.main module should exist")
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ import sys
 
 from telethon import TelegramClient
 
-from src.config import build_telegram_client_kwargs
+from telegram_archive.config import build_telegram_client_kwargs
 
 
 def _get_session_path() -> str:

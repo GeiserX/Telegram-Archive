@@ -11,7 +11,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 from unittest.mock import patch
 
-from src.config import Config
+from telegram_archive.config import Config
 
 _BASE = {
     "TELEGRAM_API_ID": "12345",
@@ -264,7 +264,7 @@ class TestAccountScopedConfig(unittest.TestCase):
         """__getattr__'s own defensive branch: a view missing ``_base`` entirely
         (e.g. constructed via __new__, never through Config.for_account) still
         raises AttributeError for the requested name, not some other error."""
-        from src.config import AccountScopedConfig
+        from telegram_archive.config import AccountScopedConfig
 
         broken_view = AccountScopedConfig.__new__(AccountScopedConfig)
         with self.assertRaises(AttributeError) as ctx:

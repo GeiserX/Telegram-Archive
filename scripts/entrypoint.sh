@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# DB_TYPE is lowercased everywhere in Python (src/db/base.py, alembic/env.py)
+# DB_TYPE is lowercased everywhere in Python (telegram_archive/db/base.py, alembic/env.py)
 # but compared literally below — DB_TYPE=PostgreSQL used to match NEITHER
 # branch, silently skipping migrations and starting the app against a
 # zero-table database. Normalise once so both worlds agree.
@@ -12,7 +12,9 @@ DB_TYPE=$(printf '%s' "${DB_TYPE:-}" | tr '[:upper:]' '[:lower:]')
 # For other commands, check if database exists and run migrations if needed
 
 SKIP_MIGRATIONS=false
-if [[ "$1" == "python" ]] && [[ "$2" == "-m" ]] && [[ "$3" == "src" ]] && [[ "$4" == "auth" ]]; then
+# "src" is the package's old name: compose files written for older images still
+# run "python -m src auth", and the compatibility package keeps that working.
+if [[ "$1" == "python" ]] && [[ "$2" == "-m" ]] && { [[ "$3" == "telegram_archive" ]] || [[ "$3" == "src" ]]; } && [[ "$4" == "auth" ]]; then
     echo "Running auth command - skipping database migrations"
     SKIP_MIGRATIONS=true
 fi
@@ -397,7 +399,7 @@ if database_url.startswith('sqlite+aiosqlite:///'):
 elif database_url.startswith('sqlite:///'):
     db_path = database_url.removeprefix('sqlite:///')
 else:
-    # Same precedence as src/db/base.py and alembic/env.py. DATABASE_DIR was
+    # Same precedence as telegram_archive/db/base.py and alembic/env.py. DATABASE_DIR was
     # missing here, so a DATABASE_DIR-only install had its schema inspected at
     # one path and migrated at another - the stamping ladder then read an empty
     # database and skipped, and Alembic re-ran migration 001 against the real

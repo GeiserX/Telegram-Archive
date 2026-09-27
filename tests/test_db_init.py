@@ -25,7 +25,7 @@ class TestGetAdapter:
     @pytest.mark.asyncio
     async def test_creates_adapter_when_none(self):
         """get_adapter() creates a new adapter when global is None."""
-        import src.db as db_pkg
+        import telegram_archive.db as db_pkg
 
         db_pkg._adapter = None
 
@@ -49,7 +49,7 @@ class TestGetAdapter:
     @pytest.mark.asyncio
     async def test_returns_existing_adapter(self):
         """get_adapter() returns existing adapter without re-creating."""
-        import src.db as db_pkg
+        import telegram_archive.db as db_pkg
 
         mock_adapter = MagicMock()
         db_pkg._adapter = mock_adapter
@@ -73,7 +73,7 @@ class TestCloseAdapter:
     @pytest.mark.asyncio
     async def test_closes_adapter_and_clears_global(self):
         """close_adapter() calls adapter.close() and sets global to None."""
-        import src.db as db_pkg
+        import telegram_archive.db as db_pkg
 
         mock_adapter = AsyncMock()
         mock_adapter.close = AsyncMock()
@@ -89,7 +89,7 @@ class TestCloseAdapter:
     @pytest.mark.asyncio
     async def test_close_adapter_when_none_only_closes_database(self):
         """close_adapter() only calls close_database when adapter is None."""
-        import src.db as db_pkg
+        import telegram_archive.db as db_pkg
 
         db_pkg._adapter = None
 

@@ -155,7 +155,7 @@ END $$;
 
 -- The source must be exactly one account, and that account must have logged in
 -- at least once under 8.0 — its telegram_user_id is what the target's first
--- start will match on to ADOPT the imported rows (src/db/adapter.py,
+-- start will match on to ADOPT the imported rows (telegram_archive/db/adapter.py,
 -- ensure_account: a row already carrying the user id wins outright).
 DO $$
 BEGIN
@@ -290,7 +290,7 @@ SELECT id FROM ins;
 -- work identically on both.
 --
 -- users: target rows always win. The users table is global by design (see
--- src/db/models.py) with last-writer-wins display names; a merge keeps the
+-- telegram_archive/db/models.py) with last-writer-wins display names; a merge keeps the
 -- target's version of anyone both archives know.
 -- ---------------------------------------------------------------------------
 INSERT INTO users (id, username, first_name, last_name, phone, is_bot, created_at, updated_at)

@@ -186,7 +186,7 @@ def _is_non_retryable_media_op(exc: BaseException) -> bool:
 # is well under 1 MB on disk and still costs ~370 MB to decode inside the
 # backup process. Image.MAX_IMAGE_PIXELS is no help either -- Pillow only
 # refuses above TWICE that value, so everything up to 100 MP proceeds after a
-# warning nobody reads. Mirrors _MAX_SOURCE_PIXELS in src/web/thumbnails.py;
+# warning nobody reads. Mirrors _MAX_SOURCE_PIXELS in telegram_archive/web/thumbnails.py;
 # keep the two in step.
 _MAX_SOURCE_PIXELS = 25_000_000
 
@@ -199,7 +199,7 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
 
         from PIL import Image
 
-        from src.web.thumbnails import (
+        from telegram_archive.web.thumbnails import (
             _IMAGE_EXTENSIONS,
             _MAX_SOURCE_BYTES,
             _VIDEO_EXTENSIONS,
@@ -252,7 +252,7 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
             # after, and for every format: img.thumbnail() drafts JPEGs to a
             # reduced scale, but not every JPEG actually decodes at that scale,
             # so exempting JPEG would let its full-size cost through. Same gate,
-            # same reason, as _generate_sync in src/web/thumbnails.py.
+            # same reason, as _generate_sync in telegram_archive/web/thumbnails.py.
             pixels = img.size[0] * img.size[1]
             if pixels > _MAX_SOURCE_PIXELS:
                 logger.debug("Thumbnail pre-generation refused oversized source (%d pixels)", pixels)
@@ -1000,7 +1000,7 @@ class TelegramBackup:
                 logger.error("❌ Session not authorized!")
                 logger.error("Please run the authentication setup first:")
                 logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
-                logger.error("  Local:  python -m src.setup_auth")
+                logger.error("  Local:  python -m telegram_archive.setup_auth")
                 raise RuntimeError("Session not authorized. Please run authentication setup.")
 
             # No get_me() here: authorization is already proven by the check above,

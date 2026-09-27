@@ -157,7 +157,7 @@ class TestReclassifyRoundVideos:
     def _backup(self, *, chats, found):
         from unittest.mock import AsyncMock, MagicMock
 
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.telegram_backup import TelegramBackup
 
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.account_id = 1
@@ -176,7 +176,7 @@ class TestReclassifyRoundVideos:
         return backup
 
     def _run_it(self, backup, **kwargs):
-        import src.telegram_backup as mod
+        import telegram_archive.telegram_backup as mod
 
         original = mod.iter_messages_with_flood_retry
         mod.iter_messages_with_flood_retry = self._iter
@@ -255,7 +255,7 @@ class TestReclassifyRunnerAccountHandling:
         under test, not Telethon."""
         from unittest.mock import AsyncMock, MagicMock
 
-        import src.telegram_backup as mod
+        import telegram_archive.telegram_backup as mod
 
         calls = []
 
@@ -276,7 +276,7 @@ class TestReclassifyRunnerAccountHandling:
         return calls
 
     def test_each_account_gets_a_resolver(self, monkeypatch):
-        from src.telegram_backup import run_reclassify_round_videos
+        from telegram_archive.telegram_backup import run_reclassify_round_videos
 
         calls = self._patch(
             monkeypatch, [{"chats_scanned": 1, "round_videos_found": 2, "rows_retyped": 2, "errors": 0}]
@@ -290,7 +290,7 @@ class TestReclassifyRunnerAccountHandling:
         assert calls[0]["account_resolver"] is not None
 
     def test_summaries_are_summed_across_accounts(self, monkeypatch):
-        from src.telegram_backup import run_reclassify_round_videos
+        from telegram_archive.telegram_backup import run_reclassify_round_videos
 
         self._patch(
             monkeypatch,
@@ -305,7 +305,7 @@ class TestReclassifyRunnerAccountHandling:
         assert summary == {"chats_scanned": 4, "round_videos_found": 3, "rows_retyped": 3, "errors": 0}
 
     def test_one_failing_account_does_not_take_the_other_down(self, monkeypatch):
-        from src.telegram_backup import run_reclassify_round_videos
+        from telegram_archive.telegram_backup import run_reclassify_round_videos
 
         self._patch(
             monkeypatch,
@@ -322,7 +322,7 @@ class TestReclassifyRunnerAccountHandling:
         the same rule run_backup and run_fill_gaps follow."""
         import pytest
 
-        from src.telegram_backup import run_reclassify_round_videos
+        from telegram_archive.telegram_backup import run_reclassify_round_videos
 
         self._patch(monkeypatch, [RuntimeError("boom")])
 
@@ -339,8 +339,8 @@ class TestReclassifyCommandOutput:
         return SimpleNamespace(chat_id=kw.get("chat_id"), dry_run=kw.get("dry_run", False))
 
     def test_it_reports_the_counts_and_exits_zero(self, monkeypatch, capsys):
-        import src.__main__ as cli
-        import src.telegram_backup as mod
+        import telegram_archive.__main__ as cli
+        import telegram_archive.telegram_backup as mod
 
         async def _fake(config, chat_id=None, dry_run=False):
             return {"chats_scanned": 4, "round_videos_found": 9, "rows_retyped": 9, "errors": 0}
@@ -357,8 +357,8 @@ class TestReclassifyCommandOutput:
         assert "Chats with errors" not in out  # only shown when there are some
 
     def test_a_dry_run_says_so(self, monkeypatch, capsys):
-        import src.__main__ as cli
-        import src.telegram_backup as mod
+        import telegram_archive.__main__ as cli
+        import telegram_archive.telegram_backup as mod
 
         async def _fake(config, chat_id=None, dry_run=False):
             assert dry_run is True
@@ -375,8 +375,8 @@ class TestReclassifyCommandOutput:
         assert "Chats with errors:  2" in out
 
     def test_a_failure_is_reported_and_exits_nonzero(self, monkeypatch, capsys):
-        import src.__main__ as cli
-        import src.telegram_backup as mod
+        import telegram_archive.__main__ as cli
+        import telegram_archive.telegram_backup as mod
 
         async def _boom(config, chat_id=None, dry_run=False):
             raise RuntimeError("no session")

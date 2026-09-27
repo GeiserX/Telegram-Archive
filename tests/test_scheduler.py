@@ -1,5 +1,5 @@
 """
-Tests for the scheduler module (src/scheduler.py).
+Tests for the scheduler module (telegram_archive/scheduler.py).
 """
 
 import asyncio
@@ -16,7 +16,7 @@ def _make_entry(connection=None, row_id=1, index=1, listener=None, listener_task
     instead of the old singular ``_connection``/``_listener`` attributes; tests
     inject their mocks through entries like this one.
     """
-    from src.scheduler import _AccountRuntime
+    from telegram_archive.scheduler import _AccountRuntime
 
     account = MagicMock()
     account.index = index
@@ -39,8 +39,8 @@ class TestBackupSchedulerInit:
 
     def test_init_sets_config(self):
         """BackupScheduler stores the config object."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -49,8 +49,8 @@ class TestBackupSchedulerInit:
 
     def test_init_sets_running_false(self):
         """BackupScheduler starts in non-running state."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -59,8 +59,8 @@ class TestBackupSchedulerInit:
 
     def test_init_starts_with_no_account_runtimes(self):
         """BackupScheduler starts with no per-account connections."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -69,8 +69,8 @@ class TestBackupSchedulerInit:
 
     def test_init_sets_listener_disabled(self):
         """BackupScheduler starts with listeners not yet enabled."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -79,8 +79,8 @@ class TestBackupSchedulerInit:
 
     def test_init_creates_backup_lock(self):
         """BackupScheduler creates a lock to prevent overlapping backup runs."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.should_skip_topic = MagicMock(return_value=False)
@@ -91,8 +91,8 @@ class TestBackupSchedulerInit:
 
     def test_init_registers_signal_handlers(self):
         """BackupScheduler registers SIGINT and SIGTERM handlers."""
-        with patch("src.scheduler.signal.signal") as mock_signal:
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal") as mock_signal:
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             BackupScheduler(config)
@@ -107,8 +107,8 @@ class TestBackupSchedulerSignalHandler:
 
     def test_signal_handler_calls_stop(self):
         """Signal handler triggers stop on the scheduler."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -124,8 +124,8 @@ class TestBackupSchedulerStart:
 
     def test_start_with_valid_cron_schedule(self):
         """Start succeeds with valid 5-part cron schedule."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.schedule = "0 */6 * * *"
@@ -144,8 +144,8 @@ class TestBackupSchedulerStart:
 
     def test_start_with_invalid_cron_raises_value_error(self):
         """Start raises ValueError with malformed cron schedule."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.schedule = "invalid"
@@ -157,8 +157,8 @@ class TestBackupSchedulerStart:
 
     def test_start_with_three_part_cron_raises_value_error(self):
         """Start raises ValueError when cron has wrong number of parts."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.schedule = "0 * *"
@@ -174,8 +174,8 @@ class TestBackupSchedulerStop:
 
     def test_stop_when_running_shuts_down_scheduler(self):
         """Stop shuts down the APScheduler when running."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -189,8 +189,8 @@ class TestBackupSchedulerStop:
 
     def test_stop_when_not_running_is_noop(self):
         """Stop is a no-op when scheduler is not running."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -208,8 +208,8 @@ class TestBackupSchedulerRunBackupJob:
     @pytest.fixture
     def scheduler_with_connection(self):
         """Create a scheduler with one mocked account runtime."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -224,7 +224,7 @@ class TestBackupSchedulerRunBackupJob:
         entry = scheduler._accounts[0]
         entry.connection.ensure_connected = AsyncMock(return_value=mock_client)
 
-        with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
+        with patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
             await scheduler._run_backup_job()
 
             scheduler.config.for_account.assert_called_with(entry.account.index)
@@ -234,15 +234,15 @@ class TestBackupSchedulerRunBackupJob:
 
     async def test_run_backup_job_sweeps_accounts_sequentially(self):
         """Two accounts are swept in config order, each under its own row id."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
             scheduler = BackupScheduler(config)
             scheduler._accounts = [_make_entry(row_id=1, index=1), _make_entry(row_id=5, index=2)]
 
-            with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
+            with patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
                 await scheduler._run_backup_job()
 
             assert [c.kwargs["account_id"] for c in mock_backup.await_args_list] == [1, 5]
@@ -255,8 +255,8 @@ class TestBackupSchedulerRunBackupJob:
         """
         import logging
 
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -267,8 +267,8 @@ class TestBackupSchedulerRunBackupJob:
             scheduler._accounts = [broken, healthy]
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup,
-                caplog.at_level(logging.ERROR, logger="src.scheduler"),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock) as mock_backup,
+                caplog.at_level(logging.ERROR, logger="telegram_archive.scheduler"),
             ):
                 await scheduler._run_backup_job()
 
@@ -285,8 +285,8 @@ class TestBackupSchedulerRunBackupJob:
         mock_run_fill_gaps = AsyncMock(return_value={"errors": 0, "total_recovered": 5})
 
         with (
-            patch("src.scheduler.run_backup", new_callable=AsyncMock),
-            patch("src.telegram_backup.run_fill_gaps", mock_run_fill_gaps, create=True),
+            patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+            patch("telegram_archive.telegram_backup.run_fill_gaps", mock_run_fill_gaps, create=True),
         ):
             await scheduler._run_backup_job()
 
@@ -299,7 +299,7 @@ class TestBackupSchedulerRunBackupJob:
         entry.listener = AsyncMock()
         entry.listener._load_tracked_chats = AsyncMock()
 
-        with patch("src.scheduler.run_backup", new_callable=AsyncMock):
+        with patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock):
             await scheduler._run_backup_job()
 
             entry.listener._load_tracked_chats.assert_called_once()
@@ -317,7 +317,7 @@ class TestBackupSchedulerRunBackupJob:
         scheduler = scheduler_with_connection
         await scheduler._backup_lock.acquire()
         try:
-            with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
+            with patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
                 await scheduler._run_backup_job()
             mock_backup.assert_not_called()
         finally:
@@ -325,8 +325,8 @@ class TestBackupSchedulerRunBackupJob:
 
     async def test_run_backup_job_gap_fill_with_errors(self):
         """Backup job logs warning when gap-fill has errors."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = True
@@ -336,8 +336,8 @@ class TestBackupSchedulerRunBackupJob:
             mock_fill_gaps = AsyncMock(return_value={"errors": 2, "total_recovered": 3})
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
-                patch("src.telegram_backup.run_fill_gaps", mock_fill_gaps, create=True),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.telegram_backup.run_fill_gaps", mock_fill_gaps, create=True),
             ):
                 await scheduler._run_backup_job()
 
@@ -345,8 +345,8 @@ class TestBackupSchedulerRunBackupJob:
 
     async def test_run_backup_job_gap_fill_exception(self):
         """Backup job catches gap-fill exceptions without crashing."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = True
@@ -354,9 +354,11 @@ class TestBackupSchedulerRunBackupJob:
             scheduler._accounts = [_make_entry()]
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
                 patch(
-                    "src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, side_effect=Exception("gap fill boom")
+                    "telegram_archive.telegram_backup.run_fill_gaps",
+                    new_callable=AsyncMock,
+                    side_effect=Exception("gap fill boom"),
                 ),
             ):
                 await scheduler._run_backup_job()
@@ -368,10 +370,10 @@ class TestBackupSchedulerConnect:
     async def test_connect_creates_telegram_connection_per_account_and_resolves_rows(self):
         """_connect builds one TelegramConnection per account and resolves row ids."""
         with (
-            patch("src.scheduler.signal.signal"),
-            patch("src.scheduler.TelegramConnection") as MockConn,
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.scheduler.TelegramConnection") as MockConn,
         ):
-            from src.scheduler import BackupScheduler
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             account = MagicMock()
@@ -387,7 +389,7 @@ class TestBackupSchedulerConnect:
             mock_db = AsyncMock()
             mock_db.ensure_account = AsyncMock(return_value=1)
 
-            with patch("src.db.create_adapter", new_callable=AsyncMock, return_value=mock_db):
+            with patch("telegram_archive.db.create_adapter", new_callable=AsyncMock, return_value=mock_db):
                 await scheduler._connect()
 
             MockConn.assert_called_once_with(config, account=account)
@@ -401,8 +403,8 @@ class TestBackupSchedulerConnect:
 
     async def test_disconnect_closes_connection(self):
         """_disconnect calls disconnect on every account's connection."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -416,8 +418,8 @@ class TestBackupSchedulerConnect:
 
     async def test_disconnect_when_no_connection_is_noop(self):
         """_disconnect is safe when no connection exists."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -432,8 +434,8 @@ class TestBackupSchedulerListener:
 
     async def test_start_listener_when_disabled_is_noop(self):
         """_start_listener does nothing when enable_listener is False."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = False
@@ -448,8 +450,8 @@ class TestBackupSchedulerListener:
 
     async def test_start_listener_when_not_connected_logs_error(self):
         """_start_listener fails gracefully when no account ever connected."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
@@ -461,8 +463,8 @@ class TestBackupSchedulerListener:
 
     async def test_start_listener_when_connection_not_connected_logs_error(self):
         """_start_listener fails gracefully when a connection is down."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
@@ -478,8 +480,8 @@ class TestBackupSchedulerListener:
 
     async def test_start_listener_creates_and_starts_listener(self):
         """_start_listener creates a TelegramListener and starts it."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
@@ -490,9 +492,9 @@ class TestBackupSchedulerListener:
             mock_listener = AsyncMock()
             mock_listener.run = AsyncMock()
 
-            with patch("src.listener.TelegramListener") as MockListener:
+            with patch("telegram_archive.listener.TelegramListener") as MockListener:
                 MockListener.create = AsyncMock(return_value=mock_listener)
-                with patch("src.scheduler.asyncio.create_task") as mock_task:
+                with patch("telegram_archive.scheduler.asyncio.create_task") as mock_task:
                     mock_task.return_value = MagicMock()
                     await scheduler._start_listener()
 
@@ -511,9 +513,9 @@ class TestBackupSchedulerListener:
         which these assertions turn red. The patched class in the test above
         cannot catch that.
         """
-        with patch("src.scheduler.signal.signal"):
-            from src.listener import TelegramListener
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.listener import TelegramListener
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
@@ -530,7 +532,7 @@ class TestBackupSchedulerListener:
             scheduler._accounts = [entry]
 
             with (
-                patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
+                patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
                 patch.object(TelegramListener, "connect", new_callable=AsyncMock),
                 patch.object(TelegramListener, "run", new_callable=AsyncMock),
             ):
@@ -543,8 +545,8 @@ class TestBackupSchedulerListener:
 
     async def test_start_listener_handles_exception_gracefully(self):
         """_start_listener catches exceptions during listener creation."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
@@ -556,7 +558,7 @@ class TestBackupSchedulerListener:
             with patch.dict(
                 "sys.modules",
                 {
-                    "src.listener": MagicMock(
+                    "telegram_archive.listener": MagicMock(
                         TelegramListener=MagicMock(create=AsyncMock(side_effect=Exception("listener init failed")))
                     )
                 },
@@ -568,8 +570,8 @@ class TestBackupSchedulerListener:
 
     async def test_stop_listener_cancels_task_and_closes_listener(self):
         """_stop_listener cancels the task and closes the listener."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -600,8 +602,8 @@ class TestBackupSchedulerListener:
         CancelledError was caught), crashing run_forever -> main -> sys.exit(1)
         -> container restart, instead of triggering the intended restart.
         """
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.should_skip_topic = MagicMock(return_value=False)
@@ -631,8 +633,8 @@ class TestBackupSchedulerListener:
         Restarting a healthy listener would detach and re-register its handlers
         for no reason; the watchdog restarts exactly what died.
         """
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -660,8 +662,8 @@ class TestBackupSchedulerListener:
 
     async def test_stop_listener_when_no_listener_is_noop(self):
         """_stop_listener is safe when no listener is running."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
@@ -676,8 +678,8 @@ class TestBackupSchedulerRunForever:
 
     async def test_run_forever_connects_starts_and_runs_initial_backup(self):
         """run_forever connects, starts scheduler, and runs initial backup."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -702,8 +704,8 @@ class TestBackupSchedulerRunForever:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup,
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock) as mock_backup,
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -716,8 +718,8 @@ class TestBackupSchedulerRunForever:
 
     async def test_run_forever_handles_initial_backup_failure(self):
         """run_forever catches exceptions from initial backup."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -742,16 +744,20 @@ class TestBackupSchedulerRunForever:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock, side_effect=Exception("backup failed")),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch(
+                    "telegram_archive.scheduler.run_backup",
+                    new_callable=AsyncMock,
+                    side_effect=Exception("backup failed"),
+                ),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 # Should not raise
                 await scheduler.run_forever()
 
     async def test_run_forever_cleanup_on_keyboard_interrupt(self):
         """run_forever cleans up on KeyboardInterrupt."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -768,8 +774,8 @@ class TestBackupSchedulerRunForever:
             scheduler.stop = MagicMock()
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
-                patch("src.scheduler.asyncio.sleep", side_effect=KeyboardInterrupt),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=KeyboardInterrupt),
             ):
                 await scheduler.run_forever()
 
@@ -794,12 +800,12 @@ class TestSchedulerMain:
         mock_scheduler_instance = AsyncMock()
 
         with (
-            patch("src.scheduler.signal.signal"),
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.scheduler.BackupScheduler", return_value=mock_scheduler_instance) as MockBS,
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.BackupScheduler", return_value=mock_scheduler_instance) as MockBS,
         ):
-            from src.scheduler import main
+            from telegram_archive.scheduler import main
 
             await main()
 
@@ -809,12 +815,12 @@ class TestSchedulerMain:
     async def test_main_handles_value_error(self):
         """main() exits with code 1 on ValueError."""
         with (
-            patch("src.scheduler.signal.signal"),
-            patch("src.config.Config", side_effect=ValueError("bad config")),
-            patch("src.config.setup_logging"),
-            patch("src.scheduler.sys.exit") as mock_exit,
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", side_effect=ValueError("bad config")),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.sys.exit") as mock_exit,
         ):
-            from src.scheduler import main
+            from telegram_archive.scheduler import main
 
             await main()
 
@@ -823,12 +829,12 @@ class TestSchedulerMain:
     async def test_main_handles_generic_exception(self):
         """main() exits with code 1 on unexpected exception."""
         with (
-            patch("src.scheduler.signal.signal"),
-            patch("src.config.Config", side_effect=RuntimeError("fatal")),
-            patch("src.config.setup_logging"),
-            patch("src.scheduler.sys.exit") as mock_exit,
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", side_effect=RuntimeError("fatal")),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.sys.exit") as mock_exit,
         ):
-            from src.scheduler import main
+            from telegram_archive.scheduler import main
 
             await main()
 
@@ -845,8 +851,8 @@ class TestRunBackupJobGapFillException:
 
     async def test_gap_fill_exception_sets_gap_fill_ok_false(self):
         """Exception during gap-fill sets gap_fill_ok to False."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = True
@@ -854,9 +860,11 @@ class TestRunBackupJobGapFillException:
             scheduler._accounts = [_make_entry()]
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
                 patch(
-                    "src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, side_effect=Exception("gap fill crash")
+                    "telegram_archive.telegram_backup.run_fill_gaps",
+                    new_callable=AsyncMock,
+                    side_effect=Exception("gap fill crash"),
                 ),
             ):
                 # Should not raise
@@ -873,8 +881,8 @@ class TestRunForeverInitialGapFill:
 
     async def test_initial_gap_fill_runs_when_enabled(self):
         """Initial gap-fill runs after initial backup when fill_gaps=True."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = True
@@ -898,13 +906,13 @@ class TestRunForeverInitialGapFill:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
                 patch(
-                    "src.telegram_backup.run_fill_gaps",
+                    "telegram_archive.telegram_backup.run_fill_gaps",
                     new_callable=AsyncMock,
                     return_value={"errors": 0, "total_recovered": 3},
                 ) as mock_fill,
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -912,8 +920,8 @@ class TestRunForeverInitialGapFill:
 
     async def test_initial_gap_fill_with_errors_logs_warning(self):
         """Initial gap-fill with errors logs warning (line 246)."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = True
@@ -937,20 +945,20 @@ class TestRunForeverInitialGapFill:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
                 patch(
-                    "src.telegram_backup.run_fill_gaps",
+                    "telegram_archive.telegram_backup.run_fill_gaps",
                     new_callable=AsyncMock,
                     return_value={"errors": 5, "total_recovered": 2},
                 ),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
     async def test_initial_gap_fill_exception_caught(self):
         """Initial gap-fill exception is caught (lines 247-248)."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = True
@@ -974,11 +982,13 @@ class TestRunForeverInitialGapFill:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
                 patch(
-                    "src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, side_effect=Exception("gap fill crash")
+                    "telegram_archive.telegram_backup.run_fill_gaps",
+                    new_callable=AsyncMock,
+                    side_effect=Exception("gap fill crash"),
                 ),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -993,8 +1003,8 @@ class TestRunForeverListenerReload:
 
     async def test_listener_tracked_chats_reloaded(self):
         """Listener tracked chats are reloaded after initial backup."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -1021,8 +1031,8 @@ class TestRunForeverListenerReload:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -1039,8 +1049,8 @@ class TestRunForeverListenerRestart:
 
     async def test_listener_task_restart_on_death(self):
         """Dead listener task is restarted during the main loop."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -1071,8 +1081,8 @@ class TestRunForeverListenerRestart:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -1089,8 +1099,8 @@ class TestRunForeverListenerRestart:
         a container restart could recover. The fixed watchdog keeps retrying based
         on `self._listener_enabled` regardless of whether the task is None or done.
         """
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -1130,8 +1140,8 @@ class TestRunForeverListenerRestart:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -1142,8 +1152,8 @@ class TestRunForeverListenerRestart:
 
     async def test_listener_task_cancelled_restart(self):
         """Cancelled listener task is restarted during the main loop."""
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
@@ -1174,8 +1184,8 @@ class TestRunForeverListenerRestart:
                     scheduler.running = False
 
             with (
-                patch("src.scheduler.run_backup", new_callable=AsyncMock),
-                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+                patch("telegram_archive.scheduler.run_backup", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
             ):
                 await scheduler.run_forever()
 
@@ -1201,12 +1211,12 @@ class TestSchedulerMainLogging:
         mock_scheduler_instance = AsyncMock()
 
         with (
-            patch("src.scheduler.signal.signal"),
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.scheduler.BackupScheduler", return_value=mock_scheduler_instance) as MockBS,
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.BackupScheduler", return_value=mock_scheduler_instance) as MockBS,
         ):
-            from src.scheduler import main
+            from telegram_archive.scheduler import main
 
             await main()
 

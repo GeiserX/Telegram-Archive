@@ -21,9 +21,9 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Media, Message, Reaction
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Media, Message, Reaction
 
 CHAT_ID = -500
 LONG_REPLY_TEXT = "L" * 150
@@ -188,13 +188,13 @@ class TestPendingMediaDownloadsLimit:
         for i in range(5):
             await self._add_media(adapter, f"m{i}", attempts=0)
 
-        with caplog.at_level(logging.INFO, logger="src.db.adapter"):
+        with caplog.at_level(logging.INFO, logger="telegram_archive.db.adapter"):
             limited = await adapter.get_pending_media_downloads(limit=3, account_id=1)
         assert len(limited) == 3
         assert any("media retry: processing 3 of 5 pending" in r.getMessage() for r in caplog.records)
 
         caplog.clear()
-        with caplog.at_level(logging.INFO, logger="src.db.adapter"):
+        with caplog.at_level(logging.INFO, logger="telegram_archive.db.adapter"):
             not_truncated = await adapter.get_pending_media_downloads(limit=5, account_id=1)
         assert len(not_truncated) == 5
         assert not any("media retry" in r.getMessage() for r in caplog.records)

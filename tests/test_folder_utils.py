@@ -1,6 +1,6 @@
-"""Unit tests for pure folder-membership resolution (src/folder_utils.py)."""
+"""Unit tests for pure folder-membership resolution (telegram_archive/folder_utils.py)."""
 
-from src.folder_utils import (
+from telegram_archive.folder_utils import (
     FolderChat,
     FolderPeers,
     FolderRules,

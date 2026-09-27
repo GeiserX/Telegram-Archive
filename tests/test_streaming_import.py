@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
-from src.db.models import Media, Message, SyncStatus, account_metadata_key
-from src.telegram_import import TelegramImporter
+from telegram_archive.db.models import Media, Message, SyncStatus, account_metadata_key
+from telegram_archive.telegram_import import TelegramImporter
 
 CHAT_A = 901001  # personal_chat keeps its raw id
 CHAT_B_EXPORT = 901002  # what result.json says
@@ -157,7 +157,10 @@ async def test_interrupted_import_resumes_to_identical_state(real_adapter, tmp_p
         # BATCH_SIZE=2 makes chat B span two batches: the crash lands MID-CHAT,
         # leaving partial chat-B rows — the state whose retry used to require
         # --merge (and corrupt message_count).
-        with patch("src.telegram_import.BATCH_SIZE", 2), pytest.raises(RuntimeError, match="simulated crash"):
+        with (
+            patch("telegram_archive.telegram_import.BATCH_SIZE", 2),
+            pytest.raises(RuntimeError, match="simulated crash"),
+        ):
             await importer.run(str(tmp_path / "export"))
     finally:
         real_adapter.insert_messages_batch = real_batch

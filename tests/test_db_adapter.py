@@ -10,8 +10,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.adapter import DatabaseAdapter, _strip_tz, retry_on_locked
-from src.db.models import Message
+from telegram_archive.db.adapter import DatabaseAdapter, _strip_tz, retry_on_locked
+from telegram_archive.db.models import Message
 
 # ============================================================
 # _strip_tz helper
@@ -278,7 +278,7 @@ class TestSerializeRawData:
         """Returns {} when even string conversion fails."""
         adapter = self._make_adapter()
         # Patch json.dumps to always raise, forcing ultimate fallback
-        with patch("src.db.adapter.json.dumps", side_effect=TypeError("can't serialize")):
+        with patch("telegram_archive.db.adapter.json.dumps", side_effect=TypeError("can't serialize")):
             result = adapter._serialize_raw_data({"key": "value"})
             assert result == "{}"
 
@@ -1204,9 +1204,9 @@ class TestDeleteChatOperations:
         adapter = DatabaseAdapter(db_manager)
 
         with (
-            patch("src.db.adapter.os.path.exists", return_value=True),
-            patch("src.db.adapter.shutil.rmtree") as mock_rmtree,
-            patch("src.db.adapter.glob.glob", return_value=[]),
+            patch("telegram_archive.db.adapter.os.path.exists", return_value=True),
+            patch("telegram_archive.db.adapter.shutil.rmtree") as mock_rmtree,
+            patch("telegram_archive.db.adapter.glob.glob", return_value=[]),
         ):
             await adapter.delete_chat_and_related_data(100, media_base_path="/data/media", account_id=1)
 
@@ -1218,7 +1218,7 @@ class TestDeleteChatOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        with patch("src.db.adapter.shutil.rmtree") as mock_rmtree:
+        with patch("telegram_archive.db.adapter.shutil.rmtree") as mock_rmtree:
             await adapter.delete_chat_and_related_data(100, media_base_path=None, account_id=1)
 
         mock_rmtree.assert_not_called()
@@ -3481,7 +3481,7 @@ class TestIterMediaPathsForRepair:
 
     @pytest.mark.asyncio
     async def test_streams_all_rows_in_id_order_across_batches(self, tmp_path):
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'repair.db'}")
         await db_manager.init()
@@ -3516,7 +3516,7 @@ class TestIterMediaPathsForRepair:
 
     @pytest.mark.asyncio
     async def test_empty_table_yields_no_batches(self, tmp_path):
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'empty.db'}")
         await db_manager.init()
@@ -3538,7 +3538,7 @@ class TestComputeDirectorySize:
 
     def test_sums_regular_files_and_ignores_symlinks(self, tmp_path):
         """Total equals the two real files; a symlink to one is not double-counted."""
-        from src.message_utils import compute_directory_size
+        from telegram_archive.message_utils import compute_directory_size
 
         nested = tmp_path / "a" / "b"
         nested.mkdir(parents=True)
@@ -3557,13 +3557,13 @@ class TestComputeDirectorySize:
 
     def test_missing_path_returns_zero(self, tmp_path):
         """A path that does not exist returns 0."""
-        from src.message_utils import compute_directory_size
+        from telegram_archive.message_utils import compute_directory_size
 
         assert compute_directory_size(str(tmp_path / "does_not_exist")) == 0
 
     def test_empty_and_falsy_path_returns_zero(self, tmp_path):
         """An empty directory and a falsy path both return 0."""
-        from src.message_utils import compute_directory_size
+        from telegram_archive.message_utils import compute_directory_size
 
         assert compute_directory_size(str(tmp_path)) == 0
         assert compute_directory_size("") == 0
@@ -3580,7 +3580,7 @@ class TestCalculateAndStoreStatisticsStorage:
     @pytest.mark.asyncio
     async def test_storage_path_uses_disk_size_not_db_file_size(self, tmp_path):
         """With storage_path, total_size_mb reflects real disk usage, not the DB file_size."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_du.db'}")
         await db_manager.init()
@@ -3613,7 +3613,7 @@ class TestCalculateAndStoreStatisticsStorage:
     @pytest.mark.asyncio
     async def test_without_storage_path_falls_back_to_db_sum(self, tmp_path):
         """Without storage_path, total_size_mb is derived from the DB SUM(file_size)."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_sum.db'}")
         await db_manager.init()
@@ -3638,7 +3638,7 @@ class TestCalculateAndStoreStatisticsStorage:
     @pytest.mark.asyncio
     async def test_missing_storage_path_falls_back_to_db_sum_not_zero(self, tmp_path):
         """An unmounted/missing storage path (du==0) with media present falls back to the DB SUM, not a spurious 0."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_unmounted.db'}")
         await db_manager.init()
@@ -3669,7 +3669,7 @@ class TestCalculateAndStoreStatisticsStorage:
         The totals are derived from the per-(account, chat) grouped rows, so a
         downloaded row with no chat_id (absent from both maps) must still count.
         """
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_grouped.db'}")
         await db_manager.init()
@@ -3719,8 +3719,8 @@ class TestDeleteChatPushSubscriptionPurge:
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
         from sqlalchemy.pool import StaticPool
 
-        from src.db.base import DatabaseManager
-        from src.db.models import Base, Chat, PushSubscription
+        from telegram_archive.db.base import DatabaseManager
+        from telegram_archive.db.models import Base, Chat, PushSubscription
 
         engine = create_async_engine(
             "sqlite+aiosqlite://",
@@ -3750,7 +3750,7 @@ class TestDeleteChatPushSubscriptionPurge:
     async def _endpoints(self, db_manager):
         from sqlalchemy import select as sa_select
 
-        from src.db.models import PushSubscription
+        from telegram_archive.db.models import PushSubscription
 
         async with db_manager.async_session_factory() as session:
             rows = await session.execute(sa_select(PushSubscription.endpoint))
@@ -3816,7 +3816,7 @@ class TestDeleteChatPushSubscriptionPurge:
             from sqlalchemy import select as sa_select
             from sqlalchemy.dialects import postgresql
 
-            from src.db.models import Chat
+            from telegram_archive.db.models import Chat
 
             locked = sa_select(Chat.id).where(Chat.id == -100200).with_for_update()
             assert "FOR UPDATE" in str(locked.compile(dialect=postgresql.dialect()))

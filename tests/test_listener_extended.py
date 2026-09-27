@@ -30,7 +30,7 @@ from telethon.tl.types import (
     UpdatePinnedMessages,
 )
 
-from src.listener import MassOperationProtector, TelegramListener
+from telegram_archive.listener import MassOperationProtector, TelegramListener
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -682,7 +682,9 @@ class TestDownloadMedia:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+        with patch(
+            "telegram_archive.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"
+        ):
             result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()
@@ -720,7 +722,8 @@ class TestDownloadMedia:
 
         mock_exists.side_effect = exists
         with patch(
-            "src.message_utils.finalize_atomic_download", return_value=os.path.normpath("/tmp/test_media/-100/123.jpg")
+            "telegram_archive.message_utils.finalize_atomic_download",
+            return_value=os.path.normpath("/tmp/test_media/-100/123.jpg"),
         ):
             result = await listener._download_media(msg, -100)
         assert result is not None
@@ -764,7 +767,9 @@ class TestDownloadMedia:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+        with patch(
+            "telegram_archive.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"
+        ):
             result = await listener._download_media(msg, -100)
         assert result is not None
         # Threshold raised only for the download window, restored after.
@@ -805,7 +810,8 @@ class TestDownloadMedia:
 
         mock_exists.side_effect = exists
         with patch(
-            "src.message_utils.finalize_atomic_download", return_value=os.path.normpath("/tmp/test_media/-100/123.jpg")
+            "telegram_archive.message_utils.finalize_atomic_download",
+            return_value=os.path.normpath("/tmp/test_media/-100/123.jpg"),
         ):
             result = await listener._download_media(msg, -100)
         assert result is not None
@@ -904,7 +910,7 @@ class TestDownloadMedia:
 class TestDownloadAvatar:
     """Tests for _download_avatar paths."""
 
-    @patch("src.listener.get_avatar_paths", return_value=(None, "/legacy/path"))
+    @patch("telegram_archive.listener.get_avatar_paths", return_value=(None, "/legacy/path"))
     async def test_returns_early_when_no_avatar_set(self, mock_paths):
         """If avatar_path is None, returns without downloading."""
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
@@ -914,7 +920,7 @@ class TestDownloadAvatar:
         await listener._download_avatar(entity, 123)
         listener.client.download_profile_photo.assert_not_called()
 
-    @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
+    @patch("telegram_archive.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
     @patch("os.path.lexists", return_value=True)
     @patch("os.path.islink", return_value=False)
     @patch("os.path.getsize", return_value=1024)
@@ -927,7 +933,7 @@ class TestDownloadAvatar:
         await listener._download_avatar(entity, 123)
         listener.client.download_profile_photo.assert_not_called()
 
-    @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
+    @patch("telegram_archive.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
     @patch("os.path.lexists", return_value=False)
     async def test_downloads_avatar_when_file_missing(self, mock_lexists, mock_paths):
         """Downloads avatar when file does not exist."""
@@ -939,7 +945,7 @@ class TestDownloadAvatar:
         await listener._download_avatar(entity, 123)
         listener.client.download_profile_photo.assert_called_once()
 
-    @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
+    @patch("telegram_archive.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
     @patch("os.path.lexists", return_value=True)
     @patch("os.path.islink", return_value=False)
     @patch("os.path.getsize", return_value=0)
@@ -953,7 +959,7 @@ class TestDownloadAvatar:
         await listener._download_avatar(entity, 123)
         listener.client.download_profile_photo.assert_called_once()
 
-    @patch("src.listener.get_avatar_paths", side_effect=Exception("filesystem error"))
+    @patch("telegram_archive.listener.get_avatar_paths", side_effect=Exception("filesystem error"))
     async def test_handles_exception_gracefully(self, mock_paths):
         """Exceptions during avatar download are caught and logged."""
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
@@ -963,7 +969,7 @@ class TestDownloadAvatar:
         # Should not raise
         await listener._download_avatar(entity, 123)
 
-    @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
+    @patch("telegram_archive.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
     @patch("os.path.lexists", return_value=False)
     async def test_handles_none_download_result(self, mock_lexists, mock_paths):
         """When download_profile_photo returns None, logs debug instead of info."""
@@ -993,7 +999,7 @@ class TestNotifyUpdate:
 
     async def test_sends_edit_notification(self):
         """Sends edit notification with correct type mapping."""
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
@@ -1004,7 +1010,7 @@ class TestNotifyUpdate:
 
     async def test_sends_delete_notification(self):
         """Sends delete notification with correct type mapping."""
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
@@ -1015,7 +1021,7 @@ class TestNotifyUpdate:
 
     async def test_sends_new_message_notification(self):
         """Sends new_message notification with correct type mapping."""
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
@@ -1026,7 +1032,7 @@ class TestNotifyUpdate:
 
     async def test_sends_pin_notification(self):
         """Sends pin notification with correct type mapping."""
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
@@ -1056,7 +1062,7 @@ class TestNotifyUpdate:
 
     async def test_default_chat_id_when_missing(self):
         """Uses 0 as default chat_id when not provided in data."""
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
@@ -1562,7 +1568,7 @@ class TestOnNewMessageAdvanced:
 
     async def test_notifier_called_for_new_message(self):
         """When notifier is set, it is called after saving new message."""
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener, handlers, db, config = _make_listener_with_handlers()
         handler = handlers[events.NewMessage]
@@ -1609,7 +1615,7 @@ class TestOnNewMessageAdvanced:
         """
         from telethon.tl.types import MessageMediaPhoto, User
 
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener, handlers, db, config = _make_listener_with_handlers(
             listen_new_messages_media=True,
@@ -1652,7 +1658,7 @@ class TestOnNewMessageAdvanced:
         assert call_args[0][0] == NotificationType.NEW_MESSAGE
         ws_message = call_args[0][2]["message"]
 
-        # Flat sender fields mirror the API row (src/db/adapter.py get_messages_paginated)
+        # Flat sender fields mirror the API row (telegram_archive/db/adapter.py get_messages_paginated)
         assert ws_message["first_name"] == "Test"
         assert ws_message["last_name"] == "User"
         assert ws_message["username"] == "testuser"
@@ -1935,7 +1941,7 @@ class TestLoadTrackedChatsError:
         db.get_all_chats = AsyncMock(side_effect=Exception("db error"))
         listener = TelegramListener(_make_config(), db, account_id=1)
 
-        with caplog.at_level("WARNING", logger="src.listener"):
+        with caplog.at_level("WARNING", logger="telegram_archive.listener"):
             await listener._load_tracked_chats()
 
         assert listener._tracked_chat_ids == set()
@@ -1949,7 +1955,7 @@ class TestLoadTrackedChatsError:
         assert listener._tracked_chat_ids == {-1001000000706, -1001000000707}
 
         db.get_all_chats.side_effect = Exception("postgres failover")
-        with caplog.at_level("WARNING", logger="src.listener"):
+        with caplog.at_level("WARNING", logger="telegram_archive.listener"):
             await listener._load_tracked_chats()
 
         assert listener._tracked_chat_ids == {-1001000000706, -1001000000707}
@@ -1998,7 +2004,7 @@ class TestLoadTrackedChatsError:
         db.get_all_chats = AsyncMock(side_effect=ValueError("PeerUser(user_id=123456789)"))
         listener = TelegramListener(_make_config(), db, account_id=1)
 
-        with caplog.at_level("WARNING", logger="src.listener"):
+        with caplog.at_level("WARNING", logger="telegram_archive.listener"):
             await listener._load_tracked_chats()
 
         assert caplog.records
@@ -2043,7 +2049,7 @@ class TestListenerCreateFactory:
         config = _make_config()
         mock_db = _make_db()
 
-        with patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
+        with patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
             listener = await TelegramListener.create(config, account_id=1)
 
         assert isinstance(listener, TelegramListener)
@@ -2055,7 +2061,7 @@ class TestListenerCreateFactory:
         mock_db = _make_db()
         mock_client = MagicMock()
 
-        with patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
+        with patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
             listener = await TelegramListener.create(config, client=mock_client, account_id=1)
 
         assert listener.client is mock_client
@@ -2118,7 +2124,7 @@ class TestListenerConnectSharedClient:
         mock_db_manager = MagicMock()
         mock_db_manager._is_sqlite = True
 
-        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=mock_db_manager):
+        with patch("telegram_archive.db.get_db_manager", new_callable=AsyncMock, return_value=mock_db_manager):
             await listener.connect()
 
 
@@ -2142,7 +2148,7 @@ class TestListenerConnectNotAuthorized:
         mock_client.is_user_authorized = AsyncMock(return_value=False)
 
         with (
-            patch("src.listener.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.listener.TelegramClient", return_value=mock_client),
             pytest.raises(RuntimeError, match="Session not authorized"),
         ):
             await listener.connect()
@@ -2211,7 +2217,9 @@ class TestDownloadMediaSymlinkFallback:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+        with patch(
+            "telegram_archive.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"
+        ):
             result = await listener._download_media(msg, -100)
         assert result is not None
         mock_move.assert_called_once()
@@ -2340,7 +2348,7 @@ class TestRunListenerStandalone:
 
     async def test_run_listener_connects_runs_and_closes(self):
         """run_listener creates one listener per account, connects, runs, closes."""
-        from src.listener import run_listener
+        from telegram_archive.listener import run_listener
 
         mock_listener = AsyncMock()
         mock_listener.connect = AsyncMock()
@@ -2350,7 +2358,7 @@ class TestRunListenerStandalone:
         config = _make_config()
 
         with patch(
-            "src.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener
+            "telegram_archive.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener
         ) as mock_create:
             await run_listener(config)
 
@@ -2373,7 +2381,7 @@ class TestRunListenerStandalone:
 
     async def test_run_listener_closes_on_keyboard_interrupt(self):
         """run_listener calls close() even on KeyboardInterrupt."""
-        from src.listener import run_listener
+        from telegram_archive.listener import run_listener
 
         mock_listener = AsyncMock()
         mock_listener.connect = AsyncMock()
@@ -2382,7 +2390,9 @@ class TestRunListenerStandalone:
 
         config = _make_config()
 
-        with patch("src.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener):
+        with patch(
+            "telegram_archive.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener
+        ):
             await run_listener(config)
 
         mock_listener.close.assert_awaited_once()
@@ -2396,12 +2406,12 @@ class TestRunListenerStandalone:
         and NO hardwired row id (resolution belongs to connect(), patched here,
         so account_id must still be None at this seam).
         """
-        from src.listener import run_listener
+        from telegram_archive.listener import run_listener
 
         config = _make_config()
 
         with (
-            patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
+            patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
             patch.object(TelegramListener, "connect", autospec=True) as mock_connect,
             patch.object(TelegramListener, "run", autospec=True),
             patch.object(TelegramListener, "close", autospec=True),
@@ -2446,7 +2456,7 @@ class TestRunListenerStandalone:
 
         mock_db_manager = MagicMock()
         mock_db_manager._is_sqlite = True
-        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=mock_db_manager):
+        with patch("telegram_archive.db.get_db_manager", new_callable=AsyncMock, return_value=mock_db_manager):
             await listener.connect()
 
         assert listener.account_id == 7
@@ -2465,14 +2475,14 @@ class TestListenerMainEntryPoint:
 
     async def test_main_creates_config_and_runs(self):
         """main() creates Config, sets up logging, and calls run_listener."""
-        from src.listener import main
+        from telegram_archive.listener import main
 
         mock_config = MagicMock()
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.listener.run_listener", new_callable=AsyncMock) as mock_run,
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.listener.run_listener", new_callable=AsyncMock) as mock_run,
         ):
             await main()
 
@@ -2480,22 +2490,22 @@ class TestListenerMainEntryPoint:
 
     async def test_main_value_error_raises(self):
         """main() re-raises ValueError from config."""
-        from src.listener import main
+        from telegram_archive.listener import main
 
         with (
-            patch("src.config.Config", side_effect=ValueError("bad config")),
-            patch("src.config.setup_logging"),
+            patch("telegram_archive.config.Config", side_effect=ValueError("bad config")),
+            patch("telegram_archive.config.setup_logging"),
             pytest.raises(ValueError, match="bad config"),
         ):
             await main()
 
     async def test_main_generic_exception_raises(self):
         """main() re-raises generic exceptions."""
-        from src.listener import main
+        from telegram_archive.listener import main
 
         with (
-            patch("src.config.Config", side_effect=RuntimeError("fatal")),
-            patch("src.config.setup_logging"),
+            patch("telegram_archive.config.Config", side_effect=RuntimeError("fatal")),
+            patch("telegram_archive.config.setup_logging"),
             pytest.raises(RuntimeError, match="fatal"),
         ):
             await main()
@@ -2628,7 +2638,7 @@ class TestRealtimeMediaAttributes:
         assert media_data["mime_type"] == "video/mp4"
 
     async def test_ws_media_mirrors_the_inserted_row(self):
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
         handler = handlers[events.NewMessage]
@@ -2673,7 +2683,7 @@ class TestNotifyUpdateCapturingAccount:
     """#315: _notify_update forwards the account whose rows were just written."""
 
     async def test_notify_update_passes_capturing_account(self) -> None:
-        from src.realtime import NotificationType
+        from telegram_archive.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=7)
         notifier = AsyncMock()
@@ -2703,7 +2713,9 @@ class TestNotifierBindsToOwnManager:
 
         foreign_manager = MagicMock()
         foreign_manager._is_sqlite = True
-        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=foreign_manager) as global_resolver:
+        with patch(
+            "telegram_archive.db.get_db_manager", new_callable=AsyncMock, return_value=foreign_manager
+        ) as global_resolver:
             await listener.connect()
 
         assert listener._notifier._db_manager is own_manager

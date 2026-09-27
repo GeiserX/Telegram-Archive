@@ -238,7 +238,7 @@ class PushNotificationManager:
         try:
             from sqlalchemy import select
 
-            from src.db.models import PushSubscription
+            from telegram_archive.db.models import PushSubscription
 
             accounts_json = json.dumps(allowed_accounts) if allowed_accounts is not None else None
             refs_json = json.dumps(allowed_chat_refs) if allowed_chat_refs is not None else None
@@ -287,7 +287,7 @@ class PushNotificationManager:
         try:
             from sqlalchemy import and_, delete
 
-            from src.db.models import PushSubscription
+            from telegram_archive.db.models import PushSubscription
 
             async with self.db.db_manager.async_session_factory() as session:
                 conditions = [PushSubscription.endpoint == endpoint]
@@ -328,7 +328,7 @@ class PushNotificationManager:
         try:
             from sqlalchemy import or_, select
 
-            from src.db.models import PushSubscription
+            from telegram_archive.db.models import PushSubscription
 
             async with self.db.db_manager.async_session_factory() as session:
                 query = select(PushSubscription)
@@ -392,7 +392,7 @@ class PushNotificationManager:
 
         from sqlalchemy import or_, select
 
-        from src.db.models import ViewerAccount, ViewerToken
+        from telegram_archive.db.models import ViewerAccount, ViewerToken
 
         live = {name for name in usernames if name in self.configured_principals}
         remaining = usernames - live

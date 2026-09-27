@@ -43,7 +43,7 @@ IMPORT_ID = f"import_{CHAT_ID}_{MSG_ID}"
 SWEEP_ID = f"{CHAT_ID}_{MSG_ID}_video"
 CHAT_REF = "importAddrRef1234ABcd"
 FNAME = f"{IMPORT_ID}_holiday.Mp4"
-REL_PATH = f"{CHAT_ID}/{FNAME}"  # exactly what src/telegram_import.py writes
+REL_PATH = f"{CHAT_ID}/{FNAME}"  # exactly what telegram_archive/telegram_import.py writes
 
 
 def _row(media_id: str, media_type: str = "video", file_path: str = REL_PATH, downloaded: int = 1) -> dict:
@@ -84,7 +84,7 @@ class _MediaTable:
 
 
 def _reload_main(media_root=None):
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
     main_mod.db = AsyncMock()
@@ -284,7 +284,7 @@ class TestImportedMediaPathResolution(unittest.TestCase):
         """The resolver's output is deleted and replaced by callers, so a value
         that climbs out of the archive must resolve to None, not to a real
         file elsewhere on the host."""
-        from src.web.media_utils import resolve_stored_media_path
+        from telegram_archive.web.media_utils import resolve_stored_media_path
 
         self.assertIsNone(resolve_stored_media_path("../../etc/passwd", self.media_root))
         self.assertIsNone(resolve_stored_media_path(f"{CHAT_ID}/../../x", self.media_root))

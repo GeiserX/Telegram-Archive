@@ -1,7 +1,7 @@
 """Make ``alembic upgrade head`` produce exactly the schema in models.py.
 
 Until now this project had two schema authors that nothing compared:
-``Base.metadata.create_all`` (SQLite only, from ``src/db/base.py``) and this
+``Base.metadata.create_all`` (SQLite only, from ``telegram_archive/db/base.py``) and this
 migration chain (the only author PostgreSQL ever had). They had drifted to 54
 structural differences on SQLite and 50 on PostgreSQL. This migration removes
 every one of them, and ``tests/test_schema_parity.py`` keeps them removed: its

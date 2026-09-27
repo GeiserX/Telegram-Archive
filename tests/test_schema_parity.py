@@ -4,9 +4,9 @@ There are two ways this project can build a schema:
 
 * ``alembic upgrade head``     — ``scripts/entrypoint.sh`` runs this on both
   backends before the app starts. It is the authority.
-* ``Base.metadata.create_all`` — ``src/db/base.py`` falls back to this on
+* ``Base.metadata.create_all`` — ``telegram_archive/db/base.py`` falls back to this on
   SQLite for processes that never pass through that entrypoint (the viewer
-  image ships no ``alembic/``), and ``src/db/migrate.py`` uses it to provision
+  image ships no ``alembic/``), and ``telegram_archive/db/migrate.py`` uses it to provision
   the target of a SQLite-to-PostgreSQL move.
 
 Nothing compared them until this module, and they had drifted to 54 structural
@@ -32,7 +32,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from alembic import command
-from src.db.models import Base
+from telegram_archive.db.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_DIR = REPO_ROOT / "alembic"

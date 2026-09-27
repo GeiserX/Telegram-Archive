@@ -37,7 +37,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 
 from alembic import op
-from src.db.fts import (
+from telegram_archive.db.fts import (
     PG_TRANSCRIPT_ADD_COLUMN,
     PG_TRANSCRIPT_CREATE_INDEX,
     PG_TRANSCRIPT_INDEX_NAME,

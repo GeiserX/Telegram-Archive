@@ -145,7 +145,7 @@ What has no equivalent and stays out of this mode: substring search with `ILIKE`
 
 ## Python side
 
-A new `STDBAdapter` implements the same `DatabaseAdapter` method names behind the existing [`init_database`](../src/db/__init__.py) entry point, selected by a `spacetimedb://host/db-name` database URL and an archiver token from the environment. The listener, the backup pass and the viewer keep their call sites.
+A new `STDBAdapter` implements the same `DatabaseAdapter` method names behind the existing [`init_database`](../telegram_archive/db/__init__.py) entry point, selected by a `spacetimedb://host/db-name` database URL and an archiver token from the environment. The listener, the backup pass and the viewer keep their call sites.
 
 - **Writes** are [`POST /v1/database/<db>/call/<reducer>`](https://spacetimedb.com/docs/http/database) with a JSON array of arguments and the archiver's bearer token. A reducer failure comes back as HTTP 530 with the error string and is raised as an exception.
 - **Batch size.** The call endpoint has a request body cap of about 2 MiB. Message batches carrying raw Telethon JSON must stay well under that, which the default batch of 100 does.
@@ -159,7 +159,7 @@ There is no Python SDK. The adapter is a thin HTTP client plus SATS-JSON decodin
 
 The Vue page gets a second data layer, active only in this mode.
 
-- **Bundle.** Generate TypeScript bindings with `spacetime generate`, bundle them with the SDK's browser build into one IIFE file, and vendor it next to the Vue bundle under [`src/web/static/vendor/`](../src/web/static/vendor/) with the app version in the name. The SDK ships ESM only, so this bundling step is new. Every module publish that changes tables ships a matching bundle in the same release.
+- **Bundle.** Generate TypeScript bindings with `spacetime generate`, bundle them with the SDK's browser build into one IIFE file, and vendor it next to the Vue bundle under [`telegram_archive/web/static/vendor/`](../telegram_archive/web/static/vendor/) with the app version in the name. The SDK ships ESM only, so this bundling step is new. Every module publish that changes tables ships a matching bundle in the same release.
 - **Connection.** `GET /api/stdb/token` on the viewer returns a one-hour token for the logged-in principal. The page connects with it and re-fetches before expiry. Nothing is written to local storage.
 - **Subscriptions.** `my_chats`, then per open chat `my_open_chat` plus the filtered `media`, `reaction`, `message_version` and `tg_user` queries. Row callbacks push into the existing `ref()`s; the page's rendering code does not change.
 - **What goes away in this mode:** the relay socket client and its reconnect, the 3-second poll and its reconciliation, the `after_id` newer-messages fetch, and the server-side connection manager and internal push route.

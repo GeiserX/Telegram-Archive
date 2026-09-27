@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config import Config, _parse_bool_env
+from telegram_archive.config import Config, _parse_bool_env
 
 BASE_ENV = {
     "TELEGRAM_API_ID": "12345",

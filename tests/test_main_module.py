@@ -1,5 +1,5 @@
 """
-Tests for the CLI entry point module (src/__main__.py).
+Tests for the CLI entry point module (telegram_archive/__main__.py).
 """
 
 import os
@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.__main__ import create_parser
+from telegram_archive.__main__ import create_parser
 
 
 class TestCreateParser(unittest.TestCase):
@@ -112,11 +112,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_shows_help_when_no_args(self):
         """main() shows help and returns 0 when no arguments provided."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive"]),
-            patch("src.__main__.create_parser") as mock_parser_fn,
+            patch("telegram_archive.__main__.create_parser") as mock_parser_fn,
         ):
             mock_parser = MagicMock()
             mock_parser.parse_args.return_value = MagicMock(command=None, data_dir=None)
@@ -128,11 +128,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_auth_command(self):
         """main() dispatches to run_auth for 'auth' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "auth"]),
-            patch("src.__main__.run_auth", return_value=0) as mock_auth,
+            patch("telegram_archive.__main__.run_auth", return_value=0) as mock_auth,
         ):
             result = main()
 
@@ -141,11 +141,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_backup_command(self):
         """main() dispatches to run_backup for 'backup' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "backup"]),
-            patch("src.__main__.run_backup", return_value=0) as mock_backup,
+            patch("telegram_archive.__main__.run_backup", return_value=0) as mock_backup,
         ):
             result = main()
 
@@ -154,11 +154,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_schedule_command(self):
         """main() dispatches to run_schedule for 'schedule' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "schedule"]),
-            patch("src.__main__.run_schedule", return_value=0) as mock_sched,
+            patch("telegram_archive.__main__.run_schedule", return_value=0) as mock_sched,
         ):
             result = main()
 
@@ -167,11 +167,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_export_command(self):
         """main() dispatches to run_export for 'export' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "export", "-o", "out.json"]),
-            patch("src.__main__.asyncio.run", return_value=0) as mock_run,
+            patch("telegram_archive.__main__.asyncio.run", return_value=0) as mock_run,
         ):
             result = main()
 
@@ -180,11 +180,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_stats_command(self):
         """main() dispatches to run_stats for 'stats' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "stats"]),
-            patch("src.__main__.asyncio.run", return_value=0) as mock_run,
+            patch("telegram_archive.__main__.asyncio.run", return_value=0) as mock_run,
         ):
             result = main()
 
@@ -192,11 +192,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_list_chats_command(self):
         """main() dispatches to run_list_chats for 'list-chats' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "list-chats"]),
-            patch("src.__main__.asyncio.run", return_value=0) as mock_run,
+            patch("telegram_archive.__main__.asyncio.run", return_value=0) as mock_run,
         ):
             result = main()
 
@@ -204,11 +204,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_import_command(self):
         """main() dispatches to run_import for 'import' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "import", "-p", "/tmp/export"]),
-            patch("src.__main__.asyncio.run", return_value=0) as mock_run,
+            patch("telegram_archive.__main__.asyncio.run", return_value=0) as mock_run,
         ):
             result = main()
 
@@ -216,11 +216,11 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_dispatches_fill_gaps_command(self):
         """main() dispatches to run_fill_gaps_cmd for 'fill-gaps' command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with (
             patch.object(sys, "argv", ["telegram-archive", "fill-gaps"]),
-            patch("src.__main__.asyncio.run", return_value=0) as mock_run,
+            patch("telegram_archive.__main__.asyncio.run", return_value=0) as mock_run,
         ):
             result = main()
 
@@ -228,7 +228,7 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_shows_help_for_unknown_command(self):
         """main() shows help and returns 0 for unrecognized command."""
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         # argparse would error on truly unknown commands, but None command
         # is handled by the else branch
@@ -241,13 +241,13 @@ class TestMainFunction(unittest.TestCase):
         """main() sets BACKUP_PATH and SESSION_DIR from --data-dir."""
         import tempfile
 
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = os.path.join(tmpdir, "test-data")
             with (
                 patch.object(sys, "argv", ["telegram-archive", "--data-dir", data_dir, "auth"]),
-                patch("src.__main__.run_auth", return_value=0),
+                patch("telegram_archive.__main__.run_auth", return_value=0),
                 patch("pathlib.Path.mkdir"),
                 patch.dict(os.environ, {}, clear=True),
             ):
@@ -261,13 +261,13 @@ class TestMainFunction(unittest.TestCase):
         """main() creates backup and session directories when --data-dir is used."""
         import tempfile
 
-        from src.__main__ import main
+        from telegram_archive.__main__ import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = os.path.join(tmpdir, "test-dir-create")
             with (
                 patch.object(sys, "argv", ["telegram-archive", "--data-dir", data_dir, "auth"]),
-                patch("src.__main__.run_auth", return_value=0),
+                patch("telegram_archive.__main__.run_auth", return_value=0),
                 patch("pathlib.Path.mkdir") as mock_mkdir,
                 patch.dict(os.environ, {}, clear=True),
             ):
@@ -282,9 +282,9 @@ class TestRunAuth(unittest.TestCase):
 
     def test_run_auth_calls_setup_auth_main(self):
         """run_auth calls setup_auth.main and returns its result."""
-        from src.__main__ import run_auth
+        from telegram_archive.__main__ import run_auth
 
-        with patch("src.setup_auth.main", return_value=0) as mock_auth_main:
+        with patch("telegram_archive.setup_auth.main", return_value=0) as mock_auth_main:
             result = run_auth(MagicMock())
 
             mock_auth_main.assert_called_once()
@@ -296,9 +296,9 @@ class TestRunBackup(unittest.TestCase):
 
     def test_run_backup_calls_telegram_backup_main(self):
         """run_backup calls telegram_backup.main and returns its result."""
-        from src.__main__ import run_backup
+        from telegram_archive.__main__ import run_backup
 
-        with patch("src.telegram_backup.main", return_value=0) as mock_backup_main:
+        with patch("telegram_archive.telegram_backup.main", return_value=0) as mock_backup_main:
             result = run_backup(MagicMock())
 
             mock_backup_main.assert_called_once()
@@ -310,9 +310,9 @@ class TestRunSchedule(unittest.TestCase):
 
     def test_run_schedule_calls_scheduler_main(self):
         """run_schedule runs scheduler.main via asyncio.run."""
-        from src.__main__ import run_schedule
+        from telegram_archive.__main__ import run_schedule
 
-        with patch("src.__main__.asyncio.run", return_value=None) as mock_run:
+        with patch("telegram_archive.__main__.asyncio.run", return_value=None) as mock_run:
             run_schedule(MagicMock())
 
             mock_run.assert_called_once()
@@ -323,7 +323,7 @@ class TestRunExport:
 
     async def test_run_export_success(self):
         """run_export creates exporter, exports, and returns 0."""
-        from src.__main__ import run_export
+        from telegram_archive.__main__ import run_export
 
         mock_config = MagicMock()
         mock_exporter = AsyncMock()
@@ -337,9 +337,13 @@ class TestRunExport:
         args.end_date = None
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.export_backup.BackupExporter.create", new_callable=AsyncMock, return_value=mock_exporter),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch(
+                "telegram_archive.export_backup.BackupExporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_exporter,
+            ),
         ):
             result = await run_export(args)
 
@@ -349,11 +353,11 @@ class TestRunExport:
 
     async def test_run_export_failure_returns_1(self):
         """run_export returns 1 on exception."""
-        from src.__main__ import run_export
+        from telegram_archive.__main__ import run_export
 
         args = MagicMock()
 
-        with patch("src.config.Config", side_effect=Exception("config error")):
+        with patch("telegram_archive.config.Config", side_effect=Exception("config error")):
             result = await run_export(args)
 
             assert result == 1
@@ -364,7 +368,7 @@ class TestRunStats:
 
     async def test_run_stats_success(self):
         """run_stats creates exporter, shows stats, and returns 0."""
-        from src.__main__ import run_stats
+        from telegram_archive.__main__ import run_stats
 
         mock_config = MagicMock()
         mock_exporter = AsyncMock()
@@ -374,9 +378,13 @@ class TestRunStats:
         args = MagicMock()
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.export_backup.BackupExporter.create", new_callable=AsyncMock, return_value=mock_exporter),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch(
+                "telegram_archive.export_backup.BackupExporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_exporter,
+            ),
         ):
             result = await run_stats(args)
 
@@ -386,11 +394,11 @@ class TestRunStats:
 
     async def test_run_stats_failure_returns_1(self):
         """run_stats returns 1 on exception."""
-        from src.__main__ import run_stats
+        from telegram_archive.__main__ import run_stats
 
         args = MagicMock()
 
-        with patch("src.config.Config", side_effect=Exception("fail")):
+        with patch("telegram_archive.config.Config", side_effect=Exception("fail")):
             result = await run_stats(args)
 
             assert result == 1
@@ -401,7 +409,7 @@ class TestRunListChats:
 
     async def test_run_list_chats_success(self):
         """run_list_chats creates exporter, lists chats, and returns 0."""
-        from src.__main__ import run_list_chats
+        from telegram_archive.__main__ import run_list_chats
 
         mock_config = MagicMock()
         mock_exporter = AsyncMock()
@@ -411,9 +419,13 @@ class TestRunListChats:
         args = MagicMock()
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.export_backup.BackupExporter.create", new_callable=AsyncMock, return_value=mock_exporter),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch(
+                "telegram_archive.export_backup.BackupExporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_exporter,
+            ),
         ):
             result = await run_list_chats(args)
 
@@ -423,11 +435,11 @@ class TestRunListChats:
 
     async def test_run_list_chats_failure_returns_1(self):
         """run_list_chats returns 1 on exception."""
-        from src.__main__ import run_list_chats
+        from telegram_archive.__main__ import run_list_chats
 
         args = MagicMock()
 
-        with patch("src.config.Config", side_effect=Exception("fail")):
+        with patch("telegram_archive.config.Config", side_effect=Exception("fail")):
             result = await run_list_chats(args)
 
             assert result == 1
@@ -438,7 +450,7 @@ class TestRunFillGapsCmd:
 
     async def test_run_fill_gaps_cmd_success(self):
         """run_fill_gaps_cmd runs gap-fill and prints summary."""
-        from src.__main__ import run_fill_gaps_cmd
+        from telegram_archive.__main__ import run_fill_gaps_cmd
 
         mock_config = MagicMock()
         mock_config.gap_threshold = 50
@@ -458,9 +470,9 @@ class TestRunFillGapsCmd:
         }
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, return_value=summary),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.telegram_backup.run_fill_gaps", new_callable=AsyncMock, return_value=summary),
         ):
             result = await run_fill_gaps_cmd(args)
 
@@ -468,7 +480,7 @@ class TestRunFillGapsCmd:
 
     async def test_run_fill_gaps_cmd_overrides_threshold(self):
         """run_fill_gaps_cmd sets gap_threshold from --threshold arg."""
-        from src.__main__ import run_fill_gaps_cmd
+        from telegram_archive.__main__ import run_fill_gaps_cmd
 
         mock_config = MagicMock()
         mock_config.gap_threshold = 50
@@ -486,9 +498,9 @@ class TestRunFillGapsCmd:
         }
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, return_value=summary),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.telegram_backup.run_fill_gaps", new_callable=AsyncMock, return_value=summary),
         ):
             result = await run_fill_gaps_cmd(args)
 
@@ -497,12 +509,12 @@ class TestRunFillGapsCmd:
 
     async def test_run_fill_gaps_cmd_failure_returns_1(self):
         """run_fill_gaps_cmd returns 1 on exception."""
-        from src.__main__ import run_fill_gaps_cmd
+        from telegram_archive.__main__ import run_fill_gaps_cmd
 
         args = MagicMock()
         args.threshold = None
 
-        with patch("src.config.Config", side_effect=Exception("fail")):
+        with patch("telegram_archive.config.Config", side_effect=Exception("fail")):
             result = await run_fill_gaps_cmd(args)
 
             assert result == 1
@@ -513,7 +525,7 @@ class TestRunImport:
 
     async def test_run_import_success(self):
         """run_import creates importer, runs import, and prints summary."""
-        from src.__main__ import run_import
+        from telegram_archive.__main__ import run_import
 
         mock_config = MagicMock()
         mock_config.media_path = "/data/media"
@@ -539,9 +551,13 @@ class TestRunImport:
         args.merge = False
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.telegram_import.TelegramImporter.create", new_callable=AsyncMock, return_value=mock_importer),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch(
+                "telegram_archive.telegram_import.TelegramImporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_importer,
+            ),
         ):
             result = await run_import(args)
 
@@ -551,7 +567,7 @@ class TestRunImport:
 
     async def test_run_import_dry_run_prefix(self):
         """run_import shows [DRY RUN] prefix when dry_run is True."""
-        from src.__main__ import run_import
+        from telegram_archive.__main__ import run_import
 
         mock_config = MagicMock()
         mock_config.media_path = "/data/media"
@@ -575,9 +591,13 @@ class TestRunImport:
         args.merge = False
 
         with (
-            patch("src.config.Config", return_value=mock_config),
-            patch("src.config.setup_logging"),
-            patch("src.telegram_import.TelegramImporter.create", new_callable=AsyncMock, return_value=mock_importer),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch(
+                "telegram_archive.telegram_import.TelegramImporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_importer,
+            ),
         ):
             result = await run_import(args)
 
@@ -585,12 +605,12 @@ class TestRunImport:
 
     async def test_run_import_failure_returns_1(self):
         """run_import returns 1 on exception."""
-        from src.__main__ import run_import
+        from telegram_archive.__main__ import run_import
 
         args = MagicMock()
         args.path = "/tmp/export"
 
-        with patch("src.config.Config", side_effect=Exception("fail")):
+        with patch("telegram_archive.config.Config", side_effect=Exception("fail")):
             result = await run_import(args)
 
             assert result == 1

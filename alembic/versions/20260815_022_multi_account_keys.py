@@ -280,7 +280,7 @@ ENTITLEMENT_TABLES: dict[str, str] = {
 ENTITLEMENT_COLUMNS: tuple[str, ...] = ("allowed_accounts", "allowed_chat_refs")
 
 # secrets.token_urlsafe(16) is always exactly 22 characters over 128 bits. Kept
-# in step with src/db/models.py:new_chat_ref; a migration must not import the
+# in step with telegram_archive/db/models.py:new_chat_ref; a migration must not import the
 # ORM, which is free to move on without it.
 CHAT_REF_BYTES = 16
 CHAT_REF_LENGTH = 22

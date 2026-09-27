@@ -10,9 +10,9 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.db.models import account_metadata_key
-from src.listener import TelegramListener
-from src.telegram_backup import TelegramBackup
+from telegram_archive.db.models import account_metadata_key
+from telegram_archive.listener import TelegramListener
+from telegram_archive.telegram_backup import TelegramBackup
 
 
 def _backup(account_id):

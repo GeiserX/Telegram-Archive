@@ -56,10 +56,10 @@ from alembic import command
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_chat_ref_"))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Chat, Media, Message
-from src.web import main as web_main
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Chat, Media, Message
+from telegram_archive.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

@@ -41,7 +41,7 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_stats_"))
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
-from src.db.adapter import (
+from telegram_archive.db.adapter import (
     LEGACY_CHAT_COUNTS_KEY,
     PER_ACCOUNT_CHAT_COUNTS_KEY,
     PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY,
@@ -50,7 +50,7 @@ from src.db.adapter import (
     account_chat_stats_key,
     parse_account_chat_stats_key,
 )
-from src.web import main as web_main
+from telegram_archive.web import main as web_main
 
 BASE = datetime(2026, 5, 1, 9, 0, 0)
 

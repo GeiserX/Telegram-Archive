@@ -19,7 +19,7 @@ class TestSessionPathLogging:
 
     def _make_backup(self):
         """Create a TelegramBackup instance with mocked dependencies."""
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.telegram_backup import TelegramBackup
 
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.account_id = 1
@@ -43,8 +43,8 @@ class TestSessionPathLogging:
         backup = self._make_backup()
 
         with (
-            patch("src.telegram_backup.TelegramClient") as mock_client_cls,
-            patch("src.telegram_backup.logger") as mock_logger,
+            patch("telegram_archive.telegram_backup.TelegramClient") as mock_client_cls,
+            patch("telegram_archive.telegram_backup.logger") as mock_logger,
         ):
             mock_client_cls.return_value = MagicMock()
             mock_client_cls.return_value.connect = AsyncMock()
@@ -77,8 +77,8 @@ class TestSessionPathLogging:
             return mock
 
         with (
-            patch("src.telegram_backup.TelegramClient", side_effect=track_client),
-            patch("src.telegram_backup.logger") as mock_logger,
+            patch("telegram_archive.telegram_backup.TelegramClient", side_effect=track_client),
+            patch("telegram_archive.telegram_backup.logger") as mock_logger,
         ):
             mock_logger.info = track_log
             mock_logger.debug = MagicMock()
@@ -94,7 +94,7 @@ class TestListenerSessionPathLogging:
 
     def _make_listener(self):
         """Create a TelegramListener instance with mocked dependencies."""
-        from src.listener import TelegramListener
+        from telegram_archive.listener import TelegramListener
 
         config = MagicMock()
         config.api_id = 12345
@@ -141,10 +141,10 @@ class TestListenerSessionPathLogging:
         listener = self._make_listener()
 
         with (
-            patch("src.listener.TelegramClient") as mock_client_cls,
-            patch("src.listener.logger") as mock_logger,
-            patch("src.db.get_db_manager", new_callable=AsyncMock) as mock_get_db,
-            patch("src.listener.RealtimeNotifier") as mock_notifier_cls,
+            patch("telegram_archive.listener.TelegramClient") as mock_client_cls,
+            patch("telegram_archive.listener.logger") as mock_logger,
+            patch("telegram_archive.db.get_db_manager", new_callable=AsyncMock) as mock_get_db,
+            patch("telegram_archive.listener.RealtimeNotifier") as mock_notifier_cls,
         ):
             mock_client = AsyncMock()
             mock_client.connect = AsyncMock()
@@ -181,10 +181,10 @@ class TestListenerSessionPathLogging:
             return mock_client
 
         with (
-            patch("src.listener.TelegramClient", side_effect=track_client),
-            patch("src.listener.logger") as mock_logger,
-            patch("src.db.get_db_manager", new_callable=AsyncMock),
-            patch("src.listener.RealtimeNotifier") as mock_notifier_cls,
+            patch("telegram_archive.listener.TelegramClient", side_effect=track_client),
+            patch("telegram_archive.listener.logger") as mock_logger,
+            patch("telegram_archive.db.get_db_manager", new_callable=AsyncMock),
+            patch("telegram_archive.listener.RealtimeNotifier") as mock_notifier_cls,
         ):
             mock_logger.info = track_log
             mock_logger.debug = MagicMock()
@@ -209,7 +209,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_relative_db_path_gets_resolved_to_absolute(self):
         """DB_PATH=data/telegram_backup.db (relative) becomes an absolute path in the URL."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         env = {"DB_PATH": "data/telegram_backup.db"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
@@ -223,7 +223,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_absolute_db_path_remains_unchanged(self):
         """DB_PATH=/data/backups/telegram_backup.db (already absolute) is not modified."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         env = {"DB_PATH": "/data/backups/telegram_backup.db"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
@@ -234,7 +234,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_relative_database_path_env_gets_resolved(self):
         """DATABASE_PATH=./my.db (relative) becomes an absolute path."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         env = {"DATABASE_PATH": "./my.db"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
@@ -248,7 +248,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_absolute_database_path_env_remains_unchanged(self):
         """DATABASE_PATH=/custom/path/my.db (already absolute) is unchanged."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         env = {"DATABASE_PATH": "/custom/path/my.db"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
@@ -259,7 +259,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_default_path_is_absolute(self):
         """Default path (no env vars set) produces an absolute path."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         with patch.dict(os.environ, {}, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
@@ -271,7 +271,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_relative_database_dir_gets_resolved(self):
         """DATABASE_DIR=data (relative directory) produces an absolute path."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         env = {"DATABASE_DIR": "data"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
@@ -285,7 +285,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
 
     def test_relative_backup_path_gets_resolved(self):
         """BACKUP_PATH=backups (relative) produces an absolute path."""
-        from src.db.base import DatabaseManager
+        from telegram_archive.db.base import DatabaseManager
 
         env = {"BACKUP_PATH": "backups"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
@@ -315,7 +315,7 @@ class TestDockerfileAssumptions(unittest.TestCase):
         import pathlib
 
         # Check source files for hardcoded /app directory writes
-        src_dir = pathlib.Path(__file__).parent.parent / "src"
+        src_dir = pathlib.Path(__file__).parent.parent / "telegram_archive"
         for py_file in (src_dir / "telegram_backup.py", src_dir / "listener.py"):
             content = py_file.read_text(encoding="utf-8")
             # Should not have APP_DIR or open("/app/...") patterns

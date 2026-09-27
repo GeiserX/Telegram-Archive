@@ -19,11 +19,11 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
-# Add the src directory to the path so we can import our models
+# Put the repository root on the path so we can import our models
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import our models - this registers them with the Base metadata
-from src.db.models import Base
+from telegram_archive.db.models import Base
 
 # This is the Alembic Config object
 config = context.config
@@ -151,7 +151,7 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
         # A failed statement inside a migration must never print its bound
         # values: 022's backfill binds chat ids, which this project treats as
-        # PII. Same setting as the runtime engines in src/db/base.py.
+        # PII. Same setting as the runtime engines in telegram_archive/db/base.py.
         hide_parameters=True,
     )
 

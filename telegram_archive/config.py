@@ -32,7 +32,7 @@ TRANSCRIPTION_VALID_TYPES = TRANSCRIBABLE_TYPES
 TRANSCRIPTION_PRESETS = frozenset({"lite", "fast", "best", "fusion", "auto"})
 # TRANSCRIPTION_PROVIDER: auto asks the server (akou's job path or the OpenAI
 # endpoint), akou insists on the job path, openai skips the question, and
-# every other name is a module in src/transcription_providers/. Adding a
+# every other name is a module in telegram_archive/transcription_providers/. Adding a
 # provider is that module and its name here.
 TRANSCRIPTION_PROVIDERS = frozenset({"auto", "akou", "openai", "deepgram", "assemblyai", "elevenlabs"})
 TRANSCRIPTION_SECRET_PREFIX = "whsec_"
@@ -715,7 +715,7 @@ class Config:
         # Increase this if you experience "database is locked" errors (e.g., on Unraid/slow disks).
         # Default increased to 60s for better resilience with concurrent access (backup + web viewer).
         # DATABASE_TIMEOUT deliberately keeps the never-abort contract of
-        # src/db/base.py's own parse (#378): the viewer tolerates garbage here,
+        # telegram_archive/db/base.py's own parse (#378): the viewer tolerates garbage here,
         # and the backup container must not crash where the viewer shrugs.
         try:
             self.database_timeout = _parse_float_env("DATABASE_TIMEOUT", 60.0)

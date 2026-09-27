@@ -4140,7 +4140,7 @@
                     return !topicId || topicId === 'all' ? null : topicId
                 }
 
-                // Contract mirror — keep in sync with src/db/adapter.py get_messages_paginated:
+                // Contract mirror — keep in sync with telegram_archive/db/adapter.py get_messages_paginated:
                 // ORDER BY date DESC, id DESC; cursor (date < before_date OR (date = before_date AND id < before_id));
                 // topic filter coalesce(reply_to_top_id, GENERAL_TOPIC_ID). Telegram forums use topic id 1 for General.
                 const GENERAL_TOPIC_ID = 1
@@ -4311,7 +4311,7 @@
                     previewFallback.value = {}
                 }
 
-                // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
+                // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see telegram_archive/db/adapter.py.
                 // Non-forum chats and the synthetic "all" topic leave activeTopicId null.
                 const messageBelongsToCurrentTopic = (msg) => {
                     const topicId = activeTopicId()
@@ -4328,7 +4328,7 @@
                 // How "adjoins" is decided for THIS list, since the next reader will need it:
                 //  - The rows are ordered (date desc, id desc) and carry integer ids. Per-chat
                 //    Telegram ids increase with time, which the backend already leans on in
-                //    both cursor directions (src/db/adapter.py: the lone before_id branch and
+                //    both cursor directions (telegram_archive/db/adapter.py: the lone before_id branch and
                 //    the after_id branch both order by id for exactly that reason). So "no id
                 //    strictly between them" means "no message between them".
                 //  - A batch is ONE bounded server page, dense between its own oldest and
@@ -8604,7 +8604,7 @@
                         return 'document'
                     }
 
-                    // Mirror of _MEDIA_STORAGE_PREFIX_RE in src/message_utils.py, which
+                    // Mirror of _MEDIA_STORAGE_PREFIX_RE in telegram_archive/message_utils.py, which
                     // names the download the same way this labels it — change both together.
                     // Every ingest path prefixes the stored name for uniqueness: the sweep
                     // with `<telegram_file_id>_`, the Telegram Desktop importer with

@@ -1,4 +1,4 @@
-"""Tests for web push notification manager (src/web/push.py).
+"""Tests for web push notification manager (telegram_archive/web/push.py).
 
 The push module depends on py_vapid and pywebpush which may not be installed
 locally.  A module-level guard skips all tests gracefully when unavailable.
@@ -10,8 +10,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
-    import src.web.push as push_mod
-    from src.web.push import PushNotificationManager, validate_push_endpoint
+    import telegram_archive.web.push as push_mod
+    from telegram_archive.web.push import PushNotificationManager, validate_push_endpoint
 
     _PUSH_AVAILABLE = True
 except Exception:
@@ -23,7 +23,9 @@ except Exception:
 
 def _skip_unless_push(cls_or_fn):
     """Skip test class/method when push module could not be imported."""
-    return unittest.skipUnless(_PUSH_AVAILABLE, "src.web.push import failed (missing py_vapid/pywebpush)")(cls_or_fn)
+    return unittest.skipUnless(_PUSH_AVAILABLE, "telegram_archive.web.push import failed (missing py_vapid/pywebpush)")(
+        cls_or_fn
+    )
 
 
 def _make_manager(push_setting="full", vapid_private=None, vapid_public=None):
@@ -59,17 +61,17 @@ class TestValidatePushEndpoint(unittest.TestCase):
 
     def test_accepts_fcm_endpoint(self):
         """A real FCM push endpoint resolving to a public IP is accepted."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("142.250.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("142.250.0.1")):
             self.assertTrue(validate_push_endpoint("https://fcm.googleapis.com/fcm/send/abc123"))
 
     def test_accepts_mozilla_endpoint(self):
         """A real Mozilla autopush endpoint resolving to a public IP is accepted."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("34.0.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("34.0.0.1")):
             self.assertTrue(validate_push_endpoint("https://updates.push.services.mozilla.com/wpush/v2/xyz"))
 
     def test_accepts_endpoint_resolving_to_public_ip(self):
         """Any hostname resolving only to public IPs is accepted."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("8.8.8.8")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("8.8.8.8")):
             self.assertTrue(validate_push_endpoint("https://push.example.com/sub"))
 
     def test_rejects_non_https_scheme(self):
@@ -112,34 +114,37 @@ class TestValidatePushEndpoint(unittest.TestCase):
         """A hostname that can't be resolved is rejected (can't prove it's safe)."""
         import socket
 
-        with patch("src.web.push.socket.getaddrinfo", side_effect=socket.gaierror("nodename nor servname provided")):
+        with patch(
+            "telegram_archive.web.push.socket.getaddrinfo",
+            side_effect=socket.gaierror("nodename nor servname provided"),
+        ):
             self.assertFalse(validate_push_endpoint("https://does-not-exist.invalid/sub"))
 
     # -- Confirmed SSRF bypass payloads (encoding tricks defeat naive string checks) --
 
     def test_rejects_decimal_ipv4_loopback_encoding(self):
         """Decimal-encoded IPv4 (2130706433 == 127.0.0.1) resolves to loopback and is rejected."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
             self.assertFalse(validate_push_endpoint("https://2130706433/x"))
 
     def test_rejects_decimal_ipv4_metadata_encoding(self):
         """Decimal-encoded cloud metadata IP (2852039166 == 169.254.169.254) is rejected."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")):
             self.assertFalse(validate_push_endpoint("https://2852039166/x"))
 
     def test_rejects_hex_ipv4_encoding(self):
         """Hex-encoded IPv4 (0x7f.0.0.1 == 127.0.0.1) resolves to loopback and is rejected."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
             self.assertFalse(validate_push_endpoint("https://0x7f.0.0.1/x"))
 
     def test_rejects_octal_ipv4_encoding(self):
         """Octal-encoded IPv4 (0177.0.0.1 == 127.0.0.1) resolves to loopback and is rejected."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
             self.assertFalse(validate_push_endpoint("https://0177.0.0.1/x"))
 
     def test_rejects_shorthand_ipv4_encoding(self):
         """Shorthand IPv4 (127.1 == 127.0.0.1) resolves to loopback and is rejected."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
             self.assertFalse(validate_push_endpoint("https://127.1/x"))
 
     def test_rejects_trailing_dot_localhost(self):
@@ -148,7 +153,7 @@ class TestValidatePushEndpoint(unittest.TestCase):
 
     def test_rejects_trailing_dot_loopback_ip(self):
         """A trailing dot (127.0.0.1.) must not defeat resolution-based rejection."""
-        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
             self.assertFalse(validate_push_endpoint("https://127.0.0.1./x"))
 
 
@@ -223,7 +228,7 @@ class TestInitializeWithEnvKeys(unittest.IsolatedAsyncioTestCase):
             vapid_public="BFAKE_PUBLIC_KEY_BASE64",
         )
 
-        with patch("src.web.push.Vapid") as mock_vapid_cls:
+        with patch("telegram_archive.web.push.Vapid") as mock_vapid_cls:
             mock_vapid_cls.from_pem.return_value = MagicMock()
             result = await mgr.initialize()
 
@@ -241,7 +246,7 @@ class TestInitializeWithEnvKeys(unittest.IsolatedAsyncioTestCase):
             }.get(k)
         )
 
-        with patch("src.web.push.Vapid") as mock_vapid_cls:
+        with patch("telegram_archive.web.push.Vapid") as mock_vapid_cls:
             mock_vapid_cls.from_pem.return_value = MagicMock()
             result = await mgr.initialize()
 
@@ -263,8 +268,8 @@ class TestInitializeWithEnvKeys(unittest.IsolatedAsyncioTestCase):
         mock_vapid_instance.public_key = mock_pub_key
 
         with (
-            patch("src.web.push.Vapid") as mock_vapid_cls,
-            patch("src.web.push.b64urlencode", return_value="BNEW_ENCODED_KEY"),
+            patch("telegram_archive.web.push.Vapid") as mock_vapid_cls,
+            patch("telegram_archive.web.push.b64urlencode", return_value="BNEW_ENCODED_KEY"),
         ):
             mock_vapid_cls.return_value = mock_vapid_instance
             mock_vapid_cls.from_pem.return_value = MagicMock()
@@ -288,8 +293,8 @@ class TestInitializeWithEnvKeys(unittest.IsolatedAsyncioTestCase):
         mock_vapid_instance.public_key = mock_pub_key
 
         with (
-            patch("src.web.push.Vapid") as mock_vapid_cls,
-            patch("src.web.push.b64urlencode", return_value="BKEY"),
+            patch("telegram_archive.web.push.Vapid") as mock_vapid_cls,
+            patch("telegram_archive.web.push.b64urlencode", return_value="BKEY"),
         ):
             mock_vapid_cls.return_value = mock_vapid_instance
             # from_string also fails since key doesn't contain BEGIN
@@ -338,7 +343,7 @@ class TestSendNotification(unittest.IsolatedAsyncioTestCase):
         ]
         mgr.get_subscriptions = AsyncMock(return_value=subs)
 
-        with patch("src.web.push.webpush") as mock_webpush:
+        with patch("telegram_archive.web.push.webpush") as mock_webpush:
             result = await mgr.send_notification("Test", "Hello", chat_id=123)
 
         self.assertEqual(result, 2)
@@ -358,7 +363,7 @@ class TestSendNotification(unittest.IsolatedAsyncioTestCase):
         mock_response = MagicMock()
         mock_response.status_code = 410
 
-        with patch("src.web.push.webpush", side_effect=WebPushException("Gone", response=mock_response)):
+        with patch("telegram_archive.web.push.webpush", side_effect=WebPushException("Gone", response=mock_response)):
             result = await mgr.send_notification("Test", "Expired")
 
         self.assertEqual(result, 0)
@@ -378,7 +383,9 @@ class TestSendNotification(unittest.IsolatedAsyncioTestCase):
         mock_response = MagicMock()
         mock_response.status_code = 403
 
-        with patch("src.web.push.webpush", side_effect=WebPushException("Forbidden", response=mock_response)):
+        with patch(
+            "telegram_archive.web.push.webpush", side_effect=WebPushException("Forbidden", response=mock_response)
+        ):
             result = await mgr.send_notification("Test", "Blocked")
 
         self.assertEqual(result, 0)
@@ -390,7 +397,7 @@ class TestSendNotification(unittest.IsolatedAsyncioTestCase):
         subs = [{"endpoint": "https://push.example.com/s", "keys": {"p256dh": "k", "auth": "a"}}]
         mgr.get_subscriptions = AsyncMock(return_value=subs)
 
-        with patch("src.web.push.webpush") as mock_webpush:
+        with patch("telegram_archive.web.push.webpush") as mock_webpush:
             await mgr.send_notification("Title", "Body", chat_id=42, icon="/icon.png", tag="my-tag")
 
         call_kwargs = mock_webpush.call_args

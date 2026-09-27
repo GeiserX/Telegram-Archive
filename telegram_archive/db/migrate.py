@@ -136,7 +136,7 @@ async def migrate_sqlite_to_postgres(
         Dict with counts of migrated records per table
 
     Example:
-        from src.db.migrate import migrate_sqlite_to_postgres
+        from telegram_archive.db.migrate import migrate_sqlite_to_postgres
         import asyncio
 
         result = asyncio.run(migrate_sqlite_to_postgres())

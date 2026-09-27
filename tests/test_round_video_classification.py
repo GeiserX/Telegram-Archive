@@ -4,12 +4,12 @@ Telegram's circular video messages are ordinary documents carrying a
 ``DocumentAttributeVideo`` whose ``round_message`` flag is set. Neither the
 scheduled sweep nor the realtime listener ever looked at that flag, so every
 round video was archived as a plain ``video`` — while the Telegram Desktop
-importer has always written ``video_note`` (src/telegram_import.py). The same
+importer has always written ``video_note`` (telegram_archive/telegram_import.py). The same
 message therefore got a different type depending on which lane captured it.
 
-The ladder lived twice, byte-identically, in src/telegram_backup.py and
-src/listener.py, which is how it stayed unimplemented in both at once. It now
-lives once in src/message_utils.py next to extract_media_attributes, which was
+The ladder lived twice, byte-identically, in telegram_archive/telegram_backup.py and
+telegram_archive/listener.py, which is how it stayed unimplemented in both at once. It now
+lives once in telegram_archive/message_utils.py next to extract_media_attributes, which was
 made the single extractor for the same reason after the same class of bug.
 """
 
@@ -26,7 +26,7 @@ from telethon.tl.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.message_utils import classify_media_type
+from telegram_archive.message_utils import classify_media_type
 
 
 def _document(*attributes):
@@ -99,8 +99,8 @@ class TestBothCaptureLanesAgree:
     tests are what fail if anyone forks it again."""
 
     def test_the_sweep_and_the_listener_share_one_classifier(self):
-        import src.listener as listener_mod
-        import src.telegram_backup as backup_mod
+        import telegram_archive.listener as listener_mod
+        import telegram_archive.telegram_backup as backup_mod
 
         assert backup_mod.classify_media_type is listener_mod.classify_media_type
         assert backup_mod.classify_media_type is classify_media_type
@@ -114,8 +114,8 @@ class TestBothCaptureLanesAgree:
         ],
     )
     def test_both_lanes_return_the_same_type(self, attributes, expected):
-        from src.listener import TelegramListener
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.listener import TelegramListener
+        from telegram_archive.telegram_backup import TelegramBackup
 
         media = _document(*attributes)
         sweep = TelegramBackup.__new__(TelegramBackup)
@@ -134,7 +134,7 @@ class TestBothCaptureLanesAgree:
 import pathlib  # noqa: E402
 import re  # noqa: E402
 
-INDEX_HTML = pathlib.Path(__file__).resolve().parent.parent / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = pathlib.Path(__file__).resolve().parent.parent / "telegram_archive" / "web" / "templates" / "index.html"
 
 
 class TestViewerRendersRoundVideos:

@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.listener import TelegramListener
-from src.message_utils import downloadable_media_payload, fallback_media_filename
-from src.telegram_backup import TelegramBackup
+from telegram_archive.listener import TelegramListener
+from telegram_archive.message_utils import downloadable_media_payload, fallback_media_filename
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001
 
@@ -239,7 +239,7 @@ class TestFilenameFallback(unittest.TestCase):
 
 class TestViewerTemplate(unittest.TestCase):
     def test_card_shows_downloaded_image_and_generic_block_excludes_webpage(self):
-        template = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+        template = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
         html = template.read_text(encoding="utf-8")
         self.assertIn("msg.media?.type === 'webpage' && msg.media?.file_path", html)
         self.assertIn("msg.media?.type !== 'webpage' && !getExtendedMediaChip(msg)", html)

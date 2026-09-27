@@ -1,5 +1,5 @@
 """
-Tests for the realtime notification module (src/realtime.py).
+Tests for the realtime notification module (telegram_archive/realtime.py).
 """
 
 import asyncio
@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.realtime import (
+from telegram_archive.realtime import (
     NotificationType,
     RealtimeListener,
     RealtimeNotifier,
@@ -422,7 +422,7 @@ class TestRealtimeNotifierPostgres:
         ``Failed to send realtime notification`` warning."""
         notifier, _session = self._make_notifier_with_fake_session()
 
-        with caplog.at_level("WARNING", logger="src.realtime"):
+        with caplog.at_level("WARNING", logger="telegram_archive.realtime"):
             await notifier.notify(
                 NotificationType.EDIT,
                 chat_id=42,
@@ -656,7 +656,7 @@ class TestRealtimeListenerStart:
         listener = RealtimeListener()
         listener._is_postgresql = True
 
-        with patch("src.realtime.asyncio.create_task") as mock_task:
+        with patch("telegram_archive.realtime.asyncio.create_task") as mock_task:
             mock_task.return_value = MagicMock()
             await listener.start()
 
@@ -703,7 +703,7 @@ class TestRealtimeListenerPgCallback(unittest.TestCase):
 
         payload = json.dumps({"type": "new_message", "chat_id": 123})
 
-        with patch("src.realtime.asyncio.create_task") as mock_task:
+        with patch("telegram_archive.realtime.asyncio.create_task") as mock_task:
             listener._pg_callback(None, 0, "telegram_updates", payload)
 
             mock_task.assert_called_once()
@@ -734,7 +734,7 @@ class TestRealtimeListenerPgCallback(unittest.TestCase):
         assert listener._MAX_CALLBACK_TASKS == 200
         listener._callback_tasks = {MagicMock() for _ in range(listener._MAX_CALLBACK_TASKS)}
 
-        with patch("src.realtime.asyncio.create_task") as mock_task:
+        with patch("telegram_archive.realtime.asyncio.create_task") as mock_task:
             listener._pg_callback(None, 0, "telegram_updates", '{"type": "new_message"}')
 
         mock_task.assert_not_called()
@@ -750,7 +750,7 @@ class TestRealtimeListenerPgCallback(unittest.TestCase):
             coro.close()  # never-awaited otherwise: the patch swallows it
             return MagicMock()
 
-        with patch("src.realtime.asyncio.create_task", side_effect=close_coro) as mock_task:
+        with patch("telegram_archive.realtime.asyncio.create_task", side_effect=close_coro) as mock_task:
             listener._pg_callback(None, 0, "telegram_updates", '{"type": "new_message"}')
 
         mock_task.assert_called_once()
@@ -815,7 +815,7 @@ class TestPgCallbackTaskTracking(unittest.IsolatedAsyncioTestCase):
         listener = RealtimeListener(callback=failing_callback)
         secret_payload = json.dumps({"type": "new_message", "chat_id": 123, "message": {"text": "super secret text"}})
 
-        with self.assertLogs("src.realtime", level="WARNING") as ctx:
+        with self.assertLogs("telegram_archive.realtime", level="WARNING") as ctx:
             listener._pg_callback(None, 0, "telegram_updates", secret_payload)
             task = next(iter(listener._callback_tasks))
             with contextlib.suppress(ValueError):
@@ -1088,7 +1088,7 @@ class TestListenPostgresShutdownDiscipline:
 
         with (
             patch.dict("sys.modules", {"asyncpg": mock_asyncpg}),
-            patch("src.realtime._TEARDOWN_TIMEOUT_SECONDS", 0.05),
+            patch("telegram_archive.realtime._TEARDOWN_TIMEOUT_SECONDS", 0.05),
         ):
             listener._task = asyncio.create_task(listener._listen_postgres())
             for _ in range(10):
@@ -1175,7 +1175,7 @@ class TestResolveInternalPushSecret:
             secret_file.chmod(0o600)
             raise FileExistsError(dst)
 
-        with patch("src.realtime.os.link", side_effect=other_container_wins):
+        with patch("telegram_archive.realtime.os.link", side_effect=other_container_wins):
             assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") == "winner-token"
         assert os.link is real_link  # patch scope sanity
         # The loser's private sibling never lingers on the shared volume.
@@ -1192,7 +1192,7 @@ class TestResolveInternalPushSecret:
         # os.open is mocked (not a chmod-0500 directory) so the test also
         # holds when the suite runs as root, which ignores directory modes.
         self._clear_env(monkeypatch)
-        with patch("src.realtime.os.open", side_effect=PermissionError):
+        with patch("telegram_archive.realtime.os.open", side_effect=PermissionError):
             assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
 
     async def test_managerless_init_resolves_secret_from_database_url_env(self, tmp_path, monkeypatch):

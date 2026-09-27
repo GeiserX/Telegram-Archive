@@ -156,7 +156,7 @@ docker run -it --rm \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
   drumsergio/telegram-archive:8.16.1 \
-  python -m src auth
+  python -m telegram_archive auth
 ```
 
 **Example for docker compose deployment:**
@@ -167,7 +167,7 @@ docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
   drumsergio/telegram-archive:8.16.1 \
-  python -m src auth
+  python -m telegram_archive auth
 
 # Then restart the backup container
 docker compose restart telegram-backup
@@ -383,7 +383,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VIEWER_PORT` | `8080` | B | Viewer port for SQLite realtime push from backup/listener. The shipped compose overrides it to `8000`, the viewer container's port |
 | `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `VIEWER_DEFAULT_THEME` | *(unset — Slate)* | V | Default color theme for browsers with no saved choice: `slate`, `night`, `amoled`, `forest`, `aubergine`, `day`, `paper`. The in-app picker overrides it per browser |
-| `VIEWER_CHAT_BACKGROUND` | *(unset — none)* | V | Wallpaper behind the messages: a file name the viewer serves from `/static`, so mount the image into the container (`- ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro`). Bubbles turn opaque and the image is tinted with the palette's own background, so one picture suits a light and a dark theme |
+| `VIEWER_CHAT_BACKGROUND` | *(unset — none)* | V | Wallpaper behind the messages: a file name the viewer serves from `/static`, so mount the image into the container (`- ./wallpaper.jpg:/app/telegram_archive/web/static/wallpaper.jpg:ro`). Bubbles turn opaque and the image is tinted with the palette's own background, so one picture suits a light and a dark theme |
 | `MEDIA_OPEN_CMD` | - | V | Adds an **Open** button to the files in the chat info panel, for the master account only. Runs this command on the machine that serves the viewer, with `%PATH%`, `%DIR%` and `%FILENAME%` filled in. That makes it a setting for a native run on the machine you sit at, not for a container. Example: `open %PATH%` |
 | `MEDIA_OPEN_PATH_CMD` | - | V | Same for a **Show in folder** button. Example: `open -R %PATH%` on macOS, `explorer.exe /select,%PATH%` on Windows, `xdg-open %DIR%` on Linux |
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
@@ -422,7 +422,7 @@ How it behaves:
 - **Indexed wins.** When both styles are set, the `TG_ACCOUNT_*` declarations are used and the legacy triple is ignored; startup logs `Multi-account: using N configured account(s)`.
 - **Account 1 keeps your existing archive.** On its first login under v8.0.0, the account at index 1 adopts the account row all pre-8.0 data was migrated under. From then on accounts are recognized by their Telegram user id, so re-ordering the indexes later never moves or splits an account's data.
 - **Sequential sweeps.** Scheduled backups run account 1 to completion, then account 2, and so on — one Telethon client per account, each with its own session file and its own rate-limit budget.
-- **One interactive login per account.** Run the same auth flow as always (`./init_auth.sh`, i.e. `python -m src auth`); it walks every configured account that does not yet have an authorized session. Account 1 reuses the legacy session file; accounts 2+ default to `telegram_backup_account<N>.session`.
+- **One interactive login per account.** Run the same auth flow as always (`./init_auth.sh`, i.e. `python -m telegram_archive auth`); it walks every configured account that does not yet have an authorized session. Account 1 reuses the legacy session file; accounts 2+ default to `telegram_backup_account<N>.session`.
 - **Filters resolve per account (v8.1.0+).** Every capture filter can be overridden per account with the same indexed pattern: `TG_ACCOUNT_<N>_CHAT_IDS`, `TG_ACCOUNT_<N>_CHAT_TYPES`, `TG_ACCOUNT_<N>_INCLUDE_CHAT_IDS` / `_EXCLUDE_CHAT_IDS` (overriding `GLOBAL_INCLUDE_CHAT_IDS` / `GLOBAL_EXCLUDE_CHAT_IDS`), the `PRIVATE_` / `GROUPS_` / `CHANNELS_` include/exclude variants, `TG_ACCOUNT_<N>_PRIORITY_CHAT_IDS` and `TG_ACCOUNT_<N>_SKIP_MEDIA_CHAT_IDS`. The indexed variable wins for that account and the global one is the fallback, so an account with no overrides behaves exactly as before. An **empty** indexed value inherits the global — Compose's `${VAR:-}` idiom injects empty strings, and silently clearing a whitelist would widen capture — so explicit-empty is spelled with the literal token `none`: `TG_ACCOUNT_2_CHAT_IDS=none` means "no whitelist for account 2, use its type-based filters" even while account 1 keeps its whitelist. Filter-only overrides never switch an install into indexed mode — only the credential variables (`_API_ID` / `_API_HASH` / `_PHONE_NUMBER` / `_LABEL` / `_SESSION_NAME`) do — so a legacy single-account install may set `TG_ACCOUNT_1_CHAT_IDS=none` without declaring indexed credentials. Startup logs each account's effective scope as counts. Settings that are not chat filters stay global: `DOWNLOAD_MEDIA`, `MAX_MEDIA_SIZE_MB`, the listener toggles, and `SKIP_TOPIC_IDS`.
 
   ```bash
@@ -608,7 +608,7 @@ The folder's membership is re-checked at the start of every scheduled backup cyc
 
 Worth knowing before relying on this:
 
-* **Explicit membership only.** Telegram folders can also be built from category toggles ("all groups", "non-contacts", "unmuted", etc.) instead of, or in addition to, a picked chat list. Only the folder's explicitly pinned/included chats are honored here — the category flags can't be evaluated at this point in the pipeline, because whether a not-yet-archived chat matches "groups" or "non-contacts" is exactly the thing this filtering pass is trying to decide, and there is no archived-chat record yet to check it against. (The existing per-chat folder metadata sync, which powers the *viewer's* folder view for chats you've already archived, does resolve category flags — that's a different, downstream question with different information available. See `src/folder_utils.py` for both.) Add chats to the folder explicitly if you want them picked up here.
+* **Explicit membership only.** Telegram folders can also be built from category toggles ("all groups", "non-contacts", "unmuted", etc.) instead of, or in addition to, a picked chat list. Only the folder's explicitly pinned/included chats are honored here — the category flags can't be evaluated at this point in the pipeline, because whether a not-yet-archived chat matches "groups" or "non-contacts" is exactly the thing this filtering pass is trying to decide, and there is no archived-chat record yet to check it against. (The existing per-chat folder metadata sync, which powers the *viewer's* folder view for chats you've already archived, does resolve category flags — that's a different, downstream question with different information available. See `telegram_archive/folder_utils.py` for both.) Add chats to the folder explicitly if you want them picked up here.
 * **A folder id, not a name.** Neither Telegram nor the viewer shows a folder's numeric id. After a scheduled backup has run with the folder visible to the account, the archive database lists them: `SELECT account_id, id, title FROM chat_folders;` (`account_id` tells accounts apart).
 * **Folder ids belong to one account.** Every Telegram account numbers its folders separately. With several accounts, set the variables per account (`TG_ACCOUNT_<N>_GROUPS_INCLUDE_FOLDER_IDS` and so on); an unprefixed variable may apply to one account only, so every other account must set its own value or `none`, or startup is refused.
 * **Ignored in whitelist mode.** When `CHAT_IDS` is set, only those chats are backed up, and the folder variables are not even resolved.
@@ -770,38 +770,38 @@ telegram-archive --data-dir ./data list-chats
 
 ### Docker Usage
 
-All commands use the unified `python -m src` interface inside containers:
+All commands use the unified `python -m telegram_archive` interface inside containers:
 
 ```bash
 # Show all available commands
-docker compose exec telegram-backup python -m src --help
+docker compose exec telegram-backup python -m telegram_archive --help
 
 # View statistics
-docker compose exec telegram-backup python -m src stats
+docker compose exec telegram-backup python -m telegram_archive stats
 
 # List chats
-docker compose exec telegram-backup python -m src list-chats
+docker compose exec telegram-backup python -m telegram_archive list-chats
 
 # Export to JSON
-docker compose exec telegram-backup python -m src export -o backup.json
+docker compose exec telegram-backup python -m telegram_archive export -o backup.json
 
 # Export date range
-docker compose exec telegram-backup python -m src export -o backup.json -s 2024-01-01 -e 2024-12-31
+docker compose exec telegram-backup python -m telegram_archive export -o backup.json -s 2024-01-01 -e 2024-12-31
 
 # Manual backup run (one-time)
-docker compose exec telegram-backup python -m src backup
+docker compose exec telegram-backup python -m telegram_archive backup
 
 # Re-authenticate (if session expires)
-docker compose exec -it telegram-backup python -m src auth
+docker compose exec -it telegram-backup python -m telegram_archive auth
 
 # Import a Telegram Desktop export (JSON or HTML) into the archive
-docker compose exec telegram-backup python -m src import -p /data/export
+docker compose exec telegram-backup python -m telegram_archive import -p /data/export
 
 # Give imported forum messages their topics back (see note below)
-docker compose exec telegram-backup python -m src backfill-topics -c -1001234567890
+docker compose exec telegram-backup python -m telegram_archive backfill-topics -c -1001234567890
 
 # Detect and fill message gaps left by failed backups
-docker compose exec telegram-backup python -m src fill-gaps
+docker compose exec telegram-backup python -m telegram_archive fill-gaps
 ```
 
 > **Imported forum chats and topics.** Telegram Desktop exports (HTML *and*

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.database import Database
+from telegram_archive.database import Database
 
 
 def generate_dummy_db(db_path="data/backups/telegram_backup.db"):

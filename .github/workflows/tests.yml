@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths: ['src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', 'Dockerfile*', 'docker-compose.yml', '.github/workflows/tests.yml']
+    paths: ['telegram_archive/**', 'src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', 'Dockerfile*', 'docker-compose.yml', '.github/workflows/tests.yml']
   pull_request:
     # No paths filter: test is a required status check, so it must be able to run
     # on every PR (a docs- or compose-only PR would otherwise never satisfy it and
@@ -38,7 +38,7 @@ jobs:
           --health-retries 5
 
     env:
-      # Deliberately not DATABASE_URL. src/db/base.py, alembic/env.py and
+      # Deliberately not DATABASE_URL. telegram_archive/db/base.py, alembic/env.py and
       # scripts/entrypoint.sh all treat DATABASE_URL as "the archive", so
       # exporting it job-wide would silently repoint every test that builds a
       # bare DatabaseManager() at PostgreSQL — where init() does not create
@@ -77,7 +77,7 @@ jobs:
         run: |
           set -o pipefail
           uv run --no-sync python -m pytest tests/ -v --tb=short -rs \
-            --cov=src --cov-report=term-missing --cov-report=xml | tee pytest-output.log
+            --cov=telegram_archive --cov-report=term-missing --cov-report=xml | tee pytest-output.log
 
       # The dual-backend fixtures skip the PostgreSQL leg when no server
       # answers, so a broken service container would turn this job green while

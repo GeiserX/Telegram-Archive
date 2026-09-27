@@ -837,7 +837,7 @@ class TelegramListener:
             # lexists short-circuits when an avatar (even a symlink whose
             # target is unreachable from this process) is already on disk,
             # so we don't try to overwrite an archive entry. Mirrors the
-            # backup-flow guard in src/telegram_backup.py (issue #143).
+            # backup-flow guard in telegram_archive/telegram_backup.py (issue #143).
             if os.path.lexists(avatar_path):
                 if os.path.islink(avatar_path) or os.path.getsize(avatar_path) > 0:
                     return

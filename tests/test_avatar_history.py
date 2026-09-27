@@ -23,7 +23,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import select
 
-from src.db.models import AvatarHistory
+from telegram_archive.db.models import AvatarHistory
 
 # Obviously fake ids.
 CHAT = -420300001
@@ -151,7 +151,7 @@ async def _photo_ids(adapter, account_id: int = 1, chat_id: int = CHAT) -> list:
 class TestWritePath:
     def test_upsert_chat_keeps_its_lock_retry(self):
         """The sighting helper sits right above upsert_chat; the retry decorator stays on the upsert."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         assert hasattr(DatabaseAdapter.upsert_chat, "__wrapped__")
         assert not hasattr(DatabaseAdapter._record_avatar_sighting, "__wrapped__")

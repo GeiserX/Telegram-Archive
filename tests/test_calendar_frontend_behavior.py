@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 
 def _matching_closing_brace(source: str, opening_brace: int) -> int:

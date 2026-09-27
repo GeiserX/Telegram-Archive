@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
     _HTTPX_AVAILABLE = False
 
 try:
-    from src.web import main as web_main
+    from telegram_archive.web import main as web_main
 
     _WEB_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -88,7 +88,7 @@ class TestRenderMediaCommand(unittest.TestCase):
 
     def test_a_hostile_name_cannot_leave_its_shell_word(self):
         """Names survive sanitize_media_filename with ' ; & $ ` and placeholder text intact; none of it may run."""
-        from src.message_utils import sanitize_media_filename
+        from telegram_archive.message_utils import sanitize_media_filename
 
         hostile = sanitize_media_filename("pic'%DIR%;id;%PATH%'$(id)`id`&.jpg")
         self.assertIn(";id;", hostile)  # the sanitizer keeps shell metacharacters, so the quoting has to hold
@@ -337,14 +337,16 @@ class TestCapabilityFlags(unittest.TestCase):
             web_main.config.media_open_cmd, web_main.config.media_open_path_cmd = saved
 
     def test_the_shipped_page_declares_the_flags(self):
-        html = (Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html").read_text()
+        html = (
+            Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
+        ).read_text()
         # assertTrue, not assertIn: a failure must not print the whole page.
         self.assertTrue("__VIEWER_MEDIA_OPEN__" in html, "the template does not declare __VIEWER_MEDIA_OPEN__")
 
 
 class TestConfig(unittest.TestCase):
     def test_commands_are_read_trimmed_and_default_empty(self):
-        from src.config import Config
+        from telegram_archive.config import Config
 
         base = {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h", "TELEGRAM_PHONE": "+1"}
         with patch.dict(os.environ, base, clear=True), patch("os.makedirs"):

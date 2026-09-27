@@ -12,7 +12,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    command: ["python", "-m", "src", "schedule"]
+    command: ["python", "-m", "telegram_archive", "schedule"]
 
     # Every variable documented in .env.example reaches the container. The
     # environment: block below interpolates ${VAR} references for readable
@@ -308,7 +308,7 @@ services:
       # service runs with a read-only root filesystem, so a bind mount is the
       # only way in. Mount the FILE: a directory mounted over the static one
       # hides the app's own assets and the viewer comes up blank.
-      # - ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro
+      # - ./wallpaper.jpg:/app/telegram_archive/web/static/wallpaper.jpg:ro
     networks:
       - telegram-network
     # Security hardening
@@ -323,7 +323,7 @@ services:
     # telegram-backup, and none is needed. telegram-backup owns the schema and
     # migrates it on start; this image ships no alembic/ and cannot. It also no
     # longer writes tables into a database that already has any (see
-    # _create_schema_if_absent in src/db/base.py), so starting it never
+    # _create_schema_if_absent in telegram_archive/db/base.py), so starting it never
     # corrupts a migration. The ordering that matters is enforced from the
     # other side: a migration that rebuilds tables refuses to start while any
     # other process holds the SQLite file, and proceeds once it is released.

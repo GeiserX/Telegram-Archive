@@ -16,10 +16,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from src.config import Config
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.telegram_backup import TelegramBackup
+from telegram_archive.config import Config
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.telegram_backup import TelegramBackup
 
 # ---------------------------------------------------------------------------
 # Helpers — lightweight in-memory async SQLite setup
@@ -704,7 +704,7 @@ class TestGapFillBotClassification:
         import os
         from unittest.mock import patch as _patch
 
-        from src.config import Config
+        from telegram_archive.config import Config
 
         env = dict(self._BASE_ENV, CHAT_TYPES=chat_types)
         with _patch.dict(os.environ, env, clear=True):

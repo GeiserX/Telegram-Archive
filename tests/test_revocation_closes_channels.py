@@ -49,10 +49,10 @@ from alembic import command
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_revocation_"))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Chat, PushSubscription
-from src.web import main as web_main
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Chat, PushSubscription
+from telegram_archive.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -499,7 +499,7 @@ async def test_get_subscriptions_drops_rows_whose_owner_no_longer_lives(viewer_a
     purge leaves behind: the revoking path already ran and deleted nothing.
     """
     pytest.importorskip("pywebpush")
-    from src.web.push import PushNotificationManager
+    from telegram_archive.web.push import PushNotificationManager
 
     adapter = viewer_app.adapter
     master = await _master_cookie()
@@ -561,7 +561,7 @@ async def test_a_live_owner_still_receives_after_an_unrelated_revocation(viewer_
     check that proves the filter can go red also has to prove it can stay green.
     """
     pytest.importorskip("pywebpush")
-    from src.web.push import PushNotificationManager
+    from telegram_archive.web.push import PushNotificationManager
 
     adapter = viewer_app.adapter
     master = await _master_cookie()
@@ -585,7 +585,7 @@ async def test_a_live_owner_still_receives_after_an_unrelated_revocation(viewer_
 async def test_a_live_owners_grant_still_bounds_delivery(viewer_app):
     """Liveness is an ADDITIONAL gate, never a replacement for the ref grant."""
     pytest.importorskip("pywebpush")
-    from src.web.push import PushNotificationManager
+    from telegram_archive.web.push import PushNotificationManager
 
     adapter = viewer_app.adapter
     username, _ = await _viewer_with_session(adapter)

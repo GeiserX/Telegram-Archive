@@ -1,4 +1,4 @@
-"""Extended tests for src/config.py to cover lines 630-639 (__main__ block).
+"""Extended tests for telegram_archive/config.py to cover lines 630-639 (__main__ block).
 
 The existing test_config.py already covers the __main__ block via subprocess.
 This file adds edge-case variants to ensure both success and error paths
@@ -35,7 +35,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            [sys.executable, "-m", "src.config"],
+            [sys.executable, "-m", "telegram_archive.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -66,7 +66,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            [sys.executable, "-m", "src.config"],
+            [sys.executable, "-m", "telegram_archive.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -85,7 +85,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            [sys.executable, "-m", "src.config"],
+            [sys.executable, "-m", "telegram_archive.config"],
             capture_output=True,
             text=True,
             env=env,

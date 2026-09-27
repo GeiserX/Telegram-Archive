@@ -90,7 +90,7 @@ class TestViewerChecker:
 
 class TestHeartbeatLoop:
     async def test_heartbeat_writes_and_refreshes(self, tmp_path, monkeypatch):
-        from src.scheduler import BackupScheduler
+        from telegram_archive.scheduler import BackupScheduler
 
         beat = tmp_path / "beat"
         monkeypatch.setenv("HEARTBEAT_FILE", str(beat))
@@ -106,7 +106,7 @@ class TestHeartbeatLoop:
                 raise asyncio.CancelledError
             await real_sleep(0)
 
-        with unittest.mock.patch("src.scheduler.asyncio.sleep", side_effect=fast_sleep):
+        with unittest.mock.patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fast_sleep):
             try:
                 await scheduler._heartbeat_loop()
             except asyncio.CancelledError:
@@ -116,7 +116,7 @@ class TestHeartbeatLoop:
         assert beat.read_text().isdigit()
 
     async def test_write_failure_warns_but_does_not_die(self, tmp_path, monkeypatch):
-        from src.scheduler import BackupScheduler
+        from telegram_archive.scheduler import BackupScheduler
 
         monkeypatch.setenv("HEARTBEAT_FILE", str(tmp_path / "nodir" / "beat"))
         scheduler = BackupScheduler.__new__(BackupScheduler)
@@ -124,7 +124,7 @@ class TestHeartbeatLoop:
         async def one_tick(seconds):
             raise asyncio.CancelledError
 
-        with unittest.mock.patch("src.scheduler.asyncio.sleep", side_effect=one_tick):
+        with unittest.mock.patch("telegram_archive.scheduler.asyncio.sleep", side_effect=one_tick):
             try:
                 await scheduler._heartbeat_loop()  # OSError inside must not propagate
             except asyncio.CancelledError:
@@ -140,7 +140,7 @@ class TestImageWiring:
         assert "COPY scripts/healthcheck_viewer.py" in viewer
 
     def test_scheduler_starts_the_heartbeat_before_connecting(self):
-        src = (REPO / "src" / "scheduler.py").read_text()
+        src = (REPO / "telegram_archive" / "scheduler.py").read_text()
         start = src.index("health_heartbeat")
         connect = src.index("await self._connect()")
         assert start < connect, "heartbeat must start before the (possibly slow) connect"
@@ -150,7 +150,7 @@ class TestHeartbeatLifetime:
     async def test_startup_failure_cancels_the_heartbeat(self, tmp_path, monkeypatch):
         """Review edge: a failed connect must not leave the heartbeat ticking
         a healthy file behind on a still-alive event loop."""
-        from src.scheduler import BackupScheduler
+        from telegram_archive.scheduler import BackupScheduler
 
         monkeypatch.setenv("HEARTBEAT_FILE", str(tmp_path / "beat"))
         scheduler = BackupScheduler.__new__(BackupScheduler)

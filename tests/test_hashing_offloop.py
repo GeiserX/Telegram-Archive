@@ -10,7 +10,7 @@ import asyncio
 import unittest.mock
 from pathlib import Path
 
-import src.message_utils as mu
+import telegram_archive.message_utils as mu
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -69,8 +69,8 @@ class TestOffLoopContract:
 
 class TestCallSiteConversion:
     def test_no_inline_hashing_remains_on_async_capture_paths(self):
-        listener = (REPO / "src" / "listener.py").read_text()
-        backup = (REPO / "src" / "telegram_backup.py").read_text()
+        listener = (REPO / "telegram_archive" / "listener.py").read_text()
+        backup = (REPO / "telegram_archive" / "telegram_backup.py").read_text()
         for src, name in ((listener, "listener"), (backup, "telegram_backup")):
             assert "= compute_file_hash(" not in src, name
             assert "compute_file_hash_async" in src, name
@@ -78,5 +78,5 @@ class TestCallSiteConversion:
         assert "asyncio.to_thread(_pre_generate_thumbnail" in backup
 
     def test_dedup_and_reuse_paths_await_the_async_form(self):
-        src = (REPO / "src" / "message_utils.py").read_text()
+        src = (REPO / "telegram_archive" / "message_utils.py").read_text()
         assert src.count("await compute_file_hash_async(") == 3

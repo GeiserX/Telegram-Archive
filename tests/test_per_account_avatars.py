@@ -24,8 +24,8 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from telethon.tl.types import ChatPhoto, ChatPhotoEmpty, User, UserProfilePhoto, UserProfilePhotoEmpty
 
-from src.avatar_utils import avatar_photo_id, get_avatar_paths
-from src.telegram_backup import TelegramBackup
+from telegram_archive.avatar_utils import avatar_photo_id, get_avatar_paths
+from telegram_archive.telegram_backup import TelegramBackup
 
 # A user both accounts hold a one-to-one chat with, and a group account 1 holds.
 # Obviously fake ids.
@@ -197,7 +197,7 @@ from datetime import datetime  # noqa: E402
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
-from src.web import main as web_main  # noqa: E402
+from telegram_archive.web import main as web_main  # noqa: E402
 
 BYTES_A = b"photo account A sees"
 BYTES_B = b"photo account B sees"

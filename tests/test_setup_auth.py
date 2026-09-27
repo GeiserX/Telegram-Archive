@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.setup_auth import _print_permission_error_help, _same_phone_number, main, setup_authentication
+from telegram_archive.setup_auth import _print_permission_error_help, _same_phone_number, main, setup_authentication
 
 
 class TestSamePhoneNumber(unittest.TestCase):
@@ -73,9 +73,9 @@ async def test_setup_fails_closed_when_the_session_belongs_to_another_account():
     client.get_me.return_value = MagicMock(phone="34665238495")
 
     with (
-        patch("src.config.Config", return_value=config),
-        patch("src.config.setup_logging"),
-        patch("src.setup_auth.TelegramClient", return_value=client),
+        patch("telegram_archive.config.Config", return_value=config),
+        patch("telegram_archive.config.setup_logging"),
+        patch("telegram_archive.setup_auth.TelegramClient", return_value=client),
     ):
         result = await setup_authentication()
 
@@ -105,9 +105,9 @@ async def test_setup_succeeds_when_the_session_matches_the_configured_number():
     client.get_me.return_value = MagicMock(phone="34687016994")
 
     with (
-        patch("src.config.Config", return_value=config),
-        patch("src.config.setup_logging"),
-        patch("src.setup_auth.TelegramClient", return_value=client),
+        patch("telegram_archive.config.Config", return_value=config),
+        patch("telegram_archive.config.setup_logging"),
+        patch("telegram_archive.setup_auth.TelegramClient", return_value=client),
     ):
         result = await setup_authentication()
 
@@ -159,7 +159,7 @@ async def test_setup_authentication_already_authorized():
         }
         with (
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.setup_auth.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.setup_auth.TelegramClient", return_value=mock_client),
         ):
             result = await setup_authentication()
 
@@ -192,7 +192,7 @@ async def test_setup_authentication_with_code_input():
         }
         with (
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.setup_auth.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.setup_auth.TelegramClient", return_value=mock_client),
             patch("builtins.input", return_value="12345"),
             patch("builtins.print"),
         ):
@@ -225,7 +225,7 @@ async def test_setup_authentication_with_2fa_password():
         }
         with (
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.setup_auth.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.setup_auth.TelegramClient", return_value=mock_client),
             patch("builtins.input", side_effect=["12345", "my2fapassword"]),
             patch("builtins.print"),
         ):
@@ -257,7 +257,7 @@ async def test_setup_authentication_sign_in_non_2fa_error_reraises():
         }
         with (
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.setup_auth.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.setup_auth.TelegramClient", return_value=mock_client),
             patch("builtins.input", return_value="12345"),
             patch("builtins.print"),
         ):
@@ -292,7 +292,7 @@ async def test_setup_authentication_permission_error_returns_false():
         }
         with (
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.setup_auth.TelegramClient", side_effect=PermissionError("No write access")),
+            patch("telegram_archive.setup_auth.TelegramClient", side_effect=PermissionError("No write access")),
             patch("builtins.print"),
         ):
             result = await setup_authentication()
@@ -317,7 +317,7 @@ async def test_setup_authentication_sqlite_unable_to_open_returns_false():
         with (
             patch.dict(os.environ, env_vars, clear=True),
             patch(
-                "src.setup_auth.TelegramClient",
+                "telegram_archive.setup_auth.TelegramClient",
                 side_effect=sqlite3.OperationalError("unable to open database file"),
             ),
             patch("builtins.print"),
@@ -344,7 +344,7 @@ async def test_setup_authentication_sqlite_other_error_returns_false():
         with (
             patch.dict(os.environ, env_vars, clear=True),
             patch(
-                "src.setup_auth.TelegramClient",
+                "telegram_archive.setup_auth.TelegramClient",
                 side_effect=sqlite3.OperationalError("database is locked"),
             ),
             patch("builtins.print"),
@@ -371,7 +371,7 @@ async def test_setup_authentication_generic_permission_denied_returns_false():
         with (
             patch.dict(os.environ, env_vars, clear=True),
             patch(
-                "src.setup_auth.TelegramClient",
+                "telegram_archive.setup_auth.TelegramClient",
                 side_effect=RuntimeError("permission denied on /data"),
             ),
             patch("builtins.print"),
@@ -398,7 +398,7 @@ async def test_setup_authentication_generic_unable_to_open_db_returns_false():
         with (
             patch.dict(os.environ, env_vars, clear=True),
             patch(
-                "src.setup_auth.TelegramClient",
+                "telegram_archive.setup_auth.TelegramClient",
                 side_effect=RuntimeError("unable to open database file: /data/session"),
             ),
             patch("builtins.print"),
@@ -425,7 +425,7 @@ async def test_setup_authentication_generic_error_returns_false():
         with (
             patch.dict(os.environ, env_vars, clear=True),
             patch(
-                "src.setup_auth.TelegramClient",
+                "telegram_archive.setup_auth.TelegramClient",
                 side_effect=RuntimeError("unexpected failure"),
             ),
             patch("builtins.print"),
@@ -443,7 +443,7 @@ class TestMain(unittest.TestCase):
     def test_main_success_exits_zero(self):
         """main() exits with code 0 on successful authentication."""
         with (
-            patch("src.setup_auth.asyncio.run", return_value=True),
+            patch("telegram_archive.setup_auth.asyncio.run", return_value=True),
             patch("builtins.print"),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -453,7 +453,7 @@ class TestMain(unittest.TestCase):
     def test_main_failure_exits_one(self):
         """main() exits with code 1 on failed authentication."""
         with (
-            patch("src.setup_auth.asyncio.run", return_value=False),
+            patch("telegram_archive.setup_auth.asyncio.run", return_value=False),
             patch("builtins.print"),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -463,7 +463,7 @@ class TestMain(unittest.TestCase):
     def test_main_prints_setup_banner(self):
         """main() prints the setup banner before running auth."""
         with (
-            patch("src.setup_auth.asyncio.run", return_value=True),
+            patch("telegram_archive.setup_auth.asyncio.run", return_value=True),
             patch("builtins.print") as mock_print,
             pytest.raises(SystemExit),
         ):
@@ -476,7 +476,7 @@ class TestMain(unittest.TestCase):
     def test_main_prints_next_steps_on_success(self):
         """main() prints next steps after successful auth."""
         with (
-            patch("src.setup_auth.asyncio.run", return_value=True),
+            patch("telegram_archive.setup_auth.asyncio.run", return_value=True),
             patch("builtins.print") as mock_print,
             pytest.raises(SystemExit),
         ):
@@ -489,7 +489,7 @@ class TestMain(unittest.TestCase):
     def test_main_prints_failure_message_on_error(self):
         """main() prints failure message after failed auth."""
         with (
-            patch("src.setup_auth.asyncio.run", return_value=False),
+            patch("telegram_archive.setup_auth.asyncio.run", return_value=False),
             patch("builtins.print") as mock_print,
             pytest.raises(SystemExit),
         ):

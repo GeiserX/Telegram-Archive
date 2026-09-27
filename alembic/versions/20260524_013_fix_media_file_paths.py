@@ -23,7 +23,7 @@ down_revision = "012"
 branch_labels = None
 depends_on = None
 
-# Can't import from src.web.media_utils in migrations (different runtime context)
+# Can't import from telegram_archive.web.media_utils in migrations (different runtime context)
 # Define locally to keep migration self-contained
 _CHANNEL_ID_OFFSET = 1_000_000_000_000
 

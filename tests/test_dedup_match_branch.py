@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock
 
-from src.message_utils import deduplicate_shared_file, resolve_shared_file_path
+from telegram_archive.message_utils import deduplicate_shared_file, resolve_shared_file_path
 
 CONTENT = b"identical media bytes for dedup"
 SHA = hashlib.sha256(CONTENT).hexdigest()

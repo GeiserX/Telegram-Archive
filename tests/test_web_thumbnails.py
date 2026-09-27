@@ -1,4 +1,4 @@
-"""Tests for thumbnail generation (src/web/thumbnails.py)."""
+"""Tests for thumbnail generation (telegram_archive/web/thumbnails.py)."""
 
 import asyncio
 import tempfile
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.web.thumbnails import (
+from telegram_archive.web.thumbnails import (
     _IMAGE_EXTENSIONS,
     _MAX_SOURCE_BYTES,
     ALLOWED_SIZES,
@@ -108,16 +108,16 @@ class TestIsVideo(unittest.TestCase):
 class TestCheckFfmpeg(unittest.TestCase):
     """Test _check_ffmpeg detection."""
 
-    @patch("src.web.thumbnails.shutil.which", return_value="/usr/bin/ffmpeg")
+    @patch("telegram_archive.web.thumbnails.shutil.which", return_value="/usr/bin/ffmpeg")
     def test_returns_true_when_available(self, _mock):
-        import src.web.thumbnails as mod
+        import telegram_archive.web.thumbnails as mod
 
         mod._FFMPEG_AVAILABLE = None
         self.assertTrue(_check_ffmpeg())
 
-    @patch("src.web.thumbnails.shutil.which", return_value=None)
+    @patch("telegram_archive.web.thumbnails.shutil.which", return_value=None)
     def test_returns_false_when_missing(self, _mock):
-        import src.web.thumbnails as mod
+        import telegram_archive.web.thumbnails as mod
 
         mod._FFMPEG_AVAILABLE = None
         self.assertFalse(_check_ffmpeg())
@@ -135,7 +135,7 @@ class TestGenerateVideoSync(unittest.TestCase):
                 result = _generate_video_sync(source, dest, 200)
             self.assertFalse(result)
 
-    @patch("src.web.thumbnails._check_ffmpeg", return_value=False)
+    @patch("telegram_archive.web.thumbnails._check_ffmpeg", return_value=False)
     def test_returns_false_when_ffmpeg_missing(self, _mock):
         with tempfile.TemporaryDirectory() as tmpdir:
             source = Path(tmpdir) / "clip.mp4"
@@ -349,7 +349,7 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
     """One missing thumbnail costs one generation, no matter how many ask."""
 
     def setUp(self):
-        import src.web.thumbnails as mod
+        import telegram_archive.web.thumbnails as mod
 
         mod._recent_failures.clear()
         mod._inflight_tasks.clear()
@@ -369,7 +369,7 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
             dest.write_bytes(b"webp")
             return True
 
-        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+        with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate):
             results = await asyncio.gather(
                 *(ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg") for _ in range(6))
             )
@@ -387,7 +387,7 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
             time.sleep(0.05)
             return False
 
-        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+        with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate):
             results = await asyncio.gather(
                 *(ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg") for _ in range(6))
             )
@@ -405,7 +405,7 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
             dest.write_bytes(b"webp")
             return True
 
-        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+        with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate):
             results = await asyncio.gather(
                 ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg"),
                 ensure_thumbnail(self.media_root, 400, "chat1", "photo.jpg"),
@@ -432,7 +432,7 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
             dest.write_bytes(b"webp")
             return True
 
-        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+        with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate):
             first = asyncio.create_task(ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg"))
             second = asyncio.create_task(ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg"))
             await asyncio.sleep(0.05)  # both joined the shared generation
@@ -454,14 +454,14 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(third_result)
 
     async def test_inflight_map_is_empty_after_completion(self):
-        import src.web.thumbnails as mod
+        import telegram_archive.web.thumbnails as mod
 
         def fake_generate(source, dest, size):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"webp")
             return True
 
-        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+        with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate):
             await ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg")
 
         self.assertEqual(mod._inflight_tasks, {})

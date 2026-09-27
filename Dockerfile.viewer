@@ -22,13 +22,15 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project --only-group viewer-runtime
 
 # Copy only the necessary application code for the viewer
-COPY src/__init__.py ./src/
-COPY src/config.py ./src/
-COPY src/realtime.py ./src/
-COPY src/message_utils.py ./src/
-COPY src/transcription_contract.py ./src/
-COPY src/db/ ./src/db/
-COPY src/web/ ./src/web/
+COPY telegram_archive/__init__.py ./telegram_archive/
+COPY telegram_archive/config.py ./telegram_archive/
+COPY telegram_archive/realtime.py ./telegram_archive/
+COPY telegram_archive/message_utils.py ./telegram_archive/
+COPY telegram_archive/transcription_contract.py ./telegram_archive/
+COPY telegram_archive/db/ ./telegram_archive/db/
+COPY telegram_archive/web/ ./telegram_archive/web/
+# The old package name, so a compose file that runs "uvicorn src.web.main:app" keeps working.
+COPY src/ ./src/
 COPY scripts/healthcheck_viewer.py ./scripts/healthcheck_viewer.py
 
 # Create non-root user for security
@@ -57,4 +59,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 EXPOSE 8000
 
 # Run web viewer
-CMD ["uvicorn", "src.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "telegram_archive.web.main:app", "--host", "0.0.0.0", "--port", "8000"]

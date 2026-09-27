@@ -288,7 +288,7 @@ def test_the_states_follow_the_design_table() -> None:
 
 def test_the_bubble_rule_is_the_drains_rule() -> None:
     """The template's isTranscribable mirrors is_transcribable in transcription_contract."""
-    from src.transcription_contract import is_transcribable
+    from telegram_archive.transcription_contract import is_transcribable
 
     cases = [
         (media_type, mime)

@@ -1,4 +1,4 @@
-"""Extended coverage tests for src/web/main.py and src/web/push.py.
+"""Extended coverage tests for telegram_archive/web/main.py and telegram_archive/web/push.py.
 
 Targets the uncovered code paths: background tasks, lifespan, media serving,
 export, admin edge cases, login flow branches, WebSocket, internal push auth,
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
     os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_cov_"))
-    from src.web import main as web_main
+    from telegram_archive.web import main as web_main
 
     _WEB_AVAILABLE = True
 except ImportError:
@@ -31,8 +31,8 @@ except ImportError:
     _HTTPX_AVAILABLE = False
 
 try:
-    import src.web.push as push_mod
-    from src.web.push import PushNotificationManager
+    import telegram_archive.web.push as push_mod
+    from telegram_archive.web.push import PushNotificationManager
 
     _PUSH_AVAILABLE = True
 except ImportError:
@@ -594,7 +594,7 @@ class TestServeThumbnail(_WebTestBase):
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
             self.mock_db.get_media_for_message = AsyncMock(return_value=self._media_row())
-            with patch("src.web.thumbnails.ensure_thumbnail", new_callable=AsyncMock, return_value=None):
+            with patch("telegram_archive.web.thumbnails.ensure_thumbnail", new_callable=AsyncMock, return_value=None):
                 async with self._client() as client:
                     resp = await client.get("/media/thumb/200/someChatRef000000123A/5_photo")
             self.assertEqual(resp.status_code, 404)
@@ -608,7 +608,7 @@ class TestServeThumbnail(_WebTestBase):
                 f.write(b"\x00" * 10)
             self.mock_db.get_media_for_message = AsyncMock(return_value=self._media_row())
             with patch(
-                "src.web.thumbnails.ensure_thumbnail",
+                "telegram_archive.web.thumbnails.ensure_thumbnail",
                 new_callable=AsyncMock,
                 return_value=(web_main.Path(thumb_file), "123"),
             ) as mock_ensure:
@@ -1349,7 +1349,7 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.subscribe = AsyncMock(return_value=False)
         web_main.push_manager = mock_pm
-        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             async with self._client() as client:
                 resp = await client.post(
                     "/api/push/subscribe",
@@ -1370,7 +1370,7 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
         web_main.push_manager = mock_pm
-        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             async with self._client() as client:
                 resp = await client.post(
                     "/api/push/subscribe",
@@ -1389,7 +1389,7 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
         web_main.push_manager = mock_pm
-        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             async with self._client() as client:
                 resp = await client.post(
                     "/api/push/subscribe",
@@ -1408,7 +1408,7 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.subscribe = AsyncMock(side_effect=ConnectionRefusedError("db down"))
         web_main.push_manager = mock_pm
-        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             async with self._client() as client:
                 resp = await client.post(
                     "/api/push/subscribe",
@@ -1513,7 +1513,7 @@ class TestInternalPushEdgeCases(_WebTestBase):
         push with that bearer is accepted, a wrong bearer still 403s."""
         import tempfile
 
-        from src.realtime import resolve_internal_push_secret
+        from telegram_archive.realtime import resolve_internal_push_secret
 
         mock_listener = MagicMock()
         mock_listener.handle_http_push = AsyncMock()
@@ -2240,7 +2240,9 @@ class TestSendNotificationEdgeCases(unittest.IsolatedAsyncioTestCase):
         mock_response = MagicMock()
         mock_response.status_code = 404
 
-        with patch("src.web.push.webpush", side_effect=WebPushException("Not Found", response=mock_response)):
+        with patch(
+            "telegram_archive.web.push.webpush", side_effect=WebPushException("Not Found", response=mock_response)
+        ):
             result = await mgr.send_notification("Test", "404")
 
         self.assertEqual(result, 0)
@@ -2259,7 +2261,9 @@ class TestSendNotificationEdgeCases(unittest.IsolatedAsyncioTestCase):
         mock_response = MagicMock()
         mock_response.status_code = 500
 
-        with patch("src.web.push.webpush", side_effect=WebPushException("Server Error", response=mock_response)):
+        with patch(
+            "telegram_archive.web.push.webpush", side_effect=WebPushException("Server Error", response=mock_response)
+        ):
             result = await mgr.send_notification("Test", "500")
 
         self.assertEqual(result, 0)
@@ -2272,7 +2276,7 @@ class TestSendNotificationEdgeCases(unittest.IsolatedAsyncioTestCase):
         subs = [{"endpoint": "https://push.example.com/bad", "keys": {"p256dh": "k", "auth": "a"}}]
         mgr.get_subscriptions = AsyncMock(return_value=subs)
 
-        with patch("src.web.push.webpush", side_effect=RuntimeError("network error")):
+        with patch("telegram_archive.web.push.webpush", side_effect=RuntimeError("network error")):
             result = await mgr.send_notification("Test", "Error")
 
         self.assertEqual(result, 0)
@@ -2297,7 +2301,7 @@ class TestPushInitializeDerKey(unittest.IsolatedAsyncioTestCase):
             }.get(k)
         )
 
-        with patch("src.web.push.Vapid") as mock_vapid_cls:
+        with patch("telegram_archive.web.push.Vapid") as mock_vapid_cls:
             mock_vapid_cls.from_string.return_value = MagicMock()
             result = await mgr.initialize()
 

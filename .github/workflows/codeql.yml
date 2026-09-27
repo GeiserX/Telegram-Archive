@@ -49,7 +49,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4.37.9
         with:
-          # Covers the viewer SPA (the script blocks in src/web/templates) and
+          # Covers the viewer SPA (the script blocks in telegram_archive/web/templates) and
           # the service worker, where archived message text is rendered.
           languages: javascript-typescript
 

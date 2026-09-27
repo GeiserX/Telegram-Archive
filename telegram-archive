@@ -7,13 +7,12 @@ This script can be executed directly or symlinked to a location in PATH.
 import os
 import sys
 
-# Add src directory to Python path
+# Put the repository root (which holds the telegram_archive package) on the path
 script_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(script_dir, "src")
 sys.path.insert(0, script_dir)
 
 # Import and run the main CLI
-from src.__main__ import main  # noqa: E402 — sys.path insertion above must run first
+from telegram_archive.__main__ import main  # noqa: E402 — sys.path insertion above must run first
 
 if __name__ == "__main__":
     sys.exit(main())

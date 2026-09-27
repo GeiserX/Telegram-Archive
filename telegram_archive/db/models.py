@@ -200,7 +200,7 @@ class Message(Base):
     # get_pinned_messages, find_message_by_date*, the streaming export) already
     # outer-joins the media table and reads the columns from that join. Under
     # lazy="selectin" SQLAlchemy fired a SECOND full media read per page whose
-    # ORM objects were built and thrown away — nothing in src/ reads
+    # ORM objects were built and thrown away — nothing in telegram_archive/ reads
     # Message.media_items.
     media_items: Mapped[list[Media]] = relationship("Media", back_populates="message", lazy="select")
     versions: Mapped[list[MessageVersion]] = relationship("MessageVersion", back_populates="message", lazy="dynamic")
@@ -448,7 +448,7 @@ class Media(Base):
     account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
     # NOT a Telegram file_id, and NOT one single shape. The API sweep and the
     # listener build f"{chat_id}_{message.id}_{type}"; the Telegram Desktop
-    # importer builds f"import_{chat_id}_{message.id}" (src/telegram_import.py),
+    # importer builds f"import_{chat_id}_{message.id}" (telegram_archive/telegram_import.py),
     # deliberately type-free so adoption can re-key it whichever type each side
     # computed. Read a row by its (chat_id, message_id, type) COLUMNS rather than
     # by re-spelling this key — assuming the first shape is #423. No shape carries

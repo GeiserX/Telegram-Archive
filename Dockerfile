@@ -39,6 +39,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/.venv /app/.venv
 
 # Copy application code
+COPY telegram_archive/ ./telegram_archive/
+# The old package name, so compose files that run "python -m src ..." keep working.
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY alembic/ ./alembic/
@@ -74,4 +76,4 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=300s --retries=3 \
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 
 # Default: show help (requires explicit command)
-CMD ["python", "-m", "src"]
+CMD ["python", "-m", "telegram_archive"]

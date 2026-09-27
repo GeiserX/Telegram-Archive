@@ -1,6 +1,6 @@
 """The viewer app imports from exactly what Dockerfile.viewer copies and installs.
 
-The suite runs from an editable install, which puts all of src/ on the path,
+The suite runs from an editable install, which puts all of telegram_archive/ on the path,
 so a module the image never copies, or a package its dependency group never
 installs, imports fine here and crashes the container at start. This test
 rebuilds the image's view: a directory holding only the Dockerfile's COPY
@@ -41,16 +41,22 @@ class NotInTheImage(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, NotInTheImage())
-import src.web.main  # noqa: E402,F401
+import telegram_archive  # noqa: E402
+import telegram_archive.web.main  # noqa: E402
 
-print("imported")
+# The old name a compose file may still point uvicorn at: same module, same app.
+import src.web.main  # noqa: E402
+
+assert src.web.main is telegram_archive.web.main
+assert src.web.main.app is telegram_archive.web.main.app
+print("imported", telegram_archive.__version__)
 """
 
 
 def _copied_src_paths() -> list[str]:
-    """The ``COPY src/...`` sources of Dockerfile.viewer."""
+    """The ``COPY telegram_archive/...`` and ``COPY src/...`` sources of Dockerfile.viewer."""
     lines = (ROOT / "Dockerfile.viewer").read_text(encoding="utf-8").splitlines()
-    return [match.group(1) for line in lines if (match := re.match(r"COPY (src/\S*)\s", line))]
+    return [match.group(1) for line in lines if (match := re.match(r"COPY ((?:telegram_archive|src)/\S*)\s", line))]
 
 
 def _norm(name: str) -> str:
@@ -85,7 +91,7 @@ def _modules_outside(closure: set[str]) -> list[str]:
     """Top-level modules installed here whose every distribution the image lacks."""
     blocked = []
     for module, dists in metadata.packages_distributions().items():
-        if module == "src":
+        if module in ("telegram_archive", "src"):
             continue  # the project itself, copied file by file instead
         if not any(_norm(dist) in closure for dist in dists):
             blocked.append(module)

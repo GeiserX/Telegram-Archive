@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import text, update
 
-from src.db.adapter import TRANSCRIPTION_EVENTS_CURSOR_KEY, TRANSCRIPTION_SERVER_KEY
-from src.db.models import MediaTranscript
-from src.message_utils import utcnow_naive
+from telegram_archive.db.adapter import TRANSCRIPTION_EVENTS_CURSOR_KEY, TRANSCRIPTION_SERVER_KEY
+from telegram_archive.db.models import MediaTranscript
+from telegram_archive.message_utils import utcnow_naive
 
 CHAT = -420300001
 TYPES = ("voice", "video_note")

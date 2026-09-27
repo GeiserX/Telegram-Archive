@@ -18,7 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.message_utils import describe_exception
+from telegram_archive.message_utils import describe_exception
 
 
 class TestDescribeException(unittest.TestCase):

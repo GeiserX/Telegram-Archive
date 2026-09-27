@@ -88,13 +88,13 @@ Issues = "https://github.com/GeiserX/Telegram-Archive/issues"
 Changelog = "https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELOG.md"
 
 [project.scripts]
-telegram-archive = "src.__main__:main"
+telegram-archive = "telegram_archive.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["src", "src.*"]
+include = ["telegram_archive", "telegram_archive.*"]
 
 [tool.setuptools.package-data]
-src = ["web/templates/**/*", "web/static/**/*"]
+telegram_archive = ["web/templates/**/*", "web/static/**/*"]
 
 [tool.ruff]
 target-version = "py314"
@@ -128,16 +128,16 @@ ignore = [
 # Scripts and migrations have less strict requirements
 "scripts/*" = ["F841", "B007"]
 # Argparse subparsers are assigned for side effects
-"src/__main__.py" = ["F841"]
+"telegram_archive/__main__.py" = ["F841"]
 # Core backup has intentional variable assignments and zip patterns
-"src/telegram_backup.py" = ["F841", "B905"]
+"telegram_archive/telegram_backup.py" = ["F841", "B905"]
 # Test mocks are assigned for patching side effects
 "tests/*" = ["F841"]
 # Alembic migrations use dialect variable for inspection
 "alembic/*" = ["F841"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["telegram_archive"]
 
 [tool.ruff.format]
 quote-style = "double"

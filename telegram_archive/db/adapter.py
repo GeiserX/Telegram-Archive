@@ -5072,7 +5072,7 @@ class DatabaseAdapter:
                     stmt = stmt.where(Message.text.ilike(f"%{escaped}%", escape="\\"))
 
             # Cursor-based pagination (preferred - O(1) performance)
-            # Mirrored by the viewer (src/web/templates/index.html: compareMessagesDesc/messageCursor) — keep in sync.
+            # Mirrored by the viewer (telegram_archive/web/templates/index.html: compareMessagesDesc/messageCursor) — keep in sync.
             if after_id is not None:
                 # Forward window (#213): the LIMIT must take the rows closest to the
                 # target, so select oldest-first and reverse to newest-first below to

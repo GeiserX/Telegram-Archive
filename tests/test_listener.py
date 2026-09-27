@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from telethon import events
 
-from src.listener import MassOperationProtector, TelegramListener
+from telegram_archive.listener import MassOperationProtector, TelegramListener
 
 
 class TestTelegramListener:

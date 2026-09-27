@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
-from src.db.fts import SQLITE_TRANSCRIPT_FTS_TABLE, SQLITE_TRANSCRIPT_TRIGGER_NAMES
-from src.db.models import MediaTranscript
+from telegram_archive.db.fts import SQLITE_TRANSCRIPT_FTS_TABLE, SQLITE_TRANSCRIPT_TRIGGER_NAMES
+from telegram_archive.db.models import MediaTranscript
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260925_032_add_media_transcripts.py"
