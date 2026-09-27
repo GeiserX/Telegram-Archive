@@ -16,6 +16,7 @@ Telegram Archive is now a Python package named `telegram-archive`, ready for PyP
 
 ### Changed
 - **The code moved from `src/` to `telegram_archive/`.** Both images keep a small `src` package, so compose files that run `python -m src schedule`, `python -m src auth` or `uvicorn src.web.main:app` keep working and run the same code. The old name prints a one-line notice at start. Switch to `python -m telegram_archive` and `telegram_archive.web.main:app` when convenient. The images' default commands and [`docker-compose.yml`](../docker-compose.yml) use the new name.
+- **The viewer wallpaper has a new mount path**, `/app/telegram_archive/web/static/<file>`. The old path, `/app/src/web/static/<file>`, is a link to it in the viewer image, so an existing mount keeps working.
 - **The migrations moved into the package.** From a checkout, run `alembic -c telegram_archive/alembic.ini ...`. Inside the backup container a bare `alembic ...` still works.
 
 ## [8.16.1] - 2026-09-26

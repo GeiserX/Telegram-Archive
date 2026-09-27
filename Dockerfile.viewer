@@ -31,6 +31,9 @@ COPY telegram_archive/db/ ./telegram_archive/db/
 COPY telegram_archive/web/ ./telegram_archive/web/
 # The old package name, so a compose file that runs "uvicorn src.web.main:app" keeps working.
 COPY src/ ./src/
+# Wallpapers used to be mounted at /app/src/web/static/<file>. Keep that path
+# pointing at the static directory the viewer serves.
+RUN mkdir -p /app/src/web && ln -s /app/telegram_archive/web/static /app/src/web/static
 COPY scripts/healthcheck_viewer.py ./scripts/healthcheck_viewer.py
 
 # Create non-root user for security

@@ -125,3 +125,17 @@ def test_the_viewer_app_imports_from_the_image_copy_set(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0 and "imported" in result.stdout, result.stderr[-3000:]
+
+
+def test_the_old_wallpaper_mount_path_still_reaches_the_served_static_dir():
+    # Compose files mount a wallpaper at /app/src/web/static/<file>, the path
+    # documented before the rename. The viewer serves /static from the static
+    # directory next to telegram_archive/web/main.py, so the image links the old
+    # path to it, or the wallpaper silently 404s after an upgrade.
+    import telegram_archive.web.main as viewer
+
+    served = "/app/" + viewer.static_dir.relative_to(ROOT).as_posix()
+    dockerfile = (ROOT / "Dockerfile.viewer").read_text(encoding="utf-8")
+    links = re.findall(r"ln -s (\S+) (\S+)", dockerfile)
+    assert (served, "/app/src/web/static") in links
+    assert "telegram_archive/web/" in _copied_src_paths()
