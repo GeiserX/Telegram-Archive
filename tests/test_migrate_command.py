@@ -30,8 +30,8 @@ def _migrate(tmp_path, *extra):
     env.pop("POSTGRES_HOST", None)
     env["PYTHONPATH"] = str(ROOT)
     env["DB_TYPE"] = "sqlite"
+    # Deliberately not created: a fresh install has no data directory yet.
     env["BACKUP_PATH"] = str(tmp_path / "backups")
-    (tmp_path / "backups").mkdir(exist_ok=True)
     return subprocess.run(
         [sys.executable, "-m", "telegram_archive", *extra, "migrate"],
         cwd=tmp_path,

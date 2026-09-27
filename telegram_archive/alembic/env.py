@@ -14,7 +14,7 @@ from urllib.parse import quote_plus
 
 from alembic import context
 from sqlalchemy import pool, text
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import our models - this registers them with the Base metadata
@@ -138,7 +138,14 @@ async def run_async_migrations() -> None:
     """
     # Override the sqlalchemy.url in the config
     configuration = config.get_section(config.config_ini_section) or {}
-    configuration["sqlalchemy.url"] = get_database_url()
+    url = get_database_url()
+    configuration["sqlalchemy.url"] = url
+
+    # A fresh install has no data directory yet. DatabaseManager creates it
+    # before opening SQLite, and "telegram-archive migrate" runs first.
+    database = make_url(url).database
+    if url.startswith("sqlite") and database and database != ":memory:":
+        os.makedirs(os.path.dirname(os.path.abspath(database)), exist_ok=True)
 
     connectable = async_engine_from_config(
         configuration,
