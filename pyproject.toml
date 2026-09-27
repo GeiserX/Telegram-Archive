@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+# 77 is the first setuptools that reads a PEP 639 license expression.
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +9,8 @@ version = "8.16.1"
 description = "Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule."
 readme = "README.md"
 requires-python = ">=3.14"
-license = {text = "GPL-3.0-or-later"}
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     {name = "Sergio Fernández", email = "sergio@geiser.cloud"}
 ]
@@ -16,7 +18,6 @@ keywords = ["telegram", "backup", "archive", "docker", "telethon"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
     "Topic :: Communications :: Chat",
@@ -91,10 +92,13 @@ Changelog = "https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELO
 telegram-archive = "telegram_archive.__main__:main"
 
 [tool.setuptools.packages.find]
+# Only the package. src/ is the old name the Docker images keep for existing
+# compose files; it never ships in the wheel.
 include = ["telegram_archive", "telegram_archive.*"]
+exclude = ["*.__pycache__"]
 
 [tool.setuptools.package-data]
-telegram_archive = ["web/templates/**/*", "web/static/**/*"]
+telegram_archive = ["web/templates/**/*", "web/static/**/*", "alembic.ini", "alembic/script.py.mako"]
 
 [tool.ruff]
 target-version = "py314"
