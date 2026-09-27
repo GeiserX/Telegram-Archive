@@ -1018,6 +1018,7 @@ class Config:
         self.transcription_types: set[str] = set(TRANSCRIPTION_DEFAULT_TYPES)
         self.transcription_max_seconds = 1800
         self.transcription_max_upload_mb = 500
+        self.transcription_max_upload_mb_set = False
         self.transcription_language = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip()
         # Ask akou's job path to label speakers; the OpenAI endpoint has no such field.
         self.transcription_diarize = _parse_bool_env("TRANSCRIPTION_DIARIZE", False)
@@ -1032,6 +1033,8 @@ class Config:
             # operator turned off must not stop the archiver.
             self.transcription_max_seconds = _parse_int_env("TRANSCRIPTION_MAX_SECONDS", 1800)
             self.transcription_max_upload_mb = _parse_int_env("TRANSCRIPTION_MAX_UPLOAD_MB", 500)
+            # Unset, TRANSCRIPTION_PROVIDER=openai caps uploads at 25 MB instead.
+            self.transcription_max_upload_mb_set = bool(os.getenv("TRANSCRIPTION_MAX_UPLOAD_MB", "").strip())
             self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
             self.transcription_priority_chat_ids = self._parse_ordered_id_list(
                 os.getenv("TRANSCRIPTION_PRIORITY_CHAT_IDS", "")

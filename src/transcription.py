@@ -32,9 +32,11 @@ other HTTP error is an answer about the file and is stored as a ``failed``
 row, and so is a synchronous request the server took and never answered
 (a read or write timeout, or a 5xx after every attempt), which also ends
 the run. On the synchronous path a 404 is about the server too (an unknown
-model or a wrong URL). A 413 is the server's or a proxy's upload limit,
-lower than TRANSCRIPTION_MAX_UPLOAD_MB since the archive never sends more:
-the row stays queued, the run ends and the log says to lower the setting.
+model or a wrong URL). A 413 is a limit on the way lower than the upload
+cap: a file sent as stored is sent again as its Opus track, and a track
+still refused is skipped as ``too_large``, so only that file is affected.
+Two refused files with none answered end the run: a model or language
+setting the server refuses would otherwise fail every file of the backlog.
 
 PII rule: this module never logs a URL (httpx exception strings embed it,
 so exceptions log as class names), the bearer key, a media id (it carries
@@ -127,6 +129,14 @@ TOO_LARGE = "too_large"
 # 4 GB video to tens of megabytes. Extracting reads the whole file, so it
 # gets far longer than ffprobe.
 SENT_AS_STORED = frozenset({"voice", "audio"})
+
+# What ``_send`` answers for a 413; ``transcribe_media`` turns it into a retry
+# with the audio track, or a ``too_large`` skip. Never a drain outcome.
+UPLOAD_TOO_LARGE = "upload_too_large"
+
+# The upload cap of TRANSCRIPTION_PROVIDER=openai when TRANSCRIPTION_MAX_UPLOAD_MB
+# is not set: OpenAI and Groq's free tier refuse more than 25 MB.
+OPENAI_UPLOAD_MB = 25
 EXTRACT_TIMEOUT_SECONDS = 900
 
 # One warning per process and tool when ffprobe or ffmpeg is missing or
@@ -265,8 +275,12 @@ class TranscriptionClient:
         self.backoffs = self.BACKOFFS
         self.poll_interval = PROVIDER_POLL_SECONDS
         self._transport = transport
-        # Per run: the OpenAI endpoint still takes verbose_json (see the openai provider).
+        # Per run: the OpenAI endpoint still takes verbose_json (see the openai
+        # provider); the server has answered a file (a transcript, or a job it
+        # took); and how many files it refused with a 4xx (413 skips included).
         self.verbose = True
+        self.answered = False
+        self.file_refusals = 0
 
     @property
     def sync_source(self) -> str:
@@ -308,7 +322,9 @@ class TranscriptionClient:
             "model": self.sync_model(server),
             "language": self.language or "auto",
             "diarize": self.diarize and self.diarizes(server),
-            "prompt": _prompt_for(config) or "",
+            # Only the OpenAI endpoint sends the hotword prompt; for an adapter a
+            # TRANSCRIPTION_HOTWORDS change must not block its copies.
+            "prompt": "" if self.provider.name in NATIVE_PROVIDERS else (_prompt_for(config) or ""),
             # The OpenAI endpoint is one source for OpenAI, Groq, Mistral and
             # every self-hosted server: the host tells their answers apart.
             "host": urllib.parse.urlsplit(self._base_url).netloc.lower(),
@@ -939,7 +955,7 @@ async def _submit_job(
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
         if e.status == 413:
-            return _upload_refused(config)
+            return UPLOAD_TOO_LARGE
         if _server_refused(e) or _server_failed(e):
             # Every other submit of this run would get the same answer, and
             # none of it is about this file: no failed row, the run ends.
@@ -951,11 +967,14 @@ async def _submit_job(
             else:
                 logger.warning(f"Transcription server refused the job ({e.reason}); the media stays queued")
             return "refused"
+        if e.status is not None and 400 <= e.status < 500:
+            client.file_refusals += 1
         await db.fill_media_transcript(row["id"], status="failed", error=e.reason, source=SOURCE_AKOU)
         await _notify(notifier, media, row["id"], "failed", account_id)
         logger.warning(f"Transcription job refused ({e.reason})")
         return "failed"
 
+    client.answered = True
     data = flat_job(job)
     job_id = data.get("job_id")
     if not isinstance(job_id, str) or not job_id:
@@ -1137,9 +1156,13 @@ async def _copy_transcript(
     """
     lookup = {"account_id": account_id, "media_id": media["id"]}
     if server is None:
-        # The listener's call, before the server is known: ask it only when
-        # some row could be copied at all.
-        if await db.find_copyable_transcript(content_hash, client.preset, diarize=client.diarize, **lookup) is None:
+        # The listener's call, before the server is known: ask it only when a
+        # tagged row could be copied at all (openai and the adapters answer
+        # without a request).
+        loose = await db.find_copyable_transcript(
+            content_hash, client.preset, diarize=client.diarize, tagged_only=True, **lookup
+        )
+        if loose is None:
             return None
         try:
             server = await client.detect_server()
@@ -1214,8 +1237,10 @@ async def transcribe_media(
     every attempt): the row is failed, so the cap of three applies, and the
     drain ends the run. ``refused`` is a refusal about the server or its
     configuration (see ``_server_refused``; on the synchronous path a 404,
-    on the job path a 5xx, and on both a 413, see ``_upload_refused``): the
-    row stays queued, no failed row is spent, and the drain ends the run.
+    on the job path a 5xx): the row stays queued, no failed row is spent,
+    and the drain ends the run. A 413 is sent again as the Opus audio track
+    when the file went out as stored, and ``skipped`` with ``too_large``
+    when the track itself is refused: only that file is affected.
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -1308,20 +1333,21 @@ async def transcribe_media(
         # An ask-now row, or a row for an imported media with no hash.
         await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
 
-    max_mb = _upload_limit_mb(config)
+    max_mb = _upload_limit_mb(config, client)
     limit = max_mb * 1024 * 1024 if max_mb > 0 else None  # 0 or less: no limit
     # A voice message or music file over the limit is not skipped yet: its
     # audio extracted to Opus is usually a fraction of it.
     over_limit = limit is not None and os.path.getsize(path) > limit
     extract = media.get("type") not in SENT_AS_STORED or over_limit
     extracted = await extract_audio(path) if extract else None
-    try:
-        upload_path = extracted or path
+
+    async def send(track: str | None) -> str:
+        upload_path = track or path
         if limit is not None and os.path.getsize(upload_path) > limit:
             return await skip(TOO_LARGE)
-        upload_key = await asyncio.to_thread(_file_sha256, extracted) if extracted else None
+        upload_key = await asyncio.to_thread(_file_sha256, track) if track else None
         stem = os.path.splitext(os.path.basename(path))[0]
-        filename = f"{stem}.ogg" if extracted else os.path.basename(path)
+        filename = f"{stem}.ogg" if track else os.path.basename(path)
         # Streamed from disk: httpx reads the open file in chunks and rewinds
         # it on a retry, so a large file never sits in memory.
         with open(upload_path, "rb") as upload:
@@ -1339,6 +1365,25 @@ async def transcribe_media(
                 server=server,
                 notifier=notifier,
             )
+
+    try:
+        outcome = await send(extracted)
+        if outcome == UPLOAD_TOO_LARGE and extracted is None:
+            # A 413 on the file as stored: its Opus track is a fraction of it, try that once.
+            extracted = await extract_audio(path)
+            if extracted:
+                outcome = await send(extracted)
+        if outcome != UPLOAD_TOO_LARGE:
+            return outcome
+        # A 413 on the audio track itself: this server cannot take this file.
+        # Only this file is skipped; the run goes on.
+        client.file_refusals += 1
+        logger.warning(
+            "Transcription server refused a file as too large (HTTP 413) even as its audio track; skipped. "
+            f"Its limit, or a proxy's, is below TRANSCRIPTION_MAX_UPLOAD_MB ({_limit_text(max_mb)}): lower the "
+            "setting so such files are skipped before they are sent"
+        )
+        return await skip(TOO_LARGE)
     finally:
         if extracted:
             _remove(extracted)
@@ -1363,9 +1408,10 @@ async def _send(
 
     On the synchronous path a refusal about the server's setup (401, 402,
     403, 404 for an unknown model or a wrong URL, 429) stores nothing: the
-    row stays queued and the run ends (``refused``). So does a 413, the
-    server's or a proxy's upload limit (``_upload_refused``). Any other 4xx
-    is an answer about this file and spends a failed row; the run goes on.
+    row stays queued and the run ends (``refused``). A 413 answers
+    ``UPLOAD_TOO_LARGE`` for ``transcribe_media`` to retry with the audio
+    track or skip. Any other 4xx is an answer about this file and spends a
+    failed row, and counts in ``client.file_refusals`` for the drain.
     """
     if server is None:
         try:
@@ -1414,7 +1460,9 @@ async def _send(
             logger.warning(f"Transcription server refused the request ({e.reason}); the media stays queued")
             return "refused"
         if e.status == 413:
-            return _upload_refused(config)
+            return UPLOAD_TOO_LARGE
+        if e.status is not None and 400 <= e.status < 500:
+            client.file_refusals += 1
         failed = {
             "row_id": row["id"],
             "media": media,
@@ -1431,6 +1479,7 @@ async def _send(
         # server decodes the file inside the request and the file may be the cause.
         return "stalled" if e.stalled or _server_failed(e) else "failed"
 
+    client.answered = True
     await db.fill_media_transcript(
         row["id"],
         status="done",
@@ -1451,27 +1500,24 @@ _NOT_AKOU = (
 )
 
 
-def _upload_limit_mb(config) -> int:
-    """TRANSCRIPTION_MAX_UPLOAD_MB; 0 or less means no limit."""
-    max_mb = getattr(config, "transcription_max_upload_mb", 500)
-    return max_mb if isinstance(max_mb, int) and not isinstance(max_mb, bool) else 500
+def _upload_limit_mb(config, client: TranscriptionClient) -> int:
+    """The upload cap in MB; 0 or less means no limit.
 
-
-def _upload_refused(config) -> str:
-    """A 413: the server's or a proxy's limit, never this file's fault.
-
-    The archive skips a file over TRANSCRIPTION_MAX_UPLOAD_MB before sending
-    it, so a 413 means a limit on the way is lower than the setting. The row
-    stays queued and the run ends, so no file is spent on it; the log says
-    what to change.
+    TRANSCRIPTION_MAX_UPLOAD_MB when it is set. Unset, 500, except for
+    TRANSCRIPTION_PROVIDER=openai, whose usual servers (OpenAI, Groq's free
+    tier) refuse more than 25 MB: the archive then extracts or skips before
+    sending instead of learning it from a 413.
     """
-    max_mb = _upload_limit_mb(config)
-    setting = f"{max_mb} MB" if max_mb > 0 else "no limit"
-    logger.warning(
-        "Transcription server refused an upload as too large (HTTP 413): its limit, or a proxy's, is lower than "
-        f"TRANSCRIPTION_MAX_UPLOAD_MB ({setting}). Lower the setting to that limit; the media stays queued"
-    )
-    return "refused"
+    max_mb = getattr(config, "transcription_max_upload_mb", 500)
+    if not isinstance(max_mb, int) or isinstance(max_mb, bool):
+        max_mb = 500
+    if client.provider_name == "openai" and getattr(config, "transcription_max_upload_mb_set", None) is not True:
+        return OPENAI_UPLOAD_MB
+    return max_mb
+
+
+def _limit_text(max_mb: int) -> str:
+    return f"{max_mb} MB" if max_mb > 0 else "no limit"
 
 
 async def _store_failed(db, notifier, failed: dict[str, Any]) -> None:
@@ -1593,6 +1639,15 @@ async def drain_transcriptions(
             config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
         )
         stats[outcome] = stats.get(outcome, 0) + 1
+        if not client.answered and client.file_refusals >= 2:
+            # Every file refused, none answered: more likely TRANSCRIPTION_MODEL or
+            # TRANSCRIPTION_LANGUAGE than the files. Two rows a run at most, and a
+            # failed row retires after three.
+            logger.warning(
+                f"Transcription server refused {client.file_refusals} files and answered none this run; ending the "
+                "run. Check TRANSCRIPTION_MODEL and TRANSCRIPTION_LANGUAGE"
+            )
+            break
         if outcome in ("unreachable", "stalled", "refused"):
             # transcribe_media warned once; every media after this one would
             # wait out the same timeouts, or get the same refusal.

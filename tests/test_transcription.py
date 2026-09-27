@@ -1604,19 +1604,22 @@ class TestJobPath:
                 None,
             ), media_id
 
-    async def test_a_413_on_the_job_path_ends_the_run_and_spends_no_file(self, real_adapter, tmp_path):
+    async def test_a_413_on_the_job_path_retries_the_track_then_skips_only_that_file(
+        self, real_adapter, tmp_path, monkeypatch
+    ):
         """akou, or a proxy in front of it, with a lower upload limit than TRANSCRIPTION_MAX_UPLOAD_MB."""
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", FAKE_FFMPEG)
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
-        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
         server = AkouServer()
         server.submit_refusal = (413, {"error": "file_too_large", "message": "server text"})
 
         stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
 
-        assert (stats["refused"], stats["failed"], stats["skipped"]) == (1, 0, 0)
-        assert len(server.submits) == 1
-        rows = await _rows(real_adapter, "m_1_voice") or await _rows(real_adapter, "m_2_voice")
-        assert [(r["status"], r["error"]) for r in rows] == [("queued", None)]
+        assert (stats["skipped"], stats["refused"], stats["failed"]) == (1, 0, 0)
+        assert len(server.submits) == 2, "as stored, then as its audio track"
+        assert _sent_file(server.submits[1]).startswith(b"OggS extracted by run ")
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"]) == ("skipped", "too_large")
 
     async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)
@@ -2461,6 +2464,64 @@ class TestCopyAcrossAccounts:
         assert stats["done"] == 1
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["source"], row["diarize"]) == ("openai", False)
+
+    async def test_a_hotword_change_does_not_block_an_adapters_copies(self, real_adapter, tmp_path):
+        """The native adapters never send the hotword prompt, so it is not part of their options."""
+        from src.transcription_contract import options_tag
+
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        before = _config(str(tmp_path), transcription_provider="deepgram")
+        tag = options_tag(TranscriptionClient(before).request_options(ServerInfo(name="deepgram"), before))
+        source = await _done_source(
+            real_adapter, 1, "m_1_video", source="deepgram", engine_name="deepgram", options_tag=tag
+        )
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_provider="deepgram", transcription_hotwords=["Kubernetes"])
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(copied=1)
+        assert server.requests == []
+        [row] = await real_adapter.list_media_transcripts("m_7_video", account_id=2)
+        assert row["copied_from_id"] == source["id"]
+
+    async def test_the_listener_never_asks_the_server_twice_for_a_row_from_before_the_tag(self, real_adapter, tmp_path):
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        await _done_source(real_adapter, 1, "m_1_video", options_tag=None)
+        server = FakeServer()
+        config = _config(str(tmp_path))
+        media = {**await real_adapter.get_media_by_id("m_7_video", account_id=2), "content_hash": HASH}
+
+        outcome = await transcribe_media(
+            config, real_adapter, media, account_id=2, client=_client(config, server), notifier=AsyncMock()
+        )
+
+        assert outcome == "done"
+        assert [r.url.path for r in server.requests].count("/base/v1/server") == 1
+
+    async def test_the_listener_copies_with_a_provider_known_from_the_setting_without_a_request(
+        self, real_adapter, tmp_path
+    ):
+        from src.transcription_contract import options_tag
+
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        config = _config(str(tmp_path), transcription_provider="openai")
+        tag = options_tag(TranscriptionClient(config).request_options(ServerInfo(), config))
+        await _done_source(real_adapter, 1, "m_1_video", options_tag=tag)
+        server = FakeServer()
+        media = {**await real_adapter.get_media_by_id("m_7_video", account_id=2), "content_hash": HASH}
+
+        outcome = await transcribe_media(
+            config, real_adapter, media, account_id=2, client=_client(config, server), notifier=AsyncMock()
+        )
+
+        assert outcome == "copied"
+        assert server.requests == []
 
     async def test_a_row_from_before_the_options_tag_is_never_copied(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")

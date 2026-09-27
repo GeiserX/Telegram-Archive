@@ -6694,6 +6694,7 @@ class DatabaseAdapter:
         source: str | None = None,
         engine_name: str | None = None,
         options_tag: str | None = None,
+        tagged_only: bool = False,
     ) -> dict[str, Any] | None:
         """The newest ``done`` row, in any account, of the same stored audio the drain would get again.
 
@@ -6729,6 +6730,8 @@ class DatabaseAdapter:
             if options_tag is not None:
                 # A row from before the tag (NULL) never matches: its options are unknown.
                 stmt = stmt.where(MediaTranscript.options_tag == options_tag)
+            elif tagged_only:
+                stmt = stmt.where(MediaTranscript.options_tag.is_not(None))
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._transcript_to_dict(row) if row is not None else None
 

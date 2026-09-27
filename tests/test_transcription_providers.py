@@ -36,11 +36,35 @@ from test_transcription import (  # noqa: E402
     FakeServer,
     _client,
     _config,
+    _fake_tool,
     _make_stale,
     _media,
     _rows,
     _stats,
 )
+
+# ffmpeg's last argument is the output file; this one writes a small Opus-named track.
+SMALL_TRACK = 'for a; do last="$a"; done\nprintf "OggS a small track" > "$last"\n'
+
+
+def _upload_name(request: httpx.Request) -> str:
+    import re
+
+    found = re.search(r'filename="([^"]+)"', request.content.decode("latin-1"))
+    return found.group(1) if found else ""
+
+
+def _refusing_files(status: int, refused: set[str]):
+    """An OpenAI-shaped server that refuses uploads named in ``refused`` and transcribes the rest."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/server"):
+            return httpx.Response(404)
+        if _upload_name(request) in refused:
+            return httpx.Response(status, json={"error": {"message": "no", "code": None}})
+        return httpx.Response(200, json=VERBOSE_JSON)
+
+    return handle
 
 
 def _provider_client(config, handler) -> tuple[TranscriptionClient, list[httpx.Request]]:
@@ -238,25 +262,52 @@ class TestRefusedEveryFile:
         client, _ = _provider_client(config, _refusing(status, good={1, 2, 3}))
         assert (await _drain(config, real_adapter, client))["done"] == 3
 
-    @pytest.mark.parametrize("status", [400, 422])
-    async def test_a_4xx_about_a_file_fails_that_file_and_the_run_goes_on(self, real_adapter, tmp_path, status):
-        """Two files the server refuses first never block the rest (the default auto setting)."""
+    async def test_a_setup_error_answered_as_422_ends_the_run_after_two_rows(self, real_adapter, tmp_path):
+        """A TRANSCRIPTION_MODEL typo some providers answer with 400 or 422: two rows a run, not the backlog."""
         from datetime import datetime
 
         for n, day in ((1, 4), (2, 3), (3, 2)):
             await _media(real_adapter, tmp_path, f"m_{n}_voice", download_date=datetime(2026, 1, day))
         config = _config(str(tmp_path))
-        # A 400 is asked once more for plain json before it counts, so the good upload is the fifth.
-        good = {5} if status == 400 else {3}
-        client, _ = _provider_client(config, _refusing(status, {"error": {"message": "no", "code": None}}, good=good))
+        client, requests = _provider_client(config, _refusing(422, {"error": {"message": "no", "code": None}}))
 
         stats = await _drain(config, real_adapter, client)
 
-        assert (stats["done"], stats["failed"], stats["refused"]) == (1, 2, 0)
-        for n in (1, 2):
-            [bad] = await _rows(real_adapter, f"m_{n}_voice")
-            assert (bad["status"], bad["error"], bad["source"]) == ("failed", f"HTTP {status}", "openai")
+        assert (stats["failed"], stats["done"]) == (2, 0)
+        assert len([r for r in requests if r.method == "POST"]) == 2
+        assert await _rows(real_adapter, "m_3_voice") == [], "the third file is not touched this run"
+
+    async def test_two_refused_files_retire_after_three_runs_and_the_rest_is_sent(self, real_adapter, tmp_path):
+        """The files are the problem: bounded at two rows a run, then they retire and the backlog moves."""
+        from datetime import datetime
+
+        for n, day in ((1, 4), (2, 3), (3, 2)):
+            await _media(real_adapter, tmp_path, f"m_{n}_voice", download_date=datetime(2026, 1, day))
+        config = _config(str(tmp_path))
+        for _ in range(3):
+            client, _ = _provider_client(config, _refusing_files(422, {"m_1_voice.ogg", "m_2_voice.ogg"}))
+            assert (await _drain(config, real_adapter, client))["failed"] == 2
+        client, _ = _provider_client(config, _refusing_files(422, {"m_1_voice.ogg", "m_2_voice.ogg"}))
+        stats = await _drain(config, real_adapter, client)
+        assert (stats["done"], stats["failed"]) == (1, 0)
         assert [r["status"] for r in await _rows(real_adapter, "m_3_voice")] == ["done"]
+
+    @pytest.mark.parametrize("status", [400, 422])
+    async def test_refusals_after_a_transcript_are_per_file_and_the_run_goes_on(self, real_adapter, tmp_path, status):
+        from datetime import datetime
+
+        for n, day in ((1, 5), (2, 4), (3, 3), (4, 2)):
+            await _media(real_adapter, tmp_path, f"m_{n}_voice", download_date=datetime(2026, 1, day))
+        config = _config(str(tmp_path))
+        refused = {"m_1_voice.ogg", "m_3_voice.ogg", "m_4_voice.ogg"}
+        client, _ = _provider_client(config, _refusing_files(status, refused))
+
+        stats = await _drain(config, real_adapter, client)
+
+        assert (stats["done"], stats["failed"]) == (1, 3)
+        for n in (1, 3, 4):
+            [bad] = await _rows(real_adapter, f"m_{n}_voice")
+            assert (bad["status"], bad["error"]) == ("failed", f"HTTP {status}")
 
     async def test_the_listener_path_leaves_a_refused_row_queued_for_the_drain(self, real_adapter, tmp_path):
         from src.transcription import transcribe_media
@@ -267,22 +318,80 @@ class TestRefusedEveryFile:
         assert await transcribe_media(config, real_adapter, media, account_id=1, client=client) == "refused"
         assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == ["queued"]
 
-    async def test_a_413_is_a_limit_on_the_way_it_ends_the_run_and_spends_no_file(self, real_adapter, tmp_path, caplog):
-        """The archive never sends more than TRANSCRIPTION_MAX_UPLOAD_MB, so a 413 is a lower limit elsewhere."""
-        for n in (1, 2):
-            await _media(real_adapter, tmp_path, f"m_{n}_voice")
-        config = _config(str(tmp_path), transcription_max_upload_mb=500)
-        client, requests = _provider_client(config, _refusing(413, {"error": {"message": "too big", "code": None}}))
+    async def test_a_413_on_a_stored_file_is_sent_again_as_its_audio_track(self, real_adapter, tmp_path, monkeypatch):
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", SMALL_TRACK)
+        path = tmp_path / "-420300001" / "long.mp3"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(AUDIO)
+        from test_transcription import _file_media
+
+        await _file_media(real_adapter, path, "m_1_audio", media_type="audio", mime_type="audio/mpeg", duration=3)
+        config = _config(str(tmp_path), transcription_types={"audio"})
+        client, requests = _provider_client(config, _refusing_files(413, {"long.mp3"}))
+
+        stats = await _drain(config, real_adapter, client)
+
+        assert stats == _stats(done=1)
+        assert [_upload_name(r) for r in requests if r.method == "POST"] == ["long.mp3", "long.ogg"]
+
+    async def test_a_413_on_the_track_skips_only_that_file(self, real_adapter, tmp_path, monkeypatch, caplog):
+        """The head of the queue never blocks: the refused file is skipped and the next one is sent."""
+        from datetime import datetime
+
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", SMALL_TRACK)
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 4))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 3))
+        config = _config(str(tmp_path))
+        client, requests = _provider_client(config, _refusing_files(413, {"m_1_voice.ogg"}))
 
         with caplog.at_level(logging.WARNING, logger="src.transcription"):
             stats = await _drain(config, real_adapter, client)
 
-        assert stats == _stats(refused=1)
-        assert len([r for r in requests if r.method == "POST"]) == 1
-        [row] = await _rows(real_adapter, "m_1_voice") or await _rows(real_adapter, "m_2_voice")
-        assert (row["status"], row["error"]) == ("queued", None)
-        [line] = [r.getMessage() for r in caplog.records if "413" in r.getMessage()]
-        assert "TRANSCRIPTION_MAX_UPLOAD_MB (500 MB)" in line and "lower" in line
+        assert (stats["skipped"], stats["done"]) == (1, 1)
+        [skipped] = await _rows(real_adapter, "m_1_voice")
+        assert (skipped["status"], skipped["error"]) == ("skipped", "too_large")
+        assert [r["status"] for r in await _rows(real_adapter, "m_2_voice")] == ["done"]
+        assert any("413" in r.getMessage() and "TRANSCRIPTION_MAX_UPLOAD_MB" in r.getMessage() for r in caplog.records)
+
+    async def test_two_413_skips_with_nothing_answered_end_the_run(self, real_adapter, tmp_path, monkeypatch):
+        from datetime import datetime
+
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", SMALL_TRACK)
+        for n, day in ((1, 4), (2, 3), (3, 2)):
+            await _media(real_adapter, tmp_path, f"m_{n}_voice", download_date=datetime(2026, 1, day))
+        config = _config(str(tmp_path))
+        refused = {f"m_{n}_voice.ogg" for n in (1, 2, 3)}
+        client, _ = _provider_client(config, _refusing_files(413, refused))
+
+        stats = await _drain(config, real_adapter, client)
+
+        assert stats["skipped"] == 2
+        assert await _rows(real_adapter, "m_3_voice") == []
+
+    @pytest.mark.parametrize(("setting", "sent"), [(None, "big.ogg"), (500, "big.ogg.stored")], ids=["unset", "set"])
+    async def test_the_openai_provider_caps_uploads_at_25_mb_unless_set(
+        self, real_adapter, tmp_path, monkeypatch, setting, sent
+    ):
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", SMALL_TRACK)
+        path = tmp_path / "-420300001" / "big.ogg"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x01" * (26 * 1024 * 1024))
+        from test_transcription import _file_media
+
+        await _file_media(real_adapter, path, "m_1_voice", media_type="voice", duration=3)
+        extra = (
+            {} if setting is None else {"transcription_max_upload_mb": setting, "transcription_max_upload_mb_set": True}
+        )
+        config = _config(str(tmp_path), transcription_provider="openai", **extra)
+        client, requests = _provider_client(config, _refusing_files(413, set()))
+
+        assert (await _drain(config, real_adapter, client))["done"] == 1
+        [upload] = [r for r in requests if r.method == "POST"]
+        body = upload.content
+        if sent == "big.ogg":
+            assert b"OggS a small track" in body, "extracted before sending"
+        else:
+            assert len(body) > 26 * 1024 * 1024, "sent as stored"
 
     async def test_a_402_no_credit_keeps_the_row_queued_even_after_a_transcript(self, real_adapter, tmp_path):
         """No credit is about the account, never the file: the run ends and nothing is spent."""
