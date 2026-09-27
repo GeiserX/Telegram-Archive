@@ -132,6 +132,8 @@ Follow these conventions:
 
 ### Module Structure
 
+The package is `telegram_archive`, published to PyPI as `telegram-archive`. `src/` is only a compatibility package the Docker images ship for compose files that still run `python -m src ...` or `uvicorn src.web.main:app`. Every `src.<name>` import returns the `telegram_archive.<name>` module object. It is not in the wheel. Never add code there, and never import `src` from the package.
+
 - **`telegram_archive/telegram_backup.py`** — Scheduled backup flow: `backup_all()` → `_backup_dialog()` → iterates messages → `_process_message()` → `_commit_batch()`. Gap filling: `_fill_gaps()` → `_fill_gap_range()`. Forum topics: `_backup_forum_topics()`.
 - **`telegram_archive/listener.py`** — Real-time event handlers: `on_new_message`, `on_message_edited`, `on_message_deleted`, `on_chat_action`, `on_pinned_messages`. Instantiated with `TelegramListener(config, db, client)`.
 - **`telegram_archive/config.py`** — All config from env vars. The backup requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or indexed `TG_ACCOUNT_<N>_*` accounts since 8.0); the viewer runs without credentials. Properties are lazy-parsed from env.
@@ -241,13 +243,14 @@ Both `pyproject.toml` AND `telegram_archive/__init__.py` must be updated togethe
 
 ### Release Workflow
 
-CI auto-creates GitHub releases from `v*.*.*` tags via `.github/workflows/release.yml`. Do NOT manually create releases — just tag and push:
+CI auto-creates GitHub releases from `v*.*.*` tags via `.github/workflows/release.yml`, and the same tag publishes the package to PyPI through trusted publishing and the `pypi` environment. That job refuses a tag that differs from the version files. Do NOT manually create releases — just tag and push:
 ```bash
 git tag v7.6.0 && git push origin v7.6.0
 ```
 
 ## Alembic Migrations — Critical Reminders
 
+- **The migrations ship in the package**: `telegram_archive/alembic.ini`, `telegram_archive/alembic/env.py` and `telegram_archive/alembic/versions/`. From a checkout, run `alembic -c telegram_archive/alembic.ini revision -m "..."` (or `upgrade head`). Code that needs the config calls `telegram_archive.db.migrations.alembic_config()`. `telegram-archive migrate` runs `upgrade head` for pip installs and fresh databases; it has no stamping ladder, which stays in `scripts/entrypoint.sh`.
 - **`Base.metadata.create_all(checkfirst=True)`** creates ALL tables from SQLAlchemy models at once, including tables that should be created by future Alembic migrations. This means pre-Alembic databases can have schema objects from migrations that haven't "run" yet.
 - **`scripts/entrypoint.sh`** stamps pre-Alembic databases by detecting which schema objects exist. **The stamping ladder is frozen at 018 on purpose** (both the PostgreSQL block and the SQLite block; the comment above the ladder explains why 019 to 022 added no rung, and 027 to 029 say the same in their headers). Do not add a rung for a new migration. A `create_all()` database is stamped at 018 and every later migration runs against a schema that may already have its objects, so the next bullet is what keeps it from crash-looping.
 - **Every migration MUST be idempotent.** Use `sa.inspect(conn)` to check if tables/columns/indexes exist before creating them. The stamping logic only helps fresh databases (no `alembic_version` table); databases already stamped at an older version skip stamping entirely, so Alembic runs the migration against a schema that `create_all()` may have already populated. Pattern:

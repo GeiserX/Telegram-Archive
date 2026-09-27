@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+Telegram Archive is now a Python package named `telegram-archive`, ready for PyPI. The next release publishes it. Docker deployments need no changes.
+
+### Added
+- **Install with pip.** `pip install telegram-archive` gives the `telegram-archive` command and `python -m telegram_archive`. The templates, static files and every database migration ship inside the package. ([#492](https://github.com/GeiserX/Telegram-Archive/issues/492))
+- **`telegram-archive migrate`** runs `alembic upgrade head` to create or upgrade the database schema. It is meant for pip installs and fresh databases. Run it before the first backup and after each upgrade. The Docker image still migrates on start and still detects older schemas.
+- **A small Python API.** `from telegram_archive import Config, TelegramBackup, run_backup`, then `asyncio.run(run_backup(Config()))` runs one backup of every configured account. The names load lazily, so the viewer image, which has no telethon, can still import the package.
+- **PyPI publishing.** Each release tag builds the package, checks that the tag matches the version, and uploads it with PyPI trusted publishing. A new Package check builds and installs the wheel on every pull request.
+
+### Changed
+- **The code moved from `src/` to `telegram_archive/`.** Both images keep a small `src` package, so compose files that run `python -m src schedule`, `python -m src auth` or `uvicorn src.web.main:app` keep working and run the same code. The old name prints a one-line notice at start. Switch to `python -m telegram_archive` and `telegram_archive.web.main:app` when convenient. The images' default commands and [`docker-compose.yml`](../docker-compose.yml) use the new name.
+- **The migrations moved into the package.** From a checkout, run `alembic -c telegram_archive/alembic.ini ...`. Inside the backup container a bare `alembic ...` still works.
+
 ## [8.16.1] - 2026-09-26
 
 Three fixes to transcription from a real diarization test against akou. Upgrading needs no manual steps and no migration.

@@ -728,6 +728,36 @@ docker compose up -d
 
 For major version upgrades with breaking changes and migration scripts, see **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
 
+## Install from PyPI
+
+Docker stays the main way to run Telegram Archive. The images bring ffmpeg, run the database migrations on start and keep the viewer in its own container. The PyPI package is for running it without Docker, or for using it from Python.
+
+```bash
+pip install telegram-archive   # Python 3.14 or newer
+```
+
+The command reads the same [environment variables](#environment-variables) as the Docker image, and `--data-dir` sets where the data goes. Create the database first, and run `migrate` again after every upgrade:
+
+```bash
+telegram-archive --data-dir ./data migrate
+telegram-archive --data-dir ./data auth
+telegram-archive --data-dir ./data schedule
+```
+
+The other commands are `backup`, `export`, `stats`, `list-chats`, `import`, `fill-gaps`, `backfill-topics` and `reclassify-round-videos`; `telegram-archive --help` lists them all. The viewer runs with `uvicorn telegram_archive.web.main:app`. Video thumbnails need `ffmpeg` on the `PATH`.
+
+From Python, `run_backup` runs one backup of every configured account. It is a coroutine, and `Config()` reads the environment like the command does:
+
+```python
+import asyncio
+
+from telegram_archive import Config, run_backup
+
+asyncio.run(run_backup(Config()))
+```
+
+`TelegramBackup`, the class `run_backup` drives, is exported too. Neither creates the database schema, so run `telegram-archive migrate` first.
+
 ## CLI Commands
 
 ### Local Development
@@ -770,7 +800,7 @@ telegram-archive --data-dir ./data list-chats
 
 ### Docker Usage
 
-All commands use the unified `python -m telegram_archive` interface inside containers:
+All commands use the unified `python -m telegram_archive` interface inside containers. Before the package was renamed it was `python -m src`, and that still works: compose files written for older images need no change.
 
 ```bash
 # Show all available commands

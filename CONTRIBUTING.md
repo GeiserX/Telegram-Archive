@@ -133,8 +133,11 @@ python -m pytest tests/test_db_adapter.py -v
 ## Project Structure
 
 ```
-telegram_archive/
+telegram_archive/       # The package (PyPI: telegram-archive)
+├── __init__.py         # Version and the lazy Python API
 ├── __main__.py         # Entry point
+├── alembic.ini         # Migrations config: alembic -c telegram_archive/alembic.ini ...
+├── alembic/            # env.py and versions/, shipped in the wheel
 ├── config.py           # Environment variable handling
 ├── telegram_backup.py  # Core backup logic
 ├── realtime.py         # WebSocket real-time updates
@@ -146,6 +149,7 @@ telegram_archive/
     ├── main.py         # FastAPI application
     ├── static/         # CSS, JS, images
     └── templates/      # Jinja2 templates
+src/                    # Old package name, kept for Docker compose files; not in the wheel
 ```
 
 ## Reporting Bugs
