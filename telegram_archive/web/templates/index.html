@@ -6350,7 +6350,7 @@
                 const transcriptRegionId = (msg) => `transcript-${msg?.id}`
                 const transcriptRows = (msg) => Array.isArray(msg?.media?.transcripts) ? msg.media.transcripts : []
                 const doneTranscripts = (msg) => transcriptRows(msg).filter(row => row.status === 'done')
-                // Mirror of is_transcribable in src/transcription_contract.py, the rule the
+                // Mirror of is_transcribable in telegram_archive/transcription_contract.py, the rule the
                 // drain and the ask-now route read: every media with sound, a document
                 // only with an audio or video mime type, never an animation.
                 const isTranscribable = (media) => {
