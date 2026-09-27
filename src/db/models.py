@@ -387,6 +387,9 @@ class MediaTranscript(Base):
     # Whether the request asked for speaker labels (akou's diarize=true),
     # written when the row is sent. NULL on rows from before the column.
     diarize: Mapped[bool | None] = mapped_column(Boolean)
+    # 12 hex characters naming every option the request carried (033): the
+    # copy rule reuses a row only for the same options. NULL before 033.
+    options_tag: Mapped[str | None] = mapped_column(String(16))
 
     __table_args__ = (
         Index("uq_media_transcripts_account_media_job", "account_id", "media_id", "job_id", unique=True),
