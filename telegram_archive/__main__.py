@@ -24,16 +24,20 @@ GETTING STARTED:
   1. First time setup (authenticate with Telegram):
      telegram-archive auth
 
-  2. Run backup:
+  2. Installed with pip? Create the database schema, and again after upgrades
+     (the Docker image does this itself on start):
+     telegram-archive migrate
+
+  3. Run backup:
      telegram-archive backup       # One-time manual backup
      telegram-archive schedule     # Continuous scheduled backups (recommended)
 
-  3. View and export data:
+  4. View and export data:
      telegram-archive list-chats   # List all backed up chats
      telegram-archive stats        # Show backup statistics
      telegram-archive export -o file.json  # Export to JSON
 
-  4. Import Telegram Desktop exports:
+  5. Import Telegram Desktop exports:
      telegram-archive import -p /path/to/export              # JSON (full account export)
      telegram-archive import -p /path/to/export -c -1001234567890 --merge
      telegram-archive import -p /path/to/chat_folder -c 123  # HTML (per-chat export)
@@ -176,6 +180,16 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         ),
     )
     backfill_parser.add_argument("-c", "--chat-id", type=int, required=True, help="Chat ID to backfill")
+
+    subparsers.add_parser(
+        "migrate",
+        help="Create or upgrade the database schema (alembic upgrade head)",
+        description=(
+            "Apply every database migration the archive has not seen yet. "
+            "Run it once before the first backup and again after each upgrade "
+            "when installed with pip. The Docker image does this itself on start."
+        ),
+    )
 
     # Reclassify round videos
     round_parser = subparsers.add_parser(
@@ -359,6 +373,19 @@ def run_schedule(args) -> int:
     return asyncio.run(scheduler_main())
 
 
+def run_migrate(args) -> int:
+    """Upgrade the database schema to the newest migration."""
+    from .db.migrations import upgrade_to_head
+
+    try:
+        upgrade_to_head()
+    except Exception as e:
+        print(f"Migration failed: {e}", file=sys.stderr)
+        return 1
+    print("Database schema is up to date.")
+    return 0
+
+
 def run_reclassify_round_videos(args) -> int:
     """Ask Telegram which archived videos are round, and re-type those rows."""
     from .config import Config, setup_logging
@@ -448,6 +475,8 @@ def main() -> int:
         return run_auth(args)
     elif args.command == "backup":
         return run_backup(args)
+    elif args.command == "migrate":
+        return run_migrate(args)
     elif args.command == "reclassify-round-videos":
         return run_reclassify_round_videos(args)
     elif args.command == "backfill-topics":

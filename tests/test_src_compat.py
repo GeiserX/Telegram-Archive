@@ -29,7 +29,7 @@ def test_python_m_src_help_runs_the_cli(tmp_path):
     result = _run([sys.executable, "-m", "src", "--help"], tmp_path)
     assert result.returncode == 0, result.stderr
     assert "usage: telegram-archive" in result.stdout
-    assert "schedule" in result.stdout
+    assert "schedule" in result.stdout and "migrate" in result.stdout
     assert result.stderr.count(NOTE) == 1, result.stderr
 
 

@@ -30,11 +30,10 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 import sqlalchemy as sa
+from alembic import command
 from alembic.config import Config as AlembicConfig
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.orm import Session
-
-from alembic import command
 
 if not os.environ.get("BACKUP_PATH"):
     os.environ["BACKUP_PATH"] = tempfile.mkdtemp(prefix="ta_test_v8_viewer_")
@@ -86,7 +85,7 @@ OPTIONAL_UNSCOPED_METHODS = (
 def _upgrade_to_head(sync_url: str) -> None:
     """Run this tree's real Alembic environment against ``sync_url``."""
     config = AlembicConfig()
-    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    config.set_main_option("script_location", str(REPO_ROOT / "telegram_archive" / "alembic"))
     config.set_main_option("sqlalchemy.url", sync_url)
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = sync_url

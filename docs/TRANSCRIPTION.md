@@ -166,7 +166,7 @@ There is no foreign key to `media` on purpose. [`delete_voice_note_audio_twins`]
 
 ### Migration rules
 
-`032` follows the conventions of [`031`](../alembic/versions/20260924_031_add_avatar_history.py): inspector guards so that a `create_all()` database and a re-run are both no-ops, the stamping ladder stays frozen at 018, and `downgrade` drops the table and its search objects. For the FTS table it copies the rule of [`028`](../alembic/versions/20260823_028_full_text_search.py): the rebuild that indexes existing rows runs only when this pass created the table.
+`032` follows the conventions of [`031`](../telegram_archive/alembic/versions/20260924_031_add_avatar_history.py): inspector guards so that a `create_all()` database and a re-run are both no-ops, the stamping ladder stays frozen at 018, and `downgrade` drops the table and its search objects. For the FTS table it copies the rule of [`028`](../telegram_archive/alembic/versions/20260823_028_full_text_search.py): the rebuild that indexes existing rows runs only when this pass created the table.
 
 Two more pieces of code go with the migration, or [`tests/test_schema_parity.py`](../tests/test_schema_parity.py) fails: the DDL constants for the transcript search objects go in [telegram_archive/db/fts.py](../telegram_archive/db/fts.py), and [`install_fts_ddl_listener`](../telegram_archive/db/fts.py#L90), wired at [models.py](../telegram_archive/db/models.py#L95), creates them on the `create_all()` path too. `KNOWN_DIFFERENCES` in that test is empty and stays empty. A new `tests/test_migration_032.py` proves the upgrade is idempotent and that the triggers exist afterwards.
 

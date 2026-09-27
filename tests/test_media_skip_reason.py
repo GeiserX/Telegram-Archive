@@ -59,7 +59,7 @@ async def _seed(adapter_, media_id: str, msg_id: int, **extra) -> None:
 # Migration 030
 # ============================================================================
 
-_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
 _spec = importlib.util.spec_from_file_location("migration_030", _VERSIONS_DIR / "20260923_030_add_media_skip_reason.py")
 migration_030 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(migration_030)

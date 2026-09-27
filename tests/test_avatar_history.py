@@ -34,7 +34,13 @@ PHOTO_2 = 2222
 # Migration 031
 # ============================================================================
 
-_MIGRATION_PATH = Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260924_031_add_avatar_history.py"
+_MIGRATION_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "telegram_archive"
+    / "alembic"
+    / "versions"
+    / "20260924_031_add_avatar_history.py"
+)
 _spec = importlib.util.spec_from_file_location("migration_031", _MIGRATION_PATH)
 migration_031 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(migration_031)

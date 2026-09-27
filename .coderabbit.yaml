@@ -18,7 +18,7 @@ reviews:
     - "!dist/**"
     - "!**/__pycache__/**"
     - "!**/*.pyc"
-    - "!alembic/versions/**"
+    - "!telegram_archive/alembic/versions/**"
   path_instructions:
     - path: "telegram_archive/**"
       instructions: |

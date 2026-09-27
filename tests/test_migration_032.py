@@ -17,7 +17,11 @@ from telegram_archive.db.fts import SQLITE_TRANSCRIPT_FTS_TABLE, SQLITE_TRANSCRI
 from telegram_archive.db.models import MediaTranscript
 
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260925_032_add_media_transcripts.py"
+    Path(__file__).resolve().parent.parent
+    / "telegram_archive"
+    / "alembic"
+    / "versions"
+    / "20260925_032_add_media_transcripts.py"
 )
 _spec = importlib.util.spec_from_file_location("migration_032", _MIGRATION_PATH)
 migration_032 = importlib.util.module_from_spec(_spec)

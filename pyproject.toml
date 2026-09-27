@@ -134,7 +134,7 @@ ignore = [
 # Test mocks are assigned for patching side effects
 "tests/*" = ["F841"]
 # Alembic migrations use dialect variable for inspection
-"alembic/*" = ["F841"]
+"telegram_archive/alembic/*" = ["F841"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["telegram_archive"]

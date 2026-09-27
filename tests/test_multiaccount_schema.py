@@ -575,7 +575,11 @@ class TestWhatDidNotChange:
 def test_no_account_or_chat_identifier_is_logged_by_the_migration():
     """PII rule: counts and type names only, never an id, a ref or a payload."""
     source = (
-        Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260815_022_multi_account_keys.py"
+        Path(__file__).resolve().parent.parent
+        / "telegram_archive"
+        / "alembic"
+        / "versions"
+        / "20260815_022_multi_account_keys.py"
     ).read_text(encoding="utf-8")
     logged = [line for line in source.splitlines() if "logger." in line or "raise RuntimeError" in line]
     assert logged, "the guard is worthless if it matches nothing"
@@ -636,7 +640,11 @@ def test_the_migration_never_uses_cascade():
     """DROP CONSTRAINT ... CASCADE succeeds while deleting a foreign key, with
     only a NOTICE to say so. Measured on a real server; it must never appear."""
     source = (
-        Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260815_022_multi_account_keys.py"
+        Path(__file__).resolve().parent.parent
+        / "telegram_archive"
+        / "alembic"
+        / "versions"
+        / "20260815_022_multi_account_keys.py"
     ).read_text(encoding="utf-8")
     executed = [
         line

@@ -2,7 +2,7 @@
 
 The hazard
 ----------
-``Dockerfile.viewer`` ships no ``alembic/`` and sets no ENTRYPOINT — it runs
+``Dockerfile.viewer`` ships no ``telegram_archive/alembic/`` and sets no ENTRYPOINT — it runs
 uvicorn directly — so the viewer container can never migrate. It does, however,
 reach ``Base.metadata.create_all(checkfirst=True)`` in ``telegram_archive/db/base.py`` on
 every SQLite start, and ``docker-compose.yml`` starts it concurrently with the

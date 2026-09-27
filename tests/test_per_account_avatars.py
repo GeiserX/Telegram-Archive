@@ -89,7 +89,7 @@ class TestExtractChatData:
 # Migration 029
 # ============================================================================
 
-_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
 _spec = importlib.util.spec_from_file_location(
     "migration_029", _VERSIONS_DIR / "20260923_029_add_chat_avatar_photo_id.py"
 )

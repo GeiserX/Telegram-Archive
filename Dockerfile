@@ -43,8 +43,6 @@ COPY telegram_archive/ ./telegram_archive/
 # The old package name, so compose files that run "python -m src ..." keep working.
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-COPY alembic/ ./alembic/
-COPY alembic.ini .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 telegram && \
@@ -55,12 +53,14 @@ RUN useradd -m -u 1000 telegram && \
 # Switch to non-root user
 USER telegram
 
-# Set default environment variables
+# Set default environment variables. ALEMBIC_CONFIG keeps a bare "alembic ..."
+# inside the container working now that alembic.ini lives in the package.
 ENV BACKUP_PATH=/data/backups \
     LOG_LEVEL=INFO \
     PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    ALEMBIC_CONFIG=/app/telegram_archive/alembic.ini \
     PATH="/app/.venv/bin:$PATH"
 
 # Volume for persistent data

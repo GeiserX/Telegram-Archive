@@ -14,8 +14,6 @@ on:
       - 'scripts/**'
       - 'telegram_archive/**'
       - 'src/**'
-      - 'alembic/**'
-      - 'alembic.ini'
       - '.github/workflows/docker-publish.yml'
       # Exclude viewer-only changes
       - '!telegram_archive/web/**'
@@ -55,7 +53,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      # Deliberately not DATABASE_URL. telegram_archive/db/base.py, alembic/env.py and
+      # Deliberately not DATABASE_URL. telegram_archive/db/base.py, telegram_archive/alembic/env.py and
       # scripts/entrypoint.sh all treat DATABASE_URL as "the archive", so
       # exporting it job-wide would silently repoint every test that builds a
       # bare DatabaseManager() at PostgreSQL — where init() does not create

@@ -165,7 +165,8 @@ class DatabaseManager:
         # runs `upgrade head` before this process starts, on SQLite whether or not
         # the file existed. This create_all is only a fallback for a process that
         # never passes through that entrypoint — the viewer image, which ships no
-        # alembic/ directory, or a direct `python -m telegram_archive` run — and it is limited
+        # migrations, or a pip install whose operator never ran
+        # `telegram-archive migrate` — and it is limited
         # to SQLite because on PostgreSQL it would race a concurrently migrating
         # container into a deadlock. tests/test_schema_parity.py builds both
         # schemas on both backends and fails on any difference, so the fallback
@@ -194,7 +195,7 @@ class DatabaseManager:
 
         Why the guard is not optional
         -----------------------------
-        The viewer image ships no ``alembic/`` and has no ENTRYPOINT
+        The viewer image ships no ``telegram_archive/alembic/`` and has no ENTRYPOINT
         (``Dockerfile.viewer``), so it never migrates — but it does reach this
         line on every SQLite start, and ``docker compose up -d`` starts it
         alongside the backup container that *is* migrating. Unguarded,

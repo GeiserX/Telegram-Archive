@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# DB_TYPE is lowercased everywhere in Python (telegram_archive/db/base.py, alembic/env.py)
+# DB_TYPE is lowercased everywhere in Python (telegram_archive/db/base.py, telegram_archive/alembic/env.py)
 # but compared literally below — DB_TYPE=PostgreSQL used to match NEITHER
 # branch, silently skipping migrations and starting the app against a
 # zero-table database. Normalise once so both worlds agree.
@@ -24,7 +24,6 @@ if [ "$SKIP_MIGRATIONS" = "false" ]; then
   if { [[ -n "$DATABASE_URL" ]] && { [[ "$DATABASE_URL" == postgresql://* ]] || [[ "$DATABASE_URL" == postgresql+asyncpg://* ]] || [[ "$DATABASE_URL" == postgres://* ]]; }; } || { [[ -z "$DATABASE_URL" ]] && { [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ]; }; }; then
     echo "Running database migrations..."
     python -c "
-from alembic.config import Config
 from alembic import command
 import os
 import sys
@@ -357,11 +356,11 @@ cur.close()
 conn.close()
 
 # Now run normal Alembic upgrade
-# alembic/env.py resolves the URL from the environment itself; setting
-# sqlalchemy.url here would only run it through configparser interpolation,
-# which rejects any raw or percent-encoded '%'.
-config = Config('/app/alembic.ini')
-command.upgrade(config, 'head')
+# telegram_archive/alembic/env.py resolves the URL from the environment itself;
+# setting sqlalchemy.url here would only run it through configparser
+# interpolation, which rejects any raw or percent-encoded '%'.
+from telegram_archive.db.migrations import alembic_config
+command.upgrade(alembic_config(), 'head')
 print('Migrations complete.')
 "
   elif { [[ -n "$DATABASE_URL" ]] && { [[ "$DATABASE_URL" == sqlite://* ]] || [[ "$DATABASE_URL" == sqlite+aiosqlite://* ]]; }; } || { [[ -z "$DATABASE_URL" ]] && { [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ]; }; }; then
@@ -388,7 +387,6 @@ print('Migrations complete.')
       echo "No SQLite database at $DB_PATH yet - creating it with Alembic..."
     fi
     python -c "
-from alembic.config import Config
 from alembic import command
 import os
 import sqlite3
@@ -399,7 +397,7 @@ if database_url.startswith('sqlite+aiosqlite:///'):
 elif database_url.startswith('sqlite:///'):
     db_path = database_url.removeprefix('sqlite:///')
 else:
-    # Same precedence as telegram_archive/db/base.py and alembic/env.py. DATABASE_DIR was
+    # Same precedence as telegram_archive/db/base.py and telegram_archive/alembic/env.py. DATABASE_DIR was
     # missing here, so a DATABASE_DIR-only install had its schema inspected at
     # one path and migrated at another - the stamping ladder then read an empty
     # database and skipped, and Alembic re-ran migration 001 against the real
@@ -577,9 +575,9 @@ cur.close()
 conn.close()
 
 # Now run normal Alembic upgrade
-# alembic/env.py resolves the URL from the environment itself (see above).
-config = Config('/app/alembic.ini')
-command.upgrade(config, 'head')
+# telegram_archive/alembic/env.py resolves the URL from the environment itself (see above).
+from telegram_archive.db.migrations import alembic_config
+command.upgrade(alembic_config(), 'head')
 print('SQLite migrations complete.')
 "
   else

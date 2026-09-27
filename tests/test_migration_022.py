@@ -44,14 +44,13 @@ from types import ModuleType
 
 import pytest
 import sqlalchemy as sa
-from alembic.config import Config
-
 from alembic import command
+from alembic.config import Config
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ALEMBIC_DIR = REPO_ROOT / "alembic"
+ALEMBIC_DIR = REPO_ROOT / "telegram_archive" / "alembic"
 MIGRATION_PATH = ALEMBIC_DIR / "versions" / "20260815_022_multi_account_keys.py"
 ENTRYPOINT_PATH = REPO_ROOT / "scripts" / "entrypoint.sh"
 

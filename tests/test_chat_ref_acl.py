@@ -44,6 +44,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 import sqlalchemy as sa
+from alembic import command
 from alembic.config import Config as AlembicConfig
 from conftest import NO_POSTGRES_REASON
 from httpx import ASGITransport, AsyncClient
@@ -51,8 +52,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 from starlette.testclient import TestClient
-
-from alembic import command
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_chat_ref_"))
 
@@ -79,7 +78,7 @@ UNIFORM_404 = {"detail": "Chat not found"}
 def _upgrade_to_head(url: str) -> None:
     """Run this tree's real Alembic environment against ``url`` (sync or async)."""
     config = AlembicConfig()
-    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    config.set_main_option("script_location", str(REPO_ROOT / "telegram_archive" / "alembic"))
     config.set_main_option("sqlalchemy.url", url)
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = url
@@ -171,7 +170,7 @@ def ref_archive(request, tmp_path_factory, postgres_server_url, make_postgres_da
         db_path = tmp_path_factory.mktemp("chatref-db") / "archive.db"
         sync_url = f"sqlite:///{db_path}"
         async_url = f"sqlite+aiosqlite:///{db_path}"
-    # alembic/env.py builds an ASYNC engine from the URL it is given, so the
+    # telegram_archive/alembic/env.py builds an ASYNC engine from the URL it is given, so the
     # upgrade takes the async URL; seeding uses a plain sync engine.
     _upgrade_to_head(async_url)
     refs = _seed(sync_url, media_root)

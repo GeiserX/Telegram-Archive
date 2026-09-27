@@ -30,15 +30,15 @@ from pathlib import Path
 from typing import Any
 
 import sqlalchemy as sa
+from alembic import command
 from alembic.config import Config
 
-from alembic import command
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
 from telegram_archive.db.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ALEMBIC_DIR = REPO_ROOT / "alembic"
+ALEMBIC_DIR = REPO_ROOT / "telegram_archive" / "alembic"
 
 AUDIT_INDEXES = ("idx_audit_log_username", "idx_audit_log_created")
 

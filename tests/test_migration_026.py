@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
-_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
 
 spec = importlib.util.spec_from_file_location(
     "migration_026", _VERSIONS_DIR / "20260821_026_add_media_gallery_index.py"

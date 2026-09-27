@@ -15,8 +15,6 @@ on:
       - 'scripts/**'
       - 'telegram_archive/**'
       - 'src/**'
-      - 'alembic/**'
-      - 'alembic.ini'
       - '.github/workflows/docker-publish-dev.yml'
   workflow_dispatch:
     inputs:

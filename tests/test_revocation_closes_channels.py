@@ -36,6 +36,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 import sqlalchemy as sa
+from alembic import command
 from alembic.config import Config as AlembicConfig
 from conftest import NO_POSTGRES_REASON
 from httpx import ASGITransport, AsyncClient
@@ -44,8 +45,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-
-from alembic import command
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_revocation_"))
 
@@ -66,7 +65,7 @@ VIEWER_PASSWORD = "revoc-pass@test/value"  # obvious fake
 def _upgrade_to_head(url: str) -> None:
     """Run this tree's real Alembic environment against ``url``."""
     config = AlembicConfig()
-    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    config.set_main_option("script_location", str(REPO_ROOT / "telegram_archive" / "alembic"))
     config.set_main_option("sqlalchemy.url", url)
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = url
