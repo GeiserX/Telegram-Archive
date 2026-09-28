@@ -191,6 +191,42 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         ),
     )
 
+    merge_parser = subparsers.add_parser(
+        "merge",
+        help="Merge another archive's accounts into this archive",
+        description=(
+            "Copy every account of another archive (the source) into this one "
+            "(the target) under new account ids, with their chats, messages, "
+            "media rows, versions, reactions, topics, folders, sync cursors, "
+            "avatar history and transcripts, then copy their media files. The "
+            "source is only read. Nothing already in the target is changed or "
+            "deleted. Viewer accounts, sessions, share tokens and push "
+            "subscriptions are not merged. Stop both installs first."
+        ),
+    )
+    merge_parser.add_argument("--source", required=True, help="The other archive: a SQLite file path or a database URL")
+    merge_parser.add_argument(
+        "--source-media",
+        metavar="DIR",
+        help="The other archive's media folder (default: 'media' beside a SQLite source file)",
+    )
+    merge_parser.add_argument(
+        "--account",
+        metavar="LABEL_OR_ID",
+        help="Merge only this source account, by label or account id (default: every account)",
+    )
+    merge_parser.add_argument(
+        "--add-missing-parents",
+        action="store_true",
+        help=(
+            "Add an empty placeholder chat, message, folder or user for each source row whose parent row "
+            "the source lacks (needed to merge such a SQLite source into PostgreSQL)"
+        ),
+    )
+    merge_parser.add_argument(
+        "--dry-run", action="store_true", help="Print the row counts and media size without writing"
+    )
+
     # Reclassify round videos
     round_parser = subparsers.add_parser(
         "reclassify-round-videos",
@@ -386,6 +422,33 @@ def run_migrate(args) -> int:
     return 0
 
 
+def run_merge(args) -> int:
+    """Merge another archive into the configured one."""
+    from .config import Config
+    from .merge import MergeError, format_report, merge_archives, target_database_url
+
+    try:
+        report = merge_archives(
+            source=args.source,
+            target_url=target_database_url(),
+            target_media=Config().media_path,
+            source_media=args.source_media,
+            dry_run=args.dry_run,
+            account=args.account,
+            add_missing_parents=args.add_missing_parents,
+        )
+    except MergeError as e:
+        print(f"Merge refused: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        # The type only: a driver error can quote a row or a path.
+        print(f"Merge failed: {type(e).__name__}. Nothing was committed to the target database.", file=sys.stderr)
+        return 1
+    for line in format_report(report):
+        print(line)
+    return 0
+
+
 def run_reclassify_round_videos(args) -> int:
     """Ask Telegram which archived videos are round, and re-type those rows."""
     from .config import Config, setup_logging
@@ -477,6 +540,8 @@ def main() -> int:
         return run_backup(args)
     elif args.command == "migrate":
         return run_migrate(args)
+    elif args.command == "merge":
+        return run_merge(args)
     elif args.command == "reclassify-round-videos":
         return run_reclassify_round_videos(args)
     elif args.command == "backfill-topics":

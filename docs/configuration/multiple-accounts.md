@@ -162,6 +162,6 @@ A small label with the account name, called an account chip, appears on chat row
 - Imports from Telegram Desktop always land in account 1.
 - `backfill-topics` sets `CHAT_IDS` to the chat you ask for. If an account sets `TG_ACCOUNT_<N>_CHAT_IDS`, the command uses that list for the account and ignores the chat you asked for.
 - `scripts/auth_noninteractive.py` only reads `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE`. It cannot log in indexed accounts.
-- There is no supported way to merge two existing archives on a current release.
+- Two existing archives, each holding other accounts, can be combined with `telegram-archive merge`. See [Merge two archives](../operations/maintenance.md#merge-two-archives).
 
 See [Import and maintenance tasks](../operations/maintenance.md) for imports and `backfill-topics`, and [Upgrading](../operations/upgrading.md) for moving from 7.x.
