@@ -167,9 +167,6 @@ To find an id, run one backup first. Then use any of these:
         telegram-archive list-chats
         ```
 
-    !!! note "Images up to 8.16.1"
-        Images up to and including 8.16.1 only know `python -m src`. Use that form with them. See [the module rename](../operations/upgrading.md#module-rename).
-
 - The viewer's chat list shows `ID:` on each chat.
 - The chat info panel in the viewer shows the id as **Telegram ID**.
 

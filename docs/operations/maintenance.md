@@ -6,8 +6,6 @@ This page covers one-off jobs on an archive that is already running.
 
 Stop the backup service before any command that connects to Telegram, and start it again afterwards. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
 
-The Docker examples on this page need an image newer than 8.16.1. On 8.16.1 and older, run `python -m src <command>` instead of `python -m telegram_archive <command>`.
-
 The container's root filesystem is read-only. Any file a command writes must go under `/data`, which is the `./data` folder on the host.
 
 Without Docker, run the same commands with the `telegram-archive` command and point it at your data directory:

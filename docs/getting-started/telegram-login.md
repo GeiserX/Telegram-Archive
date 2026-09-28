@@ -27,7 +27,7 @@ To back up several accounts, declare them with the `TG_ACCOUNT_<N>_*` variables 
 === "Docker"
 
     ```bash
-    docker compose run --rm telegram-backup python -m src auth
+    docker compose run --rm telegram-backup python -m telegram_archive auth
     ```
 
 === "Native"
@@ -38,9 +38,7 @@ To back up several accounts, declare them with the `TG_ACCOUNT_<N>_*` variables 
 
     [Install from PyPI](pip.md) explains how the command finds your `.env` file.
 
-The stock compose file pins the 8.16.1 images, which know the module only as `src`. Images after 8.16.1 accept `python -m telegram_archive auth` as well. See [the module rename](../operations/upgrading.md#module-rename).
-
-`python -m telegram_archive.setup_auth` runs the same login. On the 8.16.1 images the equivalent is `python -m src.setup_auth`. The `Session not authorized` error names the one that fits the image.
+`python -m telegram_archive.setup_auth` runs the same login. The `Session not authorized` error names this form.
 
 Telegram sends a code to your Telegram app. The command asks for it:
 
@@ -78,7 +76,7 @@ The repository ships two wrappers around the Docker login.
 
 The script creates `data/backups` as your own user, and the container runs as uid 1000. If your uid is not 1000, see [Permission errors](#permission-errors).
 
-`init_auth.bat` does the same on Windows but runs `python -m src.setup_auth`. The image does not treat that as the login command, so it updates the database schema first.
+`init_auth.bat` does the same on Windows but runs `python -m telegram_archive.setup_auth`. The image does not treat that as the login command, so it updates the database schema first.
 
 ## Log in without a terminal
 
@@ -150,7 +148,7 @@ When the logs show `Session not authorized`, Telegram no longer accepts the sess
 
     ```bash
     docker compose stop telegram-backup
-    docker compose run --rm telegram-backup python -m src auth
+    docker compose run --rm telegram-backup python -m telegram_archive auth
     docker compose up -d
     ```
 

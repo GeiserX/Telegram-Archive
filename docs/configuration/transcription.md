@@ -26,8 +26,8 @@ Every result is stored as a new transcript row. The media row is never changed.
 
 ## Availability
 
-!!! note "Settings added after 8.16.1"
-    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_HOTWORDS` and the Deepgram, AssemblyAI and ElevenLabs adapters arrive in the first release after 8.16.1. Version 8.16.1 detects akou or an OpenAI-compatible endpoint by itself from `TRANSCRIPTION_URL`.
+!!! note "Added in 8.17.0"
+    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_HOTWORDS` and the Deepgram, AssemblyAI and ElevenLabs adapters were added in 8.17.0. Older versions detect akou or an OpenAI-compatible endpoint by themselves from `TRANSCRIPTION_URL`.
 
 ## Choosing a server
 

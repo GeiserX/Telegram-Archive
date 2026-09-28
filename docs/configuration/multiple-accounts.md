@@ -73,10 +73,10 @@ Account 1 follows the same chain as single-account mode, so an existing install 
 4. Log in. The login checks every account and skips any account that is already logged in. It asks only for the new account's code, then its two-step password if the account has one. It fails if the account that logs in does not own the configured phone number.
 
     ```bash
-    docker compose run --rm telegram-backup python -m src auth
+    docker compose run --rm telegram-backup python -m telegram_archive auth
     ```
 
-    The 8.16.1 images know the module only by its old name, `src`. Later images keep `src` as an alias, so this command works on both. See [Log in to Telegram](../getting-started/telegram-login.md) for details.
+    See [Log in to Telegram](../getting-started/telegram-login.md) for details.
 
 5. Start the stack.
 

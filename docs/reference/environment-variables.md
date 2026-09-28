@@ -227,8 +227,8 @@ Feature page: [Voice transcription](../configuration/transcription.md).
 
 The backup checks the transcription settings only while transcription is on. [What happens on a bad value](#what-happens-on-a-bad-value) lists which ones stop startup and which only log a warning.
 
-!!! note "Not in 8.16.1"
-    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_HOTWORDS` were added after the 8.16.1 release. An 8.16.1 image ignores them.
+!!! note "Added in 8.17.0"
+    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_HOTWORDS` were added in 8.17.0. Older images ignore them.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|

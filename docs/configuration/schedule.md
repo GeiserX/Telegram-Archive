@@ -24,11 +24,9 @@ The `backup` command runs one backup over every account and exits. It fails only
 
     ```bash
     docker compose stop telegram-backup
-    docker compose run --rm telegram-backup python -m src backup
+    docker compose run --rm telegram-backup python -m telegram_archive backup
     docker compose start telegram-backup
     ```
-
-    Images newer than 8.16.1 also accept `python -m telegram_archive backup`. See [the module rename](../operations/upgrading.md#module-rename).
 
 === "PyPI"
 

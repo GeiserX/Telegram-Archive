@@ -10,7 +10,7 @@ This page runs the backup and the viewer from the Python package, without Docker
 | Command | `telegram-archive` |
 | Python module | `telegram_archive` |
 
-PyPI carries the package from the first release after 8.16.1 on. Earlier versions exist only as Docker images. Until that release is out, install from a checkout. See [From a git checkout](#from-a-git-checkout).
+PyPI carries the package from 8.17.0 on. Earlier versions exist only as Docker images.
 
 It requires Python 3.14 or newer.
 

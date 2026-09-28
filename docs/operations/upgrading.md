@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:8.16.1
+        image: drumsergio/telegram-archive:8.17.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:8.16.1
+        image: drumsergio/telegram-archive-viewer:8.17.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `8.16.1`, `v8.16.1` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `8.17.0`, `v8.17.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -55,11 +55,11 @@ Use the same `--data-dir` or database variables you run the archive with.
 
 Run `migrate` before any other command on a new database. If another command created the database first, `migrate` fails on the first table it tries to create, with `table chats already exists` on SQLite or `relation "chats" already exists` on PostgreSQL. To fix it, delete the new database and run `migrate` first. You can also start the Docker backup image once. Its entrypoint detects this schema and marks it as current.
 
-Packages on PyPI start with the release after 8.16.1. See [Install from PyPI](../getting-started/pip.md).
+Packages on PyPI start with 8.17.0. See [Install from PyPI](../getting-started/pip.md).
 
 ## The module rename { #module-rename }
 
-After 8.16.1 the code moved from the `src` package to `telegram_archive`.
+In 8.17.0 the code moved from the `src` package to `telegram_archive`.
 
 - Both images keep a `src` alias. `python -m src ...` and `uvicorn src.web.main:app` keep working and run the same code. They print a one-line deprecation note on stderr.
 - Images up to and including 8.16.1 only know `src`. On those, use `python -m src`.
@@ -67,7 +67,7 @@ After 8.16.1 the code moved from the `src` package to `telegram_archive`.
 - The wallpaper mount path is now `/app/telegram_archive/web/static/<file>`. The old path, `/app/src/web/static/<file>`, still works.
 - From a checkout of the repository, run Alembic with `alembic -c telegram_archive/alembic.ini`. Inside the backup container a bare `alembic` still works.
 
-The stock `docker-compose.yml`, `init_auth.sh` and `init_auth.bat` still use the `src` form. They keep working on every image.
+The stock `docker-compose.yml`, `init_auth.sh` and `init_auth.bat` use the new name.
 
 ## Releases that need action { #releases-that-need-action }
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 8.17.0 | Migration 033 runs on start. The module is now `telegram_archive`, and `python -m src` keeps working. See [Upgrading to 8.17.0](#upgrading-to-8170). |
 | 8.16.1 | Nothing. |
 | 8.16.0 | Migration 032 runs on start. Voice transcription is on but stays idle until `TRANSCRIPTION_URL` is set. Set `TRANSCRIPTION_ENABLED=false` to hide its banner. See [Voice transcription](../configuration/transcription.md). |
 | 8.15.1 | Nothing. |
@@ -89,7 +90,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
 
-## The release after 8.16.1
+## Upgrading to 8.17.0 { #upgrading-to-8170 }
 
 The package is renamed `telegram_archive`. See [the module rename](#module-rename). Releases are also published on PyPI, and voice transcription supports more providers. Migration 033 runs on start. Nothing is needed beyond the routine upgrade.
 

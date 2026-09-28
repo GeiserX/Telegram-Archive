@@ -132,8 +132,6 @@ When the backup cannot process a message, it keeps the chat's progress marker be
 docker compose exec telegram-backup python -m telegram_archive stats
 ```
 
-On the 8.16.1 images, run `python -m src stats` instead. See the `No module named telegram_archive` row below.
-
 This prints cached figures. They are all zero until the first backup has completed.
 
 ## Troubleshooting table
@@ -143,7 +141,7 @@ This prints cached figures. They are all zero until the first backup has complet
 | `Permission denied` writing to `/data` | Both containers run as uid 1000 and cannot write a directory another user owns. | `sudo chown -R 1000:1000 data`. See [Create the data directory](../getting-started/docker.md#3-create-the-data-directory). |
 | The backup container restarts over and over after printing help | The image's default command has no subcommand, so it prints help and exits. | Pass a command, normally `schedule`, as the stock compose file does. |
 | `Session not authorized` | Telegram no longer accepts the session. See [Log in to Telegram](../getting-started/telegram-login.md#log-in-again). | Stop the backup service, run `auth` again, start the service. |
-| `No module named telegram_archive` | The 8.16.1 images know the module only as `src`. See [Upgrading](upgrading.md#module-rename). | Run the same command with `python -m src`. |
+| `No module named telegram_archive` | Images up to and including 8.16.1 know the module only as `src`. See [the module rename](upgrading.md#module-rename). | Run the same command with `python -m src`, or move both image pins to 8.17.0 or later. |
 | The viewer answers 503 `Viewer authentication is not configured` | No login method is set, so the viewer serves no data by design. See [Logins, viewer accounts and share links](../viewer/access.md). | Set `VIEWER_USERNAME` and `VIEWER_PASSWORD`, or `AUTH_PROXY_HEADER`, or `ALLOW_ANONYMOUS_VIEWER=true`, in the viewer's environment. |
 | The viewer shows no chats while the backup has data | The two containers resolve different databases, usually because `DATABASE_DIR` or `DATABASE_PATH` is set only in `.env`. See [SQLite and PostgreSQL](../configuration/database.md). | Use `DB_PATH`, or add the same variable to the viewer's `environment:` block. Both containers need identical database settings. |
 | The viewer shows errors right after an upgrade, or on an empty PostgreSQL database | The viewer never migrates, and the backup has not finished migrating yet. See [Upgrading](upgrading.md). | Start the backup container and wait. Check with `docker compose exec telegram-backup alembic current`. |

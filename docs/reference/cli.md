@@ -27,9 +27,6 @@ This page lists every `telegram-archive` command with its flags, output and exit
 
     The container's root filesystem is read-only. Write any output file under `/data`, which is the `./data` folder on the host.
 
-!!! note "Images up to 8.16.1"
-    Images up to and including 8.16.1 only know `python -m src`. Use that form with them. See [the module rename](../operations/upgrading.md#module-rename).
-
 ### Global option
 
 | Option | Argument | Meaning |

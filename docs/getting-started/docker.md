@@ -28,7 +28,7 @@ To limit growth, use `MAX_MEDIA_SIZE_MB`, `DOWNLOAD_MEDIA_TYPES`, `DOWNLOAD_DOCU
 To see how much space you use, pick one:
 
 - In the viewer, signed in with the master login, open the Stats dropdown or the Archive Status panel.
-- Run `docker compose exec telegram-backup python -m src stats`.
+- Run `docker compose exec telegram-backup python -m telegram_archive stats`.
 - Run `du -sh data/backups/media` on the host.
 
 ## Set it up
@@ -76,11 +76,8 @@ Both containers run as uid 1000 and write the session, database and media under 
 
 ### 4. Log in to Telegram
 
-!!! warning "Module name in the 8.16.1 images"
-    The 8.16.1 images know the module only as `src`, so this page uses `python -m src`. See [the module rename](../operations/upgrading.md#module-rename).
-
 ```bash
-docker compose run --rm telegram-backup python -m src auth
+docker compose run --rm telegram-backup python -m telegram_archive auth
 ```
 
 The login code arrives in your Telegram app. If the account has two-step verification, the command then asks for that password. It echoes the password on screen as you type, so run it where nobody can see. The session is saved under `data/session`. Treat that file like a password: it gives full access to your account. Everything else about login is in [Log in to Telegram](telegram-login.md).
@@ -121,7 +118,7 @@ The file runs two services, `telegram-backup` and `telegram-viewer`, both pinned
 
 ### The telegram-backup service
 
-It runs the Telegram client and the scheduler with `python -m src schedule`.
+It runs the Telegram client and the scheduler with `python -m telegram_archive schedule`.
 
 It loads the whole `.env` through `env_file`, so every variable you put there reaches this container. It also has its own `environment:` block, and that block wins on conflict:
 
@@ -222,14 +219,14 @@ Enabling PostgreSQL also means uncommenting the `volumes: postgres_data:` block 
 Run any command with a fresh container:
 
 ```bash
-docker compose run --rm telegram-backup python -m src <command>
+docker compose run --rm telegram-backup python -m telegram_archive <command>
 ```
 
 `export`, `stats` and `list-chats` only read the database, so you can also run them inside the running container:
 
 ```bash
-docker compose exec telegram-backup python -m src stats
-docker compose exec telegram-backup python -m src export -o /data/backups/export.json
+docker compose exec telegram-backup python -m telegram_archive stats
+docker compose exec telegram-backup python -m telegram_archive export -o /data/backups/export.json
 ```
 
 The container's root filesystem is read-only, so any output file must go under `/data`. It then appears under `./data` on the host.
@@ -238,7 +235,7 @@ Commands that connect to Telegram use the scheduler's session file, so stop the 
 
 ```bash
 docker compose stop telegram-backup
-docker compose run --rm telegram-backup python -m src fill-gaps
+docker compose run --rm telegram-backup python -m telegram_archive fill-gaps
 docker compose start telegram-backup
 ```
 
@@ -262,7 +259,7 @@ Log in once, then start the backup:
 
 ```bash
 docker run -it --rm --env-file .env -v ./data:/data \
-  drumsergio/telegram-archive:8.16.1 python -m src auth
+  drumsergio/telegram-archive:8.17.0 python -m telegram_archive auth
 
 docker run -d --name telegram-backup --restart unless-stopped \
   --network telegram-archive \
@@ -272,7 +269,7 @@ docker run -d --name telegram-backup --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --stop-timeout 90 \
   --log-opt max-size=10m --log-opt max-file=3 \
-  drumsergio/telegram-archive:8.16.1 python -m src schedule
+  drumsergio/telegram-archive:8.17.0 python -m telegram_archive schedule
 ```
 
 The viewer gets explicit `-e` variables, never the whole `.env`. Its database settings must match the backup's. With the image defaults, both use `/data/backups/telegram_backup.db`:
@@ -291,7 +288,7 @@ docker run -d --name telegram-viewer --restart unless-stopped \
   -e VIEWER_TIMEZONE=Europe/London \
   -e DB_TYPE=sqlite \
   -e DB_PATH=/data/backups/telegram_backup.db \
-  drumsergio/telegram-archive-viewer:8.16.1
+  drumsergio/telegram-archive-viewer:8.17.0
 ```
 
 For PostgreSQL, see [SQLite and PostgreSQL](../configuration/database.md). What each setting means is in [Environment variables](../reference/environment-variables.md).
