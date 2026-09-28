@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-**Only the latest release is supported.** That is `7.33.6` today; see
+**Only the latest release is supported.** That is the newest tag on the releases page; see
 [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for the current one.
 
 There are no maintenance branches and nothing is backported. Every fix lands on

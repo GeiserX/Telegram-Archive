@@ -64,7 +64,7 @@ New code follows the same shape: add a row, a column or a file next to the old o
 
 The only removals allowed are the ones the operator asks for by configuration: `DELETION_MODE=hard` (opt-in; the default is `soft`), `EXCLUDE_DELETE_EXISTING`, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`, and `VERIFY_MEDIA`, which replaces a corrupted file with a fresh copy of the same media. Temporary and partial download files are not archive state.
 
-A new or wider removal path needs a config flag that defaults to keeping data, a README row that says it deletes, and explicit maintainer approval in the PR. When reviewing a PR, state what it deletes, what it overwrites and what it forgets, in that order.
+A new or wider removal path needs a config flag that defaults to keeping data, a row on the settings reference page (`docs/reference/environment-variables.md`) that says it deletes, and explicit maintainer approval in the PR. When reviewing a PR, state what it deletes, what it overwrites and what it forgets, in that order.
 
 ## Boundaries
 
