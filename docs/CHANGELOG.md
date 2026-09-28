@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Added
+- **`telegram-archive merge`** combines two archives that hold different Telegram accounts, on SQLite and PostgreSQL in any combination, on current releases. It copies every account-scoped row under a new account id in one transaction, copies media by content, refuses a schema mismatch or a duplicate Telegram account, and deletes or overwrites nothing. `--dry-run` shows the counts first. The 8.0-only SQL scripts in `scripts/merge/` are removed. ([#502](https://github.com/GeiserX/Telegram-Archive/pull/502))
+
 ## [8.17.0] - 2026-09-29
 
 Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.
