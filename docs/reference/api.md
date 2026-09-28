@@ -1,0 +1,483 @@
+# HTTP API
+
+The viewer's web app uses a JSON API, and scripts can call the same routes. This page covers how to log in, which login each route needs, and each route's parameters and responses.
+
+## Basics
+
+- The viewer listens on port 8000. Every path on this page is relative to that address, or to the address of your reverse proxy.
+- Chats are addressed by an opaque `ref`, never by the Telegram chat id. Get refs from `GET /api/chats`.
+- Request bodies are JSON. Send `Content-Type: application/json`.
+- Dates are ISO 8601. A timestamp without an offset is read as UTC.
+
+The viewer serves its own generated OpenAPI document at `/openapi.json`, and it needs no login. The `/docs` and `/redoc` pages also exist, but they render blank, because the viewer's content security policy allows no scripts from other hosts. The document lists paths and query parameters, but it has no request bodies, no response shapes and no permission rules. Use this page for those.
+
+## Authentication
+
+There are no API keys for the `/api` routes. A script logs in, keeps the session cookie and sends it back on every request.
+
+The viewer supports three login modes. [Logins, viewer accounts and share links](../viewer/access.md) explains how to turn each one on.
+
+| Mode | Turned on by | What a script does |
+|------|--------------|--------------------|
+| Password | `VIEWER_USERNAME` and `VIEWER_PASSWORD` both set | Posts to `/api/login` and keeps the cookie |
+| Proxy identity | `AUTH_PROXY_HEADER` set | Goes through the proxy, which sets the identity header. Without the header the viewer falls back to the session cookie. |
+| Anonymous mode | `ALLOW_ANONYMOUS_VIEWER=true` with neither of the above | Calls routes directly with no login. It never gets master rights. |
+
+With no mode configured, every protected route answers 503 `Viewer authentication is not configured`.
+
+### Log in with a password
+
+`POST /api/login` takes `{"username": "...", "password": "..."}`. It checks viewer accounts first, then the master credentials from the environment. On success it sets the `viewer_auth` cookie and answers:
+
+```json
+{"success": true, "role": "master", "username": "admin"}
+```
+
+`role` is `master` or `viewer`.
+
+=== "curl"
+
+    ```bash
+    curl -s -c jar.txt -H 'Content-Type: application/json' \
+      -d '{"username":"admin","password":"your-password"}' \
+      http://localhost:8000/api/login
+
+    curl -s -b jar.txt http://localhost:8000/api/chats
+    ```
+
+=== "Python"
+
+    ```python
+    import requests
+
+    s = requests.Session()
+    r = s.post(
+        "http://localhost:8000/api/login",
+        json={"username": "admin", "password": "your-password"},
+    )
+    r.raise_for_status()
+    chats = s.get("http://localhost:8000/api/chats").json()
+    ```
+
+Login errors:
+
+| Status | Meaning |
+|--------|---------|
+| 400 | The body is not JSON, or a field is missing |
+| 401 | `Invalid credentials` |
+| 429 | Too many attempts from this client IP |
+| 503 | The database was unreachable and the master credentials did not match |
+
+When password login is off but anonymous mode is on, the route answers `{"success": true, "message": ...}` and sets no cookie.
+
+### The session cookie
+
+The cookie `viewer_auth` holds an opaque random session key. It is `HttpOnly` and `SameSite=Lax`, and lasts `AUTH_SESSION_DAYS` days, default 30. The viewer marks it `Secure` when `SECURE_COOKIES=true`. When `SECURE_COOKIES` is unset, it marks it `Secure` only if the login request came over https or carried `X-Forwarded-Proto: https`. A client does not send a `Secure` cookie over plain http. If the cookie is `Secure`, call the viewer over https.
+
+Sessions are stored in the database and survive a viewer restart. Each user holds at most 10 sessions. The 11th login ends the oldest one, so a script that logs in on every run can push a browser session out. Log out at the end of each run, or reuse one cookie jar.
+
+### Log in with a share token
+
+A share token is a 64-character hex string created by the master. `POST /auth/token` takes `{"token": "..."}` and sets the `viewer_auth` cookie:
+
+```bash
+curl -s -c jar.txt -H 'Content-Type: application/json' \
+  -d '{"token":"<64 hex characters>"}' \
+  http://localhost:8000/auth/token
+```
+
+```json
+{"success": true, "role": "token", "username": "token:family", "no_download": false}
+```
+
+`username` is `token:` followed by the token's label. A token with no label gets `token:token:<id>`, so give every token a label. The session sees only the token's chats. Invalid, revoked and expired tokens all answer 401 `Invalid or expired token`. Each use updates the token's `last_used_at` and `use_count`.
+
+A share link in the browser carries the token as `#token=<value>`. The web app reads it and posts it to `/auth/token` for you.
+
+### Check the session
+
+`GET /api/auth/check` needs no login. It answers:
+
+```json
+{"authenticated": true, "auth_required": true, "role": "viewer", "username": "alice", "no_download": false}
+```
+
+Proxy users also get `"proxy_auth": true`. When no login mode is configured, the answer carries `"setup_required": true`.
+
+### Log out
+
+`POST /api/logout` ends the session named by the cookie, closes that session's WebSocket connections, deletes every push subscription of that user and clears the cookie. It always answers `{"success": true}`.
+
+```bash
+curl -s -b jar.txt -X POST http://localhost:8000/api/logout
+```
+
+The master can end other people's sessions through the admin routes. See [End sessions](#end-sessions).
+
+### Rate limit
+
+`/api/login` and `/auth/token` share one limit: 15 attempts per client IP in 5 minutes, then 429. The client IP is the socket peer unless `TRUST_PROXY_HEADERS=true`, in which case the viewer reads `X-Forwarded-For` or `X-Real-IP`. No other route is rate limited. [Exposing the viewer safely](../viewer/exposing.md) explains the proxy setup.
+
+## Who can call what
+
+| Level | Who passes | Routes |
+|-------|-----------|--------|
+| Public | Anyone | `GET /`, `GET /sw.js`, `/static/*`, `GET /api/health`, `GET /api/auth/check`, `GET /api/push/config`, `GET /api/notifications/settings`, `POST /api/login`, `POST /api/logout`, `POST /auth/token`, `/docs`, `/redoc`, `/openapi.json` |
+| Any login | master, viewer, share token, anonymous | Accounts, chat list, folders, stats, search, tags, change feed, transcription status, push subscriptions |
+| Chat entitlement | Any login that can see the chat | Every route with `{chat_ref}` in the path |
+| Master only | The master login or a proxy admin | `/api/status`, `/api/stats/refresh`, `/api/admin/*`, `/media/open/*`, `/media/open-path/*` |
+| Internal | Other containers, not clients | `/internal/push`, `/api/transcriptions/callback` |
+
+Master routes answer 403 `Admin access required` to everyone else. They also answer 403 when the request carries `X-Viewer-Only: true`, even with a master cookie. That header also makes the master credentials fail at login.
+
+A chat route answers the same 404 `Chat not found` for a ref that does not exist, a malformed ref and a chat the caller may not see. What a caller may see combines the operator's `DISPLAY_CHAT_IDS` filter with the caller's `allowed_accounts` and `allowed_chat_refs` grants.
+
+Logins with `no_download` set get 403 `Downloads disabled for this account` on media bytes, thumbnails, transcript routes and export. In message payloads their media `file_path` and `url` are `null`, `downloaded` is `false` and transcripts are removed. Avatars stay available to them.
+
+## Health and status
+
+| Method and path | Login | Purpose |
+|-----------------|-------|---------|
+| `GET /api/health` | Public | Whether the database answers |
+| `GET /api/stats` | Any | Archive totals and runtime flags |
+| `GET /api/status` | Master | Backup, listener, media and database health in one call |
+| `POST /api/stats/refresh` | Master | Recalculate the stats now and return them |
+
+`GET /api/health` answers `{"status": "ok", "database": "connected"}`. When the database probe fails it answers HTTP 503 with `{"status": "degraded", "database": "unreachable"}`. The viewer container's health check calls this route.
+
+`GET /api/stats` answers the stored daily figures and some runtime settings and flags:
+
+| Kind | Fields |
+|------|--------|
+| Daily figures | `chats`, `messages`, `media_files`, `total_size_mb`, `stats_calculated_at`, `last_backup_time` |
+| Settings and flags | `timezone`, `stats_calculation_hour`, `show_stats`, `listener_active`, `listener_active_since`, `backup_in_progress`, `push_notifications`, `push_enabled`, `enable_notifications` |
+
+For a restricted login the counts cover only its chats. `POST /api/stats/refresh` recounts the whole archive, which takes a while on a large one. Do not call it on a schedule.
+
+`GET /api/status` holds counts and timestamps only, never chat names or content. It is sent with `Cache-Control: private, no-store`.
+
+```bash
+curl -s -b jar.txt http://localhost:8000/api/status
+```
+
+```json
+{
+  "backup": {"last_run": "2026-09-28T03:00:12", "in_progress": false},
+  "stats_calculated_at": "2026-09-28T00:00:05",
+  "listeners": [{"account_id": 1, "active": true, "active_since": "2026-09-27T18:04:40"}],
+  "media": {"downloaded": 1200, "pending": 3, "exhausted": 0, "skipped": 45},
+  "database": {"backend": "postgresql", "size_bytes": 734003200}
+}
+```
+
+`backend` is `sqlite` or `postgresql`. A monitoring script can alert when `backup.last_run` is too old, when a listener is not `active`, or when `media.exhausted` grows.
+
+## Accounts, chats and folders
+
+All of these need any login.
+
+| Method and path | Parameters | Response |
+|-----------------|-----------|----------|
+| `GET /api/accounts` | None | `{accounts: [{id, label}]}`. `label` is `TG_ACCOUNT_<N>_LABEL` when set; otherwise `default` for the first account and `account<N>` for the others. |
+| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url` and `accounts`. |
+| `GET /api/chats/{chat_ref}` | None | One chat in the same shape as a list row |
+| `GET /api/folders` | None | `{folders}` with chat counts limited to what the caller can see |
+| `GET /api/archived/count` | None | `{count}` |
+
+## Messages
+
+All of these need a login that can see the chat.
+
+| Method and path | Parameters | Response |
+|-----------------|-----------|----------|
+| `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
+| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message |
+| `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
+| `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
+| `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
+| `GET /api/chats/{chat_ref}/topics` | None | `{topics}` for a forum chat |
+| `GET /api/chats/{chat_ref}/stats` | None | `{chat_id, messages, media_files, total_size_bytes, total_size_mb, first_message_date, last_message_date}`, cached for 60 seconds |
+| `GET /api/chats/{chat_ref}/avatars` | None | `[{photo_id, seen_at, url, available}]` |
+
+### Paging through messages
+
+Offset paging gets slower as the offset grows. For long walks use the cursor: pass the `date` and `id` of the last message you received as `before_date` and `before_id`.
+
+```bash
+curl -s -b jar.txt \
+  'http://localhost:8000/api/chats/<ref>/messages?limit=200&before_date=2026-09-01T10:15:00&before_id=48213'
+```
+
+A lone `before_id=N` returns messages with ids below N. `after_id=N` returns messages with ids above N.
+
+Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
+
+## Search, tags and the change feed
+
+All of these need any login. Results cover only chats the caller can see.
+
+| Method and path | Parameters | Response |
+|-----------------|-----------|----------|
+| `GET /api/search/messages` | `q` required, 1 to 500 characters. `limit` default 20, up to 100. `offset` up to 5000. | `{query, limit, offset, has_more, indexed, results}` |
+| `GET /api/tags/{tag}` | `scope` is `chat`, `mine` or `all`, default `all`. `chat_ref`, required with `scope=chat`. `limit` default 50, up to 200. `offset`. | `{tag, results, has_more, truncated}` |
+| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. | `{changes, next_before}` |
+
+`/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum` and `avatar_url`.
+
+`/api/tags/{tag}` takes a `#hashtag` or a `$CASHTAG` and answers 400 for anything else. Encode `#` as `%23` in the URL:
+
+```bash
+curl -s -b jar.txt 'http://localhost:8000/api/tags/%23holiday?scope=all&limit=50'
+```
+
+`/api/changes` lists deletions, edits and new transcripts, newest first. Each change has `kind`, `date`, `chat` with `ref`, `title` and `type`, `message_id` and `sender_name`, plus:
+
+| `kind` | Extra fields |
+|--------|-------------|
+| `deleted` | `text` |
+| `edited` | `old_text`, `new_text` |
+| `transcript` | `text`, `language` |
+
+Hard deletions never appear, and no-download logins get no transcript rows. The response is sent with `Cache-Control: private, no-store`. To walk the feed, pass `next_before` from each answer as `before` on the next request until it comes back empty. To poll for new changes, pass the time of your last poll as `since`:
+
+```bash
+curl -s -b jar.txt 'http://localhost:8000/api/changes?since=2026-09-28T00:00:00Z&limit=200'
+```
+
+## Media
+
+A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route.
+
+| Method and path | Login | Purpose |
+|-----------------|-------|---------|
+| `GET /media/{chat_ref}/{media_key}` | Chat entitlement | The original file. Add `?download=1` to force an attachment. |
+| `GET /media/thumb/{size}/{chat_ref}/{media_key}` | Chat entitlement | A generated WebP thumbnail. `size` is 200 or 400. |
+| `GET /media/avatar/{chat_ref}` | Chat entitlement | The chat's avatar. `photo_id` picks an older one. |
+| `GET /media/avatar/{chat_ref}/{message_id}` | Chat entitlement | The avatar of that message's sender |
+| `GET /api/chats/{chat_ref}/media` | Chat entitlement | The chat's media gallery |
+| `GET /api/chats/{chat_ref}/media/counts` | Chat entitlement | `{type: count}` for the chat |
+| `POST /media/open/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_CMD` on the file, on the viewer's host |
+| `POST /media/open-path/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_PATH_CMD` on the file, on the viewer's host |
+
+The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment. Media responses carry `Cache-Control: private`. Thumbnails and avatars add `max-age=86400`.
+
+The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`.
+
+The open routes answer `{"ok": true}` on success and 404 `Not configured` when their command is unset. `/media/open` accepts only types the viewer shows inline and answers 415 for others. `/media/open-path` accepts any type. Both answer 400 `File name cannot be passed to the command` when the file name cannot be passed to the command, and 500 when the command fails to start or exits non-zero within half a second.
+
+## Export
+
+`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file. It needs a login that can see the chat and answers 403 for no-download logins.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `from` | Start, inclusive, ISO 8601 |
+| `to` | A bare date such as `2026-06-30` includes that whole day. A full timestamp is exclusive. |
+
+`from` must be before `to`, or the route answers 400. Without either, the export holds the whole chat. Save the stream to a file:
+
+```bash
+curl -s -b jar.txt -o june.json \
+  'http://localhost:8000/api/chats/<ref>/export?from=2026-06-01&to=2026-06-30'
+```
+
+The response is an `application/json` attachment named `<chat name>_export.json`:
+
+```json
+{
+  "chat": {"id": -1001234567890, "ref": "<ref>", "type": "channel", "title": "Example", "username": null},
+  "filters": {"from": "2026-06-01", "to": "2026-06-30"},
+  "messages": [],
+  "message_versions": []
+}
+```
+
+`filters` appears only when `from` or `to` was given. `message_versions` holds the earlier versions of edited messages in the same window.
+
+## Transcripts
+
+| Method and path | Login | Purpose |
+|-----------------|-------|---------|
+| `GET /api/transcription/status` | Any | `{enabled, configured, server_name, server_version}`. Never includes the server URL. |
+| `GET /api/chats/{chat_ref}/media/{media_key}/transcripts` | Chat entitlement | Transcripts of one media item, newest first |
+| `POST /api/chats/{chat_ref}/media/{media_key}/transcripts` | Chat entitlement | Ask for a transcript now |
+| `GET /api/media/{media_id}/transcripts` | Chat entitlement | The same, addressed by the storage media id. Returns full rows. |
+| `POST /api/media/{media_id}/transcripts` | Chat entitlement | The same, addressed by the storage media id |
+
+Each transcript has `id`, `status`, `error`, `text`, `language`, `source`, `engine_name`, `engine_version`, `preset`, `models`, `confidence`, `duration_s`, `requested_at`, `completed_at` and `turns`.
+
+The POST routes queue a request, or return the one already open, and make no outbound call themselves. They answer 409 when transcription is off, when the media has no sound, or when the file is not downloaded yet. All transcript routes except status answer 403 for no-download logins. Setup is in [Voice transcription](../configuration/transcription.md).
+
+## Live updates over WebSocket
+
+`/ws/updates` is a WebSocket and is not in the OpenAPI document. There is no server-sent events endpoint.
+
+The viewer checks the upgrade request the same way it checks any HTTP request, using the `viewer_auth` cookie or the proxy header. A failed login closes the socket with code 4001. The `Origin` header must match `Host` or appear in `CORS_ORIGINS`, or the socket closes with 4003. The viewer holds at most `MAX_WS_CONNECTIONS` sockets, default 200, and refuses more with close code 1013. Each socket follows at most `MAX_WS_SUBSCRIPTIONS_PER_CONNECTION` chats, default 16.
+
+The client sends:
+
+```json
+{"action": "subscribe", "chat_ref": "<ref>"}
+{"action": "unsubscribe", "chat_ref": "<ref>"}
+{"action": "ping"}
+```
+
+The server replies with `subscribed`, `subscribe_denied`, `unsubscribed` or `pong`. A denial past the subscription limit carries `reason: "subscription_limit"`.
+
+Event frames all carry `type` and `chat_ref`:
+
+| `type` | Fields |
+|--------|--------|
+| `new_message` | `message` |
+| `edit` | `message_id`, `new_text`, `edit_date` |
+| `delete` | `message_id`, `deletion_mode`, `deleted_at` |
+| `pin` | `message_ids`, `pinned` |
+| `reaction` | `message_id`, `reactions` |
+| `transcript` | `message_id`, `transcript_id`, `status` |
+
+The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, or an admin change to the viewer account or share token behind it. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).
+
+## Push notifications
+
+| Method and path | Login | Purpose |
+|-----------------|-------|---------|
+| `GET /api/push/config` | Public | `{mode, enabled, vapid_public_key}` |
+| `GET /api/notifications/settings` | Public | `{enabled, mode, websocket_url: "/ws/updates"}` |
+| `POST /api/push/subscribe` | Any | Register a Web Push subscription |
+| `POST /api/push/unsubscribe` | Any | Remove a Web Push subscription |
+
+`/api/notifications/settings` answers `{"enabled": false, "reason": "Not authenticated"}` when password login is on and the cookie is missing or expired.
+
+`POST /api/push/subscribe` takes `{endpoint, keys: {p256dh, auth}, chat_ref}`, with `chat_ref` optional to follow one chat. It answers 400 unless `PUSH_NOTIFICATIONS=full`, 400 for an invalid endpoint, and 400 when the body sends `chat_id` instead of `chat_ref`. On success it answers `{"status": "subscribed", "chat_ref": ...}`. `POST /api/push/unsubscribe` takes `{endpoint}` and answers `{"status": "unsubscribed"}` or `{"status": "not_found"}`. It answers 400 `Push notifications not enabled` when push is off.
+
+## Administration
+
+Every route here is master only, and every write lands in the audit log. The concepts behind them are in [Logins, viewer accounts and share links](../viewer/access.md).
+
+### Viewer accounts
+
+| Method and path | Purpose |
+|-----------------|---------|
+| `GET /api/admin/viewers` | List accounts: `{viewers: [{id, username, allowed_accounts, allowed_chat_refs, is_active, no_download, created_by, created_at, updated_at}]}` |
+| `POST /api/admin/viewers` | Create an account |
+| `PUT /api/admin/viewers/{id}` | Change an account and end its sessions |
+| `DELETE /api/admin/viewers/{id}` | Delete an account and end its sessions |
+| `GET /api/admin/chats` | Every chat, for picking grants: `{chats: [{id, ref, account_id, title, type, username, first_name, last_name}]}` |
+
+The create body:
+
+| Field | Rule |
+|-------|------|
+| `username` | Required, at least 3 characters. Must not match the master name. |
+| `password` | Required, at least 8 characters |
+| `allowed_accounts` | A list of account ids, or `null` for all |
+| `allowed_chat_refs` | A list of chat refs, or `null` for all. An empty list grants nothing. |
+| `is_active` | Default true |
+| `no_download` | Default false |
+
+A taken name answers 409. The old field `allowed_chat_ids` answers 400. Create a viewer who sees two chats:
+
+```bash
+curl -s -b jar.txt -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"a-long-password","allowed_chat_refs":["<ref1>","<ref2>"]}' \
+  http://localhost:8000/api/admin/viewers
+```
+
+```json
+{"id": 3, "username": "alice", "allowed_accounts": null, "allowed_chat_refs": ["<ref1>", "<ref2>"], "is_active": 1, "no_download": 0}
+```
+
+`PUT` takes any of the same fields. It answers 400 when the body changes nothing and 404 for an unknown id.
+
+### Share tokens
+
+| Method and path | Purpose |
+|-----------------|---------|
+| `GET /api/admin/tokens` | List tokens: `{tokens: [{id, label, created_by, allowed_accounts, allowed_chat_refs, is_revoked, no_download, expires_at, last_used_at, use_count, created_at}]}` |
+| `POST /api/admin/tokens` | Create a token |
+| `PUT /api/admin/tokens/{id}` | Change `label`, `allowed_chat_refs`, `is_revoked` or `no_download` |
+| `DELETE /api/admin/tokens/{id}` | Delete a token and end its sessions |
+
+The create body takes `label`, `allowed_chat_refs`, `no_download` and `expires_at` as ISO 8601. `allowed_chat_refs` is required and must be a non-empty list: a share token always has a scope.
+
+```bash
+curl -s -b jar.txt -H 'Content-Type: application/json' \
+  -d '{"label":"family","allowed_chat_refs":["<ref1>"],"no_download":true,"expires_at":"2026-12-31T23:59:59Z"}' \
+  http://localhost:8000/api/admin/tokens
+```
+
+```json
+{"id": 5, "label": "family", "token": "<64 hex characters>", "allowed_chat_refs": ["<ref1>"], "no_download": 1, "expires_at": "2026-12-31T23:59:59", "created_at": "2026-09-28T10:00:00"}
+```
+
+!!! warning "The token is shown once"
+    Only the create response contains the plaintext `token`. The viewer stores a hash. Save it now, or revoke the token and create another.
+
+Build a share link as `https://<viewer address>/#token=<token>`.
+
+### End sessions
+
+There is no route that lists or ends sessions by id. These calls end sessions:
+
+| Call | Ends |
+|------|------|
+| `POST /api/logout` | The caller's own session |
+| `PUT /api/admin/viewers/{id}` | Every session of that viewer, with its sockets and push subscriptions |
+| `DELETE /api/admin/viewers/{id}` | The same, and removes the account |
+| `PUT /api/admin/tokens/{id}` changing `is_revoked`, `allowed_chat_refs` or `no_download` | Every session opened with that token, with its sockets and push subscriptions |
+| `DELETE /api/admin/tokens/{id}` | The same, and removes the token |
+
+Lock a viewer out without deleting the account:
+
+```bash
+curl -s -b jar.txt -X PUT -H 'Content-Type: application/json' \
+  -d '{"is_active":false}' http://localhost:8000/api/admin/viewers/3
+```
+
+Revoke a share token:
+
+```bash
+curl -s -b jar.txt -X PUT -H 'Content-Type: application/json' \
+  -d '{"is_revoked":true}' http://localhost:8000/api/admin/tokens/5
+```
+
+None of these calls ends a master session, and neither does changing `VIEWER_PASSWORD`.
+
+### Audit log and settings
+
+| Method and path | Parameters | Response |
+|-----------------|-----------|----------|
+| `GET /api/admin/audit` | `limit` default 100, up to 500. `offset`. `username`. `action`. | `{logs, limit, offset}` |
+| `GET /api/admin/settings` | None | `{settings}` |
+| `PUT /api/admin/settings/{key}` | Body `{"value": ...}` | `{key, value}`. The value is stored as a string. |
+
+## Internal endpoints
+
+These routes serve other parts of the system. Clients should not call them.
+
+| Route | Caller | Rules |
+|-------|--------|-------|
+| `POST /internal/push` | The backup container, in SQLite mode | Accepts only loopback and private source addresses. The viewer takes its secret from `INTERNAL_PUSH_SECRET`. In SQLite mode it falls back to the `.push-secret` file it creates next to the database. When a secret exists, every caller sends `Authorization: Bearer <secret>`. When none exists, only loopback callers get in; others get 403. PostgreSQL uses database notifications instead. |
+| `POST /api/transcriptions/callback` | Your transcription server | Exists only when transcription is on and `TRANSCRIPTION_WEBHOOK_SECRET` holds a `whsec_` secret. Checks Standard Webhooks signatures, rejects bodies over 256 KiB and answers 204 to every genuine delivery. Not in the OpenAPI document. |
+
+!!! warning "Keep internal routes off the internet"
+    Block `/internal/` at your reverse proxy. Expose the transcription callback only if your transcription server reaches the viewer through the proxy. [Exposing the viewer safely](../viewer/exposing.md) has an nginx example.
+
+## Errors and headers
+
+Errors come back as `{"detail": "..."}`.
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Bad JSON, a missing field or an invalid parameter |
+| 401 | Not logged in, or wrong credentials or token |
+| 403 | Master only, `X-Viewer-Only` set, or downloads disabled for this login |
+| 404 | Not found, including chats the caller may not see |
+| 409 | A name clash, or a transcript that cannot be made |
+| 413 | A transcription callback body over 256 KiB |
+| 415 | `/media/open` on a type the viewer does not show inline |
+| 429 | Login rate limit |
+| 500 | Any other failure. The detail is always `Internal server error` |
+| 503 | Database unreachable, or no login mode configured. `POST /auth/token` answers 500 with `Database not available` instead |
+
+`CORS_ORIGINS` defaults to `*` with credentials off, so a browser page on another origin cannot send the cookie. List explicit origins to turn credentials on for them. Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin` and a same-origin `Content-Security-Policy`.

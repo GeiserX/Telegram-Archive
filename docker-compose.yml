@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.16.1
+    image: drumsergio/telegram-archive:8.17.0
     container_name: telegram-backup
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -12,7 +12,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    command: ["python", "-m", "src", "schedule"]
+    command: ["python", "-m", "telegram_archive", "schedule"]
 
     # Every variable documented in .env.example reaches the container. The
     # environment: block below interpolates ${VAR} references for readable
@@ -212,7 +212,7 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.16.1
+    image: drumsergio/telegram-archive-viewer:8.17.0
     container_name: telegram-viewer
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -308,7 +308,7 @@ services:
       # service runs with a read-only root filesystem, so a bind mount is the
       # only way in. Mount the FILE: a directory mounted over the static one
       # hides the app's own assets and the viewer comes up blank.
-      # - ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro
+      # - ./wallpaper.jpg:/app/telegram_archive/web/static/wallpaper.jpg:ro
     networks:
       - telegram-network
     # Security hardening
@@ -338,7 +338,7 @@ services:
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   image: drumsergio/telegram-archive-viewer:8.16.1
+  #   image: drumsergio/telegram-archive-viewer:8.17.0
   #   container_name: telegram-channel-viewer
   #   restart: unless-stopped
   #   ports:

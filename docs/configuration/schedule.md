@@ -1,26 +1,30 @@
 # Schedule and backup tuning
 
-This page explains when backups run, what one run does and how to tune it.
+The backup service runs on a cron schedule and backs up every account in turn.
 
 ## Two ways to run the backup
 
 | Command | Runs | Use it for |
 |---------|------|------------|
-| `schedule` | Until stopped | Normal operation. The stock `docker-compose.yml` runs this. |
+| `schedule` | Until stopped | Normal operation. The stock compose file uses it. |
 | `backup` | One run over every account, then exits | A manual run, or an external scheduler. |
 
-**`schedule`** opens one shared Telegram connection per account and keeps it open. It starts the [real-time listener](listener.md) when `ENABLE_LISTENER=true`. It runs one backup straight away, then waits for the next [`SCHEDULE`](#when-backups-run) tick. Every 30 seconds it writes the heartbeat file the Docker health check reads. If a listener dies, the scheduler restarts it after 5 seconds. SIGTERM and SIGINT cancel the running backup, stop the listeners and close the Telegram connections.
+### The schedule command
 
-**`backup`** runs one backup over every account and exits. It fails only when every account failed. It runs no gap-fill, starts no listener and writes no heartbeat.
+The `schedule` command opens one shared Telegram connection per account and keeps it open. It starts the [real-time listener](listener.md) when `ENABLE_LISTENER=true`. It runs one backup straight away, then waits for the next [`SCHEDULE`](#when-backups-run) tick. Every 30 seconds it writes the heartbeat file the Docker health check reads. If a listener dies, the scheduler restarts it after 5 seconds. SIGTERM and SIGINT cancel the running backup, stop the listeners and close the Telegram connections.
+
+### The backup command
+
+The `backup` command runs one backup over every account and exits. It fails only when every account failed. It runs no gap-fill, starts no listener and writes no heartbeat.
 
 !!! warning "Stop the scheduler before a one-shot backup"
-    Both commands use the same session file, and Telegram can invalidate the login when two clients connect with it. Stop the `schedule` process first and start it again afterwards. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
+    Stop the `schedule` process first and start it again afterwards. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
 
 === "Docker"
 
     ```bash
     docker compose stop telegram-backup
-    docker compose run --rm telegram-backup python -m src backup
+    docker compose run --rm telegram-backup python -m telegram_archive backup
     docker compose start telegram-backup
     ```
 
@@ -30,7 +34,7 @@ This page explains when backups run, what one run does and how to tune it.
     telegram-archive --data-dir ./data backup
     ```
 
-A container that runs `backup` instead of `schedule` writes no heartbeat. Docker reports it as unhealthy about three minutes after the 300-second start period ends, after three failed checks at 60-second intervals. See [Monitoring and troubleshooting](../operations/troubleshooting.md#backup-container).
+A container that runs `backup` instead of `schedule` writes no heartbeat. Docker checks the heartbeat every 60 seconds once the 300-second start period ends. After three failed checks, about three minutes, it marks the container unhealthy. See [Monitoring and troubleshooting](../operations/troubleshooting.md#backup-container).
 
 ## When backups run
 
@@ -52,7 +56,7 @@ The schedule uses the local time of the backup process. The images run in UTC un
 TZ=Europe/Berlin
 ```
 
-A run that starts late, for example after the machine was asleep, still runs if it is less than 3600 seconds late. Several missed runs collapse into one. When a tick arrives while a backup is still running, that tick is skipped and a warning is logged.
+A run that starts late, for example after the machine was asleep, still runs if it is less than 3600 seconds late. Several missed runs collapse into one. When a tick arrives while a backup is still running, the scheduler skips that tick and logs a warning.
 
 Accounts are backed up one after another, in configuration order. With several accounts, one run takes as long as all the accounts' runs added together. See [Multiple accounts](multiple-accounts.md).
 
@@ -66,7 +70,7 @@ For each account, in order:
 4. Correct configured chat ids that lack the `-100` prefix, and refresh folder membership for folder-based filters.
 5. Select the chats to back up, priority chats first. [Choosing chats](choosing-chats.md) explains the rules.
 6. For each chat:
-    1. Update the chat row. With [`DOWNLOAD_CHAT_DESCRIPTION=true`](../reference/environment-variables.md#download_chat_description), this includes the description and member count, at the cost of one extra request per chat.
+    1. Update the chat row. With [`DOWNLOAD_CHAT_DESCRIPTION=true`](../reference/environment-variables.md#download_chat_description), this includes the description and member count, at the cost of one extra request per chat. If that request hits a FloodWait, descriptions are skipped for the rest of the run and fetched again on the next one; the chat keeps the values it already has. The member count is filled in for channels and supergroups.
     2. Check the chat's avatar and download it when it changed.
     3. Fetch new messages, oldest first.
     4. Sync edits and deletions, if [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) is on.
@@ -80,11 +84,11 @@ For each account, in order:
 12. Verify media files, if `VERIFY_MEDIA` is on.
 13. Send pending media for [transcription](transcription.md).
 
-The "backup in progress" flag is cleared at the end, even when the run fails.
+The run clears the "backup in progress" flag at the end, even when it fails.
 
 When a chat is private or forbidden, or you are banned from it, the run logs it as skipped. Any other error in one chat is logged, and the run moves on to the next chat.
 
-The last backup time is taken at the start of the run. It is one value for the whole archive, not one per account, so with several accounts the last account to start wins.
+The last backup time is taken at the start of the run. The archive stores one value for all accounts, so with several accounts the last account to start wins.
 
 ## Where a run picks up
 
@@ -92,7 +96,7 @@ Each chat has a stored position per account: the id of the newest message alread
 
 Messages are written in batches of [`BATCH_SIZE`](../reference/environment-variables.md#batch_size) messages, 100 by default. The position is saved every [`CHECKPOINT_INTERVAL`](../reference/environment-variables.md#checkpoint_interval) batches. The default is 1, which is also the minimum. It is saved once more at the end of each chat. After a crash, only the messages since the last saved position are fetched again.
 
-A message that fails to process holds the position just before it. The rest of the chat is still stored, and the failed message is tried again on the next run. Once the same message has failed on 2 separate runs, the position moves past it. Its id is kept in the backup's metadata, not in the logs.
+A message that fails to process holds the position just before it. The rest of the chat is still stored, and the failed message is tried again on the next run. Once the same message has failed on 2 separate runs, the position moves past it. The backup records its id in the metadata.
 
 Older messages are never read again by a normal run. Edits and deletions of messages below the position reach the archive only through `SYNC_DELETIONS_EDITS` or the real-time listener. Two things are refreshed on every run anyway: pinned flags, and reactions on every message fetched in that run.
 
@@ -101,13 +105,13 @@ Older messages are never read again by a normal run. Edits and deletions of mess
 | Option | What it catches | Cost |
 |--------|-----------------|------|
 | [Real-time listener](listener.md) | Edits, deletions, new messages and reactions as they happen | A process that stays connected. |
-| [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) | Edits and deletions of every archived message | Re-reads the whole archive on every run. Expensive on large archives. |
+| [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) | Edits and deletions of every archived message | Re-reads the whole archive on every run. |
 | [`REACTION_RESWEEP_DAYS`](#reaction-re-sweep) | Reaction changes on recent messages | Up to 500 messages per chat per run, spaced out. |
-| [`FILL_GAPS`](#gap-fill) | Messages missing between two archived messages | One scan of the stored ids per chat after each scheduled run. |
+| [`FILL_GAPS`](#gap-fill) | Messages missing between two archived messages | One scan of the stored ids per chat after each backup run. |
 
 ### SYNC_DELETIONS_EDITS
 
-With [`SYNC_DELETIONS_EDITS=true`](../reference/environment-variables.md#sync_deletions_edits), every run re-reads every archived message of every chat, 100 ids per request. An edit is applied when Telegram reports a different edit date. Reactions are reconciled along the way.
+With [`SYNC_DELETIONS_EDITS=true`](../reference/environment-variables.md#sync_deletions_edits), every run re-reads every archived message of every chat, 100 ids per request. The sync applies an edit when Telegram reports a different edit date. It also reconciles reactions.
 
 A message counts as deleted only when Telegram's answer matches the requested ids one for one. If the answer does not match, no message from that request is marked deleted in this run. A deletion follows [`DELETION_MODE`](../reference/environment-variables.md#deletion_mode). The default, `soft`, marks the message deleted and keeps it. `hard` removes the row.
 
@@ -126,13 +130,13 @@ This sync fires no [event webhook](event-webhook.md).
 | [`REACTION_RESWEEP_MAX_PER_CHAT`](../reference/environment-variables.md#reaction_resweep_max_per_chat) | `500` | Most messages re-checked per chat per run. Requests hold 100 ids. |
 | [`REACTION_RESWEEP_BATCH_DELAY_SECONDS`](../reference/environment-variables.md#reaction_resweep_batch_delay_seconds) | `2.0` | Minimum gap between re-sweep requests, across all chats. |
 
-After a [FloodWait](#rate-limits-and-retries), Telegram's order to wait, the re-sweep pauses until the wait plus 2 seconds has passed, then carries on in the same run. After 3 FloodWaits in one run, it stops until the next run. Progress is saved, so the next run continues where this one stopped. Saved progress older than 48 hours, or from a different day window, is discarded.
+After a [FloodWait](#rate-limits-and-retries), the re-sweep waits the required time plus 2 seconds, then continues in the same run. After 3 FloodWaits in one run, it stops until the next run. Progress is saved, so the next run continues where this one stopped. Saved progress older than 48 hours, or from a different day window, is discarded.
 
 ### Gap-fill
 
 With [`FILL_GAPS=true`](../reference/environment-variables.md#fill_gaps), the scheduler looks for holes after the startup backup and after each scheduled backup. It never runs after a one-shot `backup`.
 
-A gap is two consecutive stored message ids further apart than [`GAP_THRESHOLD`](../reference/environment-variables.md#gap_threshold), 50 by default. The missing range is fetched and stored. Gap-fill never moves the chat's position. Gap-fill recalculates statistics when it recovers messages.
+A gap is two consecutive stored message ids further apart than [`GAP_THRESHOLD`](../reference/environment-variables.md#gap_threshold), 50 by default. The missing range is fetched and stored. Gap-fill never moves the chat's position. When it recovers messages, it recalculates [statistics](#statistics).
 
 A hole before a chat's earliest archived message is reported in the log but never fetched. To run gap-fill by hand, for one chat or with another threshold, use the `fill-gaps` command described in [Import and maintenance tasks](../operations/maintenance.md).
 
@@ -147,7 +151,7 @@ Telegram answers too many requests with a FloodWait: an order to wait a number o
 
 For how this interacts with the download timeout, see [Media downloads](media.md).
 
-Every other call goes through a bounded retry:
+Message history, chat lookups, the deletion and edit sync, pinned messages and forum topic pages go through a bounded retry:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
@@ -157,13 +161,22 @@ Every other call goes through a bounded retry:
 | [`BACKOFF_MAX_SECONDS`](../reference/environment-variables.md#backoff_max_seconds) | `300.0` | Ceiling of the backoff. |
 | [`FLOOD_WAIT_LOG_THRESHOLD`](../reference/environment-variables.md#flood_wait_log_threshold) | `10` | While fetching message history, a first FloodWait shorter than this is not logged. `0` logs them all. |
 
+The folder fetch near the end of the run, the avatar download and the chat description fetch are not retried; a failure there is logged and the step waits for the next run.
+
 The sleep before retry number *n* is:
 
 ```text
 max(required wait, min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS × 2^(n-1))) + 0.5 to 2 s of jitter
 ```
 
-Transient errors, such as timeouts and dropped connections, use the same exponential backoff with 0.5 to 1.5 s of jitter, and reconnect the client when it is down. Some errors are never retried: an expired file reference, a private or forbidden chat, an invalid chat or peer id, an unauthorized session, an auth key error and a ban from the channel.
+Transient errors, such as timeouts and dropped connections, use the same exponential backoff with 0.5 to 1.5 s of jitter, and reconnect the client when it is down. These errors are never retried:
+
+- an expired file reference
+- a private or forbidden chat
+- an invalid chat or peer id
+- an unauthorized session
+- an auth key error
+- a ban from the channel
 
 While fetching a chat's history, a FloodWait or a dropped connection resumes from the last message it already received instead of starting the chat over. The retry counter resets each time a message arrives, so a long history is not cut short by scattered waits.
 

@@ -1,14 +1,12 @@
 # Backing up the archive
 
-This page lists what the archive stores, then shows how to back it up and restore it on SQLite or PostgreSQL.
-
 ## No built-in backup command
 
 Telegram Archive has no backup command for the archive itself. The `export` command writes messages to a JSON file. It leaves out media files, the Telegram session and everything the viewer stores, so it is not a backup. A real backup is a copy of the data directory, plus a database dump when you run PostgreSQL.
 
 ## Where everything lives
 
-The stock `docker-compose.yml` mounts `./data` into both containers at `/data`. Every file the archive writes is under that directory:
+The stock `docker-compose.yml` mounts `./data` into both containers at `/data`. Every file the backup container and the viewer write is under that directory:
 
 ```text
 data/
@@ -35,7 +33,7 @@ data/
         └── .thumbs/200/<chat_id>/            # thumbnail cache
 ```
 
-Two kinds of name show up only for a short time. A download in progress ends in `.part`. While media verification replaces a file, the backup container renames the old copy with a `.verify-bak` suffix. If the new download fails, it puts the old copy back. Neither needs to be in a backup.
+Two file suffixes are temporary. A download in progress ends in `.part`. While media verification replaces a file, the backup container renames the old copy with a `.verify-bak` suffix. If the new download fails, it puts the old copy back. Neither needs to be in a backup.
 
 With PostgreSQL there is no `.db`, `-wal`, `-shm` or `.push-secret` file. The database lives in the `postgres_data` volume instead.
 
@@ -53,7 +51,7 @@ The database holds more than messages. Viewer accounts, login sessions, share to
 
 You can leave out `media/.thumbs/`. The viewer rebuilds thumbnails on demand.
 
-Media folders use relative symlinks into `_shared/` when deduplication is on, which is the default. Use a tool that copies symlinks as symlinks: `rsync -a`, `cp -a` or `tar`. A tool that follows symlinks stores every shared file once per chat, and a tool that skips them leaves the chat folders empty.
+Deduplication is on by default. With it, media folders hold relative symlinks into `_shared/`. Use a tool that copies symlinks as symlinks: `rsync -a`, `cp -a` or `tar`. A tool that follows symlinks stores every shared file once per chat, and a tool that skips them leaves the chat folders empty.
 
 !!! warning "The copy is as sensitive as your Telegram account"
     The session files give full access to the Telegram account. The database dump carries viewer password hashes and the VAPID private key. Keep backups on storage only you can read, and encrypt them when they leave the machine.
@@ -71,9 +69,9 @@ Media folders use relative symlinks into `_shared/` when deduplication is on, wh
     docker compose start telegram-backup telegram-viewer
     ```
 
-    Each container gets up to 90 seconds to shut down cleanly, so `stop` can take that long during a large download. `cp -a` and `tar` also keep symlinks, so `cp -a data /path/to/backup/` or `tar -czf telegram-archive-data.tar.gz data` works too.
+    Each container gets up to 90 seconds to shut down cleanly, so `stop` can take that long during a large download. `cp -a data /path/to/backup/` or `tar -czf telegram-archive-data.tar.gz data` works in place of `rsync`.
 
-    When the backup container starts again it runs one backup at once, picking up from each chat's stored position, before it returns to its schedule.
+    When the backup container starts again, it runs one backup straight away. Each chat resumes from its stored position. Then the container returns to its schedule.
 
 === "PostgreSQL"
 
@@ -101,7 +99,7 @@ Restore the database and the media from the same backup. A database newer than i
 
 2. Put `.env`, `docker-compose.yml` and `data/` back at the same paths. Keep the same database settings in both containers.
 
-3. If the target already has `telegram_backup.db-wal` or `telegram_backup.db-shm` files that are not from the backup, delete them. A stale WAL file would be applied to the restored database.
+3. If the target already has `telegram_backup.db-wal` or `telegram_backup.db-shm` files that are not from the backup, delete them. SQLite applies a leftover WAL file to the restored database on the next open.
 
 4. Give the files to the user the containers run as, uid 1000:
 
@@ -134,10 +132,10 @@ Take a backup before every upgrade. Migrations only go forward, so that backup i
 
 ## The session file
 
-Never run two installs against the same session at the same time. That includes a restored copy on a second machine while the first one still runs. Telegram can invalidate the login when one session connects from two places, and then both installs need a new login. The code has no lock that stops this, so stop the old install before you start the restored one.
+Stop the old install before you start a restored copy on another machine. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
 
-Anyone who gets the session file can use your Telegram account without the login code or the two-step password. If a copy leaks, end that session from Telegram under Settings, Devices, then log in again as described in [Log in to Telegram](../getting-started/telegram-login.md).
+If a copy of the session file leaks, end that session in Telegram under **Settings > Devices**, then log in again as described in [Log in to Telegram](../getting-started/telegram-login.md). See [Session files](../getting-started/telegram-login.md#session-files) for what the file grants.
 
 ## Putting messages back into Telegram
 
-A backup of the archive is not the same as restoring a chat inside Telegram. The backup image carries a separate script, `scripts/restore_chat.py`, that re-sends archived messages into a chat. It sends them as the logged-in account, writes the original sender and time into each message's text, and uploads media again as new files. It cannot recreate the original senders or timestamps. Stop the backup container while it runs, because it uses the same session. Its flags, including `--dry-run`, are listed under [repository scripts](../reference/cli.md#repository-scripts).
+A backup of the archive is not the same as restoring a chat inside Telegram. The backup image carries a separate script, `scripts/restore_chat.py`, that re-sends archived messages into a chat. It sends them as the Telegram account of the session, writes the original sender and time into each message's text, and uploads media again as new files. It cannot recreate the original senders or timestamps. Stop the backup service while it runs. See [One client per session](../getting-started/telegram-login.md#one-client-per-session). Its flags, including `--dry-run`, are listed under [repository scripts](../reference/cli.md#repository-scripts).

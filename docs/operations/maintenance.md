@@ -4,21 +4,11 @@ This page covers one-off jobs on an archive that is already running.
 
 ## Ground rules
 
-Most commands on this page talk to Telegram with the same session file as the running scheduler. Nothing stops two processes from using one session at once, and Telegram can invalidate the login when that happens. Stop the backup service before any command that connects to Telegram, run the command in a throwaway container, then start the service again:
-
-```bash
-docker compose stop telegram-backup
-docker compose run --rm telegram-backup python -m telegram_archive fill-gaps
-docker compose start telegram-backup
-```
-
-The commands that connect to Telegram are `backup`, `auth`, `fill-gaps`, `backfill-topics` and `reclassify-round-videos`, plus `scripts/restore_chat.py`. `export`, `stats` and `list-chats` only read the database, so they are safe to run inside the running container with `docker compose exec`.
-
-The Docker examples on this page need the first release that ships the `telegram_archive` package, which is the release after 8.16.1. On image 8.16.1 and older, run `python -m src <command>` instead of `python -m telegram_archive <command>`.
+Stop the backup service before any command that connects to Telegram, and start it again afterwards. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
 
 The container's root filesystem is read-only. Any file a command writes must go under `/data`, which is the `./data` folder on the host.
 
-Without Docker, run the same commands with the `telegram-archive` command and point it at your data folder:
+Without Docker, run the same commands with the `telegram-archive` command and point it at your data directory:
 
 ```bash
 telegram-archive --data-dir ./data fill-gaps
@@ -32,8 +22,8 @@ The `import` command reads an export made by Telegram Desktop and writes it into
 
 Telegram Desktop offers two export formats, and the importer reads both:
 
-- **JSON.** Open Settings, Advanced, Export Telegram data, and choose the machine-readable JSON format. You can export the full account or a single chat.
-- **HTML.** A per-chat HTML export also works. It carries no chat id, so you must pass one with `-c`.
+- JSON: open Settings, Advanced, Export Telegram data, and choose the machine-readable JSON format. You can export the full account or a single chat.
+- HTML: a per-chat HTML export also works. It has no chat id, so pass one with `-c`.
 
 ### Put it where the container can see it
 
@@ -72,12 +62,12 @@ When it finishes, the command prints `Import complete:` with the number of chats
 - It uses `result.json` when the folder has one. Otherwise it reads `messages.html`, `messages2.html` and the rest. When neither exists it stops with `No result.json or messages.html found in <path>. Expected a Telegram Desktop export directory.`
 - For a JSON export it derives the marked id from the chat type. Private chats, bot chats and Saved Messages keep the raw id. Basic groups become `-id`. Supergroups and channels become `-(1000000000000 + id)`, the form that starts with `-100`.
 - It streams `result.json` one message at a time, so memory use stays flat on a large export.
-- If a JSON import is interrupted, run the same command on the same file again. Chats that finished are skipped and the interrupted one is replayed, without `--merge`. An HTML import does not resume.
+- If a JSON import stops partway, run the same command on the same file again. The importer skips the chats it finished and replays the interrupted one. You do not need `--merge` for this. An HTML import does not resume.
 - It refuses to import into a chat that already has messages, unless you pass `--merge`.
 - It copies media files into `media/<chat_id>/` in the archive. The export must stay readable for the whole run, and the copies need free disk space of their own. Media the archive already holds for a message is skipped.
 - Everything is written under account 1, even when the install has several accounts.
 - Only a full-account JSON export tells the importer which messages you sent. HTML and single-chat exports leave that flag unset.
-- HTML export dates carry a time zone offset and are stored as UTC.
+- When an HTML export date carries a `UTC+HH:MM` suffix, the time is converted to UTC. Without the suffix the time is stored as written, as the exporting computer's local time.
 
 ### After the import
 
@@ -107,9 +97,9 @@ docker compose run --rm telegram-backup python -m telegram_archive fill-gaps -c 
 docker compose start telegram-backup
 ```
 
-`-c` limits the scan to one chat. Without it, every archived chat that passes the current chat filters is scanned. `-t` sets the smallest gap worth investigating and overrides `GAP_THRESHOLD`, which defaults to 50. For every flag, see [fill-gaps](../reference/cli.md#fill-gaps).
+`-c` limits the scan to one chat. Without it, every archived chat that passes the current chat filters is scanned. `-t` sets the threshold: only gaps larger than it are investigated. It overrides `GAP_THRESHOLD`, which defaults to 50. For every flag, see [fill-gaps](../reference/cli.md#fill-gaps).
 
-A gap is two neighbouring stored message ids that are further apart than the threshold. The command prints a summary:
+A gap is two neighboring stored message ids that are further apart than the threshold. The command prints a summary:
 
 ```text
 Gap-fill complete:
@@ -119,7 +109,7 @@ Gap-fill complete:
   Messages recovered: ...
 ```
 
-It also reports history missing before a chat's earliest archived message, but does not fetch it. To fetch that history, import an export that covers it. With several accounts the summary line for this missing history is not printed. Look for the `ids missing before id` note on the per-chat lines instead.
+It also reports history missing before a chat's earliest archived message, but does not fetch it. To fetch that history, import an export that covers it. With several accounts, the command leaves this line out of the summary. Look for the `ids missing before id` note on the per-chat lines instead.
 
 To run gap-filling after every scheduled backup instead, set `FILL_GAPS=true`. See [Schedule and backup tuning](../configuration/schedule.md).
 
@@ -141,7 +131,14 @@ docker compose start telegram-backup
 
 ## Verify media files
 
-Media verification checks every downloaded file and downloads it again when it is missing, empty or the wrong size. It is a setting, not a command. Set `VERIFY_MEDIA=true` in `.env` and recreate the backup container with `docker compose up -d telegram-backup`. A plain restart keeps the old environment. The backup that runs at startup verifies the files. When it has finished, set `VERIFY_MEDIA` back to `false` and run `docker compose up -d telegram-backup` again. See [Media downloads](../configuration/media.md) for what it checks.
+Media verification checks every downloaded file and downloads it again when it is missing, empty or the wrong size. You turn it on with a setting:
+
+1. Set `VERIFY_MEDIA=true` in `.env`.
+2. Run `docker compose up -d telegram-backup`. A plain restart keeps the old environment.
+3. Wait for the backup that runs at startup to finish. It verifies the files.
+4. Set `VERIFY_MEDIA=false` and run `docker compose up -d telegram-backup` again.
+
+See [Media downloads](../configuration/media.md) for what it checks.
 
 ## Export to JSON
 
@@ -152,27 +149,25 @@ docker compose exec telegram-backup \
   python -m telegram_archive export -o /data/backups/export.json -c -1001234567890 -s 2024-01-01 -e 2025-01-01
 ```
 
-`-o` names the output file, which must be under `/data`. `-c` exports one chat's messages. `-s` is the first day to include and `-e` ends the range. For every flag, see [export](../reference/cli.md#export).
+`-o` names the output file, which must be under `/data`. `-c` exports one chat's messages. `-s` is the first day to include. `-e` is the first day to exclude: the command compares it as midnight at the start of that day. To include a whole last day, pass the day after it. The example above covers all of 2024. For every flag, see [export](../reference/cli.md#export).
 
-The end date is compared as midnight at the start of that day. To include the whole last day, pass the day after it. The example above covers all of 2024.
-
-The `chats` list in the file always holds every chat in the archive, even with `-c`. Media files are not exported. The file layout is described in [Command line and Python API](../reference/cli.md).
+The `chats` list in the file always holds every chat in the archive, even with `-c`. The export leaves out media files. For the file layout, see [Command line and Python API](../reference/cli.md).
 
 ## Merge two archives
 
-The `merge` command copies every account of another archive, the source, into this archive, the target. Use it when two installs each backed up a different Telegram account and you want one archive and one viewer for both. The command needs no Telegram login.
+The `merge` command copies every Telegram account of another archive, the source, into this archive, the target. Use it when two installs each backed up a different Telegram account and you want one archive and one viewer for both. The command needs no Telegram login.
 
 It reads the target from the same settings as every other command: `DATABASE_URL` or the other database variables, and `--data-dir`. The source is only read, and nothing already in the target is changed or deleted.
 
 ### What it copies
 
-Each source account is added to the target under the next free account id. Every row the account owns follows it under that id:
+Each source Telegram account is added to the target under the next free account id. Every row the account owns follows it under that id:
 
 - its chats, messages, edit history, reactions, media rows and transcripts
-- forum topics, folders and folder membership, sync cursors and avatar history
+- forum topics, folders and folder membership, its [positions](../reference/glossary.md#position) and avatar history
 - its per-account records: followed chat migrations, failed-message records and import progress
 
-Chats keep their ids and their link ids. A message keeps its media, its edit history and its reactions, because they share its chat id and message id. A transcript that was copied from another transcript still points at its copy in the target.
+Chats keep their chat ids and their [chat refs](../reference/glossary.md#chat-ref). A message keeps its media, its edit history and its reactions, because they share its chat id and message id. A transcript that was copied from another transcript still points at its copy in the target.
 
 Users, the table of senders shared by every account, are added only when the target does not know them. The target's row for a user it already has stays as it is. With `--account`, only the users the merged account points at are added: its message senders, the users who reacted, and the other party of its private chats. People only the other source accounts ever saw stay behind.
 
@@ -201,13 +196,14 @@ A name the target already uses for the same bytes counts as already there. A fil
 The command checks everything before it writes, and stops with `Merge refused: <reason>` when:
 
 - The source and the target are the same database.
+- The source or the target is not a SQLite or PostgreSQL database.
 - The target's records say one of its backups is running, or, on SQLite, another process is writing to the target database. Stop the target install. If it is already stopped and the backup flag stays set, a run was cut off: start the target, let one backup finish, stop it and try again.
 - The source database file, the target database file or the `--source-media` folder does not exist.
 - Either archive is not at this release's newest schema revision. Upgrade both installs to the same release and start each once, or run `telegram-archive migrate` against it.
 - The source has no account, or `--account` matches none, or two source accounts share the label you passed.
 - An account on either side has never logged in, so it has no Telegram user id yet. Start that install once.
 - A source account is the same Telegram account as one in the target. Two archives of one account are not merged.
-- A chat link id or a per-account record key from the source already exists in the target.
+- A chat ref or a per-account record key from the source already exists in the target.
 - A file name in the target's media folder holds different bytes than the source file of the same name.
 - The SQLite source's `-wal` file still holds changes and its folder is read-only. Start and stop the source install once, or copy the database with its `-wal` file to a writable folder.
 - The source is SQLite, the target is PostgreSQL, and the source holds rows whose parent row it lacks, for example a reaction whose message is gone. SQLite keeps such rows and PostgreSQL refuses them. The reason lists the count per table. Run again with `--add-missing-parents`, described below.
@@ -216,7 +212,7 @@ The rows are then copied in one transaction, counted again, and the media files 
 
 ### Example
 
-Two installs, each with one account. The target is the install you keep. Stop both first: nothing may write to either database during the merge. Take a backup of the target, see [Backing up the archive](backup-and-restore.md).
+Two installs, each with one Telegram account. The target is the install you keep. Stop both first: nothing may write to either database during the merge. Take a backup of the target, see [Backing up the archive](backup-and-restore.md).
 
 1. Copy the other install's `backups` folder, which holds its database and its `media` folder, under the target's data folder:
 
@@ -266,7 +262,7 @@ Two installs, each with one account. The target is the install you keep. Stop bo
     TG_ACCOUNT_2_LABEL=Work
     ```
 
-    After login the archive finds the account's rows by its Telegram user id, so the index in `.env` does not have to match the account id the merge printed. The sync cursors came across with the rows, so the next run continues where the source install stopped.
+    After login the archive finds the account's rows by its Telegram user id, so the index in `.env` does not have to match the account id the merge printed. The positions came across with the rows, so the next backup run continues where the source install stopped.
 
 5. Start the stack. Once the viewer shows both accounts, remove `data/incoming`, which the target never reads.
 
@@ -306,18 +302,19 @@ docker compose run --rm telegram-backup python scripts/detect_albums.py
 
 Stop the backup service before a run that changes data, and take a backup first. See [Backing up the archive](backup-and-restore.md).
 
-Each script, its flags and their defaults are listed in [Command line and Python API](../reference/cli.md#repository-scripts). A few need more context here:
+[Command line and Python API](../reference/cli.md#repository-scripts) lists every script with its flags and defaults. Before running these scripts, note the following:
 
 - `deduplicate_media.py` moves every media file in the chat folders into `media/_shared` and replaces each one with a relative symlink. It removes duplicate copies of the same file, so one file serves every chat that holds it.
-- `restore_chat.py` connects to Telegram with the same session and sends messages as the logged-in user. See [Putting messages back into Telegram](backup-and-restore.md#putting-messages-back-into-telegram).
+- `restore_chat.py` sends messages as the Telegram account of the session. See [Putting messages back into Telegram](backup-and-restore.md#putting-messages-back-into-telegram).
 - `fix_media_sizes.py` is broken and fails on every run. Use `update_media_sizes.py` instead.
+- `cleanup_legacy_avatars.py` deletes old-style avatar files that already have a new-style replacement. Run it with `--dry-run` first and take a backup. It reads `--backup-path`, default `/data/backups`.
 
 `migrate_media_paths.py` builds its database address from `DATABASE_URL`, then `DB_TYPE` and the `POSTGRES_*` variables, then `BACKUP_PATH/telegram_backup.db`. Pass `--db-url` if your database lives elsewhere.
 
 `generate_dummy_db.py` migrates the new database to the current schema before filling it. It needs `ffmpeg` on the `PATH` to make the voice notes and the round video. Without it, those messages keep their rows but get no file. It stops if the target folder already holds an archive.
 
 !!! danger "Never point the demo generator at your real data"
-    `generate_dummy_db.py --force` deletes the whole `backups` folder under `--data-dir`, including the database and media, but only when that folder holds the marker file the script writes. It refuses to delete an archive it did not create. The default `--data-dir` is `demo-data`; inside Docker give it a folder under the volume, such as `--data-dir /data/demo`.
+    `generate_dummy_db.py --force` deletes the whole `backups` folder under `--data-dir`, including the database and media. It does this only when the folder holds the marker file the script writes, so it never deletes an archive it did not create. The default `--data-dir` is `demo-data`. Inside Docker, give it a folder under the volume, such as `--data-dir /data/demo`.
 
 The folder also holds three SQL helpers:
 
