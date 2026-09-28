@@ -49,7 +49,7 @@ A successful login sets the cookie `viewer_auth`, which is `HttpOnly` and `SameS
 - Logging out ends that session and deletes every push subscription of that user. Other browsers of the same user subscribe again on their next load.
 
 !!! warning "Changing the master password does not log anyone out"
-    The viewer does not check existing master sessions against `VIEWER_USERNAME` or `VIEWER_PASSWORD` again. After a change they stay valid until `AUTH_SESSION_DAYS` runs out.
+    The viewer does not check existing master sessions against `VIEWER_USERNAME` or `VIEWER_PASSWORD` again. After a change they stay valid until `AUTH_SESSION_DAYS` runs out, or until you [end every session](#end-every-session).
 
 Logins and share-token logins share one rate limit: 15 attempts per client IP in 300 seconds, then HTTP 429. Behind a reverse proxy every client can look like the same IP, so one client can use up the limit for all. [Exposing the viewer safely](exposing.md) shows how to fix this.
 
@@ -61,25 +61,39 @@ Logins and share-token logins share one rate limit: 15 attempts per client IP in
 docker compose up -d telegram-viewer
 ```
 
-Sessions opened with the old password stay valid until `AUTH_SESSION_DAYS` runs out. To end every session at once, delete the rows of the `viewer_sessions` table while no viewer runs. A running viewer also holds its sessions in memory, so stop every viewer container first. Add the name of a second viewer if you run one:
-
-```bash
-docker compose stop telegram-viewer
-```
-
-On SQLite, run `DELETE FROM viewer_sessions;` with a SQLite client on `data/backups/telegram_backup.db`. On PostgreSQL, run the same statement with `psql`:
-
-```bash
-docker exec telegram-postgres psql -U telegram -d telegram_backup -c "DELETE FROM viewer_sessions;"
-```
-
-Then start the viewer again. This logs out every viewer account and every share-link session too.
+Sessions opened with the old password stay valid until `AUTH_SESSION_DAYS` runs out. To log them out, [end every session](#end-every-session) once the viewer runs with the new password.
 
 **A viewer account.** Open **Admin Settings**, **Viewer Accounts**, edit the account and type a new password of at least 8 characters. Saving ends that account's sessions, so the person signs in again with the new password.
 
 **A share link.** The token is shown once and only its hash is stored, so a lost link cannot be recovered. Revoke or delete the token and create a new one.
 
 **Proxy identity.** The password belongs to the reverse proxy or the identity provider in front of it. The viewer stores none.
+
+## End every session
+
+The master can log out every browser at once, for example after a master password change. This ends the master's sessions, every viewer account's sessions and every share-link session. Accounts and share tokens stay as they are, so people log in again with their current password or link.
+
+Open the gear icon, **Admin Settings**, then the **Sessions** tab. It has two buttons, and each asks you to confirm:
+
+- **End every session** logs out everyone, you included. The page returns to the login.
+- **End all but this one** keeps the browser you click it in and logs out everything else, your other browsers included.
+
+Both close the live connections of the ended sessions and delete the push subscriptions of their users. Those users subscribe again after their next login. The audit log records the action as `sessions_ended_all`, or `sessions_ended_all:kept_current` when your session was kept.
+
+The same action is the route `POST /api/admin/sessions/end-all`. Only the master may call it: the master login, or a proxy identity listed in `AUTH_PROXY_ADMIN_USERS`. Viewer accounts and share links get HTTP 403, and so does a request with `X-Viewer-Only: true`. Add `?keep_current=true`, or send the JSON body `{"keep_current": true}`, to keep the session of the cookie you call it with. Without either, your own session ends too:
+
+```bash
+curl -X POST -b "viewer_auth=<your session cookie>" \
+  "https://archive.example.com/api/admin/sessions/end-all?keep_current=true"
+```
+
+The answer names how many sessions ended and whether yours was one of them:
+
+```json
+{"success": true, "ended": 4, "current_session_ended": false}
+```
+
+When `current_session_ended` is `true`, the answer also clears the cookie. A caller signed in through proxy identity has no session of its own, so the action ends nothing of theirs and the next request signs them in again through the proxy.
 
 ## Viewer accounts
 
@@ -145,7 +159,7 @@ You can run more than one viewer container against the same archive, for example
 
 - Both read the same database, so viewer accounts, share tokens, sessions, the audit log and the generated Web Push keys are shared. Each viewer applies its own `DISPLAY_CHAT_IDS`, master login and display settings.
 - Browsers send a cookie to every port of a host name. On one host name, a master login on the main viewer is also a master login on the second viewer, and the second viewer only narrows it with its own `DISPLAY_CHAT_IDS`. Give the second viewer its own host name behind the reverse proxy, or use it only for other people.
-- Ending sessions reaches only the viewer where you do it. Editing or deleting an account, or revoking a token, removes the sessions from the database and from that viewer's memory. A session the other viewer already holds keeps working there until you restart that viewer or until `AUTH_SESSION_DAYS` runs out.
+- Ending sessions reaches every viewer, with a short delay on the other one. Editing or deleting an account, revoking a token or [ending every session](#end-every-session) removes the sessions from the database and from the memory of the viewer where you do it. The other viewer checks each session it holds against the database again once a minute, so its next request after that fails and the browser returns to the login. A browser there that only keeps a live connection open, with no requests, is closed by the sweep that runs every 900 seconds.
 - On SQLite the backup sends live events to one address, `VIEWER_HOST` and `VIEWER_PORT`. The second viewer gets none. An open chat there picks up new messages through its 3-second poll only, and it sends no notifications. On PostgreSQL both viewers receive every event.
 - The shipped example publishes port 8001 on every interface and carries no database variables, no time zone and none of the hardening of the stock services. Use this instead:
 

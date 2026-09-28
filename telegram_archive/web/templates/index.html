@@ -3284,6 +3284,9 @@
                     <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-tg-n400 hover:text-tg-n200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Audit Log
                     </button>
+                    <button @click="adminActiveTab = 'sessions'" :class="adminActiveTab === 'sessions' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-tg-n400 hover:text-tg-n200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                        Sessions
+                    </button>
                 </div>
 
                 <!-- Content -->
@@ -3464,6 +3467,7 @@
                                 <option value="token_updated">Token updated</option>
                                 <option value="token_deleted">Token deleted</option>
                                 <option value="setting_updated">Setting updated</option>
+                                <option value="sessions_ended_all">Every session ended</option>
                             </select>
                         </div>
                         <div class="space-y-1">
@@ -3475,6 +3479,27 @@
                                 <span class="text-tg-n500 truncate w-28">{{ log.ip_address }}</span>
                             </div>
                             <div v-if="adminAuditLogs.length === 0" class="text-tg-n500 text-sm text-center py-4">No audit logs yet</div>
+                        </div>
+                    </div>
+
+                    <!-- Sessions Tab: end every login at once, for example after a master password change -->
+                    <div v-if="adminActiveTab === 'sessions'">
+                        <div class="bg-tg-n900 rounded-lg p-4">
+                            <h3 class="text-sm font-medium text-tg-n300 mb-2">End every session</h3>
+                            <p class="text-xs text-tg-n400 mb-3">
+                                Logs out every browser: the master login, every viewer account and every share link.
+                                Use it after you change the master password. Accounts and share tokens stay as they are.
+                            </p>
+                            <div v-if="adminSessionsError" class="text-red-400 text-sm mb-3">{{ adminSessionsError }}</div>
+                            <div v-if="adminSessionsMessage" class="text-green-400 text-sm mb-3">{{ adminSessionsMessage }}</div>
+                            <div class="flex flex-wrap items-center gap-3">
+                                <button @click="endAllSessions(false)" class="px-4 py-1.5 bg-red-700 hover:bg-red-600 text-white text-sm rounded">
+                                    End every session
+                                </button>
+                                <button @click="endAllSessions(true)" class="px-4 py-1.5 bg-tg-n700 hover:bg-tg-n600 text-tg-ink text-sm rounded">
+                                    End all but this one
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -10329,6 +10354,47 @@
                     } catch (e) { console.error('Failed to delete token:', e) }
                 }
 
+                // Ends every session in the archive. keepCurrent keeps this browser logged in;
+                // otherwise the server ends this session too and the page returns to the login.
+                const adminSessionsError = ref('')
+                const adminSessionsMessage = ref('')
+                const endAllSessions = async (keepCurrent) => {
+                    const question = keepCurrent
+                        ? 'End every other session? Everyone else, including your other browsers, has to log in again.'
+                        : 'End every session, including this one? Everyone, you included, has to log in again.'
+                    if (!confirm(question)) return
+                    adminSessionsError.value = ''
+                    adminSessionsMessage.value = ''
+                    try {
+                        const res = await fetch(`/api/admin/sessions/end-all?keep_current=${keepCurrent ? 'true' : 'false'}`, {
+                            method: 'POST', credentials: 'include'
+                        })
+                        if (!res.ok) {
+                            const err = await res.json().catch(() => ({}))
+                            adminSessionsError.value = err.detail || 'Failed to end sessions'
+                            return
+                        }
+                        const data = await res.json()
+                        if (data.current_session_ended) {
+                            // Only now, so a refused or failed request leaves push as it was.
+                            // The server already deleted this user's push channels; this
+                            // drops the browser side, and push_enabled must go or the next
+                            // load re-subscribes automatically.
+                            try {
+                                await unsubscribeFromPush()
+                            } catch (e) { /* ignore */ }
+                            localStorage.removeItem('push_enabled')
+                            isAuthenticated.value = false
+                            userRole.value = ''
+                            currentUsername.value = ''
+                            showAdminPanel.value = false
+                            return
+                        }
+                        adminSessionsMessage.value = `Ended ${data.ended} session(s).`
+                        await loadAdminAudit()
+                    } catch (e) { adminSessionsError.value = 'Network error' }
+                }
+
                 return {
                     roundVideoHint,
                     toggleRoundVideoSound,
@@ -10578,6 +10644,9 @@
                     createToken,
                     revokeToken,
                     deleteToken,
+                    adminSessionsError,
+                    adminSessionsMessage,
+                    endAllSessions,
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,

@@ -13,11 +13,13 @@ Telegram Archive is now a Python package named `telegram-archive`, ready for PyP
 - **`telegram-archive migrate`** runs `alembic upgrade head` to create or upgrade the database schema. It is meant for pip installs and fresh databases. Run it before the first backup and after each upgrade. The Docker image still migrates on start and still detects older schemas.
 - **A small Python API.** `from telegram_archive import Config, TelegramBackup, run_backup`, then `asyncio.run(run_backup(Config()))` runs one backup of every configured account. The names load lazily, so the viewer image, which has no telethon, can still import the package.
 - **PyPI publishing.** Each release tag builds the package, checks that the tag matches the version, and uploads it with PyPI trusted publishing. A new Package check builds and installs the wheel on every pull request.
+- **End every session.** The master can log out every browser at once from the new **Sessions** tab in Admin Settings, for example after a master password change. It ends the master's, every viewer account's and every share link's sessions; **End all but this one** keeps the browser you click it in. The same action is `POST /api/admin/sessions/end-all`, with `keep_current` to keep your own session. See [End every session](viewer/access.md#end-every-session).
 
 ### Changed
 - **The code moved from `src/` to `telegram_archive/`.** Both images keep a small `src` package, so compose files that run `python -m src schedule`, `python -m src auth` or `uvicorn src.web.main:app` keep working and run the same code. The old name prints a one-line notice at start. Switch to `python -m telegram_archive` and `telegram_archive.web.main:app` when convenient. The images' default commands and [`docker-compose.yml`](../docker-compose.yml) use the new name.
 - **The viewer wallpaper has a new mount path**, `/app/telegram_archive/web/static/<file>`. The old path, `/app/src/web/static/<file>`, is a link to it in the viewer image, so an existing mount keeps working.
 - **The migrations moved into the package.** From a checkout, run `alembic -c telegram_archive/alembic.ini ...`. Inside the backup container a bare `alembic ...` still works.
+- **A viewer checks its cached sessions against the database once a minute.** A session ended on one viewer, by the end-all action or by editing an account, stops working on a second viewer on the same database within that minute. A browser there that only holds a live connection is closed by the sweep every 900 seconds.
 
 ## [8.16.1] - 2026-09-26
 
