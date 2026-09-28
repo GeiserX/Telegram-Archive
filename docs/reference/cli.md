@@ -27,9 +27,6 @@ This page lists every `telegram-archive` command with its flags, output and exit
 
     The container's root filesystem is read-only. Write any output file under `/data`, which is the `./data` folder on the host.
 
-!!! note "Images up to 8.16.1"
-    Images up to and including 8.16.1 only know `python -m src`. Use that form with them. See [the module rename](../operations/upgrading.md#module-rename).
-
 ### Global option
 
 | Option | Argument | Meaning |
@@ -42,20 +39,14 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 ### Which commands need Telegram
 
-| Needs an authorized Telegram session | Only reads or writes the database, needs no Telegram credentials |
-|--------------------------------------|-----------------------------------|
+| Needs an authorized Telegram session | Database only, no Telegram credentials |
+|--------------------------------------|----------------------------------------|
 | `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import` |
 
 !!! warning "One client per session"
-    Never run a Telegram command beside a running `schedule` on the same session file. Telegram can invalidate the login. Stop the scheduler first, run the command, then start it again:
+    Stop the backup service before any command that connects to Telegram. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
 
-    ```bash
-    docker compose stop telegram-backup
-    docker compose run --rm telegram-backup python -m telegram_archive fill-gaps
-    docker compose start telegram-backup
-    ```
-
-!!! note "pip installs migrate by hand"
+!!! note "With pip, run migrate by hand"
     The backup image migrates the database each time it starts. A pip install does not. Run [`migrate`](#migrate) before any other command, and again after every upgrade. See [Install from PyPI](../getting-started/pip.md).
 
 ## auth { #auth }
@@ -66,11 +57,11 @@ telegram-archive [--data-dir PATH] auth
 
 Takes no flags.
 
-Logs in to Telegram interactively and saves the session file. It walks every configured account in turn and skips accounts whose session is already authorized. For each login it prompts `Enter verification code: `. When two-step verification is on, it also prompts `Enter your 2FA password: `. It then checks that the logged-in phone number matches the configured one and fails if they differ. It does not touch the database. See [Log in to Telegram](../getting-started/telegram-login.md).
+Logs in to Telegram interactively and saves the session file. It walks every configured account in turn and skips accounts whose session is already authorized. For each login it prompts `Enter verification code: `. When two-step verification is on, it also prompts `Enter your 2FA password: `. It then checks that the logged-in phone number matches the configured one and fails if they differ. A failure stops the walk, so the accounts after it are not tried. Fix that account and run `auth` again. It does not touch the database. See [Log in to Telegram](../getting-started/telegram-login.md).
 
-**Output.** Progress lines, then a blank line and `✓ Setup completed successfully!` or `✗ Setup failed. Please check the errors above.` On a permission error it prints how to give the container's user, uid 1000, write access to the data directory.
+It prints progress lines, then a blank line and one of two endings. On success it prints `✓ Setup completed successfully!` followed by a short "Next steps" block. On failure it prints `✗ Setup failed. Please check the errors above.` On a permission error it prints how to give the container's user, uid 1000, write access to the data directory.
 
-**Exit codes.** 0 when every account is authorized, 1 on any failure.
+It exits 0 when every account is authorized and 1 on any failure.
 
 ## backup { #backup }
 
@@ -80,11 +71,11 @@ telegram-archive [--data-dir PATH] backup
 
 Takes no flags.
 
-Backs up every configured account once, then exits. It first moves the files in `media/_shared` into subfolders named after their hash. This happens once and does nothing on later runs. It runs no gap-fill and writes no heartbeat. See [Your first backup](../getting-started/first-backup.md) and [Schedule and backup tuning](../configuration/schedule.md).
+Backs up every configured account once, then exits. It first moves the files in `media/_shared` into subfolders named after the first two characters of each file's SHA-256 hash. This happens once and does nothing on later runs. It runs no gap-fill and writes no heartbeat. See [Your first backup](../getting-started/first-backup.md) and [Schedule and backup tuning](../configuration/schedule.md).
 
-**Output.** Log lines only.
+It prints log lines only.
 
-**Exit codes.** 0 on success. A configuration error, a session that is not authorized or any other error ends the command with a traceback and a non-zero exit code. With several accounts, a failing account is logged and the others continue. The command fails only when every account failed.
+It exits 0 on success. A configuration error, a session that is not authorized or any other error ends the command with a traceback and a non-zero exit code. With several accounts, the command logs a failing account and continues with the others. It fails only when every account failed.
 
 ## schedule { #schedule }
 
@@ -96,9 +87,7 @@ Takes no flags.
 
 Runs the scheduler until stopped. The stock compose file runs this command. It does the same one-time media move as `backup`, starts the real-time listeners when `ENABLE_LISTENER=true`, and runs one backup straight away. After that it backs up on the `SCHEDULE` cron expression, `0 */6 * * *` by default. With `FILL_GAPS=true` it runs gap-fill after each backup. It writes a heartbeat file every 30 seconds for the container health check. See [Schedule and backup tuning](../configuration/schedule.md).
 
-**Output.** Log lines only.
-
-**Exit codes.** Runs until stopped. A configuration error or a fatal error exits 1.
+It prints log lines only. It runs until stopped. A configuration error or a fatal error exits 1.
 
 ## migrate { #migrate }
 
@@ -110,9 +99,7 @@ Takes no flags.
 
 Runs `alembic upgrade head` with the Alembic configuration bundled in the package. It finds the database through the same variables as every other command, and creates the SQLite directory when it is missing. Unlike the image's entrypoint, it does not stamp a database that has tables but no migration history. See [SQLite and PostgreSQL](../configuration/database.md#migrations).
 
-**Output.** `Database schema is up to date.` on success. `Migration failed: <error>` on stderr on failure.
-
-**Exit codes.** 0 on success, 1 on failure.
+On success it prints `Database schema is up to date.` and exits 0. On failure it prints `Migration failed: <error>` on stderr and exits 1.
 
 ## export { #export }
 
@@ -132,7 +119,7 @@ Writes messages from the archive to one JSON file. It exports no media rows and 
 !!! warning "The end date is exclusive in practice"
     Both dates are compared as midnight UTC. `-e 2024-12-31` keeps messages up to 00:00 on 31 December and leaves out the rest of that day. To include the whole of 2024, use `-s 2024-01-01 -e 2025-01-01`.
 
-**Output.** The file is written with an indent of 2, and non-ASCII text is kept as UTF-8. Dates and other values JSON cannot hold are written as strings. The top-level keys are:
+The command writes the file with an indent of 2 and keeps non-ASCII text as UTF-8. It writes dates and other values JSON cannot hold as strings. The top-level keys are:
 
 | Key | Content |
 |-----|---------|
@@ -145,7 +132,7 @@ Writes messages from the archive to one JSON file. It exports no media rows and 
 
 Each message has `id`, `chat_id`, `sender_id`, `sender_name`, `date`, `text`, `reply_to_msg_id`, `reply_to_top_id`, `reply_to_text`, `forward_from_id`, `edit_date`, `raw_data`, `created_at`, `is_outgoing`, `is_pinned`, `is_deleted`, `deleted_at` and `account_id`. Messages deleted in soft mode are included, with `is_deleted` set to 1. A message with voice or media transcripts also has a `transcripts` list.
 
-**Exit codes.** 0 on success. 1 with `Export failed: <error>` on stderr, which includes a date in the wrong format.
+It exits 0 on success. On any failure, a date in the wrong format included, it prints `Export failed: <error>` on stderr and exits 1.
 
 ## stats { #stats }
 
@@ -155,9 +142,9 @@ telegram-archive [--data-dir PATH] stats
 
 Takes no flags.
 
-Prints the archive's totals. It reads the figures cached in the database. Three things recalculate them: a completed backup, a gap-fill that recovered messages, and the viewer's daily job. Until one of those has run, every figure is 0.
+Prints the archive's totals. It reads the figures cached in the database. A completed backup, a gap-fill that recovered messages, the viewer's first start when nothing is cached yet, the viewer's daily job or a `POST /api/stats/refresh` call from a master login recalculates them. Until one of those has run, every figure is 0.
 
-**Output.**
+It prints:
 
 ```text
 ============================================================
@@ -170,7 +157,7 @@ Total storage:      <n> MB
 ============================================================
 ```
 
-**Exit codes.** 0 on success. 1 with `Stats failed: <error>` on stderr.
+It exits 0 on success. On failure it prints `Stats failed: <error>` on stderr and exits 1.
 
 ## status { #status }
 
@@ -182,26 +169,26 @@ telegram-archive [--data-dir PATH] status [--json]
 |-------|------|----------|----------|---------|
 | | `--json` | | no | Print the status as JSON instead of text. |
 
-Says whether the archive is healthy, for a cron job or a monitoring check. It reads the database directly, so the viewer does not need to run and no login is needed. It gives the same answer as the master's Archive Status panel: the last backup run, each account's listener, the media counts, when the statistics were last calculated, and the database backend and size. It prints counts and times only, never chat ids, titles or text.
+Says whether the archive is healthy, for a cron job or a monitoring check. It reads the database directly, so the viewer does not need to run and no viewer login is needed. It reports what the master login's [Archive Status panel](../viewer/using-the-viewer.md#archive-status) shows, except transcription: the last backup run, the listener of each Telegram account, the media counts, when the statistics were last calculated, and the database backend and size. It prints counts and times only, never chat ids, titles or text.
 
 The archive is unhealthy when one of these holds:
 
-- No backup has ever started.
-- The last backup did not finish: it is not running, and the statistics a backup writes after its message sweep are older than its start.
-- `SCHEDULE` has fired twice since the last backup started. One missed tick is allowed, because a tick that arrives while a backup is still running is skipped. A backup still running after two ticks counts as missed, so the first backup of a large archive reads `UNHEALTHY` until it completes.
+- No backup run has ever started.
+- The last run did not finish. It is not running, and the statistics a run writes after its message sweep are older than its start.
+- `SCHEDULE` has fired twice since the last run started. One missed tick is allowed, because a tick that arrives while a run is still going is skipped. A run still going after two ticks counts as missed, so the first backup of a large archive reads `UNHEALTHY` until it completes.
 
 The schedule check uses the local time of the command, as the scheduler does. Run it with the same `TZ` as the backup service. Inside the backup container this is already the case.
 
-The schedule check reads `SCHEDULE` even when backups are started another way, for example `backup` from a host cron. Set `SCHEDULE` to the real cadence, or the check reports missed runs.
+The schedule check reads `SCHEDULE` even when runs are started another way, for example the one-shot [`backup`](#backup) command from a host cron. Set `SCHEDULE` to the real cadence, or the check reports missed runs.
 
-A database that does not exist yet is created empty and reads as `no backup has run yet`. Before trusting that verdict, check that `DATABASE_URL` or `BACKUP_PATH` points at the archive.
+A database that does not exist yet is created empty and reads as `no backup has run yet`. Before you trust that verdict, check that `DATABASE_URL` or `BACKUP_PATH` points at the archive.
 
 !!! note "What it cannot see"
-    A backup writes its statistics after the message sweep and before the media retries, media verification, transcription and gap-fill. A failure in those later steps is not reported. The logs are the signal for them.
+    A run writes its statistics after the message sweep and before the media retries, media verification, transcription and gap-fill. The command does not report a failure in those later steps. Read the logs for them.
 
-    The viewer also recalculates the statistics, once a day and when the master asks. A recalculation after a failed backup hides that failure until the next backup starts. With several accounts, the start time and the statistics are shared, so an account that failed before another one completed is not reported. The logs name the failed account.
+    The viewer also recalculates the statistics: on its first start when nothing is cached yet, in its daily job, and on a `POST /api/stats/refresh` call from the master login. A recalculation after a failed run hides that failure until the next run starts. With several Telegram accounts, the start time and the statistics are shared. An account that failed before another one completed is not reported. The logs name the failed account.
 
-**Output.** Text by default:
+By default it prints:
 
 ```text
 Archive status: healthy
@@ -212,11 +199,11 @@ Archive status: healthy
   Database:             <sqlite|postgresql>, <size>
 ```
 
-`(running now)` follows the start time while a backup runs. A listener that is off reads `not running`. When the archive is unhealthy, the first line reads `Archive status: UNHEALTHY` and a `Problems:` list with one line per reason ends the output.
+`(running now)` follows the start time while a run is going. A time that was never recorded reads `never`. A listener that is off reads `not running`. When the archive is unhealthy, the first line reads `Archive status: UNHEALTHY` and a `Problems:` list with one line per reason ends the output.
 
-With `--json` it prints the JSON that the viewer's `/api/status` returns, with two more keys: `healthy`, true or false, and `problems`, the list of reasons. Log lines go to stderr, so stdout holds only the JSON.
+With `--json` it prints the JSON that [`GET /api/status`](api.md#health-and-status) returns, with two more keys: `healthy`, true or false, and `problems`, the list of reasons. Log lines go to stderr, so stdout holds only the JSON.
 
-**Exit codes.** 0 when healthy. 1 when unhealthy. 1 with `Status failed: <error>` on stderr when the database cannot be reached or read, or `SCHEDULE` is not a valid cron expression.
+It exits 0 when the archive is healthy and 1 when it is unhealthy. When the configuration is invalid, the database cannot be reached or read, or `SCHEDULE` is not a valid cron expression, it prints `Status failed: <error>` on stderr and exits 1.
 
 ## list-chats { #list-chats }
 
@@ -228,7 +215,7 @@ Takes no flags.
 
 Prints every chat in the database as a table with the columns `ID`, `Type`, `Name` and `Last Updated`, followed by `Total: N chats`. The name is the chat title, or the first and last name for a private chat. `Last Updated` is `N/A` when the chat has no update time.
 
-**Exit codes.** 0 on success. 1 with `List chats failed: <error>` on stderr.
+It exits 0 on success. On failure it prints `List chats failed: <error>` on stderr and exits 1.
 
 ## import { #import }
 
@@ -246,9 +233,9 @@ telegram-archive [--data-dir PATH] import -p DIR [-c CHAT_ID] [--dry-run] [--ski
 
 Imports a Telegram Desktop export into the archive. Formats, resuming and the other details are in [Import and maintenance tasks](../operations/maintenance.md).
 
-**Output.** `Import complete:` with the number of chats, messages and media files, then one line per chat. With `--dry-run` the heading starts with `[DRY RUN]`.
+It prints `Import complete:` with the number of chats, messages and media files, then one line per chat. With `--dry-run` the heading starts with `[DRY RUN]`.
 
-**Exit codes.** 0 on success. 1 with `Import failed: <error>` on stderr.
+It exits 0 on success. On failure it prints `Import failed: <error>` on stderr and exits 1.
 
 ## fill-gaps { #fill-gaps }
 
@@ -263,7 +250,7 @@ telegram-archive [--data-dir PATH] fill-gaps [-c CHAT_ID] [-t THRESHOLD]
 
 Scans archived chats for holes in their message id sequences and fetches the missing messages from Telegram. A hole before a chat's earliest archived message is reported but never filled. When messages were recovered, the cached statistics are recalculated. See [Schedule and backup tuning](../configuration/schedule.md).
 
-**Output.**
+It prints:
 
 ```text
 Gap-fill complete:
@@ -275,9 +262,9 @@ Gap-fill complete:
   - <chat name> (ID <id>): <n> gaps, <n> recovered[, ~<n> ids missing before id <id>]
 ```
 
-The line about missing earlier history appears only when there is such a chat. With several accounts it is not printed at all. The `ids missing before id` suffix appears on the line of a chat with history missing before its earliest archived message.
+The line about missing earlier history appears only when there is such a chat. With several accounts it is not printed at all. A chat's line ends with `~<n> ids missing before id <id>` when the archive lacks that chat's earlier history.
 
-**Exit codes.** 0 on success. 1 with `Gap-fill failed: <error>` on stderr.
+It exits 0 on success. On failure it prints `Gap-fill failed: <error>` on stderr and exits 1.
 
 ## backfill-topics { #backfill-topics }
 
@@ -289,20 +276,12 @@ telegram-archive [--data-dir PATH] backfill-topics -c CHAT_ID
 |-------|------|----------|----------|---------|
 | `-c` | `--chat-id` | `CHAT_ID` | yes | The forum chat to sweep again. |
 
-Imported forum messages carry no topic, so they land in the General topic. This command gives them their topics back. It resets the chat's sync cursor for every account. Then it backs up that chat once, on its own. Media downloads, edit and deletion sync, and media verification are off for this run. The sweep rewrites each message's topic in place. See [Import and maintenance tasks](../operations/maintenance.md).
+Imported forum messages carry no topic, so they land in the General topic. This command gives them their topics back. It resets the chat's [position](glossary.md#position) to zero for every account. Then it backs up that chat once, on its own. Media downloads, edit and deletion sync, and media verification are off for this run. The sweep rewrites each message's topic in place. See [Import and maintenance tasks](../operations/maintenance.md).
 
 !!! warning "Per-account whitelists win"
     An account with its own `TG_ACCOUNT_<N>_CHAT_IDS` keeps that whitelist. For that account the command sweeps the account's own chats, not the requested one.
 
-**Output.** When the chat is not in the archive, it prints this exact line:
-
-```text
-That chat is not in the archive yet. Import or back it up first.
-```
-
-Otherwise it prints log lines, as `backup` does.
-
-**Exit codes.** 1 when the chat is not in the archive. 1 with `Topic backfill failed: <error>` on stderr when the cursor reset fails. Otherwise the same as `backup`.
+When the chat is not in the archive, it prints one line saying the chat is not in the archive yet and to import or back it up first, and exits 1. When the position reset fails, it prints `Topic backfill failed: <error>` on stderr and exits 1. Otherwise it prints log lines and exits as `backup` does.
 
 ## reclassify-round-videos { #reclassify-round-videos }
 
@@ -317,9 +296,9 @@ telegram-archive [--data-dir PATH] reclassify-round-videos [-c CHAT_ID] [--dry-r
 
 Archives captured before 8.5.0 stored round video messages as ordinary videos. This command asks Telegram which archived videos are round, with one filtered search per chat, and changes the type of those rows in place. Nothing is downloaded, renamed or deleted.
 
-Run it while nobody has the viewer open. An open tab shows `Media not found` for a changed video until it is reloaded.
+Run it while nobody has the viewer open. An open tab shows `Media not found` for a changed video until you reload the tab.
 
-**Output.**
+It prints:
 
 ```text
 Round-video reclassification complete:
@@ -328,20 +307,20 @@ Round-video reclassification complete:
   Rows re-typed:      <n>
 ```
 
-A `Chats with errors:` line follows when some chats failed. With `--dry-run` the heading starts with `[DRY RUN]`.
+A `Chats with errors:` line follows when some chats failed. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command. With `--dry-run` the heading starts with `[DRY RUN]`.
 
-**Exit codes.** 0 on success. 1 with `Reclassification failed: <error>` on stderr.
+It exits 0 on success. On failure it prints `Reclassification failed: <error>` on stderr and exits 1.
 
 ## Other entry points
 
 | Command | What it does |
 |---------|--------------|
 | `python -m telegram_archive.setup_auth` | The same login as `auth`. |
-| `python -m telegram_archive.export_backup export\|list-chats\|stats` | A separate command line for the three read commands, with the same `export` flags. It has no `--data-dir`. On failure it logs `Export failed: <error>` and exits 1. |
-| `python -m telegram_archive.listener` | Starts the real-time listener on its own, with its own Telegram client. Do not run it beside `schedule` on the same session. See [Real-time listener](../configuration/listener.md). |
+| `python -m telegram_archive.export_backup COMMAND` | A separate command line for three read commands: `export`, `list-chats` and `stats`. It takes the same `export` flags. It has no `--data-dir`. On failure it logs `Export failed: <error>` and exits 1. |
+| `python -m telegram_archive.listener` | Starts the real-time listener on its own, with its own Telegram client. See [Real-time listener](../configuration/listener.md) and [One client per session](../getting-started/telegram-login.md#one-client-per-session). |
 | `python -m telegram_archive.telegram_backup` | The same as `backup`, without `--data-dir`. A failure ends in a traceback. |
 | `python -m telegram_archive.scheduler` | The same as `schedule`, without `--data-dir`. |
-| `python -m telegram_archive.config` | Builds the configuration and logs a short self-check: the API id, whether a phone number is set, the schedule and the chat types. It never prints the phone number. On an invalid value it prints `Configuration error: <error>` and still exits 0, so read the output. Like every command, it creates the data directories. |
+| `python -m telegram_archive.config` | Builds the configuration and logs a short self-check: the API id, whether a phone number is set, the schedule and the chat types. It never prints the phone number. On an invalid value it prints `Configuration error: <error>` and still exits 0, so read the output. Like every command except `migrate`, it creates the data directories. |
 | `uvicorn telegram_archive.web.main:app --host 127.0.0.1 --port 8000` | Runs the viewer without Docker. See [Install from PyPI](../getting-started/pip.md). |
 | `alembic -c telegram_archive/alembic.ini upgrade head` | Runs the migrations from a repository checkout. Inside the backup image a bare `alembic`, such as `alembic current`, works because the image sets `ALEMBIC_CONFIG`. |
 | `./telegram-archive` | A script at the repository root that runs the command line from a checkout without installing the package. The dependencies must already be installed in the Python it runs with. See [Install from PyPI](../getting-started/pip.md#from-a-git-checkout). |
@@ -365,13 +344,13 @@ These scripts ship in the backup image under `/app/scripts` and in the repositor
 docker compose run --rm telegram-backup python scripts/<name>.py [flags]
 ```
 
-Most of them find the database through the same variables as the application. `migrate_media_paths.py` does not: it uses `DATABASE_URL`, else `DB_TYPE=postgresql` with the `POSTGRES_*` variables, else `$BACKUP_PATH/telegram_backup.db`, and ignores `DATABASE_PATH`, `DATABASE_DIR` and `DB_PATH`. Pass `--db-url` when the database lives elsewhere. `deduplicate_media.py` and `cleanup_legacy_avatars.py` only touch files.
+Most of them find the database through the same variables as the application. `migrate_media_paths.py` does not. It tries `DATABASE_URL` first, then `DB_TYPE=postgresql` with the `POSTGRES_*` variables, then `$BACKUP_PATH/telegram_backup.db`. It ignores `DATABASE_PATH`, `DATABASE_DIR` and `DB_PATH`. Pass `--db-url` when the database lives elsewhere. `deduplicate_media.py` and `cleanup_legacy_avatars.py` only touch files.
 
 | Script | Purpose | Flags |
 |--------|---------|-------|
 | `auth_noninteractive.py` | Logs in without a terminal, in two steps. `send` requests the code and stores its hash beside the session file. `verify` signs in with the code, and the 2FA password when one is set. It covers the single legacy account only, from `TELEGRAM_*` variables. See [Log in to Telegram](../getting-started/telegram-login.md#log-in-without-a-terminal). | `send`, then `verify CODE [2FA_PASSWORD]`. `TELEGRAM_PHONE_CODE_HASH` can replace the stored hash. |
 | `migrate-sqlite-to-postgres.py` | Copies a SQLite archive into an empty PostgreSQL database and checks the row counts. Stop the backup container first. See [SQLite and PostgreSQL](../configuration/database.md#move-an-existing-sqlite-archive-to-postgresql). | `-s`/`--sqlite PATH`, `-p`/`--postgres URL`, `-b`/`--batch-size N` (default 1000), `-v`/`--verify-only`, `-n`/`--dry-run` |
-| `restore_chat.py` | Re-sends archived messages into a Telegram chat as the logged-in user. Each message carries its original sender and time in its text. Media is uploaded again as new files. | See below. |
+| `restore_chat.py` | Re-sends archived messages into a Telegram chat as the Telegram account of the session. Each message carries its original sender and time in its text. Media is uploaded again as new files. | See below. |
 | `detect_albums.py` | Groups media sent close together into albums in older archives. | `--dry-run`, `--window SECONDS` (default 2) |
 | `deduplicate_media.py` | Moves duplicate media files into `media/_shared` and links them from the chat folders. | `--dry-run`, `-v`/`--verbose` |
 | `update_media_sizes.py` | Fills in missing media file sizes from the files on disk. | `--dry-run`, `--force` |
@@ -383,7 +362,7 @@ Most of them find the database through the same variables as the application. `m
 | `generate_dummy_db.py` | A development tool that builds a demo archive. | `--data-dir`, `--force` |
 | `fix_media_sizes.py` | Broken. It fails with `ImportError`. | none |
 
-When and how to run the maintenance scripts is covered in [Import and maintenance tasks](../operations/maintenance.md).
+[Import and maintenance tasks](../operations/maintenance.md) explains when and how to run the maintenance scripts.
 
 ### restore_chat.py
 
@@ -405,10 +384,10 @@ python scripts/restore_chat.py (--chat ID | --source-chat ID --dest-chat ID)
 | `--no-media` | | Send text only. |
 | `--dry-run` | | Show what would be sent without sending. |
 
-The session is `SESSION_PATH` when set, otherwise `SESSION_DIR` (default `/data/session`) joined with `SESSION_NAME`. It reads `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`.
+The session is `SESSION_PATH` when set. Otherwise it is `SESSION_DIR` joined with `SESSION_NAME`, and `SESSION_DIR` defaults to `/data/session`. It reads `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`.
 
 !!! danger "It sends real messages"
-    Stop the scheduler before you run it, because it uses the same session. Always run it with `--dry-run` first and read what it would send.
+    Stop the backup service first. See [One client per session](../getting-started/telegram-login.md#one-client-per-session). Always run it with `--dry-run` first and read what it would send.
 
 ## Python API
 
@@ -420,11 +399,11 @@ from telegram_archive import Config, TelegramBackup, run_backup, __version__
 
 `Config`, `TelegramBackup` and `run_backup` load on first use, so `import telegram_archive` works where telethon is not installed, as in the viewer image. Every other module is internal.
 
-Before you call the API, have three things in place:
+Before you call the API, you need:
 
-- the same environment variables the command line reads;
-- a database migrated with [`migrate`](#migrate), using those variables;
-- an authorized session, created with [`auth`](#auth).
+- the environment variables the command line reads
+- a database migrated with [`migrate`](#migrate) using those variables
+- an authorized session from [`auth`](#auth)
 
 ### Config
 
@@ -440,7 +419,7 @@ await run_backup(config, client=None, *, account_id=None)
 
 A coroutine that returns `None`.
 
-- Without `client`, it backs up every configured account in turn, each with its own session file. With one account, an error propagates. With several, a failing account is logged by its index and the others continue. It raises `RuntimeError("all N configured accounts failed to back up")` only when every account failed.
+- Without `client`, it backs up every configured account in turn, each with its own session file. With one account, an error propagates. With several, it logs a failing account by its index and continues with the others. It raises `RuntimeError("all N configured accounts failed to back up")` only when every account failed.
 - With `client`, an already connected and authorized Telethon `TelegramClient`, it backs up only that client's account.
 
 Unlike the `backup` command, it does not run the one-time move of `media/_shared`. It runs no gap-fill and starts no listener.
@@ -468,7 +447,7 @@ asyncio.run(run_backup(Config()))
 backup = await TelegramBackup.create(config, client=None, *, account_id=None, account=None, account_resolver=None)
 ```
 
-`create()` opens its own database connection. It needs either `account_id` or `account_resolver`. `account_id` is the archive's row id for the account. `account_resolver` is an async callable. Once connected, it receives the client and the database and returns that id. Without either it raises `ValueError`.
+`create()` opens its own database connection. It needs either `account_id` or `account_resolver`. `account_id` is the archive's row id for the account. `account_resolver` is an async callable. After the client connects, `create()` calls it with the client and the database, and it returns that id. Without either it raises `ValueError`.
 
 The lifecycle is:
 
@@ -483,4 +462,4 @@ The lifecycle is:
 
 `telegram_archive.web.main:app` is a standard ASGI application. It builds `Config` when it is imported, so an invalid value stops it from starting. Until viewer access is configured, it answers requests with 503. See [Logins, viewer accounts and share links](../viewer/access.md).
 
-The HTTP routes are not documented here. A running viewer serves the machine-readable route list at `/openapi.json`.
+The HTTP routes are documented in [HTTP API](api.md). A running viewer also serves the machine-readable route list at `/openapi.json`.
