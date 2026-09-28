@@ -49,6 +49,16 @@ The answer holds `backup.last_run` and `backup.in_progress`, `stats_calculated_a
 
 Log in once and keep the cookie. Each login opens a session, a user holds at most 10, and an 11th login ends the oldest, so a script that logs in on every check logs you out. Logins are also limited to 15 per client address in 300 seconds.
 
+### From the command line
+
+`telegram-archive status` gives the same answer without the viewer and without a login. It reads the database directly, prints a short summary, and exits 1 when no backup has run, the last backup did not finish, or `SCHEDULE` has missed a run. Add `--json` for the full answer as JSON. Run it inside the backup container, which has the database settings and the scheduler's time zone:
+
+```bash
+docker compose exec telegram-backup python -m telegram_archive status
+```
+
+See [`status`](../reference/cli.md#status) for the output and what each exit code means.
+
 ## Logs
 
 Follow the backup:

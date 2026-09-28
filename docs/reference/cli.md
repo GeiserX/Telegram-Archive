@@ -44,7 +44,7 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 | Needs an authorized Telegram session | Only reads or writes the database, needs no Telegram credentials |
 |--------------------------------------|-----------------------------------|
-| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` | `migrate`, `export`, `stats`, `list-chats`, `import` |
+| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import` |
 
 !!! warning "One client per session"
     Never run a Telegram command beside a running `schedule` on the same session file. Telegram can invalidate the login. Stop the scheduler first, run the command, then start it again:
@@ -171,6 +171,52 @@ Total storage:      <n> MB
 ```
 
 **Exit codes.** 0 on success. 1 with `Stats failed: <error>` on stderr.
+
+## status { #status }
+
+```text
+telegram-archive [--data-dir PATH] status [--json]
+```
+
+| Short | Long | Argument | Required | Meaning |
+|-------|------|----------|----------|---------|
+| | `--json` | | no | Print the status as JSON instead of text. |
+
+Says whether the archive is healthy, for a cron job or a monitoring check. It reads the database directly, so the viewer does not need to run and no login is needed. It gives the same answer as the master's Archive Status panel: the last backup run, each account's listener, the media counts, when the statistics were last calculated, and the database backend and size. It prints counts and times only, never chat ids, titles or text.
+
+The archive is unhealthy when one of these holds:
+
+- No backup has ever started.
+- The last backup did not finish: it is not running, and the statistics a backup writes after its message sweep are older than its start.
+- `SCHEDULE` has fired twice since the last backup started. One missed tick is allowed, because a tick that arrives while a backup is still running is skipped. A backup still running after two ticks counts as missed, so the first backup of a large archive reads `UNHEALTHY` until it completes.
+
+The schedule check uses the local time of the command, as the scheduler does. Run it with the same `TZ` as the backup service. Inside the backup container this is already the case.
+
+The schedule check reads `SCHEDULE` even when backups are started another way, for example `backup` from a host cron. Set `SCHEDULE` to the real cadence, or the check reports missed runs.
+
+A database that does not exist yet is created empty and reads as `no backup has run yet`. Before trusting that verdict, check that `DATABASE_URL` or `BACKUP_PATH` points at the archive.
+
+!!! note "What it cannot see"
+    A backup writes its statistics after the message sweep and before the media retries, media verification, transcription and gap-fill. A failure in those later steps is not reported. The logs are the signal for them.
+
+    The viewer also recalculates the statistics, once a day and when the master asks. A recalculation after a failed backup hides that failure until the next backup starts. With several accounts, the start time and the statistics are shared, so an account that failed before another one completed is not reported. The logs name the failed account.
+
+**Output.** Text by default:
+
+```text
+Archive status: healthy
+  Last backup started:  <time>
+  Statistics updated:   <time>
+  Listener, account <n>: active since <time>
+  Media files:          <n> downloaded, <n> pending, <n> exhausted, <n> skipped
+  Database:             <sqlite|postgresql>, <size>
+```
+
+`(running now)` follows the start time while a backup runs. A listener that is off reads `not running`. When the archive is unhealthy, the first line reads `Archive status: UNHEALTHY` and a `Problems:` list with one line per reason ends the output.
+
+With `--json` it prints the JSON that the viewer's `/api/status` returns, with two more keys: `healthy`, true or false, and `problems`, the list of reasons. Log lines go to stderr, so stdout holds only the JSON.
+
+**Exit codes.** 0 when healthy. 1 when unhealthy. 1 with `Status failed: <error>` on stderr when the database cannot be reached or read, or `SCHEDULE` is not a valid cron expression.
 
 ## list-chats { #list-chats }
 
