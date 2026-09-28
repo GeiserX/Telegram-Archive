@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting a feature! Please check the [Roadmap](https://github.com/GeiserX/Telegram-Archive#-roadmap) first to see if it's already planned.
+        Thanks for suggesting a feature! Please check the [Roadmap](https://geiserx.github.io/Telegram-Archive/roadmap/) first to see if it's already planned.
 
   - type: dropdown
     id: category

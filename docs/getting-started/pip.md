@@ -1,6 +1,6 @@
 # Install from PyPI
 
-This page runs the backup and the viewer from the Python package, without Docker. Run the first commands in the order shown. The database must be migrated before anything else touches it.
+This page runs the backup and the viewer from the Python package, without Docker. Run `migrate` before any other command, as [First run](#first-run) shows.
 
 ## Availability
 
@@ -10,7 +10,7 @@ This page runs the backup and the viewer from the Python package, without Docker
 | Command | `telegram-archive` |
 | Python module | `telegram_archive` |
 
-The package is published to PyPI starting with the first release after 8.16.1. Earlier versions exist only as Docker images. Until that release is out, install from a checkout. See [From a git checkout](#from-a-git-checkout).
+PyPI carries the package from the first release after 8.16.1 on. Earlier versions exist only as Docker images. Until that release is out, install from a checkout. See [From a git checkout](#from-a-git-checkout).
 
 It requires Python 3.14 or newer.
 
@@ -23,7 +23,7 @@ Put `ffmpeg` and `ffprobe` on your `PATH`. The backup and the viewer use them fo
 - Video thumbnails, in the viewer and during the backup.
 - [Voice transcription](../configuration/transcription.md), to check for an audio stream and to extract the audio track of videos and documents.
 
-Without them nothing fails loudly. Videos get no thumbnail, and transcription sends the whole stored file instead of its audio track.
+Without them, no command fails. Videos get no thumbnail, and transcription sends the whole stored file instead of its audio track.
 
 `DOWNLOAD_DOCUMENT_MIME_TYPES` uses the system's list of file types, such as `/etc/mime.types`, to also match documents by file extension. For a type missing from that list, it matches only documents that declare that type, and the backup logs a warning. See [Media downloads](../configuration/media.md).
 
@@ -41,7 +41,7 @@ The `telegram-archive` command exists only inside that environment. Activate it 
 
 Settings are environment variables, the same ones the Docker images read. There is no config file.
 
-A `.env` file is not read from the working directory. The package looks for `.env` in its own install directory and then in each parent directory:
+The package does not read `.env` from the working directory. The package looks for `.env` in its own install directory and then in each parent directory:
 
 - A `.env` in the project folder that contains `.venv` is found.
 - A system-wide install finds none.
@@ -58,7 +58,7 @@ TELEGRAM_PHONE=+15551234567
 
 ## Data directory
 
-Without `--data-dir` or `BACKUP_PATH`, the commands try to use `/data/backups` and `/data/session`. On most machines that fails with a permission error.
+Without `--data-dir` or `BACKUP_PATH`, the commands try to use `/data/backups` and `/data/session`. Most commands then fail with a permission error while creating those directories. `migrate` fails with `unable to open database file`.
 
 Pass `--data-dir` before the subcommand:
 
@@ -105,12 +105,13 @@ Run these in this order, from the project folder, with the environment active.
     ```
 
 !!! warning "Run `migrate` before anything else"
-    A pip install never migrates the database by itself. The Docker backup image migrates on every start except the `auth` command. The package does not.
+    A pip install never migrates the database by itself. The Docker backup image does, on every start except the `auth` command.
 
-    - On PostgreSQL, no command creates tables except `migrate`. Every other command fails against an unmigrated database.
-    - On an empty SQLite file, any command that opens the database, which is every command except `auth` and `migrate`, first builds the schema without recording its version. A later `migrate` then fails with `table chats already exists`.
+    - On PostgreSQL, no command creates tables except `migrate`. Every other command that opens the database fails against an unmigrated database. `auth` does not open it.
+    - On an empty SQLite file, every command except `auth` and `migrate` builds the schema without recording its version. A later `migrate` then fails with `table chats already exists`.
+    - The viewer does the same. Starting `uvicorn` against an empty SQLite file builds the schema without recording its version, so run `migrate` before the first viewer start too.
 
-    No CLI command repairs that SQLite state. The Docker backup image can record the version of such a file and then upgrade it. See [migrations](../configuration/database.md#migrations). To avoid the problem, run `migrate` first.
+    No CLI command repairs that SQLite state. The Docker backup image can record the version of such a file and then upgrade it. See [migrations](../configuration/database.md#migrations).
 
 ## The viewer
 
@@ -123,22 +124,24 @@ export VIEWER_PASSWORD='choose-a-long-password'
 uvicorn telegram_archive.web.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000> and sign in. Without `VIEWER_USERNAME` and `VIEWER_PASSWORD`, the viewer serves the page but answers every request that needs a login with 503 `Viewer authentication is not configured`. See [Logins, viewer accounts and share links](../viewer/access.md) for the other options.
+Open <http://127.0.0.1:8000> and sign in. Without `VIEWER_USERNAME` and `VIEWER_PASSWORD`, the viewer serves the page but answers every request that needs a login with 503 `Viewer authentication is not configured`. See [The viewer starts closed](../viewer/access.md#the-viewer-starts-closed) for other ways to sign in.
 
-On SQLite, set `VIEWER_PORT=8000` for the backup process, in its shell or in `.env`. The backup sends live updates to port 8080 by default, so the viewer would miss them. See [Live updates and notifications](../viewer/live-updates.md).
+On SQLite, set `VIEWER_PORT=8000` for the backup process, in its shell or in `.env`. The backup sends live updates to port 8080 by default. Without this setting, a viewer on port 8000 misses them. See [Live updates and notifications](../viewer/live-updates.md).
 
 Both `schedule` and `uvicorn` run until stopped. The package includes no service files, so run them under your own process manager, such as a systemd unit or a launchd agent.
 
-`MEDIA_OPEN_CMD` and `MEDIA_OPEN_PATH_CMD` add buttons that open a media file or its folder on the machine running the viewer. They are useful only when the viewer runs directly on your machine, as it does here, and not in a container. See [Using the viewer](../viewer/using-the-viewer.md).
+`MEDIA_OPEN_CMD` and `MEDIA_OPEN_PATH_CMD` add buttons that open a media file or its folder on the machine running the viewer. They work only when the viewer runs on your own machine, outside a container, as it does on this page. See [Using the viewer](../viewer/using-the-viewer.md).
 
 ## Upgrading
+
+Stop the backup and the viewer, then upgrade and migrate before starting either again:
 
 ```bash
 pip install -U telegram-archive
 telegram-archive --data-dir ./data migrate
 ```
 
-Stop the backup and the viewer first, and run `migrate` before starting either again. See [Upgrading](../operations/upgrading.md) for release notes that need action.
+See [Upgrading](../operations/upgrading.md) for release notes that need action.
 
 ## From a git checkout
 
@@ -152,7 +155,7 @@ uv sync --locked
 
 Contributors add the test and lint tools with `uv sync --locked --extra dev`.
 
-The `./telegram-archive` script at the repository root runs the CLI from the checkout without installing the package. The dependencies must still be installed, so run it inside the environment `uv sync` created:
+The `./telegram-archive` script at the repository root runs the CLI from the checkout without installing the package. Run it through `uv run` so it uses the dependencies from `uv sync`:
 
 ```bash
 uv run ./telegram-archive --data-dir ./data migrate
@@ -170,6 +173,6 @@ Do not install from `requirements.txt`. It is incomplete and lacks Pillow, which
 
 ## Next steps
 
-- Every flag of every command, and the Python API: [Command line and Python API](../reference/cli.md).
-- Which chats get backed up: [Choosing chats](../configuration/choosing-chats.md).
-- What happens during the first sweep: [Your first backup](first-backup.md).
+- [Command line and Python API](../reference/cli.md) lists every flag of every command and the Python API.
+- [Choosing chats](../configuration/choosing-chats.md) sets which chats get backed up.
+- [Your first backup](first-backup.md) explains what happens during the first sweep.

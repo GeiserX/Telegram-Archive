@@ -24,21 +24,21 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
 
 5. Reload any viewer tab that was open during the upgrade.
 
-`docker compose pull` on its own pulls the tag you already pinned again. Moving the pin is the upgrade.
+`docker compose pull` on its own only pulls the tag you already pinned. Moving the pin is the upgrade.
 
-The backup container migrates the database each time it starts. It skips this only for `python -m telegram_archive auth` or `python -m src auth`. `init_auth.bat` uses a different form and migrates before the login. The viewer never migrates. [SQLite and PostgreSQL](../configuration/database.md) has the details. While the backup migrates, the viewer returns errors for a few seconds. Check the schema revision after the start:
+The backup container migrates the database each time it starts. The viewer never migrates, so it returns errors for a few seconds while the backup migrates. [SQLite and PostgreSQL](../configuration/database.md) covers the exceptions for the login command. Check the schema revision after the start:
 
 ```bash
 docker compose exec telegram-backup alembic current
 ```
 
-Migrations only go forward. Downgrading to an older release is not supported. To go back, restore the backup you took in step 2 and pin the old version again.
+Migrations only go forward. You cannot downgrade to an older release. To go back, restore the backup you took in step 2 and pin the old version again.
 
 ## Image tags
 
 | Tag | What it is |
 |-----|------------|
-| `8.16.1`, `v8.16.1` | A release. Both names point at the same image. Both images ship release tags for `linux/amd64` and `linux/arm64`. |
+| `8.16.1`, `v8.16.1` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -53,7 +53,7 @@ telegram-archive --data-dir ./data migrate
 
 Use the same `--data-dir` or database variables you run the archive with.
 
-Run `migrate` before any other command on a new database. If another command created the database first, `migrate` fails with `table chats already exists`. Start the database again from `migrate`, or run it once through the Docker backup image, whose entrypoint detects and stamps such a schema.
+Run `migrate` before any other command on a new database. If another command created the database first, `migrate` fails on the first table it tries to create, with `table chats already exists` on SQLite or `relation "chats" already exists` on PostgreSQL. To fix it, delete the new database and run `migrate` first. You can also start the Docker backup image once. Its entrypoint detects this schema and marks it as current.
 
 Packages on PyPI start with the release after 8.16.1. See [Install from PyPI](../getting-started/pip.md).
 
@@ -71,7 +71,7 @@ The stock `docker-compose.yml`, `init_auth.sh` and `init_auth.bat` still use the
 
 ## Releases that need action { #releases-that-need-action }
 
-Newest first. Every release needs the routine upgrade. This table lists what comes on top of it.
+Every release needs the routine upgrade. This table lists the extra steps, newest release first.
 
 | Release | What to do |
 |---------|------------|
@@ -81,19 +81,25 @@ Newest first. Every release needs the routine upgrade. This table lists what com
 | 8.15.0 | `DELETION_MODE` now defaults to `soft`, and excluded chats are kept unless `EXCLUDE_DELETE_EXISTING=true`. If you relied on deletion, set `DELETION_MODE=hard` or `EXCLUDE_DELETE_EXISTING=true` before you upgrade. Migration 031 runs on start. Upgrade both images together. |
 | 8.14.0 | `SKIP_MEDIA_DELETE_EXISTING` now defaults to `false`. Set it to `true` to keep deleting the media of skipped chats. Migrations 029 and 030 run on start. |
 | 8.13.0 | A restricted viewer account sees zero statistics until the next daily calculation or a refresh by the master login. If you set `DOWNLOAD_MEDIA_TYPES` and want `video_note` to match, and the archive was captured before 8.5.0, run `reclassify-round-videos` once, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
-| 8.12.1, 8.12.0, 8.11.3, 8.11.2 | Nothing. |
+| 8.12.1, 8.12.0, 8.11.3, 8.11.2, 8.11.1, 8.11.0 | Nothing. |
+| 8.10.1 | Reload any viewer tab left open across the upgrade. |
+| 8.10.0 | `DOWNLOAD_YOUTUBE_VIDEOS` defaults to `false`, so the video file behind a YouTube link is no longer downloaded. Set it to `true` to keep the old behaviour. See [Media downloads](../configuration/media.md#youtube-preview-videos). |
+| 8.9.1 | If the viewer mounts the archive read-only, set `THUMBNAIL_CACHE_DIR` to a writable volume. Without it the thumbnail cache is lost each time the container is recreated. See [Thumbnails](../configuration/media.md#thumbnails). |
+| 8.5.0 | Round video messages captured before this release stay typed as ordinary videos. Run `reclassify-round-videos` once to correct them, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
+| 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
+| Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
 
 ## The release after 8.16.1
 
-The package is renamed `telegram_archive`. See [the module rename](#module-rename). Packages start to publish on PyPI. More transcription providers arrive. Migration 033 runs on start. Nothing is needed beyond the routine upgrade.
+The package is renamed `telegram_archive`. See [the module rename](#module-rename). Releases are also published on PyPI, and voice transcription supports more providers. Migration 033 runs on start. Nothing is needed beyond the routine upgrade.
 
 ## Upgrading from 7.x
 
-The jump from 7.x to 8.x has one irreversible step: migration 022. It rewrites the nine tables that hold captured data to add the account that captured each row: chats, messages, media, reactions, earlier message versions, sync state, forum topics, folders and folder membership. After that one archive can hold several Telegram accounts. Media files do not move. Only the database changes.
+The jump from 7.x to 8.x has one irreversible step: migration 022. It rewrites the nine tables that hold captured data and records the account that captured each row. The tables hold chats, messages, media, reactions, earlier message versions, sync state, forum topics, folders and folder membership. After that one archive can hold several Telegram accounts. Media files do not move. Only the database changes.
 
-Use 8.0.1 or later for this jump, never 8.0.0. That release could not upgrade some older archives that still hold messages of chats that no longer exist. 8.0.1 fixed that. Going straight to the current release runs the same migrations, then every later one. One of them builds the full-text search index over your existing messages.
+Use 8.0.1 or later for this jump, never 8.0.0. 8.0.0 fails on some older archives that still hold messages from deleted chats. 8.0.1 fixes this. Going straight to the current release runs the same migrations, then every later one. One of them builds the full-text search index over your existing messages.
 
-On PostgreSQL these migrations also create the `pg_trgm` extension, so the database user must be allowed to run `CREATE EXTENSION`, or an administrator must create it first.
+On PostgreSQL these migrations also create the `pg_trgm` extension. Give the database user permission to run `CREATE EXTENSION`, or have an administrator create the extension first.
 
 1. Stop both containers. On SQLite, migration 022 refuses to run while another process holds the database file open, and that includes the viewer.
 
@@ -122,14 +128,14 @@ On PostgreSQL these migrations also create the `pg_trgm` extension, so the datab
 
 If there is not enough free space, or another process holds the file, migration 022 stops with a message that ends in `Nothing has been changed.` Fix the cause and start the backup container again.
 
-What to expect:
+During migration 022:
 
-- On SQLite the database peaks at about 2.4 times its old size during migration 022.
+- On SQLite the database peaks at a little under 2.4 times its old size.
 - PostgreSQL barely grows.
 - Everything you already have becomes account 1. A single-account install keeps running with no new settings.
 
-From 8.0 on, the viewer's chat addresses use a random 22-character reference instead of the Telegram chat id. Old bookmarks to chats stop working. Open the chat from the sidebar to get its new address. Share links made with a share token keep working. Scripts that create viewer accounts or share tokens through the admin API must send `allowed_chat_refs` instead of `allowed_chat_ids`. The old field is refused with a 400.
+From 8.0 on, the viewer addresses each chat by its [chat ref](../viewer/using-the-viewer.md#links-to-a-message) instead of the Telegram chat id. Old bookmarks to chats stop working. Open the chat from the sidebar to get its new address. Share links keep working: the link carries only the token, and migration 022 converts each token's chat grant to the new form. Scripts that create viewer accounts or share tokens through the admin API must send `allowed_chat_refs` instead of `allowed_chat_ids`. The API rejects the old field with HTTP 400.
 
 ## Older upgrades
 
-Jumps from older major versions, such as v3 to v4 or v4 to v5, are described at the end of the [changelog](https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELOG.md#upgrading).
+Jumps from older major versions, such as v3 to v4 or v4 to v5, are described at the end of the [changelog](https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELOG.md#upgrading-to-v500-from-v4x).

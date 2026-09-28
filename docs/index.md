@@ -18,7 +18,7 @@ hide:
 
 ---
 
-**Telegram Archive** is a self-hosted backup of one or more Telegram accounts. It runs in Docker, or from the Python package, on your own machine and comes with a web viewer to read and search what it saved. The backup process is the only part that talks to Telegram. The viewer reads the archive and never contacts Telegram.
+**Telegram Archive** is a self-hosted backup of one or more Telegram accounts. It runs on your own machine, in Docker or from the [Python package](getting-started/pip.md). A web viewer lets you read and search what it saved. Only the backup talks to Telegram. The viewer only reads the archive.
 
 <div class="grid cards" markdown>
 
@@ -26,7 +26,7 @@ hide:
 
     ---
 
-    Start the backup and the viewer with the shipped compose file.
+    Start the backup and the viewer with the shipped compose file, then [log in to Telegram](getting-started/telegram-login.md).
 
 -   :material-play-circle-outline: **[Your first backup](getting-started/first-backup.md)**
 
@@ -57,12 +57,12 @@ The viewer looks and works like the Telegram app, with the archive behind it. Se
 ## What it saves
 
 - Messages with their formatting, replies and forwards.
-- Edits kept as earlier versions and deletions kept and marked. Both need either the real-time listener, with `LISTEN_DELETIONS=true` for deletions, or `SYNC_DELETIONS_EDITS=true` on the scheduled backup. See [Real-time listener](configuration/listener.md).
+- Edits and deletions. An edit keeps the earlier version, and a deleted message stays in the archive, marked as deleted. The [real-time listener](configuration/listener.md) catches edits when `ENABLE_LISTENER=true`, and deletions when you also set `LISTEN_DELETIONS=true`. The scheduled backup catches both with `SYNC_DELETIONS_EDITS=true`. See [Catching changes to older messages](configuration/schedule.md#catching-changes-to-older-messages).
 - Photos, videos, voice notes, audio files, round videos, GIFs, stickers, documents and link previews. Each file is stored once and shared between the chats that hold it. By default the backup skips files over 100 MB. See [Media downloads](configuration/media.md).
 - Reactions, as a count per emoji.
 - Pinned messages, polls, service messages, forum topics, Telegram folders, archived chats, avatars and earlier profile photos.
 - Several accounts in one archive. See [Multiple accounts](configuration/multiple-accounts.md).
-- Transcripts of voice messages, and of other audio and video if you ask for it, once you configure a transcription server. See [Voice transcription](configuration/transcription.md).
+- Transcripts of voice messages once you configure a transcription server. Other audio and video can be transcribed too if you turn that on. See [Voice transcription](configuration/transcription.md).
 - Imports from Telegram Desktop exports. See [Import and maintenance tasks](operations/maintenance.md).
 
 The backup skips bot chats unless you add them. See [Choosing chats](configuration/choosing-chats.md).
@@ -75,7 +75,7 @@ flowchart TB
     subgraph backup [Backup container]
         SCH[Scheduler]
         CL[One client per account]
-        LI[Listener, optional]
+        LI[Real-time listener, optional]
         MIG[Migrations on start]
     end
     DB[(Database<br/>SQLite by default<br/>PostgreSQL optional)]
@@ -98,32 +98,44 @@ flowchart TB
     WEB <--> BR
 ```
 
-- The backup image is `drumsergio/telegram-archive` and the viewer image is `drumsergio/telegram-archive-viewer`. Both share one version number. Each image runs on linux/amd64 and linux/arm64. Each runs as user id 1000.
+- The backup image is `drumsergio/telegram-archive` and the viewer image is `drumsergio/telegram-archive-viewer`. Both share one version number, run on linux/amd64 and linux/arm64, and run as user id 1000.
 - A backup runs when the container starts, then on a cron schedule. The default is 00:00, 06:00, 12:00 and 18:00 in the container's time zone, which is UTC in the image. See [Schedule and backup tuning](configuration/schedule.md).
 - When the listener is on, it captures changes between runs.
-- At the end of each backup, the backup retries failed media downloads and processes pending transcriptions.
+- At the end of each run, the backup retries failed media downloads, verifies media if `VERIFY_MEDIA` is on, and processes pending transcriptions. With `FILL_GAPS` on, the scheduler then looks for missing messages.
 
 ## What it does not do
 
 - It does not save secret chats.
-- Messages deleted before the first backup are gone.
-- It never sends or changes anything in your Telegram account. The one exception is a separate restore script that sends archived messages back to a chat as you. See [Command line and Python API](reference/cli.md).
+- It cannot recover messages deleted before the first backup.
+- The backup and the viewer never send or change anything in your Telegram account. Only the separate restore script sends messages: it posts archived messages back to a chat as you. See [Command line and Python API](reference/cli.md).
 - The viewer interface is in English only and has no offline mode.
 
 ## Privacy
 
-- The archive stays on your own disk. Nothing leaves it unless you turn on one of the optional features below, and each sends only what its page describes.
-- Logs never contain message text, chat ids, account names or phone numbers.
-- Transcription is optional. When you turn it on, it sends the server you configure the audio file, its stored file name, a fingerprint of the file called its content hash, your transcription options and, if you set one, your callback URL. No message text or chat details go with it.
-- The event webhook is optional. When on, it sends the message text, the previous text, the chat title and the sender name of each edit or deletion to the URL you configure. See [Event webhook](configuration/event-webhook.md).
-- Web Push notifications are optional. In full mode a short encrypted preview of each new message goes through your browser's push service.
+- The archive stays on your own disk. Nothing leaves it unless you turn on one of the optional features below.
+- The backup and viewer logs never contain message text, chat ids, Telegram account labels or phone numbers. Commands you run by hand, such as `list-chats` and `fill-gaps`, print the ids and names of the chats they work on, and `LOG_CHAT_TITLES=true` adds chat titles to progress lines.
+- Transcription is optional. When you turn it on, it sends these to the transcription server you configure:
+    - The audio. For a video, or a file over the upload limit, that is the sound track extracted from it.
+    - A file name taken from the stored file.
+    - The stored file's content hash, a fingerprint of the file.
+    - Your API key, when you set one.
+    - Your transcription options.
+    - Your callback URL, when you set one.
+
+    No message text or chat details go with it. See [Voice transcription](configuration/transcription.md).
+- The event webhook is optional. When you turn it on, it sends each edit or deletion to the URL you configure. The default body holds the event name, the account, chat, message and sender ids, the chat title, the sender name, the message date, the media type, the message text and, for an edit, the old and new text. `EVENT_WEBHOOK_BODY_TEMPLATE` changes the body. See [Event webhook](configuration/event-webhook.md).
+- Web Push notifications are optional. With `PUSH_NOTIFICATIONS=full`, the chat title, the sender name and the first 100 characters of each new message go through your browser's push service, encrypted for the browser. See [Live updates and notifications](viewer/live-updates.md#what-a-push-contains).
 
 ## Getting help
 
-- Something broken: read [Monitoring and troubleshooting](operations/troubleshooting.md), then open an issue with the details it lists.
-- A security problem: follow the [security policy](https://github.com/GeiserX/Telegram-Archive/blob/main/SECURITY.md) and do not open a public issue.
-- What changed between releases: the [changelog on GitHub](https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELOG.md).
+- If something is broken, read [Monitoring and troubleshooting](operations/troubleshooting.md), then open an issue with the details it lists.
+- To report a security problem, follow the [security policy](https://github.com/GeiserX/Telegram-Archive/blob/main/SECURITY.md) and do not open a public issue.
+- The [changelog on GitHub](https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELOG.md) lists what changed between releases.
+- The [Glossary](reference/glossary.md) explains the terms these pages use.
+- To script against the viewer, use the [HTTP API](reference/api.md).
+- The [Roadmap](roadmap/index.md) lists what is planned next.
+- To send a fix or a feature, read [Contributing](contributing.md).
 
 ## License
 
-Telegram Archive is released under the [GPL-3.0](https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE) license. It is built on [Telethon](https://github.com/LonamiWebs/Telethon). Release notes are in the [changelog on GitHub](https://github.com/GeiserX/Telegram-Archive/blob/main/docs/CHANGELOG.md).
+Telegram Archive is released under the [GPL-3.0](https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE) license. It is built on [Telethon](https://github.com/LonamiWebs/Telethon).

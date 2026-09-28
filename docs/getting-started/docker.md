@@ -6,24 +6,30 @@ This page takes you from an empty Docker host to a running backup and a viewer y
 
 You need:
 
-- A Linux host with Docker Engine and Docker Compose. The compose file uses the long `env_file` syntax, a `path` plus `required: false`. Older Compose releases reject it, so update Compose if `docker compose up` complains about `env_file`.
-- An amd64 or arm64 machine. Both images are published for both.
+- A Linux host with Docker Engine and a recent Docker Compose.
+- An amd64 or arm64 machine. Both images ship for both architectures.
 - A Telegram account and the phone that receives its login codes.
-- An API id and API hash for that account. Open [my.telegram.org/apps](https://my.telegram.org/apps), sign in with your phone number, open **API development tools** and create an app. Copy `api_id`, which is a number, and `api_hash`.
+- An API id and API hash for that account. Open [my.telegram.org/apps](https://my.telegram.org/apps), sign in with your phone number, open **API development tools** and create an app. Copy `api_id` and `api_hash`. The id is a number.
+
+The compose file uses the long `env_file` syntax with `path` and `required: false`. Older Compose releases reject it. If `docker compose up` complains about `env_file`, update Compose.
 
 ### Disk space
 
 Nothing in the archive deletes data on its own, so the data directory only grows. Plan for:
 
-- **Media.** The largest part. Every photo, video, voice note, sticker and document up to `MAX_MEDIA_SIZE_MB`, 100 MB by default, from every chat you back up. With the default `DEDUPLICATE_MEDIA=true`, a file shared by several chats of one account is stored once.
-- **The database.** It grows with every message. Every edit keeps the earlier text, and deleted messages stay in the default soft mode.
-- **Thumbnails.** `media/.thumbs` is a cache. You can delete it, and the viewer rebuilds it.
-- **Imports.** An import copies the export's media into the archive, so it needs that much free space again.
-- **The 7.x upgrade.** It needs free space of three times the database file plus its `-wal` file.
+- Media takes the most space: every photo, video, voice note, sticker and document from every chat you back up, up to `MAX_MEDIA_SIZE_MB`. The default limit is 100 MB. With the default `DEDUPLICATE_MEDIA=true`, a file shared by several chats of one account is stored once.
+- The database grows with every message. The archive keeps the earlier text of every edited message. By default it also keeps deleted messages and only marks them as deleted.
+- Thumbnails in `media/.thumbs` are a cache. You can delete them, and the viewer rebuilds them.
+- An import copies the export's media into the archive, so it needs that much free space again.
+- The upgrade from 7.x needs free space of three times the database file plus its `-wal` file.
 
 To limit growth, use `MAX_MEDIA_SIZE_MB`, `DOWNLOAD_MEDIA_TYPES`, `DOWNLOAD_DOCUMENT_MIME_TYPES`, `SKIP_MEDIA_CHAT_IDS` and the chat filters. Read [Media downloads](../configuration/media.md) before the first large run, because some of these skip files for good.
 
-To see what you use, open the Stats dropdown or the master's Archive Status panel in the viewer, run `docker compose exec telegram-backup python -m src stats`, or run `du -sh data/backups/media` on the host. The compose file caps each container's logs at 30 MB.
+To see how much space you use, pick one:
+
+- In the viewer, signed in with the master login, open the Stats dropdown or the Archive Status panel.
+- Run `docker compose exec telegram-backup python -m src stats`.
+- Run `du -sh data/backups/media` on the host.
 
 ## Set it up
 
@@ -53,12 +59,12 @@ VIEWER_PASSWORD=choose-a-long-password
 VIEWER_TIMEZONE=Europe/London
 ```
 
-`TELEGRAM_PHONE` is in international format with the leading `+`. `VIEWER_TIMEZONE` takes a tz database name. Set it, because the code default is `Europe/Madrid`. Without `VIEWER_USERNAME` and `VIEWER_PASSWORD`, every viewer data route answers 503 `Viewer authentication is not configured`.
+`TELEGRAM_PHONE` is in international format with the leading `+`. `VIEWER_TIMEZONE` takes a tz database name. Set it, because the code default is `Europe/Madrid`. Without `VIEWER_USERNAME` and `VIEWER_PASSWORD`, every viewer data route answers 503 `Viewer authentication is not configured`. See [The viewer starts closed](../viewer/access.md#the-viewer-starts-closed).
 
 Two defaults to know before the first run:
 
 - Bot chats are not backed up. Add `bots` to `CHAT_TYPES` if you want them. See [Choosing chats](../configuration/choosing-chats.md).
-- Any media file over 100 MB is skipped. Change `MAX_MEDIA_SIZE_MB`, where `0` means no limit. See [Media downloads](../configuration/media.md).
+- The backup skips media files over 100 MB. Set `MAX_MEDIA_SIZE_MB=0` to remove the limit.
 
 ### 3. Create the data directory
 
@@ -71,7 +77,7 @@ Both containers run as uid 1000 and write the session, database and media under 
 ### 4. Log in to Telegram
 
 !!! warning "Module name in the 8.16.1 images"
-    The 8.16.1 images only know the module by its old name, `src`, so every command on this page uses `python -m src`. From the next release on, the name is `telegram_archive`, see [the module rename](../operations/upgrading.md#module-rename). On 8.16.1 the entrypoint treats only `python -m src auth` as the login command. `python -m telegram_archive auth` fails there with `No module named telegram_archive`.
+    The 8.16.1 images know the module only as `src`, so this page uses `python -m src`. See [the module rename](../operations/upgrading.md#module-rename).
 
 ```bash
 docker compose run --rm telegram-backup python -m src auth
@@ -111,17 +117,11 @@ After the first backup the viewer shows your chats:
 
 ## What the stock compose file does
 
-The file runs two services, both pinned to the same version.
+The file runs two services, `telegram-backup` and `telegram-viewer`, both pinned to the same version. It also holds three optional services, all commented out. Those are described at the end of this section.
 
-The file also holds three optional services, all commented out:
+### The telegram-backup service
 
-- a PostgreSQL server. See [SQLite and PostgreSQL](../configuration/database.md).
-- an akou server for voice transcription. See [Voice transcription](../configuration/transcription.md).
-- a second viewer limited to a few chats with `DISPLAY_CHAT_IDS`. See [Logins, viewer accounts and share links](../viewer/access.md).
-
-Enabling PostgreSQL also means uncommenting the `volumes: postgres_data:` block at the end of the file.
-
-**`telegram-backup`** runs the Telegram client and the scheduler. Its command is `python -m src schedule`. In the 8.16.1 images `src` is the module itself. From the next release on, `src` is a compatibility alias for `telegram_archive` and prints a deprecation note in the log. See [Upgrading](../operations/upgrading.md#module-rename).
+It runs the Telegram client and the scheduler with `python -m src schedule`.
 
 It loads the whole `.env` through `env_file`, so every variable you put there reaches this container. It also has its own `environment:` block, and that block wins on conflict:
 
@@ -136,9 +136,11 @@ The block also sets some defaults that differ from the code defaults:
 | `VIEWER_PORT` | `8000` | The port the viewer listens on. |
 | `POSTGRES_HOST` | `postgres` | The name of the optional PostgreSQL service. |
 
-Compose also sets `DB_PATH` to `/data/backups/telegram_backup.db`. That is the same file the image would use by default, but setting it explicitly makes both services name the file the same way.
+Compose also sets `DB_PATH` to `/data/backups/telegram_backup.db`. That is the image default, and setting it in both services keeps them on the same file.
 
-**`telegram-viewer`** serves the web viewer. It has no `env_file` on purpose, so your Telegram credentials and proxy passwords never enter the container that faces the network. It receives only the variables listed in its own `environment:` block:
+### The telegram-viewer service
+
+It serves the web viewer. It has no `env_file` on purpose, so your Telegram credentials and proxy passwords never enter the container that faces the network. It receives only the variables listed in its own `environment:` block:
 
 | Area | Variables |
 |------|-----------|
@@ -165,12 +167,13 @@ The viewer reads more variables than that. These do nothing from `.env` until yo
 - `MAX_WS_SUBSCRIPTIONS_PER_CONNECTION`
 - `ENABLE_NOTIFICATIONS`
 - `MEDIA_MAX_DOWNLOAD_ATTEMPTS`
-- `TRANSCRIPTION_WEBHOOK_SECRET`, which is already in the block but commented out
-- `HEALTHCHECK_URL`, read by the image's healthcheck, only relevant if you change the viewer's port
+- `TRANSCRIPTION_WEBHOOK_SECRET`: already in the block, commented out.
+- `HEALTHCHECK_URL`: the image's healthcheck reads it. Set it only if you change the viewer's port.
 
 To add one, put it under `telegram-viewer` like this:
 
 ```yaml
+  telegram-viewer:
     environment:
       STATS_CALCULATION_HOUR: ${STATS_CALCULATION_HOUR:-3}
 ```
@@ -178,19 +181,35 @@ To add one, put it under `telegram-viewer` like this:
 !!! warning "Keep the database settings the same in both services"
     `DATABASE_PATH` or `DATABASE_DIR` in `.env` moves the backup's SQLite file but not the viewer's, because the viewer never sees them. The viewer then opens a different, empty database and shows no chats. Add the same variable to both services, or use `DB_PATH`, which both already receive.
 
+### Shared settings
+
 Both services share the same hardening:
 
 - a read-only root filesystem, with a tmpfs at `/tmp`
 - all Linux capabilities dropped, and `no-new-privileges`
 - `stop_grace_period: 90s`, so a backup that is stopped mid-run has time to finish its writes
 - `json-file` logs capped at 10 MB, three files
-- resource limits of 1 CPU and 1 GB, present but commented out
+
+`telegram-backup` also has resource limits of 1 CPU and 1 GB, present but commented out.
 
 Both mount `./data:/data` read-write. On SQLite the viewer's mount must stay writable, for the database's WAL files, the shared `.push-secret` file and the thumbnail cache. Mount it `:ro` only when you use PostgreSQL.
 
-There is no startup ordering between the two services, and none is needed. The backup owns the schema and migrates it on start. The viewer never migrates. The one migration that rebuilds every table, 022 in the upgrade from 7.x, refuses to run while another process holds the SQLite file. It exits with a message saying nothing was changed, and the container restarts into the same refusal until you stop the viewer. Stop both containers before that upgrade, then start the backup first. See [Upgrading from 7.x](../operations/upgrading.md#upgrading-from-7x).
+The two services start in any order. The backup owns the schema and migrates it on start. The viewer never migrates.
+
+!!! warning "Upgrading from 7.x"
+    Migration 022 rebuilds every table and refuses to run while another process holds the SQLite file. It exits without changing anything, and the container keeps restarting until you stop the viewer. Stop both containers, then start the backup first. See [Upgrading from 7.x](../operations/upgrading.md#upgrading-from-7x).
 
 To apply a change, edit `.env` and run `docker compose up -d` again. Compose recreates only the containers whose settings changed.
+
+### Optional services
+
+The three commented-out services are:
+
+- A PostgreSQL server. See [SQLite and PostgreSQL](../configuration/database.md).
+- An akou server for voice transcription. See [Voice transcription](../configuration/transcription.md).
+- A second viewer limited to a few chats with `DISPLAY_CHAT_IDS`. See [Logins, viewer accounts and share links](../viewer/access.md).
+
+Enabling PostgreSQL also means uncommenting the `volumes: postgres_data:` block at the end of the file.
 
 ??? example "The stock docker-compose.yml"
 
@@ -215,7 +234,7 @@ docker compose exec telegram-backup python -m src export -o /data/backups/export
 
 The container's root filesystem is read-only, so any output file must go under `/data`. It then appears under `./data` on the host.
 
-`auth`, `backup`, `fill-gaps`, `backfill-topics` and `reclassify-round-videos` connect to Telegram. These commands use the same session file as the scheduler. Two clients on one session can get you logged out, see [One client per session](telegram-login.md#one-client-per-session). Stop the scheduler first:
+Commands that connect to Telegram use the scheduler's session file, so stop the scheduler first. See [One client per session](telegram-login.md#one-client-per-session).
 
 ```bash
 docker compose stop telegram-backup
@@ -229,13 +248,17 @@ The full list of commands is in [Command line and Python API](../reference/cli.m
 
 ## Running without Compose
 
-The same setup with plain `docker run`. Create a network so the backup can push real-time updates to the viewer by name:
+You can run the same setup with plain `docker run`. First create a network so the backup can push real-time updates to the viewer by name:
 
 ```bash
 docker network create telegram-archive
 ```
 
-In `.env`, uncomment `VIEWER_HOST=telegram-viewer` and `VIEWER_PORT=8000`. Log in once, then start the backup:
+In `.env`, uncomment `VIEWER_HOST=telegram-viewer` and `VIEWER_PORT=8000`.
+
+Plain `docker run --env-file` keeps everything after `=`, inline comments included. Compose strips them, so the file works there as it is. Before you use `.env` outside Compose, delete the trailing `# ...` on the `MAX_MEDIA_SIZE_MB` and `TRANSCRIPTION_URL` lines, or move those comments to their own lines. Otherwise the backup exits at start with `MAX_MEDIA_SIZE_MB must be an integer`.
+
+Log in once, then start the backup:
 
 ```bash
 docker run -it --rm --env-file .env -v ./data:/data \
@@ -247,6 +270,8 @@ docker run -d --name telegram-backup --restart unless-stopped \
   -v ./data:/data \
   --read-only --tmpfs /tmp \
   --cap-drop ALL --security-opt no-new-privileges:true \
+  --stop-timeout 90 \
+  --log-opt max-size=10m --log-opt max-file=3 \
   drumsergio/telegram-archive:8.16.1 python -m src schedule
 ```
 
@@ -259,6 +284,8 @@ docker run -d --name telegram-viewer --restart unless-stopped \
   -v ./data:/data \
   --read-only --tmpfs /tmp \
   --cap-drop ALL --security-opt no-new-privileges:true \
+  --stop-timeout 90 \
+  --log-opt max-size=10m --log-opt max-file=3 \
   -e VIEWER_USERNAME=admin \
   -e VIEWER_PASSWORD=choose-a-long-password \
   -e VIEWER_TIMEZONE=Europe/London \
@@ -277,4 +304,4 @@ docker compose down
 
 This removes the containers and the network and keeps `./data`. With the optional PostgreSQL service, `docker compose down -v` also removes the `postgres_data` volume.
 
-The Telegram login stays valid until you end it. Open Telegram, go to Settings, Devices, and terminate the entry for the backup. Then delete `./data` if you no longer want the archive. To move the archive to another machine instead, copy `./data`, `.env` and `docker-compose.yml` as described in [Backing up the archive](../operations/backup-and-restore.md), and never run both machines at once.
+The Telegram login stays valid until you end it. In Telegram, open **Settings > Devices** and terminate the backup's session. Then delete `./data` if you no longer want the archive. To move the archive to another machine instead, copy `./data`, `.env` and `docker-compose.yml` as described in [Backing up the archive](../operations/backup-and-restore.md), and never run both machines at once.

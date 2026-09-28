@@ -40,7 +40,7 @@ To back up several accounts, declare them with the `TG_ACCOUNT_<N>_*` variables 
 
 The stock compose file pins the 8.16.1 images, which know the module only as `src`. Images after 8.16.1 accept `python -m telegram_archive auth` as well. See [the module rename](../operations/upgrading.md#module-rename).
 
-`python -m telegram_archive.setup_auth` runs the same login, and `python -m src.setup_auth` does the same on the 8.16.1 images. The `Session not authorized` error names this command.
+`python -m telegram_archive.setup_auth` runs the same login. On the 8.16.1 images the equivalent is `python -m src.setup_auth`. The `Session not authorized` error names the one that fits the image.
 
 Telegram sends a code to your Telegram app. The command asks for it:
 
@@ -57,7 +57,7 @@ Enter your 2FA password:
 !!! warning "The password is visible"
     The 2FA password is shown on screen as you type it. Run the login where nobody can watch your screen.
 
-After the login, the command compares the account's phone number with the one you configured. It compares digits only and drops a leading `00`, so `+34...` and `0034...` match. If the numbers differ, the login fails. Delete the session file and run it again, or fix how the number is written in `.env`.
+After the login, the command compares the account's phone number with the one you configured. It compares digits only and drops a leading `00`, so `+34...` and `0034...` match. If the numbers differ, the login fails. Delete the session file and run the login again, or fix how the number is written in `.env`.
 
 What else the command does:
 
@@ -74,7 +74,7 @@ When it succeeds, the command tells you to run a `scheduler.py` file. That file 
 
 The repository ships two wrappers around the Docker login.
 
-`./init_auth.sh` checks that `.env` exists in the current directory, creates `data/backups` and runs `docker compose run --rm telegram-backup python -m src auth`, the same command as above. On images after 8.16.1 the `src` name is an alias and prints a one-line deprecation note.
+`./init_auth.sh` checks that `.env` exists in the current directory, creates `data/backups` and runs the Docker login command above.
 
 The script creates `data/backups` as your own user, and the container runs as uid 1000. If your uid is not 1000, see [Permission errors](#permission-errors).
 
@@ -88,7 +88,7 @@ If you cannot type answers to prompts, for example in a script or over SSH witho
 docker compose run --rm telegram-backup python scripts/auth_noninteractive.py send
 ```
 
-`send` asks Telegram for a code. It saves a token that links that code to this login in `<SESSION_DIR>/<SESSION_NAME>.phone_code_hash`, so `/data/session/telegram_backup.phone_code_hash` by default. Only your user can read the file, mode 0600.
+`send` asks Telegram for a code. It saves a token that links that code to this login in `<SESSION_DIR>/<SESSION_NAME>.phone_code_hash`. The default path is `/data/session/telegram_backup.phone_code_hash`. The file has mode 0600, so only your user can read it.
 
 ```bash
 docker compose run --rm telegram-backup python scripts/auth_noninteractive.py verify CODE
@@ -116,25 +116,31 @@ A session file holds the login. The backup reads it on every connection.
 
 | Setting | Default |
 |---------|---------|
-| `SESSION_DIR` | A `session` directory next to `BACKUP_PATH`, so `/data/session` with the default `BACKUP_PATH`. A native run with `--data-dir PATH` uses `PATH/session`. |
+| `SESSION_DIR` | `session` next to `BACKUP_PATH`: `/data/session` in Docker, `PATH/session` for a native run with `--data-dir PATH`. |
 | `SESSION_NAME` | `telegram_backup`. Used for the single account, and for account 1 unless `TG_ACCOUNT_1_SESSION_NAME` is set. |
 | Accounts 2 and up | `telegram_backup_account<N>`. Override with `TG_ACCOUNT_<N>_SESSION_NAME`. |
 
 The Telegram library adds `.session` to the name, so the default file is `/data/session/telegram_backup.session`.
 
-The backup keeps two copies next to each session:
+The `schedule` service keeps two copies next to each session:
 
-- Before each connection attempt, the backup copies a session that holds a login to `<name>.session.bak`.
-- Each time a connection succeeds with an authorized session, the backup copies it to `<name>.session.authenticated`.
+- Before each connection attempt, it copies a session that holds a login to `<name>.session.bak`.
+- Each time a connection succeeds with an authorized session, it copies the session to `<name>.session.authenticated`.
 
-When authorization fails, the backup restores the session from the `.authenticated` copy first, then from the `.bak` copy. It then stops with `Session not authorized. Please run authentication setup.` The next time the backup starts, it connects with the restored copy.
+One-off commands, the standalone listener and the helper scripts open the session with their own client. They neither write nor restore these copies.
+
+When authorization fails, the service restores the session from the `.authenticated` copy first, then from the `.bak` copy. The next connection attempt uses the restored copy. What the service does in the meantime depends on the case:
+
+- A service with one account that starts with an unauthorized session exits with `Session not authorized. Please run authentication setup.` The container restarts into the same error.
+- A service with several accounts keeps running the other accounts. It retries the failing account on each sweep and listener start.
+- A session that stops working while the service runs is logged and retried on the next cycle. The process does not exit, so watch the log rather than the container state.
 
 !!! danger "A session file is your account"
     Anyone who has a session file can read and send messages as you. Keep the session directory private. Include it in your backups, together with the database and media. See [Backing up the archive](../operations/backup-and-restore.md).
 
 ### What Telegram sees
 
-The login counts as a new device on the account and appears in Telegram under Settings, Devices. The backup sets no device name, so the entry shows the container's machine type, its kernel version and the Telethon library version. Ending that entry in Telegram invalidates the session file. The backup then logs `Session not authorized` and stops, and the container restarts into the same error until you [log in again](#log-in-again). The `.authenticated` and `.bak` copies hold the same key, so they do not help in that case. They only cover a session file damaged on disk.
+The login counts as a new device on the account and appears in Telegram under Settings, Devices. The backup sets no device name, so the entry shows `PC 64bit` on x86_64 or the machine type on other architectures, the kernel release of the host or container, and the Telethon version. Ending that entry in Telegram invalidates the session file. The backup then logs `Session not authorized` until you [log in again](#log-in-again). A service with one account that starts in this state exits, and the container restarts into the same error. A running service, or a service with several accounts, keeps retrying, so watch the log. The `.authenticated` and `.bak` copies hold the same key, so they do not help here. They only cover a session file that is damaged on disk.
 
 ## Log in again
 
@@ -165,6 +171,7 @@ While `schedule` runs, do not run any of these against the same session:
 
 - `backup`, `fill-gaps`, `backfill-topics` or `reclassify-round-videos`
 - `auth`
+- `python -m telegram_archive.listener`
 - `scripts/auth_noninteractive.py`
 - `scripts/restore_chat.py`
 
@@ -174,18 +181,18 @@ Never point two installs at the same session file.
 
 ## Permission errors
 
-If the login cannot write the session file, the data directory does not belong to uid 1000. The fix is in [Run with Docker](docker.md#3-create-the-data-directory). You can also run the container as your own user with `--user <uid>:<gid>`.
+If the login cannot write the session file, the data directory usually does not belong to uid 1000. Change its owner as shown in [Create the data directory](docker.md#3-create-the-data-directory). You can also run the container as your own user with `--user <uid>:<gid>`.
 
 ## SOCKS5 proxy
 
-The backup can reach Telegram through a SOCKS5 proxy. Setting any of `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT`, `TELEGRAM_PROXY_USERNAME` or `TELEGRAM_PROXY_PASSWORD` turns the proxy on. From then on these rules apply, and startup stops if one is broken:
+The backup can reach Telegram through a SOCKS5 proxy. Setting any of `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT`, `TELEGRAM_PROXY_USERNAME` or `TELEGRAM_PROXY_PASSWORD` turns the proxy on. Startup then checks these rules and stops if one fails:
 
 - `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR` and `TELEGRAM_PROXY_PORT` are required.
 - `TELEGRAM_PROXY_TYPE` must be `socks5`, in any letter case.
 - `TELEGRAM_PROXY_PORT` must be a number from 1 to 65535.
 - `TELEGRAM_PROXY_USERNAME` and `TELEGRAM_PROXY_PASSWORD` must be set together, or not at all.
 
-`TELEGRAM_PROXY_RDNS=true` makes the proxy look up host names. It has no effect unless the proxy is already on. When the proxy is on, it accepts 1/true/yes/on and 0/false/no/off, and any other value stops startup.
+`TELEGRAM_PROXY_RDNS=true` makes the proxy look up host names. It has no effect unless the proxy is on. When the proxy is on, the variable accepts `1`, `true`, `yes`, `on`, `0`, `false`, `no` and `off`. Any other value stops startup.
 
 ```ini
 TELEGRAM_PROXY_TYPE=socks5
