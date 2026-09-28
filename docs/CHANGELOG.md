@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Added
+- **`telegram-archive status`** says whether the archive is healthy without a browser: last run, listener state per Telegram account, media counts and database size. `--json` prints the same payload as the Archive Status panel plus `healthy` and `problems`, and the exit code is 1 when a run never happened, did not finish or was missed, so cron and monitoring can use it. ([#499](https://github.com/GeiserX/Telegram-Archive/pull/499))
+
 ## [8.17.0] - 2026-09-29
 
 Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.
