@@ -26,7 +26,7 @@ The webhook runs inside the [real-time listener](listener.md), so it needs:
 - `LISTEN_EDITS=true` for `message_edited`. This is the default.
 - `LISTEN_DELETIONS=true` for `message_deleted`. This is off by default.
 
-When a prerequisite is missing, startup logs the matching warning or warnings and the archiver keeps running. The `ENABLE_LISTENER=false` warning is logged on its own. Otherwise startup logs one line for each selected event whose `LISTEN_*` flag is off. These warnings appear only when the webhook settings themselves are valid.
+When a prerequisite is missing, startup logs the matching warning or warnings and the backup keeps running. The `ENABLE_LISTENER=false` warning is logged on its own. Otherwise startup logs one line for each selected event whose `LISTEN_*` flag is off. These warnings appear only when the webhook settings themselves are valid.
 
 ```text
 EVENT_WEBHOOK_ENABLED has no effect: ENABLE_LISTENER=false
@@ -35,7 +35,7 @@ message_edited webhooks will never fire: LISTEN_EDITS=false
 ```
 
 !!! warning "Message content leaves the archive"
-    The request body can carry message text, chat titles and sender names to the target. Point the webhook only at a service you trust. The archiver never logs the URL, the headers or the body, so a token in the URL or in a header stays out of the logs.
+    The request body can carry message text, chat titles and sender names to the target. Point the webhook only at a service you trust. The backup never logs the URL, the headers or the body, so a token in the URL or in a header stays out of the logs.
 
 ## Settings
 
@@ -46,7 +46,7 @@ Set these in the backup service's environment, for example in `.env`.
 | `EVENT_WEBHOOK_ENABLED` | `false` | Turns the webhook on. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. Any other value stops startup with an error. |
 | `EVENT_WEBHOOK_URL` | empty | Target URL. Required. Must be `http://` or `https://` with a hostname. With `http://` the message text and your headers, tokens included, travel in cleartext. Use it only on a trusted, isolated network, and `https://` everywhere else. |
 | `EVENT_WEBHOOK_METHOD` | `POST` | `POST` or `PUT`, in any case. |
-| `EVENT_WEBHOOK_HEADERS` | empty | A JSON object whose values are all strings, sent unchanged on every request. When the object has no `Content-Type`, the archiver adds `Content-Type: application/json; charset=utf-8`. |
+| `EVENT_WEBHOOK_HEADERS` | empty | A JSON object whose values are all strings, sent unchanged on every request. When the object has no `Content-Type`, the backup adds `Content-Type: application/json; charset=utf-8`. |
 | `EVENT_WEBHOOK_EVENTS` | `message_edited,message_deleted` | Which events fire, comma-separated, in any case. |
 | `EVENT_WEBHOOK_CHAT_IDS` | empty | Comma-separated chat ids to fire for. Empty means every chat the listener processes. |
 | `EVENT_WEBHOOK_BODY_TEMPLATE` | empty | Request body with placeholders. Empty means the [default body](#default-body). |
@@ -56,7 +56,7 @@ Set these in the backup service's environment, for example in `.env`.
 The URL and the headers are static. Only the body is templated.
 
 !!! warning "A bad setting turns the webhook off quietly"
-    Only an invalid `EVENT_WEBHOOK_ENABLED` stops startup. A bad URL, method, headers, events or chat id list logs one warning that names the variable and ends with `event webhook disabled`. The archiver keeps running without the webhook. Check the logs after every change to an `EVENT_WEBHOOK_*` value.
+    Only an invalid `EVENT_WEBHOOK_ENABLED` stops startup. A bad URL, method, headers, events or chat id list logs one warning that names the variable and ends with `event webhook disabled`. The backup keeps running without the webhook. Check the logs after every change to an `EVENT_WEBHOOK_*` value.
 
 When the configuration is valid, startup logs the method and the selected events, for example:
 
@@ -168,7 +168,7 @@ EVENT_WEBHOOK_BODY_TEMPLATE={event} in {chat_title}: {text}
 
 ### ntfy with an access token
 
-Add the token as a header to either ntfy recipe. `EVENT_WEBHOOK_HEADERS` holds every header in one JSON object. With the plain-text recipe, add `Authorization` to that recipe's object. On its own, the archiver adds the JSON `Content-Type` for you.
+Add the token as a header to either ntfy recipe. `EVENT_WEBHOOK_HEADERS` holds every header in one JSON object. With the plain-text recipe, add `Authorization` to that recipe's object. On its own, the backup adds the JSON `Content-Type` for you.
 
 ```bash
 EVENT_WEBHOOK_HEADERS='{"Authorization":"Bearer <token>"}'
@@ -190,7 +190,7 @@ The listener hands each request to a background task and never waits for it.
 
 - Each attempt has a 5-second timeout.
 - There are up to 3 attempts. The second waits 1 second and the third waits 4 seconds.
-- The archiver retries three kinds of failure: transport errors, such as a timeout or a refused connection, HTTP 429, and any 5xx response.
+- The backup retries three kinds of failure: transport errors, such as a timeout or a refused connection, HTTP 429, and any 5xx response.
 - Any status below 300 counts as success.
 - A 3xx or any other 4xx response is a permanent failure. Redirects are never followed, so set `EVENT_WEBHOOK_URL` to the final URL.
 - When 100 deliveries are already in flight, new events are dropped.

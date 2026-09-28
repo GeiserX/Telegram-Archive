@@ -16,7 +16,7 @@ Indexed mode declares accounts with numbered variables:
 | `TG_ACCOUNT_<N>_LABEL` | no | Name shown in the viewer |
 | `TG_ACCOUNT_<N>_SESSION_NAME` | no | Session file name in `SESSION_DIR` |
 
-Any non-empty value in one of these five variables switches the install to indexed mode. From then on, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE` are ignored. A per-account filter override on its own never switches modes, so a single-account install can still use `TG_ACCOUNT_1_` filters.
+Any non-empty value in one of these five variables switches the install to indexed mode. From then on, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE` are not used for any account. `TELEGRAM_API_ID` must still be a number or empty, or startup stops. A per-account filter override on its own never switches modes, so a single-account install can still use `TG_ACCOUNT_1_` filters.
 
 ## Rules for account variables
 
@@ -40,7 +40,7 @@ Session names resolve like this:
 | 1 | `TG_ACCOUNT_1_SESSION_NAME`, then `SESSION_NAME`, then `telegram_backup` |
 | 2 and up | `TG_ACCOUNT_<N>_SESSION_NAME`, then `telegram_backup_account<N>` |
 
-Account 1 follows the same chain as single-account mode. That is what lets an existing install add a second account without logging in again.
+Account 1 follows the same chain as single-account mode, so an existing install can add a second account without logging in again.
 
 ## Going from one account to two
 
@@ -50,9 +50,9 @@ Account 1 follows the same chain as single-account mode. That is what lets an ex
     docker compose down
     ```
 
-2. In `.env`, move the three `TELEGRAM_*` values to `TG_ACCOUNT_1_*`. Leave account 1's session name as it was: do not set `TG_ACCOUNT_1_SESSION_NAME`, and keep `SESSION_NAME` if you had set it. The existing session file is then reused.
+2. In `.env`, copy the three `TELEGRAM_*` values to `TG_ACCOUNT_1_*`. Do not set `TG_ACCOUNT_1_SESSION_NAME`. If you had set `SESSION_NAME`, keep it. The backup then reuses the existing session file.
 
-    Compose then warns that `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE` are not set. The warnings are harmless: in indexed mode those variables are ignored. To silence them, leave the three lines in `.env` with the old values.
+    Keep the three old `TELEGRAM_*` lines in `.env` as well. Without them, Compose warns that `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE` are not set. You can ignore the warnings, because indexed mode does not read these variables.
 
 3. Add the `TG_ACCOUNT_2_*` variables.
 
@@ -73,10 +73,10 @@ Account 1 follows the same chain as single-account mode. That is what lets an ex
 4. Log in. The login checks every account and skips any account that is already logged in. It asks only for the new account's code, then its two-step password if the account has one. It fails if the account that logs in does not own the configured phone number.
 
     ```bash
-    docker compose run --rm telegram-backup python -m src auth
+    docker compose run --rm telegram-backup python -m telegram_archive auth
     ```
 
-    The 8.16.1 images know the module only by its old name, `src`. Later images keep `src` as an alias, so this command works on both.
+    See [Log in to Telegram](../getting-started/telegram-login.md) for details.
 
 5. Start the stack.
 
@@ -86,13 +86,11 @@ Account 1 follows the same chain as single-account mode. That is what lets an ex
 
 The next run fetches the new account's history from the beginning. Account 1 continues from where it stopped.
 
-The stock `docker-compose.yml` loads `.env` into the backup service through `env_file`, so the `TG_ACCOUNT_*` variables reach it with no extra step. The viewer does not need them.
-
-See [Log in to Telegram](../getting-started/telegram-login.md) for the login itself.
+The stock `docker-compose.yml` passes `.env` to the backup service through `env_file`, so the backup gets the `TG_ACCOUNT_*` variables. The viewer does not need them.
 
 ## Per-account filters
 
-Each chat filter can be set for one account by adding the `TG_ACCOUNT_<N>_` prefix. These suffixes are accepted:
+To set a chat filter for one account, add the `TG_ACCOUNT_<N>_` prefix. You can use these suffixes:
 
 | Suffix | Overrides |
 |---|---|
@@ -112,9 +110,9 @@ How a value resolves for one account:
 
 - A value in the indexed variable wins for that account.
 - An empty or unset indexed variable inherits the global value.
-- The literal `none`, in any case, means an explicitly empty list.
+- The literal `none`, in upper or lower case, means an empty list.
 - An override for an account number that is not declared stops startup.
-- A non-integer entry in an indexed id list stops startup with a generic Python error that does not name the variable.
+- A non-integer entry in an indexed id list stops startup. The error does not name the variable.
 
 This example backs up everything for account 1 and only channels for account 2:
 
@@ -123,10 +121,10 @@ CHAT_TYPES=private,groups,channels
 TG_ACCOUNT_2_CHAT_TYPES=channels
 ```
 
-A global include list turns off `CHAT_TYPES`. If you set `GLOBAL_INCLUDE_CHAT_IDS`, also set `TG_ACCOUNT_2_INCLUDE_CHAT_IDS=none` so account 2 does not inherit it. How the filters combine is explained in [Choosing chats](choosing-chats.md).
+A global include list turns off `CHAT_TYPES`. If you set `GLOBAL_INCLUDE_CHAT_IDS`, also set `TG_ACCOUNT_2_INCLUDE_CHAT_IDS=none` so account 2 does not inherit it. [Choosing chats](choosing-chats.md) explains how the filters combine.
 
 !!! warning "Folder ids are per account"
-    Telegram numbers folders separately in each account: folder 3 of one account has nothing to do with folder 3 of another. This applies to `GLOBAL_INCLUDE_FOLDER_IDS` and to the `PRIVATE_`, `GROUPS_` and `CHANNELS_` folder lists. With more than one account, startup stops if two or more accounts would inherit one of these without a prefix. Scope it per account, or give the other accounts `none`:
+    Telegram numbers folders separately in each account: folder 3 of one account has nothing to do with folder 3 of another. This applies to `GLOBAL_INCLUDE_FOLDER_IDS` and to the `PRIVATE_`, `GROUPS_` and `CHANNELS_` folder lists. With more than one account, startup stops if two or more accounts would inherit the same folder list. Set the list per account, or set it to `none` for the other accounts:
 
     ```dotenv
     GLOBAL_INCLUDE_FOLDER_IDS=3
@@ -142,26 +140,26 @@ Everything that is not a chat filter applies to all accounts. That includes `DOW
 - The scheduler opens one shared Telegram connection per account.
 - Accounts are backed up one after another, in configuration order. A run takes about as long as all the accounts' runs added together.
 - If one account fails, the error is logged with its index and the other accounts continue.
-- After login, the archive matches each account to its data row by its Telegram user id. Changing the order of the `TG_ACCOUNT_<N>` numbers does not move data between accounts.
+- After login, the backup uses the Telegram user id to match each account to its data row. Changing the order of the `TG_ACCOUNT_<N>` numbers does not move data between accounts.
 - All accounts share one owner id, one last backup time and one "backup running" flag. Each value shows whichever account updated it last.
 - With `ENABLE_LISTENER=true`, each account gets its own listener. See [Real-time listener](listener.md).
 
 ## In the viewer
 
-A small label with the account name, called an account chip, appears on chat rows, in the chat header and in the info panel. Chips only appear when the logged-in user can see more than one account. On a phone the header hides its chips; the chat list and the info panel keep them.
+A small label with the account name, called an account chip, appears on chat rows, in the chat header and in the info panel. Chips only appear when the viewer login can see more than one account. On a phone the header hides its chips; the chat list and the info panel keep them.
 
 ![Chat list with Personal and Work account chips](../images/screenshots/chat-list-desktop.png)
 
-- A group or channel that several archived accounts belong to is listed once. The viewer shows the copy from the lowest account id the user may see.
+- A group or channel that several archived Telegram accounts belong to is listed once. The viewer shows the copy from the lowest account id the user may see.
 - Private chats are never merged.
-- A message sent by any archived account shows as your own message, with that account's chip.
-- Viewer accounts can be limited to some accounts. See [Logins, viewer accounts and share links](../viewer/access.md).
+- A message sent by any archived Telegram account shows as your own message, with that account's chip.
+- An admin can limit a viewer account to some Telegram accounts. See [Logins, viewer accounts and share links](../viewer/access.md).
 
 ## Caveats
 
-- Imports from Telegram Desktop always land in account 1.
-- `backfill-topics` sets `CHAT_IDS` to the chat you ask for. If an account sets `TG_ACCOUNT_<N>_CHAT_IDS`, the command uses that list for the account and ignores the chat you asked for.
-- `scripts/auth_noninteractive.py` only reads `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE`. It cannot log in indexed accounts.
-- There is no supported way to merge two existing archives on a current release.
+- Imports from Telegram Desktop always land in the first account row, the one the account at index 1 claimed on its first login. Renumbering accounts later does not change that.
+- `backfill-topics` sets `CHAT_IDS` to the chat you name. For an account with `TG_ACCOUNT_<N>_CHAT_IDS`, the command uses that list instead.
+- `scripts/auth_noninteractive.py` logs in one account from `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` and `SESSION_NAME`, and ignores `TG_ACCOUNT_<N>_*`. To log in account N with it, pass that account's values in those variables and its session name in `SESSION_NAME`. It does not check the phone number.
+- You cannot merge two existing archives.
 
 See [Import and maintenance tasks](../operations/maintenance.md) for imports and `backfill-topics`, and [Upgrading](../operations/upgrading.md) for moving from 7.x.

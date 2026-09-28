@@ -8,7 +8,17 @@ Transcription is on by default, but it does nothing until `TRANSCRIPTION_URL` is
 
 Only the backup container talks to the transcription server. The viewer never contacts it. The viewer only reports whether a URL is set.
 
-Every upload carries the audio. akou, the OpenAI endpoint and ElevenLabs also get the stored file name, with an `.ogg` ending when the audio track is sent instead. An akou job also carries the content hash, the preset, the language and speaker-label options and, when you set one, the callback URL. The OpenAI endpoint also gets the model, the language and your hotwords. Deepgram, AssemblyAI and ElevenLabs get the model, the language or a request to detect it, and the speaker-label option. No chat titles, names, message text or ids are sent.
+Every upload carries the audio. The table lists what else each server gets. No chat titles, names, message text or ids are sent.
+
+| Server | Also sent |
+|---|---|
+| akou | File name, content hash, preset, language, speaker-label option, callback URL if set |
+| OpenAI endpoint | File name, model, language, hotwords |
+| Deepgram | Model, language or a request to detect it, `smart_format=true`, and the speaker-label option with `diarize_model=latest` when it is on |
+| AssemblyAI | Model if `TRANSCRIPTION_MODEL` is set, language or a request to detect it, speaker-label option |
+| ElevenLabs | File name, model, language if you set one, speaker-label option, `timestamps_granularity=word` |
+
+When the audio track is sent, the file name ends in `.ogg`.
 
 Every result is stored as a new transcript row. The media row is never changed.
 
@@ -16,10 +26,14 @@ Every result is stored as a new transcript row. The media row is never changed.
 
 ## Availability
 
-!!! note "Settings added after 8.16.1"
-    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_HOTWORDS` and the Deepgram, AssemblyAI and ElevenLabs adapters arrive in the first release after 8.16.1. Version 8.16.1 detects akou or an OpenAI-compatible endpoint by itself from `TRANSCRIPTION_URL`.
+!!! note "Added in 8.17.0"
+    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_HOTWORDS` and the Deepgram, AssemblyAI and ElevenLabs adapters were added in 8.17.0. Older versions detect akou or an OpenAI-compatible endpoint by themselves from `TRANSCRIPTION_URL`.
 
 ## Choosing a server
+
+A drain is the step that sends queued files to the server. It runs after each backup run.
+
+With `TRANSCRIPTION_PROVIDER=auto`, the default, each drain checks which kind of server `TRANSCRIPTION_URL` points at. An akou server with jobs gets the job API. Anything else gets the OpenAI endpoint.
 
 Set the variables below on the backup container. The key goes in `TRANSCRIPTION_API_KEY`. The archive puts it in the header each server expects, and never logs it.
 
@@ -64,7 +78,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     TRANSCRIPTION_MODEL=whisper-1
     # Sent as the prompt, joined with ", "
     TRANSCRIPTION_HOTWORDS=Kubernetes,Grafana
-    # Set this for self-hosted servers; without it the cap is 25 MB
+    # Raise the 25 MB OpenAI cap for self-hosted servers
     TRANSCRIPTION_MAX_UPLOAD_MB=500
     ```
 
@@ -93,7 +107,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     TRANSCRIPTION_MODEL=
     ```
 
-    The key is sent as the raw `Authorization` header, without `Bearer`. The archive uploads the file, then polls every 3 seconds. The archive waits at most 600 seconds for the whole call. After that the file fails with reason `timeout`. The archive keeps no AssemblyAI job id to resume, so a retry uploads the file again and AssemblyAI bills it again.
+    The key is sent as the raw `Authorization` header, without `Bearer`. The archive uploads the file, then polls every 3 seconds. If the whole call takes more than 600 seconds, the file fails with reason `timeout`. The archive keeps no AssemblyAI job id to resume, so a retry uploads the file again as a new job. AssemblyAI bills that job again if it completes.
 
 === "ElevenLabs"
 
@@ -106,8 +120,6 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     ```
 
     The key is sent in the `xi-api-key` header.
-
-A drain is the step that sends queued files to the server. It runs after each backup run. With `TRANSCRIPTION_PROVIDER=auto`, the default, the archive asks the server at `TRANSCRIPTION_URL` what it is once per drain. An akou server with jobs gets the job API. Anything else gets the OpenAI endpoint.
 
 ### Speaker labels and language
 
@@ -133,9 +145,9 @@ Only downloaded files are transcribed. A chat or media type whose downloads are 
 
 ### When files are sent
 
-- **After each backup run.** The drain runs at the end of every backup run that completed without an exception. A drain error is logged as a warning and never fails the backup.
-- **From the listener.** When the [real-time listener](listener.md) downloads a file itself, it sends that file at once. This needs `LISTEN_NEW_MESSAGES_MEDIA=true` and the file's type in `TRANSCRIPTION_TYPES`. Otherwise the file waits for the next drain.
-- **From the button.** Pressing the button only queues the file. The next drain sends it.
+- The drain runs at the end of every backup run that finishes without an exception. A drain error is logged as a warning and never fails the backup.
+- When the [real-time listener](listener.md) downloads a file itself, it sends that file at once. This needs `LISTEN_NEW_MESSAGES_MEDIA=true` and the file's type in `TRANSCRIPTION_TYPES`. Otherwise the file waits for the next drain.
+- Pressing the button only queues the file. The next drain sends it.
 
 ### Drain order and limits
 
@@ -153,7 +165,7 @@ One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. Th
 - A press always gets one more attempt, whatever happened before.
 - A queued file that never got a job is sent again after 10 minutes.
 - An unreachable server spends no retry. The file stays queued.
-- Changing the model, language, hotwords, preset, speaker labels or server means files are sent again instead of reusing earlier results.
+- Changing the language, preset, speaker labels or server means files are sent again instead of reusing earlier results. On the OpenAI endpoint the model and the hotwords count too. On Deepgram, AssemblyAI and ElevenLabs the model counts and the hotwords do not.
 - The same audio already transcribed with the same settings, in this account or another, is copied instead of sent.
 
 ## Limits and audio handling
@@ -162,17 +174,17 @@ One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. Th
 
 `TRANSCRIPTION_MAX_UPLOAD_MB` caps what is actually sent. The default is 500, or 25 when it is unset and `TRANSCRIPTION_PROVIDER=openai`. `0` means no limit. A bigger upload is skipped as `too_large`.
 
-Before sending, the archive checks the file with ffprobe, except a voice message whose length is already stored. A file with no audio track is skipped as `no_audio_track` and never sent.
+Before sending, the backup checks the file with ffprobe, except a voice message whose length is already stored. A file with no audio track is skipped as `no_audio_track` and never sent.
 
 Voice messages and audio files are sent as stored. Everything else is sent as its audio track, extracted with ffmpeg to 16 kHz mono Opus. A voice or audio file over the upload limit is extracted too. At most 2 ffprobe or ffmpeg processes run at once.
 
-If the server answers `413 Payload Too Large`, the archive sends that file once more as its audio track. If the track is still refused, the file is skipped as `too_large`. Only that file is affected.
+If the server answers `413 Payload Too Large`, the backup sends that file once more as its audio track. If the track is still refused, the file is skipped as `too_large`. Only that file is affected.
 
-Both Docker images include ffmpeg and ffprobe. On a [PyPI install](../getting-started/pip.md) without ffmpeg and ffprobe, files are sent without the audio check and the stored file is sent instead of its audio track. Each missing tool logs one warning per process.
+Both Docker images include ffmpeg and ffprobe. On a [PyPI install](../getting-started/pip.md) without ffmpeg and ffprobe, the backup skips the audio check and sends the stored file instead of its audio track. Each missing tool logs one warning per process.
 
 ## Callbacks with akou
 
-By default the archive picks up akou's results on the next drain. It reads akou's list of finished jobs and asks about any job still open. A signed callback delivers each result to the viewer as soon as it is ready. Callbacks work with akou only.
+By default the archive collects akou's results on the next drain. It reads akou's event feed and asks about any job still open after ten minutes. With a signed callback, akou delivers each result to the viewer as soon as it is ready.
 
 Set the callback URL on the **backup** container. It is the viewer's public URL plus `/api/transcriptions/callback`:
 
@@ -201,10 +213,12 @@ The callback URL must be reachable from akou. See [Exposing the viewer safely](.
 
 Each transcribable file gets a small rounded button with the `→A` glyph. It flips to `A→` while the text is open.
 
-- **Voice and audio:** right of the waveform.
-- **Round videos:** over the bottom corner, right for incoming and left for outgoing. Opening the text turns the round video into a voice-style bubble.
-- **Videos:** over the bottom corner of the player.
-- **Videos sent as a file:** beside the file name.
+| Media | Where the button sits |
+|---|---|
+| Voice and audio | Right of the waveform |
+| Round videos | Over the bottom corner, right for incoming and left for outgoing. Opening the text turns the round video into a voice-style bubble. |
+| Videos | Over the bottom corner of the player |
+| Videos sent as a file | Beside the file name |
 
 The button has five states:
 
@@ -226,7 +240,7 @@ The button has five states:
 | `not_found` | The transcription server no longer knows this job |
 | `no_audio_track` | This file has no sound |
 | `too_large` | Too large to send to the transcription server |
-| over the length limit | Longer than the 30 minute limit |
+| Longer than `TRANSCRIPTION_MAX_SECONDS` | Longer than the N minute limit, with N from `TRANSCRIPTION_MAX_SECONDS`. In seconds when the limit is not a whole number of minutes |
 | any other reason | The reason in sentence case |
 | no reason, skipped | Not transcribed |
 | no reason, failed | Transcription failed |
@@ -239,11 +253,11 @@ When a file has more than one finished transcript, a picker labelled "1 of N" sw
 
 With more than one speaker, the text reads as turns: "Speaker 1:", "Speaker 2:", numbered in order of first speech.
 
-The viewer remembers per message whether a transcript is open. The chat header has a button, "Expand all transcripts" or "Collapse all transcripts", that opens or closes every transcript in the chat. That choice is remembered per chat.
+The viewer remembers per message whether a transcript is open. An "Expand all transcripts" button in the chat header opens every transcript in the chat. It then reads "Collapse all transcripts" and closes them. The viewer remembers that choice per chat.
 
 ### Status, search and exports
 
-The Archive Status panel, which only the master login sees, has a Transcription row. See [Logins, viewer accounts and share links](../viewer/access.md).
+The Archive Status panel, which only the master login sees, has a Transcription row. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 | Value | Meaning |
 |---|---|
@@ -260,13 +274,15 @@ Transcripts also appear in:
 - the What changed feed
 - the viewer's chat export and the command line export
 
-No-download logins get no transcripts at all: no button, no text, no transcript search hits. See [Logins, viewer accounts and share links](../viewer/access.md).
+No-download logins see no transcript button, no transcript text and no transcript search hits. See [No-download logins](../viewer/access.md#no-download-logins).
 
-With `TRANSCRIPTION_ENABLED=false` on the viewer only, bubbles hide transcripts. Search, the What changed feed and the exports still include the existing ones.
+To turn transcription off on the viewer only, see [Turning it off](#turning-it-off).
 
 ## Turning it off
 
-Set `TRANSCRIPTION_ENABLED=false` on both the backup and the viewer container. The archive stops sending files. The button, the banner and the callback endpoint disappear. Existing transcripts stay searchable and are still exported.
+Set `TRANSCRIPTION_ENABLED=false` on both the backup and the viewer container. The archive stops sending files. The button, the banner and the callback endpoint disappear. Existing transcripts stay in search and exports.
+
+With `TRANSCRIPTION_ENABLED=false` on the viewer only, bubbles hide transcripts. Search, the What changed feed and the exports still include the existing ones.
 
 ## Deletion
 
@@ -301,7 +317,7 @@ The full list of variables is in [Environment variables](../reference/environmen
 
 ## Troubleshooting
 
-Transcription logs never contain the server URL, the key, media ids, file names or transcript text.
+Transcription logs never contain the key, media ids, file names or transcript text. The startup line names the server's scheme and host only. The path, port and query of `TRANSCRIPTION_URL` are never logged.
 
 | What you see | What it means |
 |---|---|
