@@ -1,8 +1,24 @@
-# Telegram Archive
+---
+hide:
+  - navigation
+---
 
-Telegram Archive is a self-hosted backup of one or more Telegram accounts. It runs in Docker, or from the Python package, on your own machine and comes with a web viewer to read and search what it saved. The backup process is the only part that talks to Telegram. The viewer reads the archive and never contacts Telegram.
+# Telegram Archive { .ta-visually-hidden }
 
-![A group chat open in the viewer, with a pinned message, a photo and reactions](images/screenshots/chat-desktop.png)
+<p align="center">
+  <img src="images/banner.svg" alt="Telegram Archive" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/drumsergio/telegram-archive"><img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/GeiserX/Telegram-Archive?style=flat-square&logo=github"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/releases"><img alt="Release" src="https://img.shields.io/github/v/release/GeiserX/Telegram-Archive?style=flat-square"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square"></a>
+</p>
+
+---
+
+**Telegram Archive** is a self-hosted backup of one or more Telegram accounts. It runs in Docker, or from the Python package, on your own machine and comes with a web viewer to read and search what it saved. The backup process is the only part that talks to Telegram. The viewer reads the archive and never contacts Telegram.
 
 <div class="grid cards" markdown>
 
@@ -31,6 +47,12 @@ Telegram Archive is a self-hosted backup of one or more Telegram accounts. It ru
     Every setting, its default and what it changes.
 
 </div>
+
+## The viewer
+
+The viewer looks and works like the Telegram app, with the archive behind it. See [Using the viewer](viewer/using-the-viewer.md).
+
+![A group chat open in the viewer, with a pinned message, a photo and reactions](images/screenshots/chat-desktop.png)
 
 ## What it saves
 
