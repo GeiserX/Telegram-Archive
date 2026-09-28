@@ -19,7 +19,7 @@ echo Starting interactive authentication container...
 echo You will be asked for your Telegram verification code.
 echo.
 
-docker compose run --rm telegram-backup python -m src.setup_auth
+docker compose run --rm telegram-backup python -m telegram_archive.setup_auth
 
 echo.
 if %ERRORLEVEL% EQU 0 (

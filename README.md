@@ -58,7 +58,7 @@ Telegram Archive is a self-hosted backup of one or more Telegram accounts. It ru
 5. Log in to Telegram:
 
    ```bash
-   docker compose run --rm telegram-backup python -m src auth
+   docker compose run --rm telegram-backup python -m telegram_archive auth
    ```
 
    The login code arrives in your Telegram app. If the account uses two-step verification, the command also asks for that password. The password shows on screen as you type, so run this where nobody can see your screen.
@@ -74,8 +74,8 @@ Telegram Archive is a self-hosted backup of one or more Telegram accounts. It ru
 The first backup starts right away. For the schedule and what to check next, see [Your first backup](https://geiserx.github.io/Telegram-Archive/getting-started/first-backup/). The compose file pins both images to this release:
 
 ```text
-drumsergio/telegram-archive:8.16.1
-drumsergio/telegram-archive-viewer:8.16.1
+drumsergio/telegram-archive:8.17.0
+drumsergio/telegram-archive-viewer:8.17.0
 ```
 
 ## Documentation
