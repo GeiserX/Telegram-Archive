@@ -14,9 +14,9 @@ Every upload carries the audio. The table lists what else each server gets. No c
 |---|---|
 | akou | File name, content hash, preset, language, speaker-label option, callback URL if set |
 | OpenAI endpoint | File name, model, language, hotwords |
-| Deepgram | Model, language or a request to detect it, speaker-label option when it is on |
+| Deepgram | Model, language or a request to detect it, `smart_format=true`, and the speaker-label option with `diarize_model=latest` when it is on |
 | AssemblyAI | Model if `TRANSCRIPTION_MODEL` is set, language or a request to detect it, speaker-label option |
-| ElevenLabs | File name, model, language if you set one, speaker-label option |
+| ElevenLabs | File name, model, language if you set one, speaker-label option, `timestamps_granularity=word` |
 
 When the audio track is sent, the file name ends in `.ogg`.
 
@@ -107,7 +107,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     TRANSCRIPTION_MODEL=
     ```
 
-    The key is sent as the raw `Authorization` header, without `Bearer`. The archive uploads the file, then polls every 3 seconds. If the whole call takes more than 600 seconds, the file fails with reason `timeout`. The archive keeps no AssemblyAI job id to resume, so a retry uploads the file again and AssemblyAI bills it again.
+    The key is sent as the raw `Authorization` header, without `Bearer`. The archive uploads the file, then polls every 3 seconds. If the whole call takes more than 600 seconds, the file fails with reason `timeout`. The archive keeps no AssemblyAI job id to resume, so a retry uploads the file again as a new job. AssemblyAI bills that job again if it completes.
 
 === "ElevenLabs"
 

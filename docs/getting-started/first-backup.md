@@ -10,7 +10,7 @@ The first run reads each chat from the start of its history, oldest message firs
 
 The backup writes messages in batches of 100 and saves its progress after each batch. If the container stops or restarts, the next run continues from the last saved batch instead of starting the chat again.
 
-The backup downloads media as it reads the messages. Each file is stored once and shared between the chats that contain it.
+The backup downloads media as it reads the messages. With the default `DEDUPLICATE_MEDIA=true`, each file is stored once and shared between the chats that contain it.
 
 When every chat is done, the run fetches forum topics and Telegram folders. It then recalculates the statistics and retries failed downloads. If a transcription server is configured, it sends queued voice messages to it.
 

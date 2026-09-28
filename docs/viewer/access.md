@@ -104,7 +104,7 @@ The master login manages accounts in the viewer itself. Open the gear icon, **Ad
 | Active | Untick to block the account without deleting it. |
 | No Downloads | Makes this a [no-download login](#no-download-logins). |
 
-Saving a change to a viewer account, or deleting it, ends all of its sessions, closes its live connections and deletes its push subscriptions. The user has to log in again.
+Saving a change to a viewer account, or deleting it, ends all of its sessions, closes its live connections and deletes its push subscriptions. The user has to log in again. A second viewer keeps the sessions it already holds. See [A second viewer](#a-second-viewer).
 
 !!! warning "No chats ticked means all chats"
     The form sends an empty **Allowed Chats** box as "all chats". Viewer accounts created through proxy identity start with no chats at all. If you edit one of them and tick nothing, you widen it to every chat. Always tick the chats you mean to grant.
@@ -136,7 +136,7 @@ The session is named `token:<label>`, and it sees only the chats of the token. A
 
 To end access:
 
-- **Revoke** or **Delete** the token in the list. Either one ends every session the token created and deletes their push subscriptions. Changing its chats or its no-download setting through the API does the same.
+- **Revoke** or **Delete** the token in the list. Either one ends every session the token created and deletes their push subscriptions on this viewer. A second viewer keeps the sessions it already holds. See [A second viewer](#a-second-viewer). Changing its chats or its no-download setting through the API does the same.
 - Do not rely on expiry for this. Expiry only stops new logins with the token. Sessions it already opened keep working until `AUTH_SESSION_DAYS` runs out.
 
 Each token login checks the presented token against every live token in turn, at about 50 ms per token. Delete tokens you no longer need.

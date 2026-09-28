@@ -20,7 +20,7 @@ The record of logins, failed logins, logouts, share-token logins and admin chang
 
 ## The backup
 
-The process that talks to Telegram and writes the archive. It runs in the backup container, or as a native `telegram-archive` process, and it is the only part that holds a Telegram session. See [Two ways to run the backup](../configuration/schedule.md#two-ways-to-run-the-backup).
+The process that talks to Telegram and writes the archive. It runs in the backup container, or as a native `telegram-archive` process, and it is the only part that holds a Telegram session while the archive runs. The login command and the maintenance scripts that talk to Telegram use the same session, so stop the backup before you run them. See [Two ways to run the backup](../configuration/schedule.md#two-ways-to-run-the-backup).
 
 ## Backup run
 

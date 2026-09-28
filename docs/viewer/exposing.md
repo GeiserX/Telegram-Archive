@@ -8,7 +8,7 @@ Viewer accounts, share tokens and proxy logins are covered in [Logins, viewer ac
 
 The stock `docker-compose.yml` publishes the viewer on `127.0.0.1:8000` only. Nothing outside the host can reach it until you add a proxy or change that line.
 
-The viewer container has few privileges and holds no secrets:
+The viewer container has few privileges and no Telegram credentials. The only secrets it may hold are the viewer passwords and the internal push secret:
 
 - It holds no Telegram credentials. The compose service has no `env_file`, so it receives only the variables listed in its `environment:` block. The image does not contain the Telegram client library.
 - It runs as the non-root user `telegram`, uid 1000.

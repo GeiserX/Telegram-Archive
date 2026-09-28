@@ -8,7 +8,7 @@ Live updates come from the real-time listener, which runs inside the backup cont
 
 Without the listener, the viewer still shows new messages, but only after a scheduled backup has written them. The open chat polls its newest 50 messages every 3 seconds and picks them up that way.
 
-Instant new messages and every kind of notification need both of these on the backup side:
+Instant new messages, and the notifications for them, need both of these on the backup side:
 
 ```bash
 ENABLE_LISTENER=true

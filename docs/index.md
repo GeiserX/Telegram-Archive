@@ -26,7 +26,7 @@ hide:
 
     ---
 
-    Start the backup and the viewer with the shipped compose file, then [log in to Telegram](getting-started/telegram-login.md).
+    [Log in to Telegram](getting-started/telegram-login.md), then start the backup and the viewer with the shipped compose file.
 
 -   :material-play-circle-outline: **[Your first backup](getting-started/first-backup.md)**
 

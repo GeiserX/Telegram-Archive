@@ -108,7 +108,7 @@ To run the PostgreSQL leg, start a server and point `TEST_POSTGRES_URL` at it:
 docker run --rm -d --name telegram-archive-test-pg \
   -e POSTGRES_USER=telegram \
   -e POSTGRES_PASSWORD=not-a-secret \
-  -p 5432:5432 \
+  -p 127.0.0.1:5432:5432 \
   postgres:18-alpine
 
 export TEST_POSTGRES_URL=postgresql://telegram:not-a-secret@localhost:5432/postgres

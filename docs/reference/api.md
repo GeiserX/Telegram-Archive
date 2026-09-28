@@ -478,6 +478,6 @@ Errors come back as `{"detail": "..."}`.
 | 415 | `/media/open` on a type the viewer does not show inline |
 | 429 | Login rate limit |
 | 500 | Any other failure. The detail is always `Internal server error` |
-| 503 | Database unreachable, or no login mode configured |
+| 503 | Database unreachable, or no login mode configured. `POST /auth/token` answers 500 with `Database not available` instead |
 
 `CORS_ORIGINS` defaults to `*` with credentials off, so a browser page on another origin cannot send the cookie. List explicit origins to turn credentials on for them. Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin` and a same-origin `Content-Security-Policy`.
