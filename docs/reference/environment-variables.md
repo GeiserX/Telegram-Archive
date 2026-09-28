@@ -6,7 +6,7 @@ This page lists every setting Telegram Archive reads. Each row gives the default
 
 All configuration comes from environment variables. There is no configuration file.
 
-At startup the program also loads a `.env` file. It looks for that file starting in the directory of the installed `telegram_archive` package and walking up, not in the working directory. In a source checkout this finds the checkout's `.env`. In a pip install it only finds a `.env` in a parent of `site-packages`, such as a project folder that holds the virtualenv. Otherwise, export the variables in the shell. A variable that is already set in the environment always wins over the same name in `.env`.
+At startup the program also loads a `.env` file. It starts in the directory of the installed `telegram_archive` package and walks up through its parents. It never looks in the working directory. In a source checkout this finds the checkout's `.env`. In a pip install it only finds a `.env` in a parent of `site-packages`, such as a project folder that holds the virtualenv. Otherwise, export the variables in the shell. A variable that is already set in the environment always wins over the same name in `.env`.
 
 Under the stock `docker-compose.yml`:
 
@@ -20,21 +20,21 @@ The viewer builds the same settings object as the backup. A shared check that fa
 - Booleans accept `1`, `true`, `yes`, `on` and `0`, `false`, `no`, `off`, in any case, with surrounding spaces ignored. Empty or unset means the default. Anything else stops startup with `Invalid boolean value for <NAME>`.
 - Three booleans are stricter. `ALLOW_ANONYMOUS_VIEWER`, `TRUST_PROXY_HEADERS` and `DB_ECHO` treat only the word `true`, in any case, as true. `1` or `yes` silently mean false.
 - For integers and decimals, empty or unset means the default. A value that is not a number stops startup with an error that names the variable. `nan` and `inf` are rejected, except by `BACKOFF_MIN_SECONDS` and `BACKOFF_MAX_SECONDS`, which accept them.
-- Chat id lists are comma-separated integers. Use the marked form that Telegram uses for groups and channels, such as `-1001234567890`. A non-integer entry stops startup with Python's generic `invalid literal for int()` error, which does not say which variable is wrong. At the start of each backup, the backup checks filter ids written without the `-100` prefix. If the marked chat is already archived, it uses the marked form.
-- Three viewer integers are read with no check at all: `AUTH_SESSION_DAYS`, `MAX_WS_CONNECTIONS` and `MAX_WS_SUBSCRIPTIONS_PER_CONNECTION`. A value that is not an integer crashes the viewer as it starts.
+- Chat id lists are comma-separated integers. Use the marked form that Telegram uses for groups and channels, such as `-1001234567890`. A non-integer entry stops startup with Python's generic `invalid literal for int()` error, which does not say which variable is wrong. When a backup starts, it looks at filter ids written without the `-100` prefix. If the marked chat is already archived, it uses the marked id instead.
+- A FloodWait is Telegram telling the client to pause before its next request.
 - Empty id lists count as unset. A chat id list set to an empty string behaves as if it were not set. `CHAT_TYPES` is the exception: an explicitly empty value means no types. To clear a filter for one account in a multi-account setup, set its per-account override to `none`.
 
 ### What happens on a bad value
 
 | Outcome | Settings |
 |---|---|
-| Startup stops, and the error names the variable | Most booleans, integers and decimals. `SKIP_TOPIC_IDS`, the proxy, the `TG_ACCOUNT_<N>` credential variables and `TG_ACCOUNT_<N>_CHAT_TYPES`. `DELETION_MODE` and `MASS_OPERATION_*`, even with the listener off, and in the viewer too. The three transcription integers (`TRANSCRIPTION_MAX_SECONDS`, `TRANSCRIPTION_MAX_UPLOAD_MB`, `TRANSCRIPTION_BACKFILL_PER_RUN`) while transcription is on. |
+| Startup stops, and the error names the variable | Most booleans, integers and decimals<br>`SKIP_TOPIC_IDS`, the proxy settings, the `TG_ACCOUNT_<N>` credentials and `TG_ACCOUNT_<N>_CHAT_TYPES`<br>`DELETION_MODE` and `MASS_OPERATION_*`, in the viewer too and even with the listener off<br>`TRANSCRIPTION_MAX_SECONDS`, `TRANSCRIPTION_MAX_UPLOAD_MB` and `TRANSCRIPTION_BACKFILL_PER_RUN`, while transcription is on |
 | Startup stops, and the error shows the bad value but not the variable | `CHAT_TYPES`, `DOWNLOAD_MEDIA_TYPES`, `DOWNLOAD_DOCUMENT_MIME_TYPES`. |
 | Startup stops with a generic error | A non-integer entry in any chat or folder id list, including the `TG_ACCOUNT_<N>_*` id overrides and `TRANSCRIPTION_PRIORITY_CHAT_IDS`. |
 | The viewer crashes as it starts | `AUTH_SESSION_DAYS`, `MAX_WS_CONNECTIONS`, `MAX_WS_SUBSCRIPTIONS_PER_CONNECTION`. |
 | A warning is logged and the default is used | `MAX_FLOOD_RETRIES`, `MAX_FLOOD_WAIT_SECONDS`, `BACKOFF_MIN_SECONDS`, `BACKOFF_MAX_SECONDS`, `FLOOD_WAIT_LOG_THRESHOLD`, `MEDIA_REFRESH_MAX_ATTEMPTS`, `MEDIA_REFRESH_TIMEOUT_SECONDS`. `VIEWER_TIMEZONE` becomes `UTC`. `STATS_CALCULATION_HOUR` becomes `3`. |
 | The value silently falls back | `LOG_LEVEL` becomes `INFO`. `PUSH_NOTIFICATIONS` becomes `basic`, and it is not trimmed, so a stray space counts as a bad value. `PARALLEL_DOWNLOAD_PART_SIZE_KB` snaps to a valid size. `DATABASE_TIMEOUT` becomes 60 seconds. |
-| A warning is logged and the feature turns off or degrades | Every `EVENT_WEBHOOK_*` setting except `EVENT_WEBHOOK_ENABLED`. `TRANSCRIPTION_URL`, `TRANSCRIPTION_PRESET`, `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_TYPES`, `TRANSCRIPTION_WEBHOOK_SECRET` and `TRANSCRIPTION_CALLBACK_URL`. `VIEWER_CHAT_BACKGROUND`. |
+| A warning is logged and the feature turns off or falls back to a default | Every `EVENT_WEBHOOK_*` setting except `EVENT_WEBHOOK_ENABLED` and `EVENT_WEBHOOK_BODY_TEMPLATE`. `TRANSCRIPTION_URL`, `TRANSCRIPTION_PRESET`, `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_TYPES`, `TRANSCRIPTION_WEBHOOK_SECRET` and `TRANSCRIPTION_CALLBACK_URL`. `VIEWER_CHAT_BACKGROUND`. |
 
 ### Applying a change
 
@@ -52,8 +52,8 @@ Feature page: [Log in to Telegram](../getting-started/telegram-login.md).
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="telegram_api_id"></span>`TELEGRAM_API_ID` | unset | backup | Integer API id from my.telegram.org. Required in single-account mode. Ignored once any `TG_ACCOUNT_<N>` credential variable is set. A non-numeric value stops startup in both modes. |
-| <span id="telegram_api_hash"></span>`TELEGRAM_API_HASH` | unset | backup | API hash from my.telegram.org. Required in single-account mode. Ignored in indexed mode. |
+| <span id="telegram_api_id"></span>`TELEGRAM_API_ID` | unset | backup | Integer API id from my.telegram.org. Required in single-account mode. Ignored once any `TG_ACCOUNT_<N>` credential variable is set. A non-numeric value stops startup in single-account and [indexed](#multiple-accounts) mode. |
+| <span id="telegram_api_hash"></span>`TELEGRAM_API_HASH` | unset | backup | API hash from my.telegram.org. Required in single-account mode. Ignored in [indexed mode](#multiple-accounts). |
 | <span id="telegram_phone"></span>`TELEGRAM_PHONE` | unset | backup | Phone number with country code. Required in single-account mode. Ignored in indexed mode. |
 | <span id="session_name"></span>`SESSION_NAME` | `telegram_backup` | backup | Session file name inside `SESSION_DIR` for the single account. Also the fallback name for account 1 in indexed mode. |
 | <span id="session_dir"></span>`SESSION_DIR` | `session` beside `BACKUP_PATH`, so `/data/session` | backup | Directory for session files. Made absolute and created at startup. `--data-dir PATH` sets it to `PATH/session`. |
@@ -63,7 +63,7 @@ Feature page: [Log in to Telegram](../getting-started/telegram-login.md).
 
 Feature page: [Multiple accounts](../configuration/multiple-accounts.md).
 
-Any non-empty `TG_ACCOUNT_<N>_API_ID`, `_API_HASH`, `_PHONE_NUMBER`, `_LABEL` or `_SESSION_NAME` switches to indexed mode. `N` starts at 1, has no leading zeros and must be contiguous. A `TG_ACCOUNT_` variable with an unknown suffix stops startup. Errors name the variable, never the value.
+Any non-empty `TG_ACCOUNT_<N>_API_ID`, `_API_HASH`, `_PHONE_NUMBER`, `_LABEL` or `_SESSION_NAME` switches to indexed mode. `N` starts at 1, has no leading zeros and must be contiguous. A `TG_ACCOUNT_` variable with an unknown suffix stops startup. Errors name the variable. A credential or phone number is never echoed; an invalid `TG_ACCOUNT_<N>_CHAT_TYPES` entry is.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
@@ -115,7 +115,7 @@ Feature page: [Choosing chats](../configuration/choosing-chats.md).
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="chat_ids"></span>`CHAT_IDS` | empty | backup | Whitelist mode. When non-empty, the backup saves only these chats and ignores every other filter, including folder filters. `PRIORITY_CHAT_IDS` and `SKIP_MEDIA_CHAT_IDS` still apply. |
+| <span id="chat_ids"></span>`CHAT_IDS` | empty | backup | [Whitelist mode](../configuration/choosing-chats.md). When non-empty, the backup saves only these chats and ignores every other filter, including folder filters. `PRIORITY_CHAT_IDS` and `SKIP_MEDIA_CHAT_IDS` still apply. |
 | <span id="whitelist_resolve_dialog_limit"></span>`WHITELIST_RESOLVE_DIALOG_LIMIT` | `1000` | backup | If the backup cannot find a `CHAT_IDS` entry, it scans up to this many chats in your chat list once, for at most 300 seconds, then tries the entry again. `0` turns the scan off. |
 | <span id="chat_types"></span>`CHAT_TYPES` | `private,groups,channels` | backup | Types backed up in type-based mode: `private`, `groups`, `channels`, `bots`. Bots are not in the default. An explicitly empty value means no types, so only include lists admit chats. The stock compose turns an empty value into the default. An unknown type stops startup. |
 | <span id="global_include_chat_ids"></span>`GLOBAL_INCLUDE_CHAT_IDS` | empty | backup | When set, only these chats of any type, plus the members of `GLOBAL_INCLUDE_FOLDER_IDS`, are backed up. `CHAT_TYPES` and the per-type include lists are then ignored. |
@@ -136,7 +136,7 @@ Feature page: [Choosing chats](../configuration/choosing-chats.md).
 | <span id="channels_include_folder_ids"></span>`CHANNELS_INCLUDE_FOLDER_IDS` | empty | backup | Folder-based allow-list for channels. |
 | <span id="priority_chat_ids"></span>`PRIORITY_CHAT_IDS` | empty | backup | These chats are backed up first. |
 | <span id="skip_topic_ids"></span>`SKIP_TOPIC_IDS` | empty | backup | Forum topics to skip, as comma-separated `chat_id:topic_id` pairs. Topic `1` is the General topic. A malformed entry stops startup and names the entry. |
-| <span id="follow_chat_migrations"></span>`FOLLOW_CHAT_MIGRATIONS` | `false` | backup | When a tracked basic group becomes a supergroup, back up the new supergroup too. Off, the backup only logs a warning. |
+| <span id="follow_chat_migrations"></span>`FOLLOW_CHAT_MIGRATIONS` | `false` | backup | When a tracked basic group becomes a supergroup, back up the new supergroup too. When this is false, the backup only logs a warning. |
 
 ## Media {#media}
 
@@ -149,8 +149,8 @@ Feature page: [Media downloads](../configuration/media.md).
 | <span id="download_media_types"></span>`DOWNLOAD_MEDIA_TYPES` | empty, every type | backup | Comma-separated allow-list: `photo`, `video`, `video_note`, `animation`, `voice`, `audio`, `sticker`, `document`, `webpage`. An unknown type stops startup. Applies to the scheduled backup and the listener. |
 | <span id="download_document_mime_types"></span>`DOWNLOAD_DOCUMENT_MIME_TYPES` | empty, every document | backup | Narrows `document` to full `type/subtype` MIME types. A document passes on an exact MIME match or on a file extension that belongs to one of the listed types. Wildcards and bare extensions stop startup. |
 | <span id="download_chat_description"></span>`DOWNLOAD_CHAT_DESCRIPTION` | `false` | backup | Fetch each chat's description or bio and member count every run, at one extra request per chat. |
-| <span id="download_timeout_seconds"></span>`DOWNLOAD_TIMEOUT_SECONDS` | `3600` | backup | Time limit for one download attempt. `0` turns the limit off. A FloodWait is Telegram telling the client to pause before its next request. Any FloodWait the download waits out counts toward this limit. |
-| <span id="media_flood_sleep_threshold"></span>`MEDIA_FLOOD_SLEEP_THRESHOLD` | `60` | backup | FloodWaits up to this many seconds during a media transfer are waited out in place. `0` fails at once. Used by the backup and the listener. |
+| <span id="download_timeout_seconds"></span>`DOWNLOAD_TIMEOUT_SECONDS` | `3600` | backup | Time limit for one download attempt. `0` turns the limit off. Time spent waiting out a FloodWait counts toward this limit. |
+| <span id="media_flood_sleep_threshold"></span>`MEDIA_FLOOD_SLEEP_THRESHOLD` | `60` | backup | The backup and the listener wait out a FloodWait of up to this many seconds during a media transfer. `0` fails at once. |
 | <span id="media_max_filename_bytes"></span>`MEDIA_MAX_FILENAME_BYTES` | `143` | backup | Byte budget for a stored media file name. The file id prefix and the extension are always kept. The `import` command uses it too. |
 | <span id="media_max_download_attempts"></span>`MEDIA_MAX_DOWNLOAD_ATTEMPTS` | `5` | both | The retry pass gives up on a file after this many failed attempts. The viewer reads it only to split pending from given-up files in Archive Status. The stock compose does not pass it to the viewer. |
 | <span id="media_refresh_max_attempts"></span>`MEDIA_REFRESH_MAX_ATTEMPTS` | `3` | backup | Total attempts per file within one run, the first included. Covers expired file references, location errors and timeouts. |
@@ -175,10 +175,10 @@ Feature page: [Schedule and backup tuning](../configuration/schedule.md).
 |---|---|---|---|
 | <span id="batch_size"></span>`BATCH_SIZE` | `100` | backup | Messages written per database batch. Not clamped. |
 | <span id="checkpoint_interval"></span>`CHECKPOINT_INTERVAL` | `1` | backup | Save the chat's progress every N batches. Floored at 1. |
-| <span id="sync_deletions_edits"></span>`SYNC_DELETIONS_EDITS` | `false` | backup | Re-read every archived message each run to catch edits and deletions. Slow on large archives. Deletions follow `DELETION_MODE`. There is no mass-operation limit here, and it never fires the event webhook. |
+| <span id="sync_deletions_edits"></span>`SYNC_DELETIONS_EDITS` | `false` | backup | Re-read every archived message each run to catch edits and deletions. Slow on large archives. Deletions follow `DELETION_MODE`. The mass-operation limit does not apply to it, and it never fires the event webhook. |
 | <span id="fill_gaps"></span>`FILL_GAPS` | `false` | backup | Run gap-fill after the startup backup and after each scheduled backup. The one-shot `backup` command never runs it. |
 | <span id="gap_threshold"></span>`GAP_THRESHOLD` | `50` | backup | A gap is a jump between stored message ids larger than this. `fill-gaps --threshold` overrides it. |
-| <span id="dialog_flood_sleep_threshold"></span>`DIALOG_FLOOD_SLEEP_THRESHOLD` | `60` | backup | FloodWaits up to this many seconds while listing dialogs are waited out in place. `0` fails at once. |
+| <span id="dialog_flood_sleep_threshold"></span>`DIALOG_FLOOD_SLEEP_THRESHOLD` | `60` | backup | While listing dialogs, the backup waits out a FloodWait of up to this many seconds. `0` fails at once. |
 | <span id="max_flood_retries"></span>`MAX_FLOOD_RETRIES` | `5` | backup | Retries after a FloodWait or a transient error before a call gives up. |
 | <span id="max_flood_wait_seconds"></span>`MAX_FLOOD_WAIT_SECONDS` | `3600` | backup | A FloodWait longer than this is not waited out. The call fails and the work is retried next run. |
 | <span id="backoff_min_seconds"></span>`BACKOFF_MIN_SECONDS` | `2.0` | backup | First delay of the exponential backoff. |
@@ -197,7 +197,7 @@ Feature page: [Real-time listener](../configuration/listener.md).
 | <span id="listen_new_messages"></span>`LISTEN_NEW_MESSAGES` | `true` | backup | Save new messages as they arrive. Viewer notifications depend on it. |
 | <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `false` | backup | Also download the media of new messages at once. Otherwise media waits for the next scheduled backup. |
 | <span id="listen_edits"></span>`LISTEN_EDITS` | `true` | backup | Apply text edits as they happen. The previous text is kept as a version. |
-| <span id="listen_deletions"></span>`LISTEN_DELETIONS` | `false` | backup | Act on deletions. When false, deletions are only counted. |
+| <span id="listen_deletions"></span>`LISTEN_DELETIONS` | `false` | backup | Apply deletions as `DELETION_MODE` says. When false, the listener only counts them. |
 | <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, transcripts and reactions. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |
 | <span id="listen_chat_actions"></span>`LISTEN_CHAT_ACTIONS` | `true` | backup | Save service messages such as joins and leaves, and refresh chat titles and photos. |
 | <span id="listen_reactions"></span>`LISTEN_REACTIONS` | `false` | backup | Capture per-emoji reaction counts as they change. |
@@ -210,7 +210,7 @@ Feature page: [Real-time listener](../configuration/listener.md).
 
 Feature page: [Event webhook](../configuration/event-webhook.md).
 
-The sub-settings are checked only when `EVENT_WEBHOOK_ENABLED` is true. A bad one logs one warning that names the variable, never the value, and turns the webhook off.
+The sub-settings other than the body template are checked only when `EVENT_WEBHOOK_ENABLED` is true. A bad one logs one warning that names the variable, never the value, and turns the webhook off.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
@@ -220,25 +220,25 @@ The sub-settings are checked only when `EVENT_WEBHOOK_ENABLED` is true. A bad on
 | <span id="event_webhook_headers"></span>`EVENT_WEBHOOK_HEADERS` | empty, and `Content-Type: application/json; charset=utf-8` is added | backup | A JSON object with string values. The `Content-Type` picks how placeholders are escaped. |
 | <span id="event_webhook_events"></span>`EVENT_WEBHOOK_EVENTS` | `message_edited,message_deleted` | backup | Which events fire, from those two names. |
 | <span id="event_webhook_chat_ids"></span>`EVENT_WEBHOOK_CHAT_IDS` | empty, all chats | backup | Marked chat ids to fire for. No `-100` correction is applied. |
-| <span id="event_webhook_body_template"></span>`EVENT_WEBHOOK_BODY_TEMPLATE` | empty, the built-in JSON body | backup | Custom body with `{placeholder}` substitution. The feature page lists the placeholders and filters. |
+| <span id="event_webhook_body_template"></span>`EVENT_WEBHOOK_BODY_TEMPLATE` | empty, the built-in JSON body | backup | Custom body with `{placeholder}` substitution. The feature page lists the placeholders and filters. Not checked at startup. An unknown placeholder renders as an empty string and an unknown filter uses the automatic escaping, silently. |
 
 ## Voice transcription {#transcription}
 
 Feature page: [Voice transcription](../configuration/transcription.md).
 
-The transcription settings are checked only while transcription is on. Then a non-integer `TRANSCRIPTION_MAX_SECONDS`, `TRANSCRIPTION_MAX_UPLOAD_MB` or `TRANSCRIPTION_BACKFILL_PER_RUN`, or a non-integer entry in `TRANSCRIPTION_PRIORITY_CHAT_IDS`, stops startup. The other settings warn and degrade.
+The backup checks the transcription settings only while transcription is on. [What happens on a bad value](#what-happens-on-a-bad-value) lists which ones stop startup and which only log a warning.
 
-!!! note "Not in 8.16.1"
-    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_HOTWORDS` were added after the 8.16.1 release. An 8.16.1 image ignores them.
+!!! note "Added in 8.17.0"
+    `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_HOTWORDS` were added in 8.17.0. Older images ignore them.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="transcription_enabled"></span>`TRANSCRIPTION_ENABLED` | `true` | both | Master switch. Off means no transcription runs, no button in the viewer and no callback route. The stock compose passes it to the viewer. |
+| <span id="transcription_enabled"></span>`TRANSCRIPTION_ENABLED` | `true` | both | Turns transcription on or off. Off means no transcription runs, no button in the viewer and no callback route. The stock compose passes it to the viewer. |
 | <span id="transcription_url"></span>`TRANSCRIPTION_URL` | empty | both | Base URL of the transcription server, without a `/v1` suffix. Empty means no server. A URL that is not `http` or `https` with a host name warns and turns transcription off. The viewer only checks whether it is set and never connects to it. The stock compose passes it to the viewer. |
 | <span id="transcription_api_key"></span>`TRANSCRIPTION_API_KEY` | empty | backup | Key sent in the provider's authentication header. Never logged. |
 | <span id="transcription_provider"></span>`TRANSCRIPTION_PROVIDER` | `auto` | backup | `auto`, `akou`, `openai`, `deepgram`, `assemblyai` or `elevenlabs`. An unknown name warns and becomes `auto`. |
 | <span id="transcription_preset"></span>`TRANSCRIPTION_PRESET` | `auto` | backup | `lite`, `fast`, `best`, `fusion` or `auto`. Only sent to an akou transcription server. An unknown name warns and becomes `auto`. |
-| <span id="transcription_model"></span>`TRANSCRIPTION_MODEL` | empty, the provider's default | backup | Model name for every server except akou when it runs transcriptions as queued jobs. The defaults are `whisper-1` on the OpenAI endpoint, `nova-3` on Deepgram and `scribe_v2` on ElevenLabs. AssemblyAI picks its own. |
+| <span id="transcription_model"></span>`TRANSCRIPTION_MODEL` | empty, the provider's default | backup | Model name for every server except akou, which gets `TRANSCRIPTION_PRESET` instead. The defaults are `whisper-1` on the OpenAI endpoint, `nova-3` on Deepgram and `scribe_v2` on ElevenLabs. AssemblyAI picks its own. |
 | <span id="transcription_hotwords"></span>`TRANSCRIPTION_HOTWORDS` | empty | backup | Comma-separated words sent as the prompt on the OpenAI endpoint only. |
 | <span id="transcription_types"></span>`TRANSCRIPTION_TYPES` | `voice` | backup | Media transcribed without a button press: `voice`, `video_note`, `audio`, `video`, `document`. Documents count only with an `audio/` or `video/` MIME type. Unknown names are dropped with a warning, and if none remain the value is `voice`. |
 | <span id="transcription_max_seconds"></span>`TRANSCRIPTION_MAX_SECONDS` | `1800` | backup | Longer media is skipped with a stored reason. There is no value for unlimited: `0` skips every file with a known length. |
@@ -277,13 +277,13 @@ The stock compose passes `DATABASE_URL`, `DB_TYPE`, `DB_PATH` and the `POSTGRES_
 
 Feature page: [Live updates and notifications](../viewer/live-updates.md).
 
-With PostgreSQL, the backup reaches the viewer through the database and these settings do nothing. With SQLite, the backup sends each change to the viewer over plain HTTP, with no encryption. When `VIEWER_HOST` points at another machine, keep the two on a trusted network or a secure tunnel.
+With PostgreSQL, the backup reaches the viewer through the database and these settings do nothing. With SQLite, the backup sends each change to the viewer over unencrypted HTTP. When `VIEWER_HOST` points at another machine, keep the two on a trusted network or a secure tunnel.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
 | <span id="internal_push_secret"></span>`INTERNAL_PUSH_SECRET` | unset. With SQLite, the processes create and share a `.push-secret` file beside the database. | both | Secret the viewer requires on pushes from non-loopback addresses. Needed only when the two processes do not share the database directory. The stock compose passes it to the viewer. |
 | <span id="viewer_host"></span>`VIEWER_HOST` | `localhost`<br>compose: `telegram-viewer` | backup | Host the backup sends SQLite pushes to. |
-| <span id="viewer_port"></span>`VIEWER_PORT` | `8080`<br>compose: `8000` | backup | Port the backup sends SQLite pushes to. The viewer listens on 8000, so a setup outside the stock compose must set `8000`. |
+| <span id="viewer_port"></span>`VIEWER_PORT` | `8080`<br>compose: `8000` | backup | Port the backup sends SQLite pushes to. It must match the port the viewer listens on: `8000` in the images and in the pip instructions, so a setup outside the stock compose must set it, because the code default is `8080`. |
 
 ## Viewer access {#viewer-access}
 
@@ -305,7 +305,7 @@ The stock compose passes every variable in this table to the viewer except `MAX_
 | <span id="cors_origins"></span>`CORS_ORIGINS` | `*` | viewer | Comma-separated allowed origins. With `*`, credentials are not allowed. Also the list of origins allowed to open a cross-origin WebSocket, where `*` matches nothing. |
 | <span id="max_ws_connections"></span>`MAX_WS_CONNECTIONS` | `200` | viewer | Most WebSocket connections the viewer holds. Extra ones are closed. A non-integer crashes the viewer. |
 | <span id="max_ws_subscriptions_per_connection"></span>`MAX_WS_SUBSCRIPTIONS_PER_CONNECTION` | `16` | viewer | Most chats one WebSocket may follow. A non-integer crashes the viewer. |
-| <span id="display_chat_ids"></span>`DISPLAY_CHAT_IDS` | empty | viewer | Show only these chats, to every login including the master. Ids without the `-100` prefix are corrected when the marked chat is archived. |
+| <span id="display_chat_ids"></span>`DISPLAY_CHAT_IDS` | empty | viewer | Show only these chats, to every login including the master login. Ids without the `-100` prefix are corrected when the marked chat is archived. |
 
 ## Viewer display {#viewer-display}
 
@@ -320,8 +320,8 @@ The stock compose passes `VIEWER_TIMEZONE`, `VIEWER_DEFAULT_THEME`, `VIEWER_CHAT
 | <span id="viewer_chat_background"></span>`VIEWER_CHAT_BACKGROUND` | empty, no wallpaper | viewer | Bare file name of an image in the viewer's static directory, used as the chat wallpaper. Anything that is not a plain file name is ignored with a warning. The image is served without a login. |
 | <span id="show_stats"></span>`SHOW_STATS` | `true` | viewer | `false` hides the statistics menu in the header. The statistics API still answers. |
 | <span id="stats_calculation_hour"></span>`STATS_CALCULATION_HOUR` | `3` | viewer | Hour, 0 to 23 in `VIEWER_TIMEZONE`, of the viewer's daily statistics run. A bad value warns and becomes 3. Under the stock compose, setting it in `.env` has no effect, because the viewer does not receive it. Add it to the viewer's `environment:` block. |
-| <span id="media_open_cmd"></span>`MEDIA_OPEN_CMD` | empty | viewer | Shell command behind the master-only Open button. Placeholders `%PATH%`, `%DIR%` and `%FILENAME%` are quoted and filled in. Opens images, video, audio and PDF only. Runs on the machine serving the viewer, so it suits native installs. |
-| <span id="media_open_path_cmd"></span>`MEDIA_OPEN_PATH_CMD` | empty | viewer | Shell command behind the master-only Show in folder button. Same placeholders, any file type. |
+| <span id="media_open_cmd"></span>`MEDIA_OPEN_CMD` | empty | viewer | Shell command behind the master-login-only Open button. Placeholders `%PATH%`, `%DIR%` and `%FILENAME%` are quoted and filled in. Opens images, video, audio and PDF only. Runs on the machine serving the viewer, so it suits native installs. |
+| <span id="media_open_path_cmd"></span>`MEDIA_OPEN_PATH_CMD` | empty | viewer | Shell command behind the master-login-only Show in folder button. Same placeholders, any file type. |
 
 ## Notifications {#notifications}
 
@@ -355,7 +355,7 @@ Feature page: [Monitoring and troubleshooting](../operations/troubleshooting.md)
 |---|---|---|---|
 | <span id="heartbeat_file"></span>`HEARTBEAT_FILE` | `/tmp/telegram-archive.heartbeat` | backup | File the `schedule` command rewrites every 30 seconds and the backup health check reads. Other commands never write it. |
 | <span id="heartbeat_max_age_seconds"></span>`HEARTBEAT_MAX_AGE_SECONDS` | `180` | backup | The backup container reports unhealthy once the heartbeat is older than this. A value that is not an integer makes every health check fail, so the container stays unhealthy. |
-| <span id="healthcheck_url"></span>`HEALTHCHECK_URL` | `http://127.0.0.1:8000/api/health` | viewer | URL the viewer health check requests. It needs a `status` of `ok`. |
+| <span id="healthcheck_url"></span>`HEALTHCHECK_URL` | `http://127.0.0.1:8000/api/health` | viewer | URL the viewer health check requests. The check passes only when the JSON response has `status` set to `ok`. |
 | <span id="alembic_config"></span>`ALEMBIC_CONFIG` | `/app/telegram_archive/alembic.ini` in the backup image | backup | Set by the backup image so a bare `alembic` command works inside the container. |
 
 ## Maintenance scripts only {#scripts-only}

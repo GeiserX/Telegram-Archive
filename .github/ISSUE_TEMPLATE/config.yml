@@ -4,7 +4,7 @@ contact_links:
     url: https://geiserx.github.io/Telegram-Archive/
     about: Setup, every setting, the viewer, upgrading and troubleshooting
   - name: Roadmap
-    url: https://github.com/GeiserX/Telegram-Archive/blob/main/docs/ROADMAP.md
+    url: https://geiserx.github.io/Telegram-Archive/roadmap/
     about: See planned features before requesting
   - name: Docker Hub
     url: https://hub.docker.com/r/drumsergio/telegram-archive

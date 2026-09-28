@@ -11,15 +11,13 @@ theme:
   logo: logo.svg
   favicon: icon.svg
   palette:
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
+    - scheme: slate
       primary: custom
       accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
+    - scheme: default
       primary: custom
       accent: custom
       toggle:
@@ -124,6 +122,7 @@ exclude_docs: |
 
 nav:
   - Home: index.md
+  - Roadmap: roadmap/index.md
   - Get started:
       - Run with Docker: getting-started/docker.md
       - Log in to Telegram: getting-started/telegram-login.md
@@ -150,5 +149,8 @@ nav:
       - Import and maintenance tasks: operations/maintenance.md
       - Monitoring and troubleshooting: operations/troubleshooting.md
   - Reference:
+      - Glossary: reference/glossary.md
       - Environment variables: reference/environment-variables.md
       - Command line and Python API: reference/cli.md
+      - HTTP API: reference/api.md
+  - Contributing: contributing.md

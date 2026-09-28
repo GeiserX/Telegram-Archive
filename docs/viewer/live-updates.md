@@ -1,40 +1,42 @@
 # Live updates and notifications
 
-New messages, edits and deletions can reach a viewer tab that is already open. The path differs on PostgreSQL and on SQLite. This page also shows how to turn on browser notifications and Web Push, and what each one sends.
+New messages, edits and deletions can reach a viewer tab that is already open. This page also shows how to turn on browser notifications and Web Push, and what each one sends.
 
 ## Where updates come from
 
-Live events come from the real-time listener, which runs inside the backup container and is off by default. Its switches are described in [Real-time listener](../configuration/listener.md). The exception is voice transcripts. The backup's transcription run also sends an event when a transcript changes status. The viewer's own transcription callback route is the other source outside the listener.
+Live updates come from the real-time listener, which runs inside the backup container and is off by default. [Real-time listener](../configuration/listener.md) lists its switches. Voice transcript events are the exception. The backup's transcription run and the viewer's own transcription callback route also send them, so they arrive without the listener.
 
 Without the listener, the viewer still shows new messages, but only after a scheduled backup has written them. The open chat polls its newest 50 messages every 3 seconds and picks them up that way.
 
-Instant updates and every kind of notification need both of these on the backup side:
+Instant new messages, and the notifications for them, need both of these on the backup side:
 
 ```bash
 ENABLE_LISTENER=true
 LISTEN_NEW_MESSAGES=true   # the default
 ```
 
+Edits, deletions, pins, reactions and transcripts still arrive live when `LISTEN_NEW_MESSAGES` is off. The table below shows which of them need a switch of their own.
+
 The viewer forwards these event types to open tabs:
 
 | Event | Sent when |
 |-------|-----------|
-| `new_message` | The listener saves a new message |
+| `new_message` | The listener saves a new message. |
 | `edit` | The listener applies a text edit. Needs `LISTEN_EDITS=true`, the default. |
 | `delete` | The listener applies a deletion. Needs `LISTEN_DELETIONS=true`, off by default. |
-| `pin` | A message is pinned or unpinned |
+| `pin` | The listener sees a message pinned or unpinned. |
 | `reaction` | Reaction counts on a message change. Needs `LISTEN_REACTIONS=true`, off by default. |
-| `transcript` | A voice transcript changes status, from the listener, a backup run, or the viewer's own transcription callback route |
+| `transcript` | A voice transcript changes status, from the listener, a backup run, or the viewer's own transcription callback route. |
 
 The text of a new message or an edit is cut to 500 characters in the event. The full text is always in the database.
 
 ## How updates reach the viewer
 
-The backup and the viewer are separate processes. The way events travel between them depends on the database.
+The backup and the viewer are separate processes, and events travel between them differently on each database.
 
 ### PostgreSQL
 
-The backup sends each event with PostgreSQL `LISTEN/NOTIFY` on the channel `telegram_updates`. The viewer listens on that channel through its own database connection. If the connection fails, the viewer reconnects 5 seconds later.
+The backup sends each event with PostgreSQL `LISTEN/NOTIFY` on the channel `telegram_updates`. The viewer listens on that channel through its own database connection. If the viewer cannot connect, it retries 5 seconds later. A connection that drops after it was established is not detected, so restart the viewer after a database restart.
 
 There is nothing to configure. `VIEWER_HOST` and `VIEWER_PORT` are ignored on PostgreSQL.
 
@@ -47,13 +49,13 @@ The backup POSTs each event to `http://VIEWER_HOST:VIEWER_PORT/internal/push` wi
 | `VIEWER_HOST` | `localhost` | `telegram-viewer` |
 | `VIEWER_PORT` | `8080` | `8000` |
 
-The viewer listens on port 8000, so the code default port misses it. The stock compose file already sets both values. A native install must set the port on the backup side:
+The viewer listens on port 8000, so the code default of 8080 misses it. The stock compose file already sets both values. A native install must set the port on the backup side:
 
 ```bash
 VIEWER_PORT=8000
 ```
 
-The viewer accepts `/internal/push` from loopback addresses such as 127.0.0.1 and from private network addresses, which covers Docker's internal networks and the 10.x, 172.16.x and 192.168.x ranges. A caller on a public address is refused.
+The viewer accepts `/internal/push` from loopback addresses such as 127.0.0.1 and from private network addresses. Private addresses include Docker's internal networks and the 10.x, 172.16.x and 192.168.x ranges. A caller on a public address is refused.
 
 A caller that is not on loopback must send a bearer secret. Once a secret exists, every caller must send it, loopback included. The secret comes from one of two places:
 
@@ -87,6 +89,7 @@ Two limits protect the viewer:
 Both must be plain integers. A typo stops the viewer from starting. Under the stock compose file, the viewer receives only the variables listed in its `environment` block, so add these there if you change them:
 
 ```yaml
+services:
   telegram-viewer:
     environment:
       MAX_WS_CONNECTIONS: "400"
@@ -101,15 +104,17 @@ The viewer accepts a WebSocket from the same origin as the page. A socket from a
 
 | Value | What you get |
 |-------|--------------|
-| `off` | The viewer does not ask for notification permission and does not register the service worker. A browser that already granted permission for this origin still shows a basic notification for the open chat while the tab is hidden. Revoke the permission in the browser to stop them. |
+| `off` | The viewer does not ask for notification permission and does not register the service worker. |
 | `basic` | The default. A browser notification for the open chat while its tab is hidden. |
 | `full` | Web Push. Notifications arrive for every chat you may see, even with the browser closed. |
 
-The value is lowercased but not trimmed. Any other value, including one with a stray space, silently becomes `basic`. `ENABLE_NOTIFICATIONS` is an older switch and is not needed. Setting it to true with `off` turns the permission banner and basic notifications back on.
+With `off`, a browser that already granted permission for this origin still shows a basic notification for the open chat while the tab is hidden. Revoke the permission in the browser to stop them.
+
+The `PUSH_NOTIFICATIONS` value is lowercased but not trimmed. Any other value, including one with a stray space, silently becomes `basic`. `ENABLE_NOTIFICATIONS` is an older switch and is not needed. Setting it to `true` while `PUSH_NOTIFICATIONS=off` turns the permission banner and basic notifications back on. Under the stock compose file the viewer does not receive it. Add it to the viewer's `environment` block if you want that.
 
 When notifications are on and the browser has not decided yet, the sidebar shows **Enable notifications for new messages**. Click **Enable** and allow notifications when the browser asks.
 
-Basic mode uses the page's WebSocket. It fires only when a new message arrives in the chat that is open and the tab is hidden. It shows the chat title and the first 100 characters of the text. A message without text shows `New message received`. When the browser has a Web Push subscription, basic notifications are skipped so you do not get two.
+Basic mode uses the page's WebSocket. It fires only when a new message arrives in the chat that is open and the tab is hidden. It shows the chat title and the first 100 characters of the text. A message without text shows `New message received`. When the browser has a Web Push subscription, the page skips basic notifications so you do not get two.
 
 Full mode uses Web Push. The browser's push service delivers the notification, so the viewer tab does not need to be open.
 
@@ -146,9 +151,12 @@ A subscription made from the viewer covers every chat that user may see.
 Only new messages send a push. Each push has:
 
 - a title, which is the chat title, or `Telegram` when the chat has none;
-- a body, `sender: text`, or just the text when no sender name is known, with the text cut to 100 characters, or `[Media]` for a message without text.
+- a body of `sender: text`, or just the text when no sender name is known;
+- `[Media]` as the text for a message without text.
 
-A newer push for the same chat replaces the older one. Clicking a notification opens `/?chat=<ref>&msg=<id>`, which is the chat at that message.
+The text is cut to 100 characters.
+
+A newer push for the same chat replaces the older one. Clicking a notification opens the chat at that message, at `/?chat=<ref>&msg=<id>`.
 
 !!! note "The push text leaves your server"
     Web Push is delivered through the push service of the browser vendor. The chat title, the sender name and the first 100 characters of each message pass through that service. The content is encrypted for the browser, but the vendor still carries it. Use `basic` or `off` if that is not acceptable.
@@ -160,4 +168,6 @@ A newer push for the same chat replaces the older one. Clicking a notification o
 - When a push service answers 404, 410 or 403, the viewer deletes that subscription.
 - Each subscription keeps a snapshot of its owner's account and chat grants, and gets pushes only for those chats. It is skipped when its owner is disabled, or when the share token behind it is revoked or expired.
 - Logging out removes every subscription of that username. Other browsers of the same user subscribe again the next time they load the viewer.
+- When a browser has a subscription but has blocked notifications, the sidebar shows **Notifications blocked by browser** with an **Unsubscribe** button that removes that subscription.
+- When the push service replaces a subscription, the service worker subscribes again and sends the new one to the viewer.
 - The service worker at `/sw.js` is registered only when notifications are on. It handles pushes and notification clicks. It has no offline cache, so the viewer does not work without a connection.

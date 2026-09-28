@@ -143,7 +143,7 @@ To check or run migrations by hand:
     telegram-archive --data-dir ./data migrate
     ```
 
-The newest revision is `032` in 8.16.1. There is no supported downgrade. To go back to an older release, restore the backup you took before upgrading. See [Upgrading](../operations/upgrading.md).
+The newest revision is `033`, in 8.17.0. There is no supported downgrade. To go back to an older release, restore the backup you took before upgrading. See [Upgrading](../operations/upgrading.md).
 
 ## Search
 
@@ -189,7 +189,7 @@ The backup image ships a mover script. The image entrypoint migrates the empty P
       --network telegram-archive_telegram-network \
       -v ./data/backups/telegram_backup.db:/sqlite.db:ro \
       -e DATABASE_URL=postgresql://telegram:change-me@postgres:5432/telegram_backup \
-      drumsergio/telegram-archive:8.16.1 \
+      drumsergio/telegram-archive:8.17.0 \
       python scripts/migrate-sqlite-to-postgres.py --sqlite /sqlite.db
     ```
 
