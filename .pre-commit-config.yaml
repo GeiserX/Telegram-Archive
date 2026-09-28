@@ -8,6 +8,9 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-yaml
+        # mkdocs.yml uses !!python/name tags that a plain YAML load rejects;
+        # the strict MkDocs build in the docs workflow validates that file.
+        exclude: ^mkdocs\.yml$
       - id: check-toml
       - id: end-of-file-fixer
       - id: trailing-whitespace

@@ -983,10 +983,19 @@ async def seed(data_dir: Path) -> None:
         await close_adapter()
 
 
+# Written into the demo backups folder so --force can tell a demo archive from a
+# real one. --force never deletes a folder without it.
+DEMO_MARKER = ".telegram-archive-demo"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--data-dir", default="data", help="Base data directory (default: data)")
-    parser.add_argument("--force", action="store_true", help="Delete an existing demo archive first")
+    parser.add_argument("--data-dir", default="demo-data", help="Base data directory (default: demo-data)")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete an existing archive first, only if this script created it",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).resolve()
@@ -994,8 +1003,11 @@ def main() -> None:
     if (backup / "telegram_backup.db").exists():
         if not args.force:
             sys.exit(f"{backup / 'telegram_backup.db'} already exists; pass --force to replace it")
+        if not (backup / DEMO_MARKER).exists():
+            sys.exit(f"{backup} holds an archive this script did not create; refusing to delete it")
         shutil.rmtree(backup)
     backup.mkdir(parents=True, exist_ok=True)
+    (backup / DEMO_MARKER).write_text("demo archive written by scripts/generate_dummy_db.py\n")
 
     os.environ.pop("DATABASE_URL", None)
     os.environ["DB_TYPE"] = "sqlite"

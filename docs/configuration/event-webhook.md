@@ -44,7 +44,7 @@ Set these in the backup service's environment, for example in `.env`.
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `EVENT_WEBHOOK_ENABLED` | `false` | Turns the webhook on. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. Any other value stops startup with an error. |
-| `EVENT_WEBHOOK_URL` | empty | Target URL. Required. Must be `http://` or `https://` with a hostname. |
+| `EVENT_WEBHOOK_URL` | empty | Target URL. Required. Must be `http://` or `https://` with a hostname. With `http://` the message text and your headers, tokens included, travel in cleartext. Use it only on a trusted, isolated network, and `https://` everywhere else. |
 | `EVENT_WEBHOOK_METHOD` | `POST` | `POST` or `PUT`, in any case. |
 | `EVENT_WEBHOOK_HEADERS` | empty | A JSON object whose values are all strings, sent unchanged on every request. When the object has no `Content-Type`, the archiver adds `Content-Type: application/json; charset=utf-8`. |
 | `EVENT_WEBHOOK_EVENTS` | `message_edited,message_deleted` | Which events fire, comma-separated, in any case. |

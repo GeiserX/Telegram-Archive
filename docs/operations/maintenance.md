@@ -188,7 +188,7 @@ Each script, its flags and their defaults are listed in [Command line and Python
 `generate_dummy_db.py` migrates the new database to the current schema before filling it. It needs `ffmpeg` on the `PATH` to make the voice notes and the round video. Without it, those messages keep their rows but get no file. It stops if the target folder already holds an archive.
 
 !!! danger "Never point the demo generator at your real data"
-    `generate_dummy_db.py --force` deletes the whole `backups` folder under `--data-dir`, including the database and media. Give it a separate folder under the volume, such as `--data-dir /data/demo`. The default `data` only works outside Docker.
+    `generate_dummy_db.py --force` deletes the whole `backups` folder under `--data-dir`, including the database and media, but only when that folder holds the marker file the script writes. It refuses to delete an archive it did not create. The default `--data-dir` is `demo-data`; inside Docker give it a folder under the volume, such as `--data-dir /data/demo`.
 
 The folder also holds three SQL helpers:
 

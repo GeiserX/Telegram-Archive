@@ -28,7 +28,7 @@ The archive does not wait out a FloodWait longer than 3600 seconds. It retries t
 docker compose logs -f telegram-backup
 ```
 
-The logs never contain chat names, message text, account names or phone numbers. The per-chat progress lines show a position such as `[12/40] Backing up`, not the chat. Archived chats show as `[Archived 3/7]`. To add the chat title to those lines, set `LOG_CHAT_TITLES=true`. The title has control and formatting characters replaced with spaces and is cut to 64 characters. Private chats still show only as `private chat`, never by name.
+By default, the logs do not contain chat names, message text, account names or phone numbers. The per-chat progress lines show a position such as `[12/40] Backing up`, not the chat. Archived chats show as `[Archived 3/7]`. To add the chat title to those lines, set `LOG_CHAT_TITLES=true`. The title has control and formatting characters replaced with spaces and is cut to 64 characters. Private chats still show only as `private chat`, never by name.
 
 ## Watch from the viewer
 
@@ -56,7 +56,7 @@ The backup container reports `healthy` while the scheduler is running. For how t
 
 Later runs are much shorter. For each chat they only fetch messages newer than the last one stored.
 
-Scheduled runs do not look at older messages again. Only two things record edits and deletions of archived messages: the [real-time listener](../configuration/listener.md), or `SYNC_DELETIONS_EDITS=true`. That setting re-reads every archived message on every run.
+Scheduled runs do not look at older messages again. Only two things record edits and deletions of archived messages: the [real-time listener](../configuration/listener.md), which records edits by default and deletions only with `LISTEN_DELETIONS=true`, or `SYNC_DELETIONS_EDITS=true`. That setting re-reads every archived message on every run.
 
 ## Settings worth changing now
 

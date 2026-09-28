@@ -53,7 +53,7 @@ The viewer listens on port 8000, so the code default port misses it. The stock c
 VIEWER_PORT=8000
 ```
 
-The viewer accepts `/internal/push` only from the same machine and from private network addresses. The same machine means a loopback address, such as 127.0.0.1. A caller on any other address is refused.
+The viewer accepts `/internal/push` from loopback addresses such as 127.0.0.1 and from private network addresses, which covers Docker's internal networks and the 10.x, 172.16.x and 192.168.x ranges. A caller on a public address is refused.
 
 A caller that is not on loopback must send a bearer secret. Once a secret exists, every caller must send it, loopback included. The secret comes from one of two places:
 

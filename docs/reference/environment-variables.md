@@ -276,7 +276,7 @@ The stock compose passes `DATABASE_URL`, `DB_TYPE`, `DB_PATH` and the `POSTGRES_
 
 Feature page: [Live updates and notifications](../viewer/live-updates.md).
 
-With PostgreSQL, the backup reaches the viewer through the database and these settings do nothing. With SQLite, the backup sends each change to the viewer over HTTP.
+With PostgreSQL, the backup reaches the viewer through the database and these settings do nothing. With SQLite, the backup sends each change to the viewer over plain HTTP, with no encryption. When `VIEWER_HOST` points at another machine, keep the two on a trusted network or a secure tunnel.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|

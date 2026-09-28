@@ -90,7 +90,7 @@ flowchart TB
 
 ## Privacy
 
-- Everything stays on your own disk.
+- The archive stays on your own disk. Nothing leaves it unless you turn on one of the optional features below, and each sends only what its page describes.
 - Logs never contain message text, chat ids, account names or phone numbers.
 - Transcription is optional. When you turn it on, it sends the server you configure the audio file, its stored file name, a fingerprint of the file called its content hash, your transcription options and, if you set one, your callback URL. No message text or chat details go with it.
 - The event webhook is optional. When on, it sends the message text, the previous text, the chat title and the sender name of each edit or deletion to the URL you configure. See [Event webhook](configuration/event-webhook.md).
