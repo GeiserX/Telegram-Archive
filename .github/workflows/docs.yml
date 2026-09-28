@@ -1,0 +1,58 @@
+name: Documentation
+
+# Pull requests that touch the docs run the strict build, so a broken link or a
+# nav entry for a missing page fails the check instead of reaching the site.
+# A push to main deploys, and only after the same build has passed.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r docs/requirements-docs.txt
+
+      # --strict turns every warning into a failure.
+      - name: Build
+        run: mkdocs build --strict
+
+  deploy:
+    # Runs on push to main only, after the build job has passed.
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r docs/requirements-docs.txt
+
+      - name: Build and deploy
+        run: mkdocs gh-deploy --force

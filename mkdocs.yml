@@ -1,0 +1,154 @@
+site_name: Telegram Archive
+site_url: https://geiserx.github.io/Telegram-Archive
+site_description: Self-hosted Telegram backup with a web viewer. Messages, media and edits stay on your own disk.
+repo_url: https://github.com/GeiserX/Telegram-Archive
+repo_name: GeiserX/Telegram-Archive
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  logo: logo.svg
+  favicon: icon.svg
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+# A cross-link to a heading that no longer exists is only an info line in
+# MkDocs 1.6, even with --strict. Promoting it to a warning makes the strict
+# build fail on it.
+validation:
+  anchors: warn
+  links:
+    absolute_links: warn
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  # base_path includes the repository root, so a page can include a file that
+  # ships, such as docker-compose.yml, word for word. A copied example drifts
+  # from the real file; an included one cannot.
+  #
+  # check_paths makes a missing include fail the build. Without it the page
+  # renders an empty block and nobody notices.
+  - pymdownx.snippets:
+      base_path:
+        - .
+        - docs
+      check_paths: true
+  - pymdownx.mark
+  - attr_list
+  - md_in_html
+  # Turns :material-xxx: shortcodes into icons. The grid cards on the home page
+  # use them, and without this extension they print as literal text.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/GeiserX/Telegram-Archive
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/drumsergio/telegram-archive
+
+extra_css:
+  - stylesheets/theme.css
+
+# Files under docs/ that must not be published as pages.
+#
+# MkDocs builds every Markdown file in docs_dir, listed in nav or not. A file
+# left out of nav still gets a public URL. `mkdocs build --strict` does not
+# catch this: validation.nav.omitted_files defaults to `info`, and --strict
+# only turns warnings into errors. The only reliable guard is this list.
+exclude_docs: |
+  # The changelog stays beside the code. People compare the version they run
+  # with the one they are about to pull on GitHub, and its links are written
+  # relative to the repository, so --strict would fail on them as a page.
+  CHANGELOG.md
+  # Design and planning notes. They describe work in progress, parked ideas and
+  # open decisions, not how the released software behaves. The repository is
+  # public, so they stay readable on GitHub; this only keeps them off the site.
+  ROADMAP.md
+  SPACETIMEDB-MODE.md
+  TRANSCRIPTION.md
+  VIEWER-THEMES.md
+  # Long-form guides written for readers on GitHub, with links relative to the
+  # repository. The site gets its own pages for these topics. Remove a line
+  # here only when that file has been rewritten to be a site page.
+  MERGING-ARCHIVES.md
+  UPGRADING-8.0.md
+  # The docs build dependencies. The workflow reads them from docs/; they are
+  # not a page.
+  requirements-docs.txt
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Run with Docker: getting-started/docker.md
+      - Log in to Telegram: getting-started/telegram-login.md
+      - Your first backup: getting-started/first-backup.md
+      - Install from PyPI: getting-started/pip.md
+  - Configuration:
+      - Choosing chats: configuration/choosing-chats.md
+      - Media downloads: configuration/media.md
+      - Schedule and backup tuning: configuration/schedule.md
+      - Multiple accounts: configuration/multiple-accounts.md
+      - Real-time listener: configuration/listener.md
+      - Event webhook: configuration/event-webhook.md
+      - Voice transcription: configuration/transcription.md
+      - SQLite and PostgreSQL: configuration/database.md
+  - Viewer:
+      - Using the viewer: viewer/using-the-viewer.md
+      - Logins, viewer accounts and share links: viewer/access.md
+      - Themes and wallpaper: viewer/themes.md
+      - Live updates and notifications: viewer/live-updates.md
+      - Exposing the viewer safely: viewer/exposing.md
+  - Operations:
+      - Upgrading: operations/upgrading.md
+      - Backing up the archive: operations/backup-and-restore.md
+      - Import and maintenance tasks: operations/maintenance.md
+      - Monitoring and troubleshooting: operations/troubleshooting.md
+  - Reference:
+      - Environment variables: reference/environment-variables.md
+      - Command line and Python API: reference/cli.md

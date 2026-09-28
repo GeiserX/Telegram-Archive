@@ -63,3 +63,6 @@ Thumbs.db
 logs/
 docker_logs.txt
 error.log
+
+# MkDocs build output
+site/

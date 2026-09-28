@@ -1,0 +1,155 @@
+/* Match the docs to the banner and the app icon.
+ *
+ * banner.svg draws the name on #0E1621 with a darker #070C12 panel, and uses
+ * Telegram blue #2AABEE for its accent bar and divider. The logo is the same
+ * blue on a dark plate. These values keep the header, the logo and the page in
+ * one palette.
+ */
+:root {
+  --md-primary-fg-color:        #0E1621;  /* banner background */
+  --md-primary-fg-color--light: #17212B;
+  --md-primary-fg-color--dark:  #070C12;  /* banner side panel */
+  --md-primary-bg-color:        #F2F6FA;  /* banner title text */
+  --md-primary-bg-color--light: #8FA3B5;  /* banner tagline text */
+
+  --md-accent-fg-color:         #2AABEE;  /* banner accent */
+  --md-accent-fg-color--transparent: #2AABEE1a;
+}
+
+/* Dark scheme: the page body uses the banner background too, so the header
+   and the page read as one surface. */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color:        #0E1621;
+  --md-code-bg-color:           #17212B;
+  --md-typeset-a-color:         #2AABEE;
+}
+
+/* Light scheme: #2AABEE on white is 2.6:1, too faint for body links.
+   #0F7AB8 is the same hue at 4.7:1. */
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color:         #0F7AB8;
+}
+
+/* Give the header logo a fixed size so it does not crowd the site name. */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.6rem;
+  width: 1.6rem;
+}
+
+/* The site name, set the way banner.svg sets it: light and heavy.
+ *
+ * Only the first topic is styled. Material puts the site name in one
+ * .md-header__topic and the page title in a second one, and swaps them on
+ * scroll. Styling both would change every page title too.
+ */
+.md-header__topic:first-child .md-ellipsis {
+  color: #F2F6FA;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* Keep the mark and the name close, so they read as one unit. */
+.md-header__button.md-logo {
+  padding-right: 0.2rem;
+}
+
+.md-header__title {
+  margin-left: 0.2rem;
+}
+
+/* Buttons.
+ *
+ * Material paints .md-button in --md-primary-fg-color, the header colour. On
+ * the dark page that is also the page background, so a button would show as
+ * plain text. Outline buttons take the link colour instead. */
+.md-typeset .md-button {
+  color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+  border-radius: 0.5rem;
+}
+
+.md-typeset .md-button:focus,
+.md-typeset .md-button:hover {
+  background-color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+  color: #ffffff;
+}
+
+.md-typeset .md-button--primary,
+.md-typeset .md-button--primary:focus,
+.md-typeset .md-button--primary:hover {
+  /* White on #2AABEE is 2.6:1. #0F7AB8 -> #0F6FA8 keeps every point above
+     4.5:1. */
+  background: linear-gradient(90deg, #0F7AB8 0%, #0F6FA8 100%);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+.md-typeset .md-button--primary:focus,
+.md-typeset .md-button--primary:hover {
+  box-shadow: 0 0.2rem 0.8rem #2AABEE59;
+}
+
+/* Grid cards: the border picks up the accent on hover, so the cards match
+   the buttons and links. */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border-radius: 0.5rem;
+}
+
+.md-typeset .grid.cards > ul > li:focus-within,
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:focus-within,
+.md-typeset .grid > .card:hover {
+  border-color: #2AABEE;
+}
+
+/* FAQ entries (??? question). Material draws them lime green, a colour that
+   appears nowhere else here; use the accent instead. */
+.md-typeset .admonition.question,
+.md-typeset details.question {
+  border-color: #2AABEE;
+}
+
+.md-typeset .admonition.question:focus-within,
+.md-typeset details.question:focus-within {
+  box-shadow: 0 0 0 0.2rem #2AABEE1a;
+}
+
+.md-typeset .question > .admonition-title::after,
+.md-typeset .question > summary::after {
+  color: #2AABEE;
+}
+
+.md-typeset .question > .admonition-title,
+.md-typeset .question > summary {
+  background-color: #2AABEE1a;
+}
+
+.md-typeset .question > .admonition-title::before,
+.md-typeset .question > summary::before {
+  background-color: #2AABEE;
+}
+
+/* The home page keeps an H1 for search, screen readers and the browser tab.
+   The banner under it already shows the name, so the H1 is hidden visually.
+   Use it as: # Telegram Archive { .ta-visually-hidden } */
+.md-typeset h1.ta-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Environment variable names in tables, such as TG_ACCOUNT_1_API_HASH, must
+   not wrap mid-word. Material sets word-break: break-word on code; normal
+   keeps a name whole but still lets a long log line wrap at its spaces. */
+.md-typeset table:not([class]) code {
+  word-break: normal;
+}
