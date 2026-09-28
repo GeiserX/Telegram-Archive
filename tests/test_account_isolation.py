@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, select
 
-from src.db.models import (
+from telegram_archive.db.models import (
     DEFAULT_ACCOUNT_ID,
     Account,
     Chat,

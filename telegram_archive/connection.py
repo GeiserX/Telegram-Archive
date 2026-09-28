@@ -1,0 +1,405 @@
+"""
+Shared Telegram client connection manager.
+
+This module provides one TelegramClient instance per account that is shared
+between the backup and listener components, avoiding session file lock
+conflicts (v8.0.0: the scheduler owns one TelegramConnection per configured
+account; a single-account deployment still has exactly one).
+
+Architecture:
+- TelegramConnection owns the single client for its account's session file
+- Listener uses it for real-time events
+- Backup uses it for fetching message history
+- Both work on the same connection without conflicts
+"""
+
+import asyncio
+import logging
+import os
+import random
+import shutil
+import sqlite3
+
+from telethon import TelegramClient
+from telethon.errors import FloodPremiumWaitError, FloodWaitError
+
+from .config import AccountConfig, Config
+
+logger = logging.getLogger(__name__)
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%d", name, raw, default)
+        return default
+
+
+def _get_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%.1f", name, raw, default)
+        return default
+
+
+MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
+MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
+BACKOFF_MIN_SECONDS = _get_float_env("BACKOFF_MIN_SECONDS", 2.0)
+BACKOFF_MAX_SECONDS = _get_float_env("BACKOFF_MAX_SECONDS", 300.0)
+
+
+async def _call_with_flood_retry(coro_fn, *args, **kwargs):
+    """Retry a single async call on FloodWaitError with bounded sleep."""
+    retries = 0
+    while True:
+        try:
+            return await coro_fn(*args, **kwargs)
+        except (FloodWaitError, FloodPremiumWaitError) as e:
+            retries += 1
+            if retries > MAX_FLOOD_RETRIES:
+                logger.error(
+                    "FloodWait: exceeded %d retries on %s", MAX_FLOOD_RETRIES, getattr(coro_fn, "__name__", coro_fn)
+                )
+                raise
+            if e.seconds > MAX_FLOOD_WAIT_SECONDS:
+                logger.error(
+                    "FloodWait: required wait %ss exceeds MAX_FLOOD_WAIT_SECONDS=%s on %s",
+                    e.seconds,
+                    MAX_FLOOD_WAIT_SECONDS,
+                    getattr(coro_fn, "__name__", coro_fn),
+                )
+                raise
+            wait_seconds = max(0, e.seconds)
+            # Exponential backoff: use at least the Telegram-required wait,
+            # but escalate on repeated hits so we don't hammer the server.
+            backoff = min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS * (2.0 ** (retries - 1)))
+            effective_wait = max(wait_seconds, backoff)
+            jitter = random.uniform(0.5, 2.0)
+            sleep_duration = effective_wait + jitter
+            logger.warning(
+                "FloodWait: sleeping %.2fs (wait=%ss, backoff=%.0fs) before retrying %s (retry=%d/%d)",
+                sleep_duration,
+                wait_seconds,
+                backoff,
+                getattr(coro_fn, "__name__", coro_fn),
+                retries,
+                MAX_FLOOD_RETRIES,
+            )
+            await asyncio.sleep(sleep_duration)
+
+
+class TelegramConnection:
+    """
+    Manages a single shared Telegram client connection.
+
+    This solves the session lock conflict between listener and backup by
+    ensuring only one TelegramClient instance exists and is shared.
+
+    Usage (one connection per configured account):
+        connection = TelegramConnection(config, account=config.accounts[0])
+        await connection.connect()
+
+        # Pass to backup and listener with that account's resolved row id
+        backup = TelegramBackup(config, db, client=connection.client, account_id=row_id)
+        listener = TelegramListener(config, db, client=connection.client, account_id=row_id)
+
+        # Both use the same connection
+        await backup.backup_all()  # Uses shared client
+        await listener.run()       # Uses shared client
+    """
+
+    def __init__(self, config: Config, account: AccountConfig | None = None):
+        """
+        Initialize the connection manager.
+
+        Args:
+            config: Configuration object
+            account: The account this connection belongs to (session file and
+                API credentials). Defaults to ``config.accounts[0]``, which in a
+                zero-config deployment is the account synthesized from the
+                legacy TELEGRAM_* variables — same values this class read from
+                ``config`` directly before v8.0.0.
+        """
+        self.config = config
+        self.account = account if account is not None else config.accounts[0]
+        config.validate_credentials()
+
+        self._client: TelegramClient | None = None
+        self._connected = False
+        self._me = None
+        # One healer at a time. The scheduler drives the listener watchdog and
+        # the scheduled backup job on the SAME event loop, so either can reach
+        # ensure_connected() while the other is suspended at an await. Without
+        # this lock two coroutines could run the session-file backup/restore and
+        # Telethon's connect() concurrently against a single session database.
+        self._connect_lock = asyncio.Lock()
+
+    @property
+    def client(self) -> TelegramClient | None:
+        """Get the TelegramClient instance."""
+        return self._client
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if connected to Telegram."""
+        return self._connected and self._client is not None
+
+    @property
+    def me(self):
+        """Get the current user info (available after connect)."""
+        return self._me
+
+    @staticmethod
+    def _session_has_auth(session_file: str) -> bool:
+        """Check if a session file contains a non-empty auth_key (i.e. was once authenticated)."""
+        try:
+            if not os.path.isfile(session_file) or os.path.getsize(session_file) == 0:
+                return False
+            conn = sqlite3.connect(session_file)
+            cur = conn.cursor()
+            cur.execute("SELECT auth_key FROM sessions LIMIT 1")
+            row = cur.fetchone()
+            conn.close()
+            return row is not None and row[0] and len(row[0]) > 0
+        except Exception:
+            return False
+
+    async def connect(self) -> TelegramClient:
+        """
+        Connect to Telegram and authenticate.
+
+        Session protection: Telethon's .connect() silently replaces the auth_key
+        in the session DB via DH key exchange when the existing key is invalid
+        server-side. This means a single failed connect permanently destroys the
+        old auth_key. During crash-loops this is catastrophic — the authenticated
+        session is replaced with a useless one on the first attempt.
+
+        We guard against this with two backup tiers:
+        - `.session.authenticated` — golden backup, only written after successful auth
+        - `.session.bak` — pre-connect snapshot, written before every connect attempt
+
+        On auth failure we restore from the golden backup first (known-good state),
+        falling back to the pre-connect snapshot.
+
+        Serialised by ``_connect_lock`` so two coroutines (a scheduled backup and
+        the listener watchdog) can never run this session-file dance at once.
+
+        Returns:
+            The connected TelegramClient instance
+
+        Raises:
+            RuntimeError: If session is not authorized
+        """
+        async with self._connect_lock:
+            return await self._connect_locked()
+
+    async def _discard_client(self) -> None:
+        """Tear the current client down so the next connect builds a fresh one.
+
+        Only for the cases where reviving in place is *wrong*: Telethon reads the
+        session's ``auth_key`` once, when the session object is constructed, so a
+        client that already exists keeps using the old key no matter what we
+        write to the session file. Restoring a backup file therefore only takes
+        effect on a freshly constructed client.
+        """
+        client, self._client = self._client, None
+        self._connected = False
+        if client is None:
+            return
+        try:
+            await client.disconnect()
+        except Exception as e:
+            logger.debug(f"Discarding client: {e}")
+
+    async def _connect_locked(self) -> TelegramClient:
+        """``connect()`` body. Caller must hold ``_connect_lock``."""
+        if self._connected and self._client:
+            logger.debug("Already connected to Telegram")
+            return self._client
+
+        logger.info("Connecting to Telegram...")
+        logger.info(f"Using Telethon session database: {self.account.session_path}.session")
+
+        session_file = self.account.session_path + ".session"
+        snapshot_file = self.account.session_path + ".session.bak"
+        golden_file = self.account.session_path + ".session.authenticated"
+
+        # Tier 1: if the golden backup exists and the live session lost its auth,
+        # restore BEFORE TelegramClient even touches the file.
+        if os.path.isfile(golden_file) and not self._session_has_auth(session_file):
+            if self._session_has_auth(golden_file):
+                logger.warning("Session file has no auth — restoring from authenticated backup")
+                # The restored auth_key only reaches Telethon through a NEW
+                # session object, and the existing client still holds the file
+                # open. Drop it before overwriting the file underneath it.
+                await self._discard_client()
+                shutil.copy2(golden_file, session_file)
+
+        # Tier 2: snapshot the current state before TelegramClient can modify it.
+        if self._session_has_auth(session_file):
+            shutil.copy2(session_file, snapshot_file)
+
+        # Revive the SAME client object whenever we still have one. Callers hold
+        # `connection.client` across long awaits — a backup keeps the client it
+        # was handed for the whole run, and the listener keeps one for the life
+        # of its task — so swapping the object out from under them would strand
+        # them on a disconnected client while the healthy one lives elsewhere,
+        # and would put two TelegramClients on one session file. Telethon allows
+        # connect() after disconnect() on the same instance (only log_out()
+        # invalidates it), so healing in place is both safe for concurrent
+        # holders and sufficient for #265, whose failure is a sender that gave up
+        # and that only a fresh connect() call can revive.
+        if self._client is None:
+            self._client = TelegramClient(
+                self.account.session_path,
+                self.account.api_id,
+                self.account.api_hash,
+                **self.config.get_telegram_client_kwargs(),
+            )
+        else:
+            logger.info("Reviving the existing Telegram client in place")
+
+        # Enable WAL mode for session DB to handle concurrent access
+        self._enable_wal_mode()
+
+        # Connect to Telegram
+        await self._client.connect()
+
+        # Check authorization
+        if not await self._client.is_user_authorized():
+            # Drop the client too: the restore below rewrites the session file,
+            # and only a client built afterwards can pick the restored key up.
+            await self._discard_client()
+            # Restore from the best available backup.
+            # Golden backup is preferred (known-good); snapshot is the fallback.
+            restored = False
+            for backup in (golden_file, snapshot_file):
+                if self._session_has_auth(backup):
+                    logger.warning(f"Auth failed — restoring session from {os.path.basename(backup)}")
+                    shutil.copy2(backup, session_file)
+                    restored = True
+                    break
+            if restored:
+                logger.info("Session restored. Will retry on next scheduler cycle.")
+            logger.error("❌ Session not authorized!")
+            logger.error("Please run the authentication setup first:")
+            logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
+            logger.error("  Local:  python -m telegram_archive.setup_auth")
+            logger.error("  Non-interactive: python scripts/auth_noninteractive.py send")
+            raise RuntimeError("Session not authorized. Please run authentication setup.")
+
+        self._me = await _call_with_flood_retry(self._client.get_me)
+        self._connected = True
+
+        # Auth succeeded — update the golden backup (known-good state).
+        # Flush Telethon's WAL to ensure the file is complete before copying.
+        try:
+            if hasattr(self._client.session, "_conn") and self._client.session._conn:
+                self._client.session._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        shutil.copy2(session_file, golden_file)
+
+        # Deliberately anonymous: the account's name and phone are PII and must
+        # not reach the logs (the same rule that keeps chat ids and message text
+        # out). Which account authenticated is already confirmed at setup time.
+        logger.info("Connected")
+
+        return self._client
+
+    def _enable_wal_mode(self) -> None:
+        """Enable WAL mode on the SQLite session database for better concurrency."""
+        try:
+            if hasattr(self._client.session, "_conn"):
+                if self._client.session._conn:
+                    self._client.session._conn.execute("PRAGMA journal_mode=WAL")
+                    self._client.session._conn.execute("PRAGMA busy_timeout=30000")
+                    logger.info("Enabled WAL mode for Telethon session database")
+        except Exception as e:
+            logger.warning(f"Could not enable WAL mode for session DB: {e}")
+
+    async def disconnect(self) -> None:
+        """
+        Disconnect from Telegram gracefully.
+
+        Note: Telethon has a known issue (LonamiWebs/Telethon#782) where internal
+        tasks (_send_loop, _recv_loop) aren't properly cancelled on disconnect,
+        causing "Task was destroyed but it is pending" warnings. These are harmless
+        and don't affect functionality.
+
+        Takes the connect lock: a scheduled backup job can still be in
+        ensure_connected() while the process is tearing down, and tearing the
+        client down mid-connect is the interleaving this lock exists to prevent.
+        """
+        async with self._connect_lock:
+            await self._disconnect_locked()
+
+    async def _disconnect_locked(self) -> None:
+        """``disconnect()`` body. Caller must hold ``_connect_lock``."""
+        if self._client and self._connected:
+            try:
+                await self._client.disconnect()
+                # Small delay to allow internal task cleanup
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                # Log but don't fail - disconnect errors during shutdown are expected
+                logger.debug(f"Disconnect cleanup: {e}")
+            finally:
+                self._connected = False
+                logger.info("Disconnected from Telegram")
+
+    async def ensure_connected(self) -> TelegramClient:
+        """
+        Ensure the client is connected, reconnecting if necessary.
+
+        Concurrency contract (both halves matter — see ``_connect_locked``):
+
+        - Healing happens IN PLACE. The object returned is the one this
+          connection already owned, so a backup suspended mid-call keeps a
+          reference that heals with it instead of going stale.
+        - Healing is SERIALISED by ``_connect_lock``. The listener watchdog and
+          a scheduled backup share an event loop; without the lock both could be
+          inside connect() at once, on one session database.
+
+        Returns:
+            The connected TelegramClient instance
+        """
+        async with self._connect_lock:
+            if not self.is_connected:
+                return await self._connect_locked()
+
+            # Check if connection is still alive
+            try:
+                if not self._client.is_connected():
+                    logger.warning("Connection lost, reconnecting...")
+                    await self._client.connect()
+                    self._me = await _call_with_flood_retry(self._client.get_me)
+                    logger.info("Reconnected")
+            except Exception as e:
+                logger.warning(f"Connection check failed: {e}, reconnecting...")
+                self._connected = False
+                if self._client:
+                    try:
+                        await self._client.disconnect()
+                    except Exception:
+                        pass
+                await self._connect_locked()
+
+            return self._client
+
+    async def __aenter__(self) -> TelegramConnection:
+        """Async context manager entry."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit."""
+        await self.disconnect()

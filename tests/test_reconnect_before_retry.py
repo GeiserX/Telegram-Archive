@@ -28,7 +28,7 @@ from telethon.sessions import MemorySession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src import telegram_backup
+from telegram_archive import telegram_backup
 
 
 @pytest.fixture
@@ -146,7 +146,7 @@ class TestReconnectIsObservable:
                 raise ConnectionError("Cannot send requests while disconnected")
             return "ok"
 
-        with caplog.at_level(logging.INFO, logger="src.telegram_backup"):
+        with caplog.at_level(logging.INFO, logger="telegram_archive.telegram_backup"):
             await telegram_backup.call_with_flood_retry(plain_call, max_retries=3, client=client)
 
         messages = [record.getMessage() for record in caplog.records]
@@ -163,7 +163,7 @@ class TestReconnectIsObservable:
             raise ConnectionError("Cannot send requests while disconnected")
 
         with (
-            caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
+            caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"),
             pytest.raises(ConnectionError, match="Cannot send requests while disconnected"),
         ):
             await telegram_backup.call_with_flood_retry(plain_call, max_retries=2, client=client)
@@ -181,7 +181,7 @@ class TestReconnectIsObservable:
                 raise ConnectionError("Cannot send requests while disconnected")
             return "ok"
 
-        with caplog.at_level(logging.INFO, logger="src.telegram_backup"):
+        with caplog.at_level(logging.INFO, logger="telegram_archive.telegram_backup"):
             await telegram_backup.call_with_flood_retry(plain_call, max_retries=3, client=client)
 
         reconnect_messages = [
@@ -433,7 +433,7 @@ class TestMediaRefreshPassesItsClient:
     async def test_refresh_message_for_media_reconnects(self, no_sleep):
         """``_refresh_message_for_media`` runs on the media path that reported
         #265; its retried callable is a closure, so the client must be passed."""
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.telegram_backup import TelegramBackup
 
         client = _dead_client()
         connects = {"n": 0}
@@ -547,8 +547,8 @@ class TestListenerRestartAfterAGiveUp:
     every 5 seconds forever, because the gate reads an app-level flag."""
 
     def _scheduler(self, connection):
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler, _AccountRuntime
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler, _AccountRuntime
 
             config = MagicMock()
             config.enable_listener = True
@@ -586,7 +586,7 @@ class TestListenerRestartAfterAGiveUp:
 
     async def test_real_listener_guard_rejects_a_dead_shared_client(self):
         """Why the restart loop never ended, straight from listener.py."""
-        from src.listener import TelegramListener
+        from telegram_archive.listener import TelegramListener
 
         client = _dead_client()
         with pytest.raises(RuntimeError, match="Shared client is not connected"):
@@ -617,7 +617,7 @@ class TestListenerRestartAfterAGiveUp:
                 return listener
 
             async def connect(self):
-                # Mirrors the real guard (src/listener.py, TelegramListener.connect).
+                # Mirrors the real guard (telegram_archive/listener.py, TelegramListener.connect).
                 seen["connected_at_connect"] = self.client.is_connected()
                 if not self.client.is_connected():
                     raise RuntimeError("Shared client is not connected")
@@ -625,7 +625,7 @@ class TestListenerRestartAfterAGiveUp:
             async def run(self):
                 return None
 
-        with patch("src.listener.TelegramListener", StubListener):
+        with patch("telegram_archive.listener.TelegramListener", StubListener):
             await scheduler._start_listener()
 
         assert state["ensure"] == 1
@@ -640,7 +640,7 @@ class TestListenerRestartAfterAGiveUp:
         connection, state = self._connection(client, ensure_raises=OSError("Network is unreachable"))
         scheduler = self._scheduler(connection)
 
-        with caplog.at_level(logging.WARNING, logger="src.scheduler"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.scheduler"):
             await scheduler._start_listener()
 
         assert state["ensure"] == 1

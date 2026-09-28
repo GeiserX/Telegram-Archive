@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 # Self-contained bootstrap (same pattern as test_media_download_disposition.py):
-# _get_client reloads src.web.main, whose Config creates BACKUP_PATH — defaulting
+# _get_client reloads telegram_archive.web.main, whose Config creates BACKUP_PATH — defaulting
 # to the read-only "/data" and erroring this module when it runs on its own.
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_backup_"))
 
@@ -24,7 +24,7 @@ KNOWN_CHAT_REFS = {MEDIA_CHAT_REF, "mediaChatRef01001ABC"}
 @pytest.fixture(autouse=True)
 def _reset_auth_module():
     """Reset auth module state between tests."""
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     main_mod._sessions.clear()
     main_mod._login_attempts.clear()
@@ -126,7 +126,7 @@ def _get_client(mock_db=None):
     """Create a fresh TestClient by reloading the module with current env."""
     import importlib
 
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
 
@@ -292,7 +292,7 @@ class TestMediaPaginated:
         assert data["items"][0]["thumb_url"] == "/media/thumb/200/opaque-media-a/100_photo"
 
     def test_no_download_strips_media_url(self, auth_env):
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         mock_db = _make_mock_db()
         salt = "abc123"
@@ -341,7 +341,7 @@ class TestMediaCounts:
 
     def test_forbidden_for_restricted_user(self, auth_env):
         """A chat outside the viewer's ref grant answers the uniform 404."""
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         mock_db = _make_mock_db()
         salt = "abc123"
@@ -447,7 +447,7 @@ class TestMediaACL:
 
     def test_forbidden_chat_answers_the_uniform_404(self, auth_env):
         """A chat outside the ref grant is indistinguishable from a nonexistent one."""
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         mock_db = _make_mock_db()
         salt = "abc123"

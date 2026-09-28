@@ -29,8 +29,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text
 
-from src.config import Config
-from src.db import create_adapter
+from telegram_archive.config import Config
+from telegram_archive.db import create_adapter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
     async with db.db_manager.async_session_factory() as session:
         from sqlalchemy import select
 
-        from src.db.models import Media
+        from telegram_archive.db.models import Media
 
         # Media types that have actual downloadable files
         DOWNLOADABLE_TYPES = ["photo", "video", "audio", "voice", "document", "sticker", "animation"]

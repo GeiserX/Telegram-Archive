@@ -8,7 +8,11 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260626_015_add_message_versions.py"
+    Path(__file__).resolve().parent.parent
+    / "telegram_archive"
+    / "alembic"
+    / "versions"
+    / "20260626_015_add_message_versions.py"
 )
 
 

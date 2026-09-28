@@ -12,7 +12,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
-WEB = Path(__file__).resolve().parent.parent / "src" / "web"
+WEB = Path(__file__).resolve().parent.parent / "telegram_archive" / "web"
 STATIC = (WEB / "static").resolve()
 VENDOR = STATIC / "vendor"
 # Any absolute network location: explicit http(s) scheme or protocol-relative //host.

@@ -40,11 +40,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.listener import TelegramListener
-from src.message_utils import is_youtube_preview_video, is_youtube_url
-from src.telegram_backup import TelegramBackup
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.listener import TelegramListener
+from telegram_archive.message_utils import is_youtube_preview_video, is_youtube_url
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001
 YOUTUBE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"

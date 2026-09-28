@@ -30,9 +30,9 @@ from telethon.tl.types import (
     User,
 )
 
-from src import telegram_backup
-from src.media_errors import is_media_location_error
-from src.telegram_backup import TelegramBackup, run_backup, run_fill_gaps
+from telegram_archive import telegram_backup
+from telegram_archive.media_errors import is_media_location_error
+from telegram_archive.telegram_backup import TelegramBackup, run_backup, run_fill_gaps
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -167,7 +167,7 @@ class TestInit(unittest.TestCase):
 class TestCreateFactory(unittest.TestCase):
     """Test the async create() factory method."""
 
-    @patch("src.telegram_backup.create_adapter", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.create_adapter", new_callable=AsyncMock)
     def test_create_initializes_db_and_returns_instance(self, mock_create_adapter):
         """create() should call create_adapter and return a TelegramBackup."""
         mock_db = AsyncMock()
@@ -181,7 +181,7 @@ class TestCreateFactory(unittest.TestCase):
         self.assertIs(result.db, mock_db)
         self.assertEqual(result.account_id, 1)
 
-    @patch("src.telegram_backup.create_adapter", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.create_adapter", new_callable=AsyncMock)
     def test_create_passes_client_through(self, mock_create_adapter):
         """create() should forward the client parameter."""
         mock_create_adapter.return_value = AsyncMock()
@@ -252,7 +252,7 @@ class TestConnect(unittest.TestCase):
         mock_client.is_user_authorized = AsyncMock(return_value=True)
         mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
 
-        with patch("src.telegram_backup.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.telegram_backup.TelegramClient", return_value=mock_client):
             _run(backup.connect())
 
     def test_connect_not_authorized_raises(self):
@@ -270,7 +270,7 @@ class TestConnect(unittest.TestCase):
         mock_client.is_user_authorized = AsyncMock(return_value=False)
 
         with (
-            patch("src.telegram_backup.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.telegram_backup.TelegramClient", return_value=mock_client),
             self.assertRaises(RuntimeError, msg="Session not authorized"),
         ):
             _run(backup.connect())
@@ -521,7 +521,7 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
                 raise OSError("unlink denied")
             return real_remove(path)
 
-        with patch("src.telegram_backup.os.remove", side_effect=failing_remove):
+        with patch("telegram_archive.telegram_backup.os.remove", side_effect=failing_remove):
             _run(self.backup._verify_and_redownload_media())
 
         with open(corrupted, "rb") as f:
@@ -783,7 +783,7 @@ class TestBackupAllNonWhitelistMode(unittest.TestCase):
         self.backup._get_dialogs = AsyncMock(side_effect=[[dialog], []])
         self.backup.db.delete_chat_and_related_data = AsyncMock()
 
-        with self.assertLogs("src.telegram_backup", level="INFO") as logs:
+        with self.assertLogs("telegram_archive.telegram_backup", level="INFO") as logs:
             _run(self.backup.backup_all())
 
         self.backup.db.delete_chat_and_related_data.assert_not_awaited()
@@ -1199,7 +1199,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         self.backup.client.get_messages = AsyncMock(return_value=response)
         entity = MagicMock()
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as captured:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as captured:
             _run(self.backup._sync_deletions_and_edits(100, entity))
 
         self.backup.db.delete_message.assert_not_awaited()
@@ -1882,7 +1882,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_no_avatar_available_returns_early(self, mock_get_paths):
         """When avatar_path is None (no avatar set), returns early."""
         mock_get_paths.return_value = (None, "/legacy.jpg")
@@ -1892,7 +1892,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
 
         self.backup.client.download_profile_photo.assert_not_awaited()
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_existing_avatar_skips_download(self, mock_get_paths):
         """When avatar file already exists and is non-empty, skip download."""
         avatar_path = os.path.join(self.temp_dir, "avatar.jpg")
@@ -1905,7 +1905,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
 
         self.backup.client.download_profile_photo.assert_not_awaited()
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_missing_avatar_triggers_download(self, mock_get_paths):
         """When avatar file does not exist, download is triggered."""
         avatar_path = os.path.join(self.temp_dir, "new_avatar.jpg")
@@ -1917,7 +1917,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
 
         self.backup.client.download_profile_photo.assert_awaited_once()
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_download_failure_caught(self, mock_get_paths):
         """Download failure should not propagate."""
         avatar_path = os.path.join(self.temp_dir, "fail.jpg")
@@ -1927,7 +1927,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
 
         _run(self.backup._ensure_profile_photo(entity, 42))
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_existing_symlink_avatar_is_preserved(self, mock_get_paths):
         """A symlink at avatar_path is trusted, even when its target is unreachable.
 
@@ -1961,7 +1961,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
         self.assertTrue(os.path.islink(avatar_path))
         self.assertEqual(os.readlink(avatar_path), original_target)
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_empty_regular_file_avatar_triggers_download(self, mock_get_paths):
         """A 0-byte regular file at avatar_path falls through to download.
 
@@ -1985,7 +1985,7 @@ class TestEnsureProfilePhoto(unittest.TestCase):
 
         self.backup.client.download_profile_photo.assert_awaited_once()
 
-    @patch("src.telegram_backup.get_avatar_paths")
+    @patch("telegram_archive.telegram_backup.get_avatar_paths")
     def test_uses_marked_id_when_no_marked_id_passed(self, mock_get_paths):
         """When marked_id is None, falls back to _get_marked_id."""
         mock_get_paths.return_value = (None, "/legacy.jpg")
@@ -2158,7 +2158,7 @@ class TestMediaRefreshErrorHelpers(unittest.TestCase):
                 raise BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)
             return "ok"
 
-        with patch("src.telegram_backup.asyncio.sleep", new=AsyncMock()):
+        with patch("telegram_archive.telegram_backup.asyncio.sleep", new=AsyncMock()):
             result = _run(
                 telegram_backup.call_with_flood_retry(
                     fail_then_succeed,
@@ -2192,7 +2192,7 @@ class TestMediaRefreshErrorHelpers(unittest.TestCase):
         """A FloodWait (or any error) during refresh is swallowed (-> None), never propagated."""
         backup = _make_backup()
         with patch(
-            "src.telegram_backup.call_with_flood_retry",
+            "telegram_archive.telegram_backup.call_with_flood_retry",
             AsyncMock(side_effect=FloodWaitError(request=MagicMock())),
         ):
             # Best-effort refresh: must return None rather than raising.
@@ -2201,7 +2201,7 @@ class TestMediaRefreshErrorHelpers(unittest.TestCase):
     def test_media_retry_backoff_seconds_grows_and_is_bounded(self):
         """Backoff grows with the attempt and stays under the configured ceiling (+jitter)."""
         # Pin the jitter so the comparison is deterministic (never flakes).
-        with patch("src.telegram_backup.random.uniform", return_value=0.5):
+        with patch("telegram_archive.telegram_backup.random.uniform", return_value=0.5):
             self.assertGreater(
                 telegram_backup._media_retry_backoff_seconds(1),
                 telegram_backup._media_retry_backoff_seconds(0),
@@ -2245,7 +2245,7 @@ class TestProcessMedia(unittest.TestCase):
         self.backup.config.deduplicate_media = False
         # Neutralize the real backoff sleep so multi-attempt retry tests stay fast;
         # `mock_backoff` lets tests assert backoff was (or wasn't) applied.
-        self._backoff_patcher = patch("src.telegram_backup._media_retry_backoff_seconds", return_value=0)
+        self._backoff_patcher = patch("telegram_archive.telegram_backup._media_retry_backoff_seconds", return_value=0)
         self.mock_backoff = self._backoff_patcher.start()
         self.addCleanup(self._backoff_patcher.stop)
 
@@ -2289,7 +2289,7 @@ class TestProcessMedia(unittest.TestCase):
         msg = self._make_photo_message(22)
         self._setup_photo_download()
         self.backup.config.deduplicate_media = True
-        with patch("src.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None))):
+        with patch("telegram_archive.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None))):
             result = _run(self.backup._process_media(msg, 100))
 
         self.assertIsNotNone(result)
@@ -2495,7 +2495,7 @@ class TestProcessMedia(unittest.TestCase):
         self.backup.client.get_messages = AsyncMock()
 
         with patch(
-            "src.telegram_backup.call_with_flood_retry",
+            "telegram_archive.telegram_backup.call_with_flood_retry",
             AsyncMock(side_effect=BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)),
         ):
             result = _run(self.backup._process_media(msg, 100))
@@ -2511,7 +2511,7 @@ class TestProcessMedia(unittest.TestCase):
         self.backup.client.get_messages = AsyncMock()
 
         with patch(
-            "src.telegram_backup.call_with_flood_retry",
+            "telegram_archive.telegram_backup.call_with_flood_retry",
             AsyncMock(side_effect=BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)),
         ):
             result = _run(self.backup._process_media(msg, 100))
@@ -2869,7 +2869,7 @@ class TestProcessMessageReactionEdgeCases(unittest.TestCase):
 class TestRunBackup(unittest.TestCase):
     """Test the run_backup module-level function."""
 
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_backup_connects_backs_up_disconnects(self, mock_create):
         """run_backup calls connect, backup_all, disconnect, and db.close."""
         mock_backup = AsyncMock()
@@ -2883,8 +2883,8 @@ class TestRunBackup(unittest.TestCase):
         mock_backup.backup_all.assert_awaited_once()
         mock_backup.disconnect.assert_awaited_once()
 
-    @patch("src.repair_media_extensions.repair_media_extensions", new_callable=AsyncMock)
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.repair_media_extensions.repair_media_extensions", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_backup_runs_media_repair_before_backup(self, mock_create, mock_repair):
         """run_backup awaits the #175 media repair pass before backing up."""
         mock_backup = AsyncMock()
@@ -2903,7 +2903,7 @@ class TestRunBackup(unittest.TestCase):
         mock_repair.assert_awaited_once_with(config.media_path, mock_backup.db)
         self.assertEqual(order, ["repair", "backup"])
 
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_backup_disconnects_on_error(self, mock_create):
         """run_backup calls disconnect even when backup_all raises."""
         mock_backup = AsyncMock()
@@ -2921,7 +2921,7 @@ class TestRunBackup(unittest.TestCase):
 class TestRunFillGaps(unittest.TestCase):
     """Test the run_fill_gaps module-level function."""
 
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_fill_gaps_with_recovery(self, mock_create):
         """run_fill_gaps recalculates stats when messages are recovered."""
         mock_backup = AsyncMock()
@@ -2935,7 +2935,7 @@ class TestRunFillGaps(unittest.TestCase):
         self.assertEqual(summary["total_recovered"], 10)
         mock_backup.db.calculate_and_store_statistics.assert_awaited_once()
 
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_fill_gaps_no_recovery_skips_stats(self, mock_create):
         """run_fill_gaps skips stats recalculation when nothing recovered."""
         mock_backup = AsyncMock()
@@ -2949,7 +2949,7 @@ class TestRunFillGaps(unittest.TestCase):
         self.assertEqual(summary["total_recovered"], 0)
         mock_backup.db.calculate_and_store_statistics.assert_not_awaited()
 
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_fill_gaps_stats_error_caught(self, mock_create):
         """Exception during stats recalculation after gap-fill is caught."""
         mock_backup = AsyncMock()
@@ -2963,7 +2963,7 @@ class TestRunFillGaps(unittest.TestCase):
 
         self.assertEqual(summary["total_recovered"], 5)
 
-    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    @patch("telegram_archive.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_fill_gaps_disconnects_on_error(self, mock_create):
         """run_fill_gaps calls disconnect even when _fill_gaps raises."""
         mock_backup = AsyncMock()
@@ -2988,11 +2988,11 @@ class TestMain(unittest.TestCase):
     """Test the main() entry point."""
 
     @patch("asyncio.run")
-    @patch("src.config.setup_logging")
-    @patch("src.config.Config")
+    @patch("telegram_archive.config.setup_logging")
+    @patch("telegram_archive.config.Config")
     def test_main_creates_config_and_runs_backup(self, mock_config_cls, mock_setup, mock_run):
         """main() creates Config, sets up logging, and calls asyncio.run."""
-        from src.telegram_backup import main
+        from telegram_archive.telegram_backup import main
 
         main()
 
@@ -3027,7 +3027,7 @@ class TestConnectWalPragmaSuccess(unittest.TestCase):
         mock_client.is_user_authorized = AsyncMock(return_value=True)
         mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
 
-        with patch("src.telegram_backup.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.telegram_backup.TelegramClient", return_value=mock_client):
             _run(backup.connect())
 
         # busy_timeout PRAGMA should have been called (line 123)
@@ -3541,11 +3541,11 @@ class TestMainEntryPointLine1882(unittest.TestCase):
     """Test the __main__ guard calls main() (line 1882)."""
 
     @patch("asyncio.run")
-    @patch("src.config.setup_logging")
-    @patch("src.config.Config")
+    @patch("telegram_archive.config.setup_logging")
+    @patch("telegram_archive.config.Config")
     def test_main_function_invoked(self, mock_config_cls, mock_setup, mock_run):
         """main() function is callable and triggers asyncio.run."""
-        from src.telegram_backup import main
+        from telegram_archive.telegram_backup import main
 
         main()
         mock_run.assert_called_once()
@@ -3979,7 +3979,7 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         """Files given up after the cap are surfaced (aggregate count), even with no pending."""
         self.backup.db.get_pending_media_downloads = AsyncMock(return_value=[])
         self.backup.db.count_capped_media_downloads = AsyncMock(return_value=3)
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(self.backup._retry_pending_media_downloads())
         self.backup.db.count_capped_media_downloads.assert_awaited_once_with(5, account_id=1)
         assert any("permanently skipped" in line for line in cm.output)

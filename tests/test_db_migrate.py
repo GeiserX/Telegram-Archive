@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.migrate import MIGRATION_MODELS, _migrate_table, migrate_sqlite_to_postgres, verify_migration
+from telegram_archive.db.migrate import MIGRATION_MODELS, _migrate_table, migrate_sqlite_to_postgres, verify_migration
 
 # ============================================================
 # Helper: build a mock DatabaseManager whose get_session()
@@ -61,14 +61,14 @@ class TestMigrationModelsRegistry(unittest.TestCase):
     """
 
     def test_accounts_is_copied_and_leads(self) -> None:
-        from src.db.models import Account
+        from telegram_archive.db.models import Account
 
         assert MIGRATION_MODELS[0] is Account
 
     def test_every_orm_table_is_copied_or_named_as_left_behind(self) -> None:
         """A table missing from both lists would vanish on the move while verify still said every table matched."""
-        from src.db.migrate import MIGRATION_EXCLUDED
-        from src.db.models import Base
+        from telegram_archive.db.migrate import MIGRATION_EXCLUDED
+        from telegram_archive.db.models import Base
 
         copied = {model.__tablename__ for model in MIGRATION_MODELS}
         assert set(Base.metadata.tables) - copied == set(MIGRATION_EXCLUDED)
@@ -85,8 +85,8 @@ async def test_transcripts_move_to_postgresql_and_new_ones_still_insert(
 ):
     from datetime import datetime
 
-    from src.db.adapter import DatabaseAdapter
-    from src.db.base import DatabaseManager
+    from telegram_archive.db.adapter import DatabaseAdapter
+    from telegram_archive.db.base import DatabaseManager
 
     chat = -420900001
     source = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'source.db'}")
@@ -255,7 +255,7 @@ class TestMigrateFullFlow:
         mock_src_session.execute.return_value = mock_count_result
 
         with (
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
             patch("os.path.exists", return_value=True),
         ):
             MockDM.side_effect = [mock_source, mock_target]
@@ -290,7 +290,7 @@ class TestMigrateFullFlow:
         mock_src_session.execute.side_effect = Exception("table migration failed")
 
         with (
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
             patch("os.path.exists", return_value=True),
         ):
             MockDM.side_effect = [mock_source, mock_target]
@@ -321,7 +321,7 @@ class TestMigrateTable:
     @pytest.mark.asyncio
     async def test_returns_zero_for_empty_table(self):
         """Empty source table returns 0 records migrated."""
-        from src.db.models import Metadata
+        from telegram_archive.db.models import Metadata
 
         mock_source, mock_session = _make_mock_manager()
         mock_target, _ = _make_mock_manager()
@@ -336,7 +336,7 @@ class TestMigrateTable:
     @pytest.mark.asyncio
     async def test_migrates_records_in_batches(self):
         """Records are read from source and written to target in batches."""
-        from src.db.models import Metadata
+        from telegram_archive.db.models import Metadata
 
         mock_record1 = MagicMock()
         mock_record2 = MagicMock()
@@ -367,7 +367,7 @@ class TestMigrateTable:
     @pytest.mark.asyncio
     async def test_returns_zero_when_source_table_missing(self):
         """Missing legacy source tables are treated as empty."""
-        from src.db.models import MessageVersion
+        from telegram_archive.db.models import MessageVersion
 
         mock_source, mock_session = _make_mock_manager()
         mock_target, _ = _make_mock_manager()
@@ -406,7 +406,7 @@ class TestVerifyMigrationPathResolution:
 
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
         ):
             MockDM.side_effect = [mock_source, mock_target]
 
@@ -437,7 +437,7 @@ class TestVerifyMigrationFlow:
         mock_src_session.execute.return_value = mock_result
         mock_tgt_session.execute.return_value = mock_result
 
-        with patch("src.db.migrate.DatabaseManager") as MockDM:
+        with patch("telegram_archive.db.migrate.DatabaseManager") as MockDM:
             MockDM.side_effect = [mock_source, mock_target]
 
             result = await verify_migration(
@@ -469,7 +469,7 @@ class TestVerifyMigrationFlow:
         mock_source, _ = _make_mock_manager(session_mock=mock_src_session)
         mock_target, _ = _make_mock_manager(session_mock=mock_tgt_session)
 
-        with patch("src.db.migrate.DatabaseManager") as MockDM:
+        with patch("telegram_archive.db.migrate.DatabaseManager") as MockDM:
             MockDM.side_effect = [mock_source, mock_target]
 
             result = await verify_migration(
@@ -486,7 +486,7 @@ class TestVerifyMigrationFlow:
     @pytest.mark.asyncio
     async def test_source_missing_table_counts_as_zero(self):
         """verify_migration treats a missing legacy source table as 0 records."""
-        from src.db.models import MessageVersion
+        from telegram_archive.db.models import MessageVersion
 
         mock_src_session = AsyncMock()
         mock_src_session.execute.side_effect = OperationalError(
@@ -504,8 +504,8 @@ class TestVerifyMigrationFlow:
         mock_target, _ = _make_mock_manager(session_mock=mock_tgt_session)
 
         with (
-            patch("src.db.migrate.MIGRATION_MODELS", [MessageVersion]),
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.MIGRATION_MODELS", [MessageVersion]),
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
         ):
             MockDM.side_effect = [mock_source, mock_target]
             result = await verify_migration(
@@ -527,7 +527,7 @@ class TestVerifyMigrationFlow:
         mock_src_session.execute.return_value = mock_result
         mock_tgt_session.execute.return_value = mock_result
 
-        with patch("src.db.migrate.DatabaseManager") as MockDM:
+        with patch("telegram_archive.db.migrate.DatabaseManager") as MockDM:
             MockDM.side_effect = [mock_source, mock_target]
 
             await verify_migration(
@@ -575,7 +575,7 @@ class TestMigrateTableEmptyBatch:
     @pytest.mark.asyncio
     async def test_empty_batch_breaks_loop(self):
         """When a batch query returns no records, migration loop breaks."""
-        from src.db.models import Metadata
+        from telegram_archive.db.models import Metadata
 
         mock_src_session = AsyncMock()
 
@@ -607,7 +607,7 @@ class TestMigrateTableProgressLogging:
     @pytest.mark.asyncio
     async def test_logs_progress_at_10000_records(self):
         """Progress is logged when total reaches 10000 records."""
-        from src.db.models import Metadata
+        from telegram_archive.db.models import Metadata
 
         mock_src_session = AsyncMock()
 
@@ -657,7 +657,7 @@ class TestVerifyMigrationPathVariants:
 
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
         ):
             MockDM.side_effect = [mock_source, mock_target]
             await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
@@ -680,7 +680,7 @@ class TestVerifyMigrationPathVariants:
 
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
         ):
             MockDM.side_effect = [mock_source, mock_target]
             await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
@@ -703,7 +703,7 @@ class TestVerifyMigrationPathVariants:
 
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
         ):
             MockDM.side_effect = [mock_source, mock_target]
             await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
@@ -732,7 +732,7 @@ class TestVerifyMigrationPathVariants:
 
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("src.db.migrate.DatabaseManager") as MockDM,
+            patch("telegram_archive.db.migrate.DatabaseManager") as MockDM,
         ):
             MockDM.side_effect = [mock_source, mock_target]
             await verify_migration(sqlite_path="/fake/path.db")
@@ -761,8 +761,8 @@ class TestMigrateTableKeysetRealEngine:
     async def _manager(self, path):
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-        from src.db.base import DatabaseManager
-        from src.db.models import Base
+        from telegram_archive.db.base import DatabaseManager
+        from telegram_archive.db.models import Base
 
         url = f"sqlite+aiosqlite:///{path}"
         engine = create_async_engine(url)
@@ -779,9 +779,9 @@ class TestMigrateTableKeysetRealEngine:
     async def test_mid_copy_deletion_skips_no_surviving_row(self, tmp_path):
         from sqlalchemy import select
 
-        from src.db.models import Metadata
+        from telegram_archive.db.models import Metadata
 
-        source = await self._manager(tmp_path / "src.db")
+        source = await self._manager(tmp_path / "telegram_archive.db")
         target = await self._manager(tmp_path / "tgt.db")
         try:
             async with source.get_session() as session:

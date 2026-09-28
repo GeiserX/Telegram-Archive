@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 # ``escapeHtml`` round-trips through the DOM (``div.textContent`` in,
 # ``div.innerHTML`` out). This stub reproduces the HTML fragment serializer for

@@ -21,10 +21,14 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy.engine import Connection
 
-from src.db.models import Message
+from telegram_archive.db.models import Message
 
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260819_025_drop_redundant_chat_id_index.py"
+    Path(__file__).resolve().parent.parent
+    / "telegram_archive"
+    / "alembic"
+    / "versions"
+    / "20260819_025_drop_redundant_chat_id_index.py"
 )
 
 DROPPED = "idx_messages_chat_id"

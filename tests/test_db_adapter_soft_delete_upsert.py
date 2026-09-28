@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Message, MessageVersion
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Message, MessageVersion
 
 
 @pytest.fixture
@@ -927,7 +927,7 @@ async def test_recording_the_same_version_twice_is_a_silent_noop(sqlite_adapter,
         first = await sqlite_adapter._record_message_version(
             session, account_id=1, chat_id=300, message_id=70, text="superseded", date=when
         )
-        with caplog.at_level(_logging.WARNING, logger="src.db.adapter"):
+        with caplog.at_level(_logging.WARNING, logger="telegram_archive.db.adapter"):
             again = await sqlite_adapter._record_message_version(
                 session, account_id=1, chat_id=300, message_id=70, text="superseded", date=when
             )
@@ -1019,7 +1019,7 @@ async def test_recent_changes_merges_deletions_and_edits_newest_first(sqlite_ada
 
 @pytest.mark.asyncio
 async def test_recent_changes_respects_the_compiled_scope(sqlite_adapter):
-    from src.db.adapter import ChatScope
+    from telegram_archive.db.adapter import ChatScope
 
     await _seed_feed_chat(sqlite_adapter, 401, "Mine")
     await _seed_feed_chat(sqlite_adapter, 402, "Not mine")

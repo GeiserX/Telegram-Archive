@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from telethon.tl.types import User
 
-from src.message_utils import _LOG_TITLE_MAX_CHARS, chat_title_for_log
-from src.telegram_backup import TelegramBackup
+from telegram_archive.message_utils import _LOG_TITLE_MAX_CHARS, chat_title_for_log
+from telegram_archive.telegram_backup import TelegramBackup
 
 OFF = MagicMock()
 OFF.log_chat_titles = False
@@ -41,7 +41,7 @@ class _Titled:
 class TestTheFlagIsOff(unittest.TestCase):
     def test_the_default_is_off(self):
         """Read from the real Config, not from a mock of it."""
-        from src.config import Config
+        from telegram_archive.config import Config
 
         base = {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h", "TELEGRAM_PHONE": "+1"}
         with patch.dict(os.environ, base, clear=True), patch("os.makedirs"):
@@ -231,7 +231,7 @@ class TestTheRealProgressLines(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, *, log_titles, main, archived=()):
         backup = _sweep_backup(log_titles=log_titles, main_dialogs=main, archived_dialogs=archived)
-        with self.assertLogs("src.telegram_backup", level="INFO") as captured:
+        with self.assertLogs("telegram_archive.telegram_backup", level="INFO") as captured:
             await backup.backup_all()
         return [record.getMessage() for record in captured.records]
 
@@ -272,13 +272,13 @@ class TestTheRelaxationAnnouncesItself(unittest.TestCase):
     """An operator who turned this on months ago should be reminded every start."""
 
     def _messages_while_building(self, **env):
-        from src.config import Config
+        from telegram_archive.config import Config
 
         base = {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h", "TELEGRAM_PHONE": "+1", **env}
         with (
             patch.dict(os.environ, base, clear=True),
             patch("os.makedirs"),
-            self.assertLogs("src.config", level="DEBUG") as captured,
+            self.assertLogs("telegram_archive.config", level="DEBUG") as captured,
         ):
             Config().log_summary()
         return [r.getMessage() for r in captured.records]
@@ -297,14 +297,16 @@ class TestTheGateIsTheOnlyRoute(unittest.TestCase):
     imports is the one in message_utils, not a local rebinding."""
 
     def test_the_backup_imports_the_real_helper(self):
-        import src.telegram_backup as backup_module
-        from src import message_utils
+        import telegram_archive.telegram_backup as backup_module
+        from telegram_archive import message_utils
 
         self.assertIs(backup_module.chat_title_for_log, message_utils.chat_title_for_log)
 
     def test_the_progress_lines_call_it_inline(self):
         source = (
-            backup_path := __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "telegram_backup.py"
+            backup_path := __import__("pathlib").Path(__file__).resolve().parents[1]
+            / "telegram_archive"
+            / "telegram_backup.py"
         ).read_text(encoding="utf-8")
         self.assertEqual(2, source.count("chat_title_for_log(entity, self.config)"), str(backup_path))
         tree = ast.parse(source)

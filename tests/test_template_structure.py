@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-TEMPLATE = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+TEMPLATE = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 VOID_ELEMENTS = {
     "area",

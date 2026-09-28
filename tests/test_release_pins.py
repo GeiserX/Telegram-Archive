@@ -3,7 +3,7 @@
 docker-compose.yml sat on 8.1.0 - the last amd64-only release - while main
 was three releases ahead (#417): nothing made the pins move with a release,
 so they drifted until an arm64 user hit the one tag that could not run on
-his machine. A release bumps src/__init__.py; these assertions make the
+his machine. A release bumps telegram_archive/__init__.py; these assertions make the
 same commit move every shipped pin with it, so the release PR goes red
 until compose, README and the migration helper all point at the release.
 
@@ -14,7 +14,7 @@ docs/UPGRADING-8.0.md is deliberately not covered: it documents the one-off
 import re
 from pathlib import Path
 
-from src import __version__
+from telegram_archive import __version__
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -49,4 +49,6 @@ def test_every_pinned_file_actually_contains_pins():
 
 def test_shipped_image_pins_match_the_released_version():
     stale = [pin for name in PINNED_FILES for pin in _pins(name) if pin[2] != __version__]
-    assert not stale, f"image pins must equal src.__version__ ({__version__}); stale (file, line, tag): {stale}"
+    assert not stale, (
+        f"image pins must equal telegram_archive.__version__ ({__version__}); stale (file, line, tag): {stale}"
+    )

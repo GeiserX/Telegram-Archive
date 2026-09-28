@@ -11,9 +11,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from src.message_utils import extract_webpage_preview
+from telegram_archive.message_utils import extract_webpage_preview
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 
 def _stub(class_name: str, **attrs):
@@ -79,7 +79,7 @@ class TestCaptureWiring(unittest.TestCase):
     """Both writers put the preview under raw_data['webpage'] — same shape."""
 
     def test_sweep_message_data_carries_the_preview(self):
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.telegram_backup import TelegramBackup
 
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.config = MagicMock()
@@ -97,8 +97,8 @@ class TestCaptureWiring(unittest.TestCase):
 
     def test_writers_share_one_extraction_helper(self):
         """The classifier-duplication disease must not repeat here."""
-        backup_src = Path("src/telegram_backup.py").read_text()
-        listener_src = Path("src/listener.py").read_text()
+        backup_src = Path("telegram_archive/telegram_backup.py").read_text()
+        listener_src = Path("telegram_archive/listener.py").read_text()
         for src, name in ((backup_src, "telegram_backup"), (listener_src, "listener")):
             self.assertIn("extract_webpage_preview(message.media)", src, name)
             self.assertNotIn("def extract_webpage_preview", src, name)

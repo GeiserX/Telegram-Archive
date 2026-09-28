@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from telethon.tl.types import User
 
-from src.telegram_backup import TelegramBackup
+from telegram_archive.telegram_backup import TelegramBackup
 
 
 def _backup_with_mock_db() -> TelegramBackup:
@@ -112,7 +112,7 @@ class TestSaveSenderMemo(unittest.TestCase):
         self.backup.db.upsert_user.assert_not_awaited()
 
     def test_cache_bound_clears_and_keeps_working(self):
-        with patch("src.telegram_backup.SENDER_CACHE_MAX_ENTRIES", 1):
+        with patch("telegram_archive.telegram_backup.SENDER_CACHE_MAX_ENTRIES", 1):
             self._run(self.backup._save_sender(_sender(user_id=1)))
             self._run(self.backup._save_sender(_sender(user_id=2)))  # clears, re-adds
             self._run(self.backup._save_sender(_sender(user_id=1)))  # evicted → writes

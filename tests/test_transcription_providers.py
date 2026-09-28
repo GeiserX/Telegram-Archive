@@ -21,9 +21,9 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from src.config import Config
-from src.transcription import TranscriptionClient, drain_transcriptions, result_columns
-from src.transcription_providers import segments_from_words
+from telegram_archive.config import Config
+from telegram_archive.transcription import TranscriptionClient, drain_transcriptions, result_columns
+from telegram_archive.transcription_providers import segments_from_words
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -133,7 +133,7 @@ class TestProviderConfig(unittest.TestCase):
         self.assertEqual(config.transcription_hotwords, ["Acme", "Zork"])
 
     def test_an_unknown_provider_warns_without_the_value_and_falls_back_to_auto(self):
-        with self.assertLogs("src.config", level=logging.WARNING) as logs:
+        with self.assertLogs("telegram_archive.config", level=logging.WARNING) as logs:
             config = self._config(TRANSCRIPTION_PROVIDER="nosuchvendor")
         self.assertEqual(config.transcription_provider, "auto")
         self.assertTrue(any("TRANSCRIPTION_PROVIDER" in line for line in logs.output))
@@ -175,7 +175,7 @@ class TestChoosingThePath:
         assert stats["submitted"] == 1
 
     async def test_akou_on_the_listener_path_sends_nothing_to_another_server(self, real_adapter, tmp_path):
-        from src.transcription import transcribe_media
+        from telegram_archive.transcription import transcribe_media
 
         media = await _media(real_adapter, tmp_path, "m_1_voice")
         config = _config(str(tmp_path), transcription_provider="akou")
@@ -205,7 +205,7 @@ class TestChoosingThePath:
         await _drain(config, real_adapter, _client(config, server))
         assert _field(server.transcribe_requests[0], "model") == ["voxtral-mini-latest"]
 
-        from src.transcription import ServerInfo
+        from telegram_archive.transcription import ServerInfo
 
         client = _client(config, server)
         assert client.sync_model(ServerInfo(name="akou")) == "best"
@@ -310,7 +310,7 @@ class TestRefusedEveryFile:
             assert (bad["status"], bad["error"]) == ("failed", f"HTTP {status}")
 
     async def test_the_listener_path_leaves_a_refused_row_queued_for_the_drain(self, real_adapter, tmp_path):
-        from src.transcription import transcribe_media
+        from telegram_archive.transcription import transcribe_media
 
         media = await _media(real_adapter, tmp_path, "m_1_voice")
         config = _config(str(tmp_path))
@@ -344,7 +344,7 @@ class TestRefusedEveryFile:
         config = _config(str(tmp_path))
         client, requests = _provider_client(config, _refusing_files(413, {"m_1_voice.ogg"}))
 
-        with caplog.at_level(logging.WARNING, logger="src.transcription"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.transcription"):
             stats = await _drain(config, real_adapter, client)
 
         assert (stats["skipped"], stats["done"]) == (1, 1)
@@ -444,8 +444,8 @@ class TestPlainJsonFallback:
         assert (row["text"], row["words"], row["models"]) == ("hola", [], ["gpt-4o-transcribe"])
 
     async def test_a_file_refused_both_ways_is_still_refused(self, tmp_path):
-        from src.transcription import TranscriptionError
-        from src.transcription_providers.openai import PROVIDER
+        from telegram_archive.transcription import TranscriptionError
+        from telegram_archive.transcription_providers.openai import PROVIDER
 
         config = _config(str(tmp_path))
         client, requests = _provider_client(config, lambda request: httpx.Response(400, json={}))
@@ -601,7 +601,7 @@ class TestDeepgram:
         assert row["diarize"] is True
 
     async def test_a_language_hint_replaces_detection_and_the_model_is_configurable(self, tmp_path):
-        from src.transcription_providers.deepgram import PROVIDER
+        from telegram_archive.transcription_providers.deepgram import PROVIDER
 
         config = _config(str(tmp_path), transcription_provider="deepgram", transcription_language="es")
         client, requests = _provider_client(config, _deepgram())
@@ -725,7 +725,7 @@ class TestAssemblyAI:
         assert row["models"] == []  # AssemblyAI chose its own
 
     async def test_a_language_hint_and_a_model_are_sent(self, tmp_path):
-        from src.transcription_providers.assemblyai import PROVIDER
+        from telegram_archive.transcription_providers.assemblyai import PROVIDER
 
         config = _config(str(tmp_path), transcription_language="es")
         server = AssemblyAIServer(pending=0)
@@ -846,7 +846,7 @@ class TestElevenLabs:
         assert row["models"] == ["scribe_v2"]
 
     async def test_diarize_off_and_a_language_are_stated(self, tmp_path):
-        from src.transcription_providers.elevenlabs import PROVIDER
+        from telegram_archive.transcription_providers.elevenlabs import PROVIDER
 
         config = _config(str(tmp_path), transcription_language="es")
         client, requests = _provider_client(config, lambda request: httpx.Response(200, json=ELEVENLABS_RESULT))
@@ -899,7 +899,7 @@ async def test_no_log_line_carries_the_key_or_the_url(real_adapter, tmp_path, ca
         await _make_stale(real_adapter)
         client, _ = _provider_client(config, lambda request: httpx.Response(401, json={"error": KEY}))
         await _drain(config, real_adapter, client)
-    joined = "\n".join(record.getMessage() for record in caplog.records if record.name.startswith("src."))
+    joined = "\n".join(record.getMessage() for record in caplog.records if record.name.startswith("telegram_archive."))
     # The control: both failures were logged.
     assert "Transcription server unreachable" in joined
     assert "Transcription server refused the request" in joined

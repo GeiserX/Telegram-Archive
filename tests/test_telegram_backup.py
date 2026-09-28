@@ -26,8 +26,8 @@ from telethon.tl.types import (
     User,
 )
 
-from src.message_utils import extract_topic_id, service_action_type
-from src.telegram_backup import TelegramBackup
+from telegram_archive.message_utils import extract_topic_id, service_action_type
+from telegram_archive.telegram_backup import TelegramBackup
 
 
 class TestMediaTypeDetection(unittest.TestCase):
@@ -856,7 +856,7 @@ class TestWhitelistModeBackup(unittest.TestCase):
             )
         )
 
-        with self.assertLogs("src.telegram_backup", level="INFO") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="INFO") as cm:
             self._run(self.backup.backup_all())
 
         messages = [r.getMessage() for r in cm.records]
@@ -874,7 +874,7 @@ class TestWhitelistModeBackup(unittest.TestCase):
             side_effect=lambda **kw: self._FakeDialogIter([], error=RuntimeError("connection wedged"))
         )
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             self._run(self.backup.backup_all())
 
         self.assertTrue(any("dialog scan failed" in r.getMessage() for r in cm.records))
@@ -891,8 +891,8 @@ class TestWhitelistModeBackup(unittest.TestCase):
         )
 
         with (
-            unittest.mock.patch("src.telegram_backup.WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS", 0.05),
-            self.assertLogs("src.telegram_backup", level="WARNING") as cm,
+            unittest.mock.patch("telegram_archive.telegram_backup.WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS", 0.05),
+            self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm,
         ):
             self._run(self.backup.backup_all())
 
@@ -908,7 +908,7 @@ class TestWhitelistModeBackup(unittest.TestCase):
             side_effect=lambda **kw: self._FakeDialogIter([MagicMock(id=111, entity=User(id=111))])
         )
 
-        with self.assertLogs("src.telegram_backup", level="INFO") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="INFO") as cm:
             self._run(self.backup.backup_all())
 
         # Scope to the new fallback messages: the pre-existing per-entry
@@ -1257,7 +1257,7 @@ class TestTextWithEntitiesToString(unittest.TestCase):
         twe = MagicMock(spec=TextWithEntities)
         twe.text = "poll question"
         # Make isinstance check work
-        with unittest.mock.patch("src.telegram_backup.TextWithEntities", new=type(twe)):
+        with unittest.mock.patch("telegram_archive.telegram_backup.TextWithEntities", new=type(twe)):
             result = self.backup._text_with_entities_to_string(twe)
         self.assertEqual(result, "poll question")
 
@@ -2227,7 +2227,7 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         result_obj.filters = [folder]
         self.backup.client.return_value = result_obj
 
-        with unittest.mock.patch("src.telegram_backup.get_peer_id", return_value=-100555):
+        with unittest.mock.patch("telegram_archive.telegram_backup.get_peer_id", return_value=-100555):
             self._run(self.backup._sync_folder_include_filters())
 
         self.backup.config.update_folder_resolved_chat_ids.assert_called_once()
@@ -2286,7 +2286,7 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         result_obj.filters = [folder]
         self.backup.client.return_value = result_obj
 
-        with unittest.mock.patch("src.telegram_backup.get_peer_id", return_value=-100555):
+        with unittest.mock.patch("telegram_archive.telegram_backup.get_peer_id", return_value=-100555):
             self._run(self.backup._sync_folder_include_filters())
 
         self.backup.config.update_folder_resolved_chat_ids.assert_called_once()
@@ -2338,7 +2338,7 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         self._configure_groups_folders({28, 99})
         self.backup.client.return_value = MagicMock(filters=[self._folder(28, [555])])
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
             self._run(self.backup._sync_folder_include_filters())
 
         warning = " ".join(logs.output)
@@ -2389,7 +2389,7 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         built later, as the listener's is, and a failed one does not wipe it."""
         import os
 
-        from src.config import Config
+        from telegram_archive.config import Config
 
         env = {
             "TELEGRAM_API_ID": "12345",
@@ -2654,7 +2654,7 @@ class TestExtractForwardOrigin(unittest.TestCase):
         class Msg:
             fwd_from = Fwd()
 
-        from src.message_utils import extract_forward_origin
+        from telegram_archive.message_utils import extract_forward_origin
 
         self.assertEqual(extract_forward_origin(Msg()), {"chat_id": -1000000000123, "message_id": 777})
 
@@ -2670,12 +2670,12 @@ class TestExtractForwardOrigin(unittest.TestCase):
         class Msg:
             fwd_from = Fwd()
 
-        from src.message_utils import extract_forward_origin
+        from telegram_archive.message_utils import extract_forward_origin
 
         self.assertEqual(extract_forward_origin(Msg()), {"chat_id": -99, "message_id": 55})
 
     def test_plain_forward_and_bare_mock_are_inert(self):
-        from src.message_utils import extract_forward_origin
+        from telegram_archive.message_utils import extract_forward_origin
 
         class Fwd:
             channel_post = None
@@ -2696,7 +2696,7 @@ class TestExtractForwardOrigin(unittest.TestCase):
 
     def test_peer_resolution_failure_degrades_to_none(self):
         """A garbage from_id makes get_peer_id raise — capture must not fail."""
-        from src.message_utils import extract_forward_origin
+        from telegram_archive.message_utils import extract_forward_origin
 
         class Fwd:
             channel_post = 777

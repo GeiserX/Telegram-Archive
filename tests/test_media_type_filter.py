@@ -26,11 +26,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from src.config import Config
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Chat, Media, Message
-from src.telegram_backup import TelegramBackup
+from telegram_archive.config import Config
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Chat, Media, Message
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001
 OTHER_CHAT_ID = -2002
@@ -381,7 +381,7 @@ class TestConfigMediaFilters(unittest.TestCase):
         """The extension fallback depends on the host MIME database; it can be empty."""
         with (
             patch.dict(os.environ, {"DOWNLOAD_DOCUMENT_MIME_TYPES": "application/x-not-in-any-mime-database"}),
-            self.assertLogs("src.config", level="WARNING") as logs,
+            self.assertLogs("telegram_archive.config", level="WARNING") as logs,
         ):
             config = Config()
 
@@ -454,7 +454,7 @@ def _every_classified_media_type():
         _document_with(DocumentAttributeAudio(duration=1, voice=True)),
         _document_with(DocumentAttributeSticker(alt="x", stickerset=None)),
     ]
-    from src.message_utils import classify_media_type
+    from telegram_archive.message_utils import classify_media_type
 
     return {classified for media in candidates if (classified := classify_media_type(media)) is not None}
 
@@ -466,8 +466,8 @@ def test_valid_media_types_mirrors_the_classifier():
     cannot name, and when _VALID_MEDIA_TYPES names one the classifier never
     returns.
     """
-    from src.config import _VALID_MEDIA_TYPES
-    from src.message_utils import METADATA_ONLY_MEDIA_TYPES
+    from telegram_archive.config import _VALID_MEDIA_TYPES
+    from telegram_archive.message_utils import METADATA_ONLY_MEDIA_TYPES
 
     classified = _every_classified_media_type()
 
@@ -481,7 +481,7 @@ def test_metadata_only_kinds_are_exempt_from_the_whitelist():
     The listener asks this of every classified type, and a "no" there dropped
     the type and with it the kind the message was logged under.
     """
-    from src.message_utils import METADATA_ONLY_MEDIA_TYPES, media_download_allowed
+    from telegram_archive.message_utils import METADATA_ONLY_MEDIA_TYPES, media_download_allowed
 
     config = MagicMock()
     config.should_download_media_type = MagicMock(return_value=False)

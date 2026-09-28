@@ -14,7 +14,7 @@ from datetime import datetime
 
 import pytest
 
-from src.config import Config
+from telegram_archive.config import Config
 
 CHAT = -1001234000003
 LIMIT = 10

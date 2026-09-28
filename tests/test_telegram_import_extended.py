@@ -1,4 +1,4 @@
-"""Extended tests for src/telegram_import.py to cover missing lines.
+"""Extended tests for telegram_archive/telegram_import.py to cover missing lines.
 
 Missing lines targeted:
 118, 126-127, 141-142, 146-147, 200-201, 295-307, 323, 327, 330-339,
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from src.telegram_import import (
+from telegram_archive.telegram_import import (
     BATCH_SIZE,
     TelegramImporter,
     _build_service_text,
@@ -510,8 +510,8 @@ class TestTelegramImporterCreate(unittest.TestCase):
         finally:
             loop.close()
 
-    @patch("src.telegram_import.get_adapter")
-    @patch("src.telegram_import.init_database")
+    @patch("telegram_archive.telegram_import.get_adapter")
+    @patch("telegram_archive.telegram_import.init_database")
     def test_create_initializes_db_and_returns_importer(self, mock_init_db, mock_get_adapter):
         """TelegramImporter.create calls init_database and get_adapter."""
         mock_init_db.return_value = None
@@ -536,7 +536,7 @@ class TestTelegramImporterClose(unittest.TestCase):
         finally:
             loop.close()
 
-    @patch("src.telegram_import.close_database")
+    @patch("telegram_archive.telegram_import.close_database")
     def test_close_calls_close_database(self, mock_close_db):
         """TelegramImporter.close delegates to close_database."""
         mock_close_db.return_value = None

@@ -5,8 +5,8 @@ import os
 import tempfile
 import unittest
 
-from src.message_utils import get_shared_file_path, resolve_shared_file_path
-from src.migrate_shared_media import migrate_shared_media
+from telegram_archive.message_utils import get_shared_file_path, resolve_shared_file_path
+from telegram_archive.migrate_shared_media import migrate_shared_media
 
 
 class TestGetSharedFilePath(unittest.TestCase):

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.listener import TelegramListener
+from telegram_archive.listener import TelegramListener
 
 TRACKED = -1001234567890
 
@@ -144,7 +144,7 @@ async def test_notify_update_maps_reaction_type():
     listener._notifier.notify = AsyncMock()
     await listener._notify_update("reaction", {"chat_id": TRACKED, "message_id": 42, "reactions": []})
     listener._notifier.notify.assert_awaited_once()
-    from src.realtime import NotificationType
+    from telegram_archive.realtime import NotificationType
 
     assert listener._notifier.notify.await_args[0][0] == NotificationType.REACTION
 

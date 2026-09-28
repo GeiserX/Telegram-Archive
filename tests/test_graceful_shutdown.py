@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def _bare_scheduler(monkeypatch, tmp_path):
-    from src.scheduler import BackupScheduler
+    from telegram_archive.scheduler import BackupScheduler
 
     monkeypatch.setenv("HEARTBEAT_FILE", str(tmp_path / "beat"))
     scheduler = BackupScheduler.__new__(BackupScheduler)
@@ -112,7 +112,7 @@ class TestOpsWiring:
         assert "VIEWER_PORT: ${VIEWER_PORT:-8000}" in compose
 
     def test_run_forever_registers_loop_signal_handlers(self):
-        src = (REPO / "src" / "scheduler.py").read_text()
+        src = (REPO / "telegram_archive" / "scheduler.py").read_text()
         assert "loop.add_signal_handler(signum, self._request_shutdown, main_task, signum)" in src
         assert "except asyncio.CancelledError:" in src.split("async def run_forever", 1)[1]
 
@@ -172,7 +172,7 @@ class TestTeardownRobustness:
 
     def test_signal_handlers_are_removed_after_teardown(self):
         """Review finding: removal restores SIG_DFL, so it must run last."""
-        src = (REPO / "src" / "scheduler.py").read_text()
+        src = (REPO / "telegram_archive" / "scheduler.py").read_text()
         finally_block = src.split("async def run_forever", 1)[1]
         assert finally_block.index("await self._disconnect()") < finally_block.index(
             "loop.remove_signal_handler(signum)"

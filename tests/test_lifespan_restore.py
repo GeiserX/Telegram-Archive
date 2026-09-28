@@ -81,7 +81,7 @@ def _reload_main():
         "BACKUP_PATH": _backup_path(),
     }
     with patch.dict(os.environ, env):
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         return importlib.reload(main_mod)
 

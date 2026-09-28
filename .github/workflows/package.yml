@@ -1,0 +1,44 @@
+name: Package
+
+# Builds the PyPI sdist and wheel and uses the installed wheel the way a pip
+# user would, so a packaging mistake (a missing migration, template or entry
+# point) fails here instead of on PyPI after a release.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths: ['telegram_archive/**', 'pyproject.toml', 'uv.lock', 'MANIFEST.in', 'README.md', 'LICENSE', '.github/scripts/check_dist.py', '.github/scripts/package_smoke.sh', '.github/workflows/package.yml']
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build the sdist and wheel
+        run: uv build
+
+      - name: Check the package metadata
+        run: uvx twine@7.0.0 check --strict dist/*
+
+      - name: Check what the sdist and wheel ship
+        run: python3 .github/scripts/check_dist.py dist
+
+      - name: Install the wheel in a clean venv and use it
+        run: .github/scripts/package_smoke.sh dist/*.whl

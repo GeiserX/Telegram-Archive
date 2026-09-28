@@ -1,4 +1,4 @@
-"""Tests for web main module (src/web/main.py).
+"""Tests for web main module (telegram_archive/web/main.py).
 
 Pure utility functions and classes are tested directly.
 Route handlers that require a running FastAPI app use pytest.importorskip
@@ -19,7 +19,7 @@ from conftest import scoped_chat_source
 # pure-function tests still run even when FastAPI cannot be loaded.
 try:
     os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_wm_"))
-    from src.web import main as web_main
+    from telegram_archive.web import main as web_main
 
     _WEB_MAIN_AVAILABLE = True
 except Exception:

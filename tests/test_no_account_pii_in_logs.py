@@ -10,7 +10,7 @@ This is that check. It is deliberately a scan of whole trees rather than
 assertions about the known lines: pinning the known sites would not have
 prevented the original drift, because every one of them predated the rule.
 
-It covers ``src`` AND ``scripts``. The first draft scanned only ``src`` and was
+It covers ``telegram_archive`` AND ``scripts``. The first draft scanned only the package and was
 green while ``scripts/restore_chat.py`` logged the same name and phone the fix
 had just removed — a scanner whose blind spot contains a live violation is worse
 than none, because it certifies the gap. ``scripts`` is not incidental: the
@@ -72,7 +72,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 REPO = Path(__file__).resolve().parents[1]
-SCANNED_ROOTS = (REPO / "src", REPO / "scripts")
+SCANNED_ROOTS = (REPO / "telegram_archive", REPO / "src", REPO / "scripts")
 
 # Attributes that identify the account holder. Reading any of these into a log
 # message publishes the operator's identity into a stream that is routinely
@@ -439,8 +439,8 @@ def _interpolates_raw_exception(node: ast.AST, handler_name: str) -> bool:
 
 CHAT_ID_LOG_ALLOWLIST = frozenset(
     {
-        "src/__main__.py",  # CLI gap-fill / import summaries, printed to the operator who ran the command
-        "src/export_backup.py",  # the `list-chats` table — the chat id IS the requested output
+        "telegram_archive/__main__.py",  # CLI gap-fill / import summaries, printed to the operator who ran the command
+        "telegram_archive/export_backup.py",  # the `list-chats` table — the chat id IS the requested output
         "scripts/restore_chat.py",  # interactive destructive tool; ids are the operator's own arguments
     }
 )
@@ -660,22 +660,22 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         """The positive control ships in the repo: mutate the REAL source file and
         watch the REAL matcher go red, so a scan that silently stopped scanning
         cannot pass this suite."""
-        path = REPO / "src" / "telegram_backup.py"
+        path = REPO / "telegram_archive" / "telegram_backup.py"
         source = path.read_text(encoding="utf-8")
         anchor = f"{TITLE_LOG_SINK}(entity, self.config)"
         self.assertEqual(2, source.count(anchor), "both sanctioned call sites must use the exact anchor")
 
-        self.assertEqual([], _violations_in_tree("src/telegram_backup.py", ast.parse(source)))
+        self.assertEqual([], _violations_in_tree("telegram_archive/telegram_backup.py", ast.parse(source)))
         for replacement in ("entity.title", "chat_title", "self._get_marked_id(entity) or entity.title"):
             with self.subTest(replacement=replacement):
                 mutated = ast.parse(source.replace(anchor, replacement, 1))
                 self.assertTrue(
-                    _violations_in_tree("src/telegram_backup.py", mutated),
+                    _violations_in_tree("telegram_archive/telegram_backup.py", mutated),
                     f"a raw {replacement} at the sanctioned site must fail the guard",
                 )
 
     def test_the_sanctioned_sink_is_called_only_where_it_was_sanctioned(self) -> None:
-        """Counts EVERY call anywhere under src/ and scripts/, not only those
+        """Counts EVERY call anywhere under telegram_archive/ and scripts/, not only those
         nested in a logging call — hoisting the suffix into a local first is the
         same laundering hole, and this is what bounds it. A third caller is a
         reviewed line in the diff, never a silent widening."""
@@ -687,7 +687,7 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
                     argument = first.id if isinstance(first, ast.Name) else ast.dump(first) if first else "<none>"
                     calls.append(f"{rel}({argument})")
         self.assertEqual(
-            ["src/telegram_backup.py(entity)", "src/telegram_backup.py(entity)"],
+            ["telegram_archive/telegram_backup.py(entity)", "telegram_archive/telegram_backup.py(entity)"],
             sorted(calls),
             "the title sink may be called only from the two progress lines, and only on `entity` — "
             "`dialog` would name the person behind a private chat, because Dialog.title is their display name",
@@ -710,7 +710,7 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
                     if any((a.asname or a.name) == TITLE_LOG_SINK for a in node.names):
                         bindings.append(f"{rel}:import")
         self.assertEqual(
-            ["src/message_utils.py:def", "src/telegram_backup.py:import"],
+            ["telegram_archive/message_utils.py:def", "telegram_archive/telegram_backup.py:import"],
             sorted(bindings),
             "the sanctioned name must mean exactly one reviewed function",
         )
@@ -721,7 +721,7 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         whole entity (repr)."""
         import inspect
 
-        from src.message_utils import chat_title_for_log
+        from telegram_archive.message_utils import chat_title_for_log
 
         tree = ast.parse(inspect.getsource(chat_title_for_log))
         banned = {"first_name", "last_name", "phone", "username", "id"}

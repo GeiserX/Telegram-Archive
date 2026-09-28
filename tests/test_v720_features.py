@@ -22,7 +22,7 @@ def _reset_auth_module(tmp_path):
     ):
         os.makedirs(tmp_path / "backups", exist_ok=True)
         os.makedirs(tmp_path / "media", exist_ok=True)
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         main_mod._sessions.clear()
         main_mod._login_attempts.clear()
@@ -82,7 +82,7 @@ def auth_env():
 def _get_client(mock_db=None):
     import importlib
 
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
     if mock_db is None:
@@ -272,7 +272,7 @@ class TestThumbnails:
 
     def test_thumbnail_module_traversal_protection(self):
         """Test that path traversal is blocked in thumbnails module."""
-        from src.web.thumbnails import ALLOWED_SIZES, _is_image
+        from telegram_archive.web.thumbnails import ALLOWED_SIZES, _is_image
 
         assert 200 in ALLOWED_SIZES
         assert _is_image("photo.jpg") is True
@@ -281,7 +281,7 @@ class TestThumbnails:
     def test_thumbnail_disallowed_size(self):
         import asyncio
 
-        from src.web.thumbnails import ensure_thumbnail
+        from telegram_archive.web.thumbnails import ensure_thumbnail
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = asyncio.run(ensure_thumbnail(Path(tmpdir), 999, "folder", "file.jpg"))
@@ -290,7 +290,7 @@ class TestThumbnails:
     def test_thumbnail_non_image(self):
         import asyncio
 
-        from src.web.thumbnails import ensure_thumbnail
+        from telegram_archive.web.thumbnails import ensure_thumbnail
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = asyncio.run(ensure_thumbnail(Path(tmpdir), 200, "folder", "file.pdf"))
@@ -299,7 +299,7 @@ class TestThumbnails:
     def test_thumbnail_path_traversal(self):
         import asyncio
 
-        from src.web.thumbnails import ensure_thumbnail
+        from telegram_archive.web.thumbnails import ensure_thumbnail
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = asyncio.run(ensure_thumbnail(Path(tmpdir), 200, "../../../etc", "passwd.jpg"))

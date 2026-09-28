@@ -31,21 +31,21 @@ class TestExceptionLogsHidePaths(unittest.TestCase):
 
     def test_migration_marker_failure_hides_the_path(self) -> None:
         """open() on an unwritable path raises OSError naming that path."""
-        from src.migrate_shared_media import _write_marker
+        from telegram_archive.migrate_shared_media import _write_marker
 
         with tempfile.TemporaryDirectory() as tmp:
             # A directory cannot be opened for writing -> IsADirectoryError,
             # whose str() carries the full path including the chat folder.
             marker = os.path.join(tmp, CHAT_FOLDER)
             os.makedirs(marker)
-            with self.assertLogs("src.migrate_shared_media", level="ERROR") as captured:
+            with self.assertLogs("telegram_archive.migrate_shared_media", level="ERROR") as captured:
                 _write_marker(marker)
             self.assertNoPathLeaked(captured.records)
             self.assertIn("IsADirectoryError", " ".join(r.getMessage() for r in captured.records))
 
     def test_video_thumbnail_failure_hides_the_path(self) -> None:
         """The handler wraps ffmpeg plus Image.open on a chat-scoped path."""
-        from src.web import thumbnails
+        from telegram_archive.web import thumbnails
 
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / CHAT_FOLDER / "clip.mp4"
@@ -58,7 +58,7 @@ class TestExceptionLogsHidePaths(unittest.TestCase):
                 # handler under test never runs.
                 patch.object(thumbnails, "_check_ffmpeg", return_value=True),
                 patch.object(thumbnails.subprocess, "run", side_effect=OSError(2, "No such file", str(source))),
-                self.assertLogs("src.web.thumbnails", level="WARNING") as captured,
+                self.assertLogs("telegram_archive.web.thumbnails", level="WARNING") as captured,
             ):
                 result = thumbnails._generate_video_sync(source, dest, 200)
             self.assertFalse(result)
@@ -66,7 +66,7 @@ class TestExceptionLogsHidePaths(unittest.TestCase):
 
     def test_a_non_oserror_keeps_its_detail_in_the_same_handler(self) -> None:
         """The redaction must not blind the operator to real failures."""
-        from src.web import thumbnails
+        from telegram_archive.web import thumbnails
 
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / CHAT_FOLDER / "clip.mp4"
@@ -76,7 +76,7 @@ class TestExceptionLogsHidePaths(unittest.TestCase):
             with (
                 patch.object(thumbnails, "_check_ffmpeg", return_value=True),
                 patch.object(thumbnails.subprocess, "run", side_effect=RuntimeError("ffmpeg exploded")),
-                self.assertLogs("src.web.thumbnails", level="WARNING") as captured,
+                self.assertLogs("telegram_archive.web.thumbnails", level="WARNING") as captured,
             ):
                 thumbnails._generate_video_sync(source, dest, 200)
             joined = " ".join(r.getMessage() for r in captured.records)

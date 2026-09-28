@@ -29,8 +29,8 @@ from collections import defaultdict
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import Config
-from src.message_utils import get_shared_file_path
+from telegram_archive.config import Config
+from telegram_archive.message_utils import get_shared_file_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

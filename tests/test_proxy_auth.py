@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture(autouse=True)
 def _reset_auth_module():
     """Reset auth module state between tests."""
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     main_mod._sessions.clear()
     main_mod._login_attempts.clear()
@@ -104,7 +104,7 @@ def _get_client(mock_db=None):
     """Create a fresh TestClient by reloading the module with current env."""
     import importlib
 
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
 

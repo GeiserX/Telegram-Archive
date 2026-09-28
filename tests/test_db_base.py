@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.base import DatabaseManager, close_database, get_db_manager, init_database
+from telegram_archive.db.base import DatabaseManager, close_database, get_db_manager, init_database
 
 # ============================================================
 # URL building from environment variables
@@ -364,13 +364,13 @@ class TestGlobalFunctions:
     async def test_init_database_creates_and_inits_manager(self):
         """init_database creates a DatabaseManager and calls init()."""
         with (
-            patch("src.db.base.DatabaseManager") as MockManager,
+            patch("telegram_archive.db.base.DatabaseManager") as MockManager,
             patch.dict(os.environ, {}, clear=True),
         ):
             mock_instance = AsyncMock()
             MockManager.return_value = mock_instance
 
-            import src.db.base as base_mod
+            import telegram_archive.db.base as base_mod
 
             base_mod._db_manager = None
 
@@ -385,7 +385,7 @@ class TestGlobalFunctions:
     @pytest.mark.asyncio
     async def test_close_database_closes_and_clears_global(self):
         """close_database closes the manager and sets global to None."""
-        import src.db.base as base_mod
+        import telegram_archive.db.base as base_mod
 
         mock_manager = AsyncMock()
         base_mod._db_manager = mock_manager
@@ -398,7 +398,7 @@ class TestGlobalFunctions:
     @pytest.mark.asyncio
     async def test_close_database_does_nothing_when_no_manager(self):
         """close_database does nothing when global manager is None."""
-        import src.db.base as base_mod
+        import telegram_archive.db.base as base_mod
 
         base_mod._db_manager = None
 
@@ -409,11 +409,11 @@ class TestGlobalFunctions:
     @pytest.mark.asyncio
     async def test_get_db_manager_creates_when_none(self):
         """get_db_manager creates and initializes a manager when global is None."""
-        import src.db.base as base_mod
+        import telegram_archive.db.base as base_mod
 
         base_mod._db_manager = None
 
-        with patch("src.db.base.DatabaseManager") as MockManager:
+        with patch("telegram_archive.db.base.DatabaseManager") as MockManager:
             mock_instance = AsyncMock()
             MockManager.return_value = mock_instance
 
@@ -427,7 +427,7 @@ class TestGlobalFunctions:
     @pytest.mark.asyncio
     async def test_get_db_manager_returns_existing(self):
         """get_db_manager returns existing manager without re-initializing."""
-        import src.db.base as base_mod
+        import telegram_archive.db.base as base_mod
 
         mock_manager = MagicMock()
         base_mod._db_manager = mock_manager
@@ -453,8 +453,8 @@ class TestInitPostgresql:
         manager = DatabaseManager(database_url="postgresql+asyncpg://u:p@localhost/db")
 
         with (
-            patch("src.db.base.create_async_engine") as mock_create,
-            patch("src.db.base.async_sessionmaker"),
+            patch("telegram_archive.db.base.create_async_engine") as mock_create,
+            patch("telegram_archive.db.base.async_sessionmaker"),
         ):
             mock_engine = AsyncMock()
             mock_create.return_value = mock_engine
@@ -493,9 +493,9 @@ class TestInitSqliteCreateAllException:
         mock_engine.sync_engine = MagicMock()
 
         with (
-            patch("src.db.base.create_async_engine", return_value=mock_engine),
-            patch("src.db.base.async_sessionmaker"),
-            patch("src.db.base.event"),
+            patch("telegram_archive.db.base.create_async_engine", return_value=mock_engine),
+            patch("telegram_archive.db.base.async_sessionmaker"),
+            patch("telegram_archive.db.base.event"),
         ):
             await manager.init()
 
@@ -535,9 +535,9 @@ class TestSetupSqlitePragmasExceptions:
             return decorator
 
         with (
-            patch("src.db.base.create_async_engine", return_value=mock_engine),
-            patch("src.db.base.async_sessionmaker"),
-            patch("src.db.base.event.listens_for", side_effect=capture_listener),
+            patch("telegram_archive.db.base.create_async_engine", return_value=mock_engine),
+            patch("telegram_archive.db.base.async_sessionmaker"),
+            patch("telegram_archive.db.base.event.listens_for", side_effect=capture_listener),
         ):
             await manager.init()
 
@@ -607,7 +607,7 @@ class TestDatabaseTimeoutWiring:
     equalled the knob's default, which is what kept the dead wire invisible."""
 
     def test_busy_timeout_parses_seconds_to_milliseconds(self):
-        from src.db.base import _busy_timeout_ms
+        from telegram_archive.db.base import _busy_timeout_ms
 
         with patch.dict(os.environ, {"DATABASE_TIMEOUT": "300"}):
             assert _busy_timeout_ms() == 300000
@@ -618,7 +618,7 @@ class TestDatabaseTimeoutWiring:
             assert _busy_timeout_ms() == 60000
 
     def test_busy_timeout_rejects_garbage_and_nonpositive(self):
-        from src.db.base import _busy_timeout_ms
+        from telegram_archive.db.base import _busy_timeout_ms
 
         with patch.dict(os.environ, {"DATABASE_TIMEOUT": "forever"}):
             assert _busy_timeout_ms() == 60000
@@ -631,7 +631,7 @@ class TestDatabaseTimeoutWiring:
         """ "nan"/"inf" parse as real floats — the old int() conversion raised
         (ValueError/OverflowError) and aborted init(); a positive value under
         1ms became busy_timeout=0, silently disabling the wait entirely."""
-        from src.db.base import _busy_timeout_ms
+        from telegram_archive.db.base import _busy_timeout_ms
 
         with patch.dict(os.environ, {"DATABASE_TIMEOUT": "nan"}):
             assert _busy_timeout_ms() == 60000

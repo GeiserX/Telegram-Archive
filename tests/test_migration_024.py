@@ -20,7 +20,11 @@ from alembic.operations import Operations
 from sqlalchemy.engine import Connection
 
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260818_024_restore_missing_declared_indexes.py"
+    Path(__file__).resolve().parent.parent
+    / "telegram_archive"
+    / "alembic"
+    / "versions"
+    / "20260818_024_restore_missing_declared_indexes.py"
 )
 
 RESTORED = {"idx_messages_chat_date_desc", "idx_messages_chat_pinned"}

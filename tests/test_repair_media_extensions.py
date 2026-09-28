@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from src.repair_media_extensions import (
+from telegram_archive.repair_media_extensions import (
     REPAIR_MARKER,
     _is_corrupt_basename,
     _iter_chat_dirs,
@@ -431,7 +431,7 @@ async def test_repair_defers_and_withholds_marker_on_replace_oserror(tmp_path):
 
     db = _FakeDB([{"id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt)}])
 
-    with mock.patch("src.repair_media_extensions.os.replace", side_effect=OSError("EIO")):
+    with mock.patch("telegram_archive.repair_media_extensions.os.replace", side_effect=OSError("EIO")):
         repaired = await repair_media_extensions(str(media), db)
 
     assert repaired == 0
@@ -499,7 +499,7 @@ def test_repair_records_sync_counts_oserror_as_deferred(tmp_path):
     corrupt.write_bytes(b"video")
 
     records = [{"account_id": 1, "id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt)}]
-    with mock.patch("src.repair_media_extensions.os.replace", side_effect=OSError("EIO")):
+    with mock.patch("telegram_archive.repair_media_extensions.os.replace", side_effect=OSError("EIO")):
         repaired, deferred, pending = _repair_records_sync(records, str(media / "_shared"))
 
     assert repaired == 0
@@ -528,7 +528,7 @@ async def test_repair_offloads_fs_work_to_thread(tmp_path):
     db = _FakeDB([{"id": "m1", "file_name": "abc.mp4", "file_path": "/x/abc.mp4"}])
 
     with mock.patch(
-        "src.repair_media_extensions.asyncio.to_thread",
+        "telegram_archive.repair_media_extensions.asyncio.to_thread",
         new_callable=mock.AsyncMock,
         side_effect=[(0, 0, []), (0, 0)],
     ) as to_thread:
@@ -563,7 +563,9 @@ async def test_repair_streams_in_batches_without_loading_whole_table(tmp_path):
     db = _FakeDB(records, batch_size=2)
 
     real_to_thread = asyncio.to_thread
-    with mock.patch("src.repair_media_extensions.asyncio.to_thread", side_effect=real_to_thread) as to_thread:
+    with mock.patch(
+        "telegram_archive.repair_media_extensions.asyncio.to_thread", side_effect=real_to_thread
+    ) as to_thread:
         repaired = await repair_media_extensions(str(media), db)
 
     assert repaired == 3
@@ -634,7 +636,7 @@ def test_sweep_defers_when_root_unreadable(tmp_path):
     """A transient failure enumerating chat dirs defers the whole sweep."""
     media = _media_root(tmp_path)
 
-    with mock.patch("src.repair_media_extensions._iter_chat_dirs", side_effect=OSError("EIO")):
+    with mock.patch("telegram_archive.repair_media_extensions._iter_chat_dirs", side_effect=OSError("EIO")):
         repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
 
     assert (repaired, deferred) == (0, 1)
@@ -760,7 +762,7 @@ def test_sweep_defers_when_chat_dir_unreadable(tmp_path):
             raise OSError("EIO")  # the in-dir scan fails
         return real_scandir(path)  # the chat-dir enumeration succeeds
 
-    with mock.patch("src.repair_media_extensions.os.scandir", side_effect=scandir):
+    with mock.patch("telegram_archive.repair_media_extensions.os.scandir", side_effect=scandir):
         repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
 
     assert (repaired, deferred) == (0, 1)
@@ -781,7 +783,7 @@ def test_sweep_defers_on_per_entry_oserror(tmp_path):
     link.symlink_to(os.path.relpath(corrupt_blob, chat))
 
     with mock.patch(
-        "src.repair_media_extensions._repair_symlink_blob",
+        "telegram_archive.repair_media_extensions._repair_symlink_blob",
         side_effect=OSError("EIO"),
     ):
         repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
@@ -801,7 +803,7 @@ async def test_repair_defers_when_sweep_raises(tmp_path):
             raise RuntimeError("boom")
         return await real_to_thread(func, *args)
 
-    with mock.patch("src.repair_media_extensions.asyncio.to_thread", side_effect=flaky):
+    with mock.patch("telegram_archive.repair_media_extensions.asyncio.to_thread", side_effect=flaky):
         repaired = await repair_media_extensions(str(media), db)
 
     assert repaired == 0
@@ -877,7 +879,7 @@ async def test_repair_summary_logged_at_warning_level(tmp_path, caplog):
     media = _media_root(tmp_path)
     db = _FakeDB([])
 
-    with caplog.at_level(logging.WARNING, logger="src.repair_media_extensions"):
+    with caplog.at_level(logging.WARNING, logger="telegram_archive.repair_media_extensions"):
         await repair_media_extensions(str(media), db)
 
     assert any(

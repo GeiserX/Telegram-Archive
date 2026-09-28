@@ -106,7 +106,7 @@ def main():
                 # Type only: the avatar filename embeds the chat id, and OSError
                 # stringifies with the offending path. Deliberately self-contained
                 # rather than using describe_exception — this script imports
-                # nothing from src.
+                # nothing from telegram_archive.
                 print(f"  Error deleting an avatar: {type(e).__name__}")
 
         print(f"Deleted {deleted} legacy avatar file(s).")

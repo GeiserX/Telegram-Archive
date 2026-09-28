@@ -1,4 +1,4 @@
-"""Tests for web route handlers in src/web/main.py.
+"""Tests for web route handlers in telegram_archive/web/main.py.
 
 Targets the uncovered route handler code: API endpoints for chats, messages,
 stats, admin, push, tokens, settings, auth, and media serving.
@@ -17,7 +17,7 @@ from conftest import scoped_chat_source
 
 try:
     os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_wr_"))
-    from src.web import main as web_main
+    from telegram_archive.web import main as web_main
 
     _WEB_AVAILABLE = True
 except ImportError:
@@ -1215,7 +1215,7 @@ class TestPushSubscribeEndpoint(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.subscribe = AsyncMock(return_value=True)
         web_main.push_manager = mock_pm
-        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+        with patch("telegram_archive.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             async with self._client() as client:
                 resp = await client.post(
                     "/api/push/subscribe",
@@ -2322,7 +2322,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
     async def test_database_failures_map_to_503_or_500_and_never_echo_the_query(self):
         for exc, status in ((ConnectionRefusedError("db down"), 503), (RuntimeError("boom"), 500)):
             self.mock_db.search_messages_global = AsyncMock(side_effect=exc)
-            with self.assertLogs("src.web.main", level="ERROR") as logs:
+            with self.assertLogs("telegram_archive.web.main", level="ERROR") as logs:
                 async with self._client() as client:
                     resp = await client.get("/api/search/messages?q=secret+words")
             self.assertEqual(resp.status_code, status)

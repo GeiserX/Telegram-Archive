@@ -39,8 +39,8 @@ import shutil
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Add the package directory to the path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "telegram_archive"))
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine

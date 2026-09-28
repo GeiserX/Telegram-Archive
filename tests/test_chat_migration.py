@@ -25,10 +25,10 @@ from telethon.tl.types import (
 )
 from telethon.utils import get_peer_id
 
-from src.config import Config
-from src.db.adapter import DatabaseAdapter
-from src.listener import TelegramListener
-from src.telegram_backup import TelegramBackup
+from telegram_archive.config import Config
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.listener import TelegramListener
+from telegram_archive.telegram_backup import TelegramBackup
 
 
 def _run(coro):
@@ -127,7 +127,7 @@ class TestProcessMessageMigrationPointer(unittest.TestCase):
 # US-201 / US-202 — _reconcile_migrations warn / follow
 # ===========================================================================
 
-_LOGGER = "src.telegram_backup"
+_LOGGER = "telegram_archive.telegram_backup"
 
 
 def _make_reconcile_backup(follow=False):

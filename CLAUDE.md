@@ -71,7 +71,7 @@ A new or wider removal path needs a config flag that defaults to keeping data, a
 ### ✅ Always (do without asking)
 
 - Read any file in the project
-- Modify files in src/ or lib/
+- Modify files in telegram_archive/ or lib/
 - Run build, test, and lint commands
 - Create test files
 - Fix linting errors automatically
@@ -132,11 +132,13 @@ Follow these conventions:
 
 ### Module Structure
 
-- **`src/telegram_backup.py`** — Scheduled backup flow: `backup_all()` → `_backup_dialog()` → iterates messages → `_process_message()` → `_commit_batch()`. Gap filling: `_fill_gaps()` → `_fill_gap_range()`. Forum topics: `_backup_forum_topics()`.
-- **`src/listener.py`** — Real-time event handlers: `on_new_message`, `on_message_edited`, `on_message_deleted`, `on_chat_action`, `on_pinned_messages`. Instantiated with `TelegramListener(config, db, client)`.
-- **`src/config.py`** — All config from env vars. The backup requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or indexed `TG_ACCOUNT_<N>_*` accounts since 8.0); the viewer runs without credentials. Properties are lazy-parsed from env.
-- **`src/message_utils.py`** — Shared utility module. Contains `extract_topic_id(message)` used by both backup and listener.
-- **`src/db/adapter.py`** — Database operations. `src/db/models.py` — SQLAlchemy models. `src/db/base.py` — DB manager.
+The package is `telegram_archive`, published to PyPI as `telegram-archive`. `src/` is only a compatibility package the Docker images ship for compose files that still run `python -m src ...` or `uvicorn src.web.main:app`. Every `src.<name>` import returns the `telegram_archive.<name>` module object. It is not in the wheel. Never add code there, and never import `src` from the package.
+
+- **`telegram_archive/telegram_backup.py`** — Scheduled backup flow: `backup_all()` → `_backup_dialog()` → iterates messages → `_process_message()` → `_commit_batch()`. Gap filling: `_fill_gaps()` → `_fill_gap_range()`. Forum topics: `_backup_forum_topics()`.
+- **`telegram_archive/listener.py`** — Real-time event handlers: `on_new_message`, `on_message_edited`, `on_message_deleted`, `on_chat_action`, `on_pinned_messages`. Instantiated with `TelegramListener(config, db, client)`.
+- **`telegram_archive/config.py`** — All config from env vars. The backup requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or indexed `TG_ACCOUNT_<N>_*` accounts since 8.0); the viewer runs without credentials. Properties are lazy-parsed from env.
+- **`telegram_archive/message_utils.py`** — Shared utility module. Contains `extract_topic_id(message)` used by both backup and listener.
+- **`telegram_archive/db/adapter.py`** — Database operations. `telegram_archive/db/models.py` — SQLAlchemy models. `telegram_archive/db/base.py` — DB manager.
 
 ### Forum Topic Filtering
 
@@ -168,7 +170,7 @@ declining Telegram's attachment is the whole mechanism.
 ### Logging Rules
 
 - **Never log chat IDs, topic IDs, or topic titles** — these are considered PII per the project's guidelines. Log only aggregated counts (e.g., "skipping N topics across M chats").
-- **The one exception is `chat_title_for_log(entity, config)`** (`src/message_utils.py`), the opt-in `LOG_CHAT_TITLES` gate from #439. It is the only sanctioned route a chat title has, it is called inline at exactly two progress lines, and `tests/test_no_account_pii_in_logs.py` exempts that one callee name and nothing else. Do not add a second caller, do not rebind the name, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead — the guard is meant to fire.
+- **The one exception is `chat_title_for_log(entity, config)`** (`telegram_archive/message_utils.py`), the opt-in `LOG_CHAT_TITLES` gate from #439. It is the only sanctioned route a chat title has, it is called inline at exactly two progress lines, and `tests/test_no_account_pii_in_logs.py` exempts that one callee name and nothing else. Do not add a second caller, do not rebind the name, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead — the guard is meant to fire.
 - **Never log message content** — same PII rule applies.
 
 ## CI/CD Pipeline
@@ -182,7 +184,7 @@ python3 -m ruff check . && python3 -m ruff format --check .
 
 ### Test Workflow (`.github/workflows/tests.yml`)
 
-- Runs `pytest tests/` with `--cov=src --cov-report=xml`
+- Runs `pytest tests/` with `--cov=telegram_archive --cov-report=xml`
 - Uploads to Codecov
 - Python 3.14 on Ubuntu
 - Web tests (test_database_viewer, test_multi_user_auth, test_v720_features) require FastAPI/pydantic — may fail locally if versions mismatch
@@ -237,17 +239,18 @@ Use: pytest, pytest-asyncio, pytest-cov
 
 ### Version Files
 
-Both `pyproject.toml` AND `src/__init__.py` must be updated together when bumping versions — plus `uv.lock` and the image pins in `docker-compose.yml`, `README.md` and `scripts/migrate-sqlite-to-postgres.py` (`tests/test_release_pins.py` fails the release PR until every pin names the new version).
+Both `pyproject.toml` AND `telegram_archive/__init__.py` must be updated together when bumping versions — plus `uv.lock` and the image pins in `docker-compose.yml`, `README.md` and `scripts/migrate-sqlite-to-postgres.py` (`tests/test_release_pins.py` fails the release PR until every pin names the new version).
 
 ### Release Workflow
 
-CI auto-creates GitHub releases from `v*.*.*` tags via `.github/workflows/release.yml`. Do NOT manually create releases — just tag and push:
+CI auto-creates GitHub releases from `v*.*.*` tags via `.github/workflows/release.yml`, and the same tag publishes the package to PyPI through trusted publishing and the `pypi` environment. That job refuses a tag that differs from the version files. Do NOT manually create releases — just tag and push:
 ```bash
 git tag v7.6.0 && git push origin v7.6.0
 ```
 
 ## Alembic Migrations — Critical Reminders
 
+- **The migrations ship in the package**: `telegram_archive/alembic.ini`, `telegram_archive/alembic/env.py` and `telegram_archive/alembic/versions/`. From a checkout, run `alembic -c telegram_archive/alembic.ini revision -m "..."` (or `upgrade head`). Code that needs the config calls `telegram_archive.db.migrations.alembic_config()`. `telegram-archive migrate` runs `upgrade head` for pip installs and fresh databases; it has no stamping ladder, which stays in `scripts/entrypoint.sh`.
 - **`Base.metadata.create_all(checkfirst=True)`** creates ALL tables from SQLAlchemy models at once, including tables that should be created by future Alembic migrations. This means pre-Alembic databases can have schema objects from migrations that haven't "run" yet.
 - **`scripts/entrypoint.sh`** stamps pre-Alembic databases by detecting which schema objects exist. **The stamping ladder is frozen at 018 on purpose** (both the PostgreSQL block and the SQLite block; the comment above the ladder explains why 019 to 022 added no rung, and 027 to 029 say the same in their headers). Do not add a rung for a new migration. A `create_all()` database is stamped at 018 and every later migration runs against a schema that may already have its objects, so the next bullet is what keeps it from crash-looping.
 - **Every migration MUST be idempotent.** Use `sa.inspect(conn)` to check if tables/columns/indexes exist before creating them. The stamping logic only helps fresh databases (no `alembic_version` table); databases already stamped at an older version skip stamping entirely, so Alembic runs the migration against a schema that `create_all()` may have already populated. Pattern:

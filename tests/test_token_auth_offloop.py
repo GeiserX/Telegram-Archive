@@ -11,7 +11,7 @@ import hashlib
 import os
 import unittest.mock
 
-import src.db.adapter as adapter_module
+import telegram_archive.db.adapter as adapter_module
 
 
 def _token_material(plaintext: str) -> tuple[str, str]:

@@ -37,8 +37,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.db.adapter import DatabaseAdapter
-from src.telegram_backup import (
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.telegram_backup import (
     MESSAGE_GIVE_UP_RECORD_LIMIT,
     MESSAGE_MAX_PROCESS_ATTEMPTS,
     TelegramBackup,
@@ -314,7 +314,7 @@ class TestTheSkipIsNeverSilent(CursorFreezeExitTestCase):
         backup = self._make_backup()
         backup._get_marked_id = MagicMock(return_value=-1001234567890)
         backup._extract_chat_data = MagicMock(return_value={"id": -1001234567890})
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(backup._backup_dialog(MagicMock()))
 
         passed_over = [r.getMessage() for r in cm.records if "passed over" in r.getMessage()]
@@ -335,7 +335,7 @@ class TestTheSkipIsNeverSilent(CursorFreezeExitTestCase):
         self._run_backup()
 
         backup = self._make_backup()
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(backup._backup_dialog(MagicMock()))
 
         messages = [r.getMessage() for r in cm.records]
@@ -564,7 +564,7 @@ class TestAGiveUpIsOnlyAsGoodAsItsRecord(CursorFreezeExitTestCase):
         self.db.set_metadata_failures = [RuntimeError("metadata write failed")]
 
         backup = self._make_backup()
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(backup._backup_dialog(MagicMock()))
 
         messages = [r.getMessage() for r in cm.records]

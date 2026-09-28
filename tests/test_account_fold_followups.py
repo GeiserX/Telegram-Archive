@@ -37,9 +37,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from test_frontend_audit_fixes import INDEX_HTML, _extract_const_arrow_function, _run_node
 
-from src.db.adapter import ChatScope
-from src.db.models import MessageVersion
-from src.web import main as web_main
+from telegram_archive.db.adapter import ChatScope
+from telegram_archive.db.models import MessageVersion
+from telegram_archive.web import main as web_main
 
 BASE = datetime(2026, 4, 1, 12, 0, 0)
 

@@ -3,7 +3,7 @@ and fallback_media_filename (backup/listener ingest-path parity)."""
 
 from unittest.mock import MagicMock, patch
 
-from src.message_utils import (
+from telegram_archive.message_utils import (
     _MEDIA_PART_SUFFIX_RESERVE,
     build_media_filename,
     fallback_media_filename,
@@ -182,8 +182,8 @@ def _make_media_message(*, msg_id, mime_type=None):
 
 def test_backup_and_listener_fallback_filenames_match():
     """The two ingest paths must converge on identical names (#issue)."""
-    from src.listener import TelegramListener
-    from src.telegram_backup import TelegramBackup
+    from telegram_archive.listener import TelegramListener
+    from telegram_archive.telegram_backup import TelegramBackup
 
     backup = TelegramBackup.__new__(TelegramBackup)
     backup.account_id = 1

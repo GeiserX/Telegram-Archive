@@ -6,7 +6,7 @@ folder resolution across serve_media, thumbnails, and ACL checks.
 
 import unittest
 
-from src.web.media_utils import (
+from telegram_archive.web.media_utils import (
     CHANNEL_ID_OFFSET,
     derive_stale_folder,
     legacy_folder_alternates,
