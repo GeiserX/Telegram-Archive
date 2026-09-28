@@ -104,7 +104,7 @@ docker compose run --rm telegram-backup python scripts/auth_noninteractive.py ve
 
 Limits of this script:
 
-- It reads `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `SESSION_NAME`, `SESSION_DIR`, `BACKUP_PATH`, `TELEGRAM_PHONE_CODE_HASH` and the `TELEGRAM_PROXY_*` variables. It logs in a single account and ignores `TG_ACCOUNT_<N>_*`.
+- It reads `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `SESSION_NAME`, `SESSION_DIR`, `BACKUP_PATH`, `TELEGRAM_PHONE_CODE_HASH`, `TELEGRAM_DEVICE_MODEL` and the `TELEGRAM_PROXY_*` variables. It logs in a single account and ignores `TG_ACCOUNT_<N>_*`.
 - Its own usage text names a compose service called `backup`. The service is `telegram-backup`.
 - It does not check that the phone number matches, unlike the `auth` command.
 - When the session file is already authorized, both `send` and `verify` print `Already authorized` and stop.
@@ -134,7 +134,7 @@ When authorization fails, the backup restores the session from the `.authenticat
 
 ### What Telegram sees
 
-The login counts as a new device on the account and appears in Telegram under Settings, Devices. The backup sets no device name, so the entry shows the container's machine type, its kernel version and the Telethon library version. Ending that entry in Telegram invalidates the session file. The backup then logs `Session not authorized` and stops, and the container restarts into the same error until you [log in again](#log-in-again). The `.authenticated` and `.bak` copies hold the same key, so they do not help in that case. They only cover a session file damaged on disk.
+The login counts as a new device on the account and appears in Telegram under Settings, Devices. The entry is named `Telegram Archive`, with the operating system and its version, and the Telegram Archive version as the app version. Set [`TELEGRAM_DEVICE_MODEL`](../reference/environment-variables.md#telegram_device_model) to give an install its own name, so several installs are easy to tell apart. The name is sent each time the backup connects. An existing login keeps working after a change, and you do not need to log in again. Telegram may keep showing the old name for an existing entry; a new login always shows the current one. Ending that entry in Telegram invalidates the session file. The backup then logs `Session not authorized` and stops, and the container restarts into the same error until you [log in again](#log-in-again). The `.authenticated` and `.bak` copies hold the same key, so they do not help in that case. They only cover a session file damaged on disk.
 
 ## Log in again
 
