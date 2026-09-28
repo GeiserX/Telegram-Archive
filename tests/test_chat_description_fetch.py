@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 from telethon.errors import FloodPremiumWaitError, FloodWaitError
 from telethon.tl.types import Channel, Chat, User
 
-from src.telegram_backup import TelegramBackup
+from telegram_archive.telegram_backup import TelegramBackup
 
 
 def _run(coro):
@@ -70,7 +70,7 @@ class TestFetchChatDescription(unittest.TestCase):
                 return "The channel Secret Lair (-1001234) is private"
 
         backup = _backup(AsyncMock(side_effect=ChannelPrivateError()))
-        with self.assertLogs("src.telegram_backup", level="WARNING") as captured:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as captured:
             fields = _run(backup._fetch_chat_description(MagicMock(spec=Channel)))
         self.assertEqual(fields, {})
         joined = "\n".join(captured.output)
@@ -82,7 +82,7 @@ class TestFetchChatDescription(unittest.TestCase):
         """A description is not worth sleeping an hour for: the chat goes on, later chats skip the request."""
         error = FloodWaitError(request=None, capture=1800)
         backup = _backup(AsyncMock(side_effect=error))
-        with self.assertLogs("src.telegram_backup", level="WARNING") as captured:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as captured:
             self.assertEqual(_run(backup._fetch_chat_description(MagicMock(spec=Channel))), {})
         self.assertIn("1800", "\n".join(captured.output))
         backup.client.reset_mock()
@@ -93,7 +93,7 @@ class TestFetchChatDescription(unittest.TestCase):
     def test_the_premium_flood_wait_pauses_it_too(self):
         """FloodPremiumWaitError is not a FloodWaitError subclass; it must pause the fetch the same way."""
         backup = _backup(AsyncMock(side_effect=FloodPremiumWaitError(request=None, capture=60)))
-        with self.assertLogs("src.telegram_backup", level="WARNING"):
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING"):
             self.assertEqual(_run(backup._fetch_chat_description(MagicMock(spec=Channel))), {})
         self.assertTrue(backup._description_fetch_paused)
 

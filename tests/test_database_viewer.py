@@ -6,7 +6,7 @@ import unittest
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_backup_"))
 
-from src.web import main as web_main
+from telegram_archive.web import main as web_main
 
 
 class TestDatabaseViewer(unittest.TestCase):
@@ -105,7 +105,7 @@ class TestAsyncDatabaseAdapter(unittest.TestCase):
 
     def test_adapter_methods_exist(self):
         """Verify DatabaseAdapter has required methods."""
-        from src.db.adapter import DatabaseAdapter
+        from telegram_archive.db.adapter import DatabaseAdapter
 
         required_methods = [
             "get_all_chats",

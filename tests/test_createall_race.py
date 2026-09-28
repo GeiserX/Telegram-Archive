@@ -2,9 +2,9 @@
 
 The hazard
 ----------
-``Dockerfile.viewer`` ships no ``alembic/`` and sets no ENTRYPOINT — it runs
+``Dockerfile.viewer`` ships no ``telegram_archive/alembic/`` and sets no ENTRYPOINT — it runs
 uvicorn directly — so the viewer container can never migrate. It does, however,
-reach ``Base.metadata.create_all(checkfirst=True)`` in ``src/db/base.py`` on
+reach ``Base.metadata.create_all(checkfirst=True)`` in ``telegram_archive/db/base.py`` on
 every SQLite start, and ``docker-compose.yml`` starts it concurrently with the
 backup container, which *is* running ``alembic upgrade head`` on the same file.
 
@@ -31,7 +31,7 @@ it defeats the guard and watches those same assertions go red.
 
 Which of these can go red
 -------------------------
-Deleting the guard line from ``src/db/base.py`` fails
+Deleting the guard line from ``telegram_archive/db/base.py`` fails
 ``test_alembic_owned_database_gains_nothing``,
 ``test_pre_alembic_database_gains_nothing``,
 ``test_the_viewers_own_startup_path_creates_nothing`` and both
@@ -50,8 +50,8 @@ from unittest.mock import patch
 import pytest
 import sqlalchemy as sa
 
-from src.db.base import DatabaseManager, close_database, init_database
-from src.db.models import Base
+from telegram_archive.db.base import DatabaseManager, close_database, init_database
+from telegram_archive.db.models import Base
 
 # Stand-ins for "a table the newer ORM declares and this file does not have".
 # Both are leaf tables (nothing references them), and both are asserted to
@@ -170,7 +170,7 @@ async def test_pre_alembic_database_gains_nothing(tmp_path: Path) -> None:
 async def test_the_viewers_own_startup_path_creates_nothing(tmp_path: Path) -> None:
     """Same assertion through ``init_database()``, which is what the app calls.
 
-    ``src/web/main.py`` builds its manager from the environment via
+    ``telegram_archive/web/main.py`` builds its manager from the environment via
     ``init_database()``; testing only ``DatabaseManager`` would leave the real
     entry point unproven.
     """
@@ -190,7 +190,7 @@ async def test_the_viewers_own_startup_path_creates_nothing(tmp_path: Path) -> N
 async def test_a_genuinely_fresh_database_is_still_built(tmp_path: Path) -> None:
     """The reverse check: the fallback this guard narrows must still work.
 
-    A fresh install with no entrypoint — the viewer image, or ``python -m src``
+    A fresh install with no entrypoint — the viewer image, or ``python -m telegram_archive``
     — has to be able to provision an empty file, and the whole ORM schema has to
     land, not part of it.
     """

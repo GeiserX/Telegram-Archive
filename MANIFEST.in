@@ -1,0 +1,3 @@
+# The sdist carries the package only. setuptools adds tests/test*.py by
+# default; tests, scripts and the Docker files stay in the repository.
+prune tests

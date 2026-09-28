@@ -32,12 +32,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import func, select, text
 
-from src.config import Config
-from src.db.models import DEFAULT_ACCOUNT_ID, Account, Chat, Message
+from telegram_archive.config import Config
+from telegram_archive.db.models import DEFAULT_ACCOUNT_ID, Account, Chat, Message
 
-# NOTE: src.telegram_backup members are imported inside the sweep tests, not
+# NOTE: telegram_archive.telegram_backup members are imported inside the sweep tests, not
 # here. Other test files (test_flood_wait_visibility, test_telegram_proxy)
-# reload that module around a stubbed src.db; a from-import at collection time
+# reload that module around a stubbed telegram_archive.db; a from-import at collection time
 # would freeze the pre-reload objects and make these tests order-dependent —
 # patch targets and the code under test would come from different module
 # generations.
@@ -127,7 +127,7 @@ class TestEnsureAccountResolution:
         # there is ``hide_parameters=True`` on the engine, and #272 is about
         # what OUR log lines say — at most 'account <env_index> -> row <id>'.
         for record in caplog.records:
-            if record.name.startswith("src"):
+            if record.name.startswith("telegram_archive"):
                 assert str(UID_ONE) not in record.getMessage()
 
     async def test_fresh_database_insert_path_is_idempotent_too(self, real_adapter):
@@ -299,7 +299,7 @@ class _SweepHarness:
         return client
 
     def patches(self):
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.telegram_backup import TelegramBackup
 
         harness = self
 
@@ -315,9 +315,9 @@ class _SweepHarness:
             harness.events.append(("sweep-end", backup_self.account_id))
 
         return (
-            patch("src.telegram_backup.TelegramClient", side_effect=self.fake_client),
+            patch("telegram_archive.telegram_backup.TelegramClient", side_effect=self.fake_client),
             patch.object(TelegramBackup, "backup_all", new=recording_backup_all),
-            patch("src.repair_media_extensions.repair_media_extensions", new=AsyncMock(return_value=None)),
+            patch("telegram_archive.repair_media_extensions.repair_media_extensions", new=AsyncMock(return_value=None)),
         )
 
 
@@ -337,7 +337,7 @@ class TestSequentialSweeps:
         must be exactly [1, 2] — read back from the real SQLite file, not from
         a mock — and account 1's sweep must END before account 2's STARTS.
         """
-        from src.telegram_backup import run_backup
+        from telegram_archive.telegram_backup import run_backup
 
         env = _two_account_env(tmp_path)
         harness = _SweepHarness()
@@ -371,7 +371,7 @@ class TestSequentialSweeps:
         carry the phone number, the Telegram user id or the label — an
         account's crash report identifies it by index/row id only (#272).
         """
-        from src.telegram_backup import run_backup
+        from telegram_archive.telegram_backup import run_backup
 
         env = _two_account_env(tmp_path)
         harness = _SweepHarness(fail_indexes={1})
@@ -390,7 +390,9 @@ class TestSequentialSweeps:
 
         # Same scope rule as the resolution tests: the app's own loggers. The
         # aiosqlite driver channel echoes bound parameters at DEBUG by design.
-        log_text = "\n".join(record.getMessage() for record in caplog.records if record.name.startswith("src"))
+        log_text = "\n".join(
+            record.getMessage() for record in caplog.records if record.name.startswith("telegram_archive")
+        )
         assert "RuntimeError" in log_text, "the failure is reported by exception type"
         for pii in (PHONE_ONE, PHONE_TWO, str(UID_ONE), str(UID_TWO)):
             assert pii not in log_text
@@ -407,9 +409,9 @@ class TestResolutionIsSerialized:
         from unittest.mock import AsyncMock, MagicMock
         from unittest.mock import patch as mock_patch
 
-        from src.scheduler import BackupScheduler, _AccountRuntime
+        from telegram_archive.scheduler import BackupScheduler, _AccountRuntime
 
-        with mock_patch("src.scheduler.signal.signal"):
+        with mock_patch("telegram_archive.scheduler.signal.signal"):
             config = MagicMock()
             scheduler = BackupScheduler.__new__(BackupScheduler)
             scheduler.config = config
@@ -432,7 +434,7 @@ class TestResolutionIsSerialized:
             return env_index
 
         adapter = SimpleNamespace(ensure_account=slow_ensure_account, close=AsyncMock())
-        with mock_patch("src.db.create_adapter", AsyncMock(return_value=adapter)):
+        with mock_patch("telegram_archive.db.create_adapter", AsyncMock(return_value=adapter)):
             await asyncio.gather(
                 scheduler._resolve_account_rows(),
                 scheduler._resolve_account_rows(),

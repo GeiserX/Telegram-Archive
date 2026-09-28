@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
-SERVICE_WORKER = Path(__file__).resolve().parents[1] / "src" / "web" / "static" / "sw.js"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
+SERVICE_WORKER = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "static" / "sw.js"
 
 
 def _matching_closing_brace(source: str, opening_brace: int) -> int:

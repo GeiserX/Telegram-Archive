@@ -18,8 +18,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from src.message_utils import download_and_shard_media, resolve_shared_file_path
-from src.migrate_shared_media import SHARD_MARKER, migrate_shared_media
+from telegram_archive.message_utils import download_and_shard_media, resolve_shared_file_path
+from telegram_archive.migrate_shared_media import SHARD_MARKER, migrate_shared_media
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class TestSharedStorePublishIsAtomic(unittest.TestCase):
         db.find_media_by_content_hash = AsyncMock(return_value=None)
         chat_dir = self._chat_dir(100)
 
-        with patch("src.message_utils.compute_file_hash", return_value=None):
+        with patch("telegram_archive.message_utils.compute_file_hash", return_value=None):
             shared_file_path, content_hash = self._run(self._ingest(db, chat_dir))
 
         assert content_hash is None
@@ -259,7 +259,7 @@ class TestMigrationContainsFilesystemErrors(unittest.TestCase):
             raise PermissionError(13, "Permission denied")
 
         with (
-            patch("src.migrate_shared_media.os.link", side_effect=_link),
+            patch("telegram_archive.migrate_shared_media.os.link", side_effect=_link),
             patch("shutil.copy2", side_effect=_copy2),
         ):
             count = migrate_shared_media(self.media_path)
@@ -343,7 +343,7 @@ class TestTransactionalRelocate(unittest.TestCase):
                     raise PermissionError(13, "Permission denied")
             return real_symlink(target, link, **kwargs)
 
-        with patch("src.migrate_shared_media.os.symlink", side_effect=_symlink):
+        with patch("telegram_archive.migrate_shared_media.os.symlink", side_effect=_symlink):
             count = migrate_shared_media(self.media_path)
 
         assert count == 0
@@ -372,7 +372,7 @@ class TestTransactionalRelocate(unittest.TestCase):
                 raise PermissionError(13, "Permission denied")
             return real_unlink(path, **kwargs)
 
-        with patch("src.migrate_shared_media.os.unlink", side_effect=_unlink):
+        with patch("telegram_archive.migrate_shared_media.os.unlink", side_effect=_unlink):
             count = migrate_shared_media(self.media_path)
 
         # The entry deferred, but the link already resolves on the bucket copy.
@@ -417,7 +417,7 @@ class TestTransactionalRelocate(unittest.TestCase):
         def _link(src, dst, **kwargs):
             raise OSError(1, "Operation not permitted")
 
-        with patch("src.migrate_shared_media.os.link", side_effect=_link):
+        with patch("telegram_archive.migrate_shared_media.os.link", side_effect=_link):
             count = migrate_shared_media(self.media_path)
 
         assert count == 1
@@ -446,7 +446,7 @@ class TestTransactionalRelocate(unittest.TestCase):
                     raise PermissionError(13, "Permission denied")
             return real_symlink(target, link, **kwargs)
 
-        with patch("src.migrate_shared_media.os.symlink", side_effect=_symlink):
+        with patch("telegram_archive.migrate_shared_media.os.symlink", side_effect=_symlink):
             count = migrate_shared_media(self.media_path)
 
         assert count == 0
@@ -479,7 +479,7 @@ class TestTransactionalRelocate(unittest.TestCase):
                 raise PermissionError(13, "Permission denied")
             return real_replace(src, dst, **kwargs)
 
-        with patch("src.migrate_shared_media.os.replace", side_effect=_replace):
+        with patch("telegram_archive.migrate_shared_media.os.replace", side_effect=_replace):
             count = migrate_shared_media(self.media_path)
 
         assert count == 0
@@ -494,8 +494,8 @@ class TestTransactionalRelocate(unittest.TestCase):
         link = self._chat_link("-2004", "doc2.pdf", flat)
 
         with (
-            patch("src.migrate_shared_media.os.link", side_effect=OSError(1, "no hardlinks")),
-            patch("src.migrate_shared_media.shutil.copy2", side_effect=OSError(28, "disk full")),
+            patch("telegram_archive.migrate_shared_media.os.link", side_effect=OSError(1, "no hardlinks")),
+            patch("telegram_archive.migrate_shared_media.shutil.copy2", side_effect=OSError(28, "disk full")),
         ):
             count = migrate_shared_media(self.media_path)
 

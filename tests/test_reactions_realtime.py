@@ -18,10 +18,10 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Message, Reaction
-from src.message_utils import extract_reactions, normalize_reaction_emoji
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Message, Reaction
+from telegram_archive.message_utils import extract_reactions, normalize_reaction_emoji
 
 CHAT_ID = -100
 MSG_ID = 42

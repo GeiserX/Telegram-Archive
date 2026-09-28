@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.exc import DBAPIError
 
-from src.db.adapter import ChatScope
+from telegram_archive.db.adapter import ChatScope
 
 BASE = datetime(2026, 1, 1, 12, 0, 0)
 UNRESTRICTED = ChatScope.build()

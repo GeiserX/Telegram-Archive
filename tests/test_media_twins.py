@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.models import Media
-from src.telegram_backup import TelegramBackup
+from telegram_archive.db.models import Media
+from telegram_archive.telegram_backup import TelegramBackup
 
 PENDING_ROW = "pending-row"
 CANONICAL_ROW = "canonical-row"
@@ -81,7 +81,7 @@ class TestRetryDrainLeftoverTwin(unittest.TestCase):
     def test_the_summary_line_no_longer_claims_a_download(self):
         backup = _drain_backup({"id": CANONICAL_ROW, "downloaded": True})
 
-        with self.assertLogs("src.telegram_backup", level="INFO") as logs:
+        with self.assertLogs("telegram_archive.telegram_backup", level="INFO") as logs:
             _run(backup._retry_pending_media_downloads())
 
         summary = [line for line in logs.output if "Pending media retry:" in line]
@@ -231,7 +231,7 @@ class TestEveryBackupRunRemovesTheTwins(unittest.IsolatedAsyncioTestCase):
     async def test_a_failed_cleanup_does_not_stop_the_backup(self):
         backup = _backup_run()
         backup.db.delete_voice_note_audio_twins = AsyncMock(side_effect=RuntimeError("db down"))
-        with self.assertLogs("src.telegram_backup", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
             await backup.backup_all()
         backup._get_dialogs.assert_awaited()  # the run went on past the cleanup
         self.assertTrue(any("duplicate voice-note rows" in line for line in logs.output))

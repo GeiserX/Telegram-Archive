@@ -7,10 +7,9 @@ sqlite3 databases seeded to look like historical schema shapes -- so a wrong
 boolean in the has_0XX ladder fails the test, not just a missing substring.
 
 The extraction deliberately stops at the `conn.close()` that follows the
-stamping block, excluding the trailing `Config(...)/command.upgrade(...)` tail.
-That tail invokes real Alembic against a hardcoded `/app/alembic.ini` Docker
-path that doesn't exist in this environment and is orthogonal to the
-detection/stamping logic under test here.
+stamping block, excluding the trailing `command.upgrade(alembic_config(), ...)`
+tail. That tail runs a real Alembic upgrade against the database, which is
+orthogonal to the detection/stamping logic under test here.
 """
 
 import sqlite3

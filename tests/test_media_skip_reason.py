@@ -23,14 +23,14 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import select
 
-from src.config import Config
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Media
-from src.telegram_backup import TelegramBackup
+from telegram_archive.config import Config
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Media
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001234567890
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ async def _seed(adapter_, media_id: str, msg_id: int, **extra) -> None:
 # Migration 030
 # ============================================================================
 
-_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
 _spec = importlib.util.spec_from_file_location("migration_030", _VERSIONS_DIR / "20260923_030_add_media_skip_reason.py")
 migration_030 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(migration_030)
@@ -188,7 +188,7 @@ class TestProcessMediaRecordsReason:
         msg = _make_message(3)
         msg.media = MagicMock()
         self.backup._get_media_size = MagicMock(return_value=999)
-        with patch("src.telegram_backup.media_download_allowed", return_value=True):
+        with patch("telegram_archive.telegram_backup.media_download_allowed", return_value=True):
             row = await self.backup._process_media(msg, CHAT_ID)
         assert "downloaded" not in row
         assert row["skip_reason"] == "oversize"
@@ -196,7 +196,7 @@ class TestProcessMediaRecordsReason:
     async def test_filtered_row_says_filtered(self):
         msg = _make_message(4)
         msg.media = MagicMock()
-        with patch("src.telegram_backup.media_download_allowed", return_value=False):
+        with patch("telegram_archive.telegram_backup.media_download_allowed", return_value=False):
             row = await self.backup._process_media(msg, CHAT_ID)
         assert "downloaded" not in row
         assert row["skip_reason"] == "filtered"
@@ -334,14 +334,14 @@ class TestConfigSummaryLogging:
         }
 
     def test_construction_emits_no_summary(self, caplog):
-        caplog.set_level("DEBUG", logger="src.config")
+        caplog.set_level("DEBUG", logger="telegram_archive.config")
         with patch.dict(os.environ, self._env(), clear=True):
             Config()
         assert "Configuration loaded successfully" not in caplog.text
         assert "LOG_CHAT_TITLES enabled" not in caplog.text
 
     def test_log_summary_emits_it_once(self, caplog):
-        caplog.set_level("DEBUG", logger="src.config")
+        caplog.set_level("DEBUG", logger="telegram_archive.config")
         with patch.dict(os.environ, self._env(), clear=True):
             config = Config()
         config.log_summary()
@@ -350,7 +350,7 @@ class TestConfigSummaryLogging:
 
     def test_every_entrypoint_logs_the_summary_after_logging_is_configured(self):
         """Each ``setup_logging(config)`` is followed by ``config.log_summary()`` before the next one."""
-        src = Path(__file__).resolve().parents[1] / "src"
+        src = Path(__file__).resolve().parents[1] / "telegram_archive"
         for name in (
             "__main__.py",
             "scheduler.py",
@@ -395,7 +395,7 @@ class TestSkipMediaCleanupHonesty:
         backup.db.get_media_for_chat = AsyncMock(return_value=[{"file_path": str(link)}])
         backup.db.delete_media_for_chat = AsyncMock(return_value=1)
 
-        caplog.set_level("INFO", logger="src.telegram_backup")
+        caplog.set_level("INFO", logger="telegram_archive.telegram_backup")
         await backup._cleanup_existing_media(CHAT_ID)
 
         assert not link.exists()
@@ -473,7 +473,7 @@ class TestDrainWritesUnderivableReasons:
         record = {"id": f"{CHAT_ID}_10_video", "message_id": 10, "chat_id": CHAT_ID, "type": "video"}
         backup = _drain_backup(record)
         backup.db.get_pending_media_downloads = AsyncMock(return_value=[])
-        caplog.set_level("INFO", logger="src.telegram_backup")
+        caplog.set_level("INFO", logger="telegram_archive.telegram_backup")
 
         await backup._retry_pending_media_downloads()
         assert "Media skip reasons" not in caplog.text
@@ -553,7 +553,7 @@ class TestCleanupLogHasNoEmptyFragment:
         backup.db = AsyncMock()
         backup.db.get_media_for_chat = AsyncMock(return_value=[{"file_path": None}])
         backup.db.delete_media_for_chat = AsyncMock(return_value=3)
-        caplog.set_level("INFO", logger="src.telegram_backup")
+        caplog.set_level("INFO", logger="telegram_archive.telegram_backup")
 
         await backup._cleanup_existing_media(CHAT_ID)
 
@@ -707,7 +707,7 @@ class TestNoDownloadSessionKeepsTheReason:
     def test_the_strip_keeps_skip_reason(self):
         pytest.importorskip("fastapi")
         os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_skip_"))
-        from src.web import main as web_main
+        from telegram_archive.web import main as web_main
 
         messages = [{"media": {"file_path": None, "type": "video", "skip_reason": "oversize"}}]
         web_main._strip_original_media_paths(messages)

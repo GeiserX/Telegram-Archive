@@ -14,9 +14,9 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Media
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Media
 
 
 @pytest_asyncio.fixture

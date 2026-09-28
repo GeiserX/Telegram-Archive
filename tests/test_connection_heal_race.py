@@ -32,7 +32,7 @@ from telethon.sessions import MemorySession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.connection import TelegramConnection
+from telegram_archive.connection import TelegramConnection
 
 
 def _wire_default_account(config):
@@ -109,7 +109,7 @@ def _connection(tmp_path, client):
 def _never_built():
     """Patch target that fails loudly if a second TelegramClient is constructed."""
     return patch(
-        "src.connection.TelegramClient",
+        "telegram_archive.connection.TelegramClient",
         side_effect=AssertionError("healing built a new TelegramClient instead of reviving the existing one"),
     )
 
@@ -163,7 +163,7 @@ class TestHealingIsInPlace:
         client, _ = _shared_client()
         conn = _connection(tmp_path, client)
 
-        with patch("src.connection.asyncio.sleep", new_callable=AsyncMock):
+        with patch("telegram_archive.connection.asyncio.sleep", new_callable=AsyncMock):
             await conn.disconnect()
         assert conn.client is client
 
@@ -178,8 +178,8 @@ class TestWatchdogHealsWhileABackupIsSuspended:
     """The interleaving itself, driven through the real scheduler."""
 
     def _scheduler(self, connection):
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler, _AccountRuntime
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler, _AccountRuntime
 
             config = MagicMock()
             config.enable_listener = True
@@ -200,7 +200,7 @@ class TestWatchdogHealsWhileABackupIsSuspended:
             return listener
 
         async def connect(self):
-            # Mirrors the real guard in src/listener.py.
+            # Mirrors the real guard in telegram_archive/listener.py.
             if not self.client.is_connected():
                 raise RuntimeError("Shared client is not connected")
 
@@ -236,7 +236,7 @@ class TestWatchdogHealsWhileABackupIsSuspended:
             seen["still_the_connections_client"] = client is conn.client
             seen["usable_at_resume"] = client.is_connected()
 
-        with patch("src.scheduler.run_backup", fake_run_backup):
+        with patch("telegram_archive.scheduler.run_backup", fake_run_backup):
             backup_task = asyncio.create_task(scheduler._run_backup_job())
             await backup_started.wait()
 
@@ -247,8 +247,8 @@ class TestWatchdogHealsWhileABackupIsSuspended:
             state["alive"] = False
             state["fail_next_connect"] = True
             with (
-                patch("src.listener.TelegramListener", self._StubListener),
-                patch("src.connection.TelegramClient", builder),
+                patch("telegram_archive.listener.TelegramListener", self._StubListener),
+                patch("telegram_archive.connection.TelegramClient", builder),
             ):
                 await scheduler._start_listener()
 
@@ -292,8 +292,8 @@ class TestWatchdogHealsWhileABackupIsSuspended:
             return None
 
         with (
-            patch("src.scheduler.run_backup", fake_run_backup),
-            patch("src.listener.TelegramListener", self._StubListener),
+            patch("telegram_archive.scheduler.run_backup", fake_run_backup),
+            patch("telegram_archive.listener.TelegramListener", self._StubListener),
             _never_built(),
         ):
             await asyncio.gather(scheduler._run_backup_job(), scheduler._start_listener())
@@ -327,7 +327,7 @@ class TestHealingIsSerialised:
         state["slow_connect"] = True
         conn = _connection(tmp_path, client)
 
-        with patch("src.connection.asyncio.sleep", new_callable=AsyncMock), _never_built():
+        with patch("telegram_archive.connection.asyncio.sleep", new_callable=AsyncMock), _never_built():
             heal = asyncio.create_task(conn.ensure_connected())
             await asyncio.sleep(0)
             await asyncio.gather(heal, conn.disconnect())
@@ -370,7 +370,7 @@ class TestRebuildingIsReservedForARestoredSession:
         conn._connected = False
 
         new_client, _ = _shared_client()
-        with patch("src.connection.TelegramClient", return_value=new_client):
+        with patch("telegram_archive.connection.TelegramClient", return_value=new_client):
             result = await conn.connect()
 
         assert result is new_client
@@ -408,8 +408,8 @@ class TestTheOriginalFailureStillHeals:
         assert conn.is_connected is True  # stale app-level flag
         assert not client.is_connected()  # real state
 
-        with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler, _AccountRuntime
+        with patch("telegram_archive.scheduler.signal.signal"):
+            from telegram_archive.scheduler import BackupScheduler, _AccountRuntime
 
             config = MagicMock()
             config.enable_listener = True
@@ -437,7 +437,7 @@ class TestTheOriginalFailureStillHeals:
             async def run(self):
                 await asyncio.sleep(3600)
 
-        with patch("src.listener.TelegramListener", StubListener), _never_built():
+        with patch("telegram_archive.listener.TelegramListener", StubListener), _never_built():
             await scheduler._start_listener()
 
         assert revived["n"] == 1

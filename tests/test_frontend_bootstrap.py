@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from src.message_utils import service_action_type, service_message_text
+from telegram_archive.message_utils import service_action_type, service_message_text
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 NODE = shutil.which("node")
 
@@ -154,7 +154,7 @@ class TestSenderPresentation(unittest.TestCase):
         stored filename. That only ever matched imported files, and only while
         media.id still WAS the storage id — i.e. only while #423 was unfixed.
         media.id is now the chat-free URL key, so the prefix is matched on its
-        own shape, mirroring _MEDIA_STORAGE_PREFIX_RE in src/message_utils.py so
+        own shape, mirroring _MEDIA_STORAGE_PREFIX_RE in telegram_archive/message_utils.py so
         the visible label and the saved download name agree.
         """
         start = self.html.index("const getMediaDisplayName = (media) =>")
@@ -171,7 +171,7 @@ class TestSenderPresentation(unittest.TestCase):
         the gallery never showed. Asserted against the real Python function."""
         import re as _re
 
-        from src.message_utils import media_display_filename
+        from telegram_archive.message_utils import media_display_filename
 
         start = self.html.index("const getMediaDisplayName = (media) =>")
         end = self.html.index("const getDocumentDisplayName = (msg) =>", start)
@@ -2435,11 +2435,11 @@ const cases = [
         """#268: the authoritative cursor is already in the payload — use it.
 
         ``get_messages_paginated`` and ``get_pinned_messages`` both select
-        ``Media.id`` into ``media.id`` (src/db/adapter.py), and the no_download
+        ``Media.id`` into ``media.id`` (telegram_archive/db/adapter.py), and the no_download
         strip only blanks ``file_path``, so the client never has to guess. It
         matters because ``{chat}_{message}_{type}`` is NOT the only shape in
         use: the importer writes ``import_{chat}_{message}``
-        (src/telegram_import.py). Rebuilding invented a cursor those archives
+        (telegram_archive/telegram_import.py). Rebuilding invented a cursor those archives
         have no row for, ``get_media_paginated`` answered the empty page it
         answers for any unresolvable cursor, and #266 stayed unfixed for
         exactly those users — silently, with nothing to show for it.

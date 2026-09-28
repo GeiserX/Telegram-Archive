@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from telethon.tl.types import Channel, PeerChannel, PeerChat, PeerUser
 
-from src.telegram_backup import TelegramBackup
+from telegram_archive.telegram_backup import TelegramBackup
 
 
 async def _passthrough(coro_fn, *args, **kwargs):
@@ -45,7 +45,7 @@ class TestFetchArchivedMembership(unittest.TestCase):
         self.backup.client = AsyncMock(return_value=resp)
         self.backup.client.get_input_entity = AsyncMock(side_effect=lambda e: e)
 
-        with patch("src.telegram_backup.call_with_flood_retry", _passthrough):
+        with patch("telegram_archive.telegram_backup.call_with_flood_retry", _passthrough):
             got = self._run(self.backup._fetch_archived_membership([_channel()]))
 
         self.assertEqual(got, {-1002701160643})
@@ -56,7 +56,7 @@ class TestFetchArchivedMembership(unittest.TestCase):
         self.backup.client = AsyncMock(return_value=resp)
         self.backup.client.get_input_entity = AsyncMock(side_effect=lambda e: e)
 
-        with patch("src.telegram_backup.call_with_flood_retry", _passthrough):
+        with patch("telegram_archive.telegram_backup.call_with_flood_retry", _passthrough):
             got = self._run(self.backup._fetch_archived_membership([_channel(i) for i in range(1, 102)]))
 
         self.assertEqual(got, set())
@@ -69,7 +69,7 @@ class TestFetchArchivedMembership(unittest.TestCase):
         self.backup.client = AsyncMock(side_effect=RuntimeError("api down"))
         self.backup.client.get_input_entity = AsyncMock(side_effect=lambda e: e)
 
-        with patch("src.telegram_backup.call_with_flood_retry", _passthrough):
+        with patch("telegram_archive.telegram_backup.call_with_flood_retry", _passthrough):
             got = self._run(self.backup._fetch_archived_membership([_channel()]))
 
         self.assertIsNone(got)
@@ -151,7 +151,7 @@ class TestWhitelistBackupUsesMembership(unittest.TestCase):
         resp.dialogs = [MagicMock(folder_id=1, peer=PeerChannel(2701160643))]
         self._wire(resp)
 
-        with patch("src.telegram_backup.call_with_flood_retry", _passthrough):
+        with patch("telegram_archive.telegram_backup.call_with_flood_retry", _passthrough):
             self._run(self.backup.backup_all())
 
         self.assertIs(self.backup._backup_dialog.await_args.kwargs["is_archived"], True)
@@ -159,7 +159,7 @@ class TestWhitelistBackupUsesMembership(unittest.TestCase):
     def test_probe_failure_passes_none_never_false(self):
         self._wire(None)
 
-        with patch("src.telegram_backup.call_with_flood_retry", _passthrough):
+        with patch("telegram_archive.telegram_backup.call_with_flood_retry", _passthrough):
             self._run(self.backup.backup_all())
 
         self.assertIsNone(self.backup._backup_dialog.await_args.kwargs["is_archived"])

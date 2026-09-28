@@ -22,10 +22,10 @@ from datetime import datetime
 import pytest
 from sqlalchemy import event, inspect, select
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Chat, Media, Message, User, ViewerAuditLog
-from src.telegram_import import TelegramImporter
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Chat, Media, Message, User, ViewerAuditLog
+from telegram_archive.telegram_import import TelegramImporter
 
 CHAT_ID = -1001234567890
 
@@ -75,7 +75,7 @@ class _SQLRecorder:
 # ---------------------------------------------------------------------------
 
 
-# The exact shape src/telegram_import.py builds for `import --merge`: it omits
+# The exact shape telegram_archive/telegram_import.py builds for `import --merge`: it omits
 # reply_to_top_id and reply_to_text entirely, carries an empty raw_data, and —
 # because the export carries none of them — never supplies forward_from_id,
 # is_outgoing or is_pinned.

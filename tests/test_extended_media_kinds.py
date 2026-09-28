@@ -31,17 +31,17 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Chat, Media, Message
-from src.listener import TelegramListener
-from src.message_utils import (
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Chat, Media, Message
+from telegram_archive.listener import TelegramListener
+from telegram_archive.message_utils import (
     _EXTENDED_MEDIA_TYPES,
     METADATA_ONLY_MEDIA_TYPES,
     classify_extended_media,
     extract_extended_media_details,
 )
-from src.telegram_backup import TelegramBackup
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001
 

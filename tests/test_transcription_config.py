@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.config import Config, setup_logging
+from telegram_archive.config import Config, setup_logging
 
 KEY = "test@value/here"
 SECRET = "whsec_dGVzdEB2YWx1ZS9oZXJl"
@@ -61,7 +61,7 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_backfill_per_run, 50)
 
     def test_no_server_is_valid_and_logs_no_warning(self):
-        with self.assertNoLogs("src.config", level="WARNING"):
+        with self.assertNoLogs("telegram_archive.config", level="WARNING"):
             config = self._config(TRANSCRIPTION_ENABLED="true")
         self.assertTrue(config.transcription_enabled)
 
@@ -96,7 +96,7 @@ class TestTranscriptionConfig(unittest.TestCase):
 
     def test_bad_url_disables_without_echoing_value(self):
         for url in ("ftp://files.example.test/x", "https://", "https:///path", "akou.example.test"):
-            with self.assertLogs("src.config", level="WARNING") as logs:
+            with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
                 config = self._config(TRANSCRIPTION_URL=url)
             self.assertFalse(config.transcription_enabled)
             joined = "\n".join(logs.output)
@@ -105,13 +105,13 @@ class TestTranscriptionConfig(unittest.TestCase):
 
     def test_a_malformed_bracketed_url_degrades_instead_of_aborting(self):
         """urlparse raises on an unclosed IPv6 bracket; the warning paths still apply."""
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_URL="https://[akou.example.test")
         self.assertFalse(config.transcription_enabled)
         self.assertEqual(config.transcription_url, "")
         self.assertTrue(any("TRANSCRIPTION_URL" in line for line in logs.output))
 
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(
                 TRANSCRIPTION_URL=self.URL, TRANSCRIPTION_CALLBACK_URL="https://[viewer.example.test/cb"
             )
@@ -134,11 +134,11 @@ class TestTranscriptionConfig(unittest.TestCase):
             self._config(TRANSCRIPTION_MAX_SECONDS="30m")
 
     def test_a_negative_upload_limit_warns_and_means_no_limit(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_MAX_UPLOAD_MB="-5")
         self.assertEqual(config.transcription_max_upload_mb, 0)
         self.assertTrue(any("TRANSCRIPTION_MAX_UPLOAD_MB" in line for line in logs.output))
-        with self.assertNoLogs("src.config", level="WARNING"):
+        with self.assertNoLogs("telegram_archive.config", level="WARNING"):
             self.assertEqual(self._config(TRANSCRIPTION_MAX_UPLOAD_MB="0").transcription_max_upload_mb, 0)
 
     def test_priority_chat_ids_keep_their_order(self):
@@ -153,19 +153,19 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertTrue(self._config(TRANSCRIPTION_DIARIZE="true").transcription_diarize)
 
     def test_bad_preset_falls_back_to_auto(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_PRESET="turbo")
         self.assertEqual(config.transcription_preset, "auto")
         self.assertTrue(any("TRANSCRIPTION_PRESET" in line for line in logs.output))
 
     def test_unknown_types_are_dropped_with_a_warning(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_TYPES="voice,sticker")
         self.assertEqual(config.transcription_types, {"voice"})
         self.assertTrue(any("TRANSCRIPTION_TYPES" in line for line in logs.output))
 
     def test_only_unknown_types_keeps_the_default(self):
-        with self.assertLogs("src.config", level="WARNING"):
+        with self.assertLogs("telegram_archive.config", level="WARNING"):
             config = self._config(TRANSCRIPTION_TYPES="sticker")
         self.assertEqual(config.transcription_types, {"voice"})
 
@@ -175,13 +175,13 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_types, {"document", "voice"})
         every = "voice,video_note,audio,video,document"
         self.assertEqual(self._config(TRANSCRIPTION_TYPES=every).transcription_types, set(every.split(",")))
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_TYPES="document,animation")
         self.assertEqual(config.transcription_types, {"document"})
         self.assertTrue(any("video and document" in line for line in logs.output))
 
     def test_bad_callback_url_drops_the_callback_and_keeps_the_feature(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(
                 TRANSCRIPTION_URL=self.URL, TRANSCRIPTION_CALLBACK_URL="not a url", TRANSCRIPTION_WEBHOOK_SECRET=SECRET
             )
@@ -191,7 +191,7 @@ class TestTranscriptionConfig(unittest.TestCase):
 
     def test_callback_url_without_secret_is_the_backup_process(self):
         """The backup sends the URL, the viewer holds the secret: no warning, URL kept."""
-        with self.assertNoLogs("src.config", level="WARNING"):
+        with self.assertNoLogs("telegram_archive.config", level="WARNING"):
             config = self._config(
                 TRANSCRIPTION_URL=self.URL, TRANSCRIPTION_CALLBACK_URL="https://viewer.example.test/cb"
             )
@@ -200,7 +200,7 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_webhook_secret, "")
 
     def test_secret_must_start_with_whsec(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(
                 TRANSCRIPTION_URL=self.URL,
                 TRANSCRIPTION_CALLBACK_URL="https://viewer.example.test/cb",
@@ -224,7 +224,7 @@ class TestTranscriptionConfig(unittest.TestCase):
             TRANSCRIPTION_CALLBACK_URL="https://viewer.example.test/cb",
             TRANSCRIPTION_WEBHOOK_SECRET=SECRET,
         )
-        with self.assertLogs("src.config", level="INFO") as logs:
+        with self.assertLogs("telegram_archive.config", level="INFO") as logs:
             config.log_summary()
         lines = [line for line in logs.output if "TRANSCRIPTION" in line]
         self.assertEqual(len(lines), 1)
@@ -240,13 +240,13 @@ class TestTranscriptionConfig(unittest.TestCase):
 
     def test_log_summary_names_the_nudge_state(self):
         config = self._config()
-        with self.assertLogs("src.config", level="INFO") as logs:
+        with self.assertLogs("telegram_archive.config", level="INFO") as logs:
             config.log_summary()
         self.assertTrue(any("TRANSCRIPTION enabled" in line and "no server configured" in line for line in logs.output))
 
     def test_log_summary_when_disabled(self):
         config = self._config(TRANSCRIPTION_ENABLED="false")
-        with self.assertLogs("src.config", level="INFO") as logs:
+        with self.assertLogs("telegram_archive.config", level="INFO") as logs:
             config.log_summary()
         self.assertTrue(any("TRANSCRIPTION disabled" in line for line in logs.output))
 

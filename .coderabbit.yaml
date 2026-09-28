@@ -18,14 +18,14 @@ reviews:
     - "!dist/**"
     - "!**/__pycache__/**"
     - "!**/*.pyc"
-    - "!alembic/versions/**"
+    - "!telegram_archive/alembic/versions/**"
   path_instructions:
-    - path: "src/**"
+    - path: "telegram_archive/**"
       instructions: |
         Check for proper async/await usage and connection cleanup.
         Verify Telegram API calls handle rate limits and session expiry.
         Ensure no PII or message content is logged.
-    - path: "src/database/**"
+    - path: "telegram_archive/db/**"
       instructions: |
         Verify SQL queries are parameterized (no string interpolation).
         Check for proper connection pooling and transaction handling.

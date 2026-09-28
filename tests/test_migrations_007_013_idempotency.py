@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
-_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
 
 
 def _load_migration(filename: str, module_name: str):

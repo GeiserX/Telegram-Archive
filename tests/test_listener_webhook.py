@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from telethon import events
 
-from src.event_webhook import DEFAULT_BODY_TEMPLATE, render_template
-from src.listener import TelegramListener
+from telegram_archive.event_webhook import DEFAULT_BODY_TEMPLATE, render_template
+from telegram_archive.listener import TelegramListener
 
 CHAT_ID = -1001234567890
 
@@ -274,7 +274,7 @@ class TestWebhookLogHygiene:
         db.update_message_text = AsyncMock(return_value=("applied", {"text": "secret old text"}))
         listener._event_webhook.fire = MagicMock(side_effect=RuntimeError(f"leaks {CHAT_ID}"))
 
-        with caplog.at_level(logging.DEBUG, logger="src.listener"):
+        with caplog.at_level(logging.DEBUG, logger="telegram_archive.listener"):
             asyncio.run(handlers[events.MessageEdited](_edit_event(text="secret new text")))
 
         for record in caplog.records:

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 # Self-contained bootstrap (same pattern as tests/test_database_viewer.py): importing
-# src.web.main builds a Config, which creates BACKUP_PATH — defaulting to the
+# telegram_archive.web.main builds a Config, which creates BACKUP_PATH — defaulting to the
 # read-only "/data" and failing this whole module when it runs on its own.
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_backup_"))
 
@@ -34,8 +34,8 @@ CHAT_REF = "dispositionRef1001AB0A"
 
 
 def _reload_main(media_root=None):
-    """Reload src.web.main under anonymous auth and return (client, module)."""
-    import src.web.main as main_mod
+    """Reload telegram_archive.web.main under anonymous auth and return (client, module)."""
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
     main_mod.db = AsyncMock()
@@ -287,7 +287,7 @@ class TestMediaUrlEncoding:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
             patch.dict(os.environ, ANON_ENV),
-            patch("src.web.thumbnails.ensure_thumbnail", ensure),
+            patch("telegram_archive.web.thumbnails.ensure_thumbnail", ensure),
         ):
             client, main_mod = _reload_main(media_root=tmpdir)
             _wire_chat_and_media(main_mod, "we#1 who? are.jpg")

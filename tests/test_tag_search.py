@@ -8,7 +8,7 @@ cursors are dialect behavior a mock cannot vouch for.
 
 from datetime import datetime, timedelta
 
-from src.db.adapter import ChatScope
+from telegram_archive.db.adapter import ChatScope
 
 BASE = datetime(2026, 1, 1, 12, 0, 0)
 

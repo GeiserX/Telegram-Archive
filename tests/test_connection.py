@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from telethon.errors import FloodPremiumWaitError, FloodWaitError
 
-from src import connection
-from src.connection import TelegramConnection
+from telegram_archive import connection
+from telegram_archive.connection import TelegramConnection
 
 
 def _wire_default_account(config):
@@ -78,7 +78,7 @@ async def test_connection_call_with_flood_retry_respects_env():
         patch.object(connection, "BACKOFF_MIN_SECONDS", 15.0),
         patch.object(connection, "BACKOFF_MAX_SECONDS", 45.0),
         patch.object(connection.asyncio, "sleep", record_sleep),
-        patch("src.connection.random.uniform", return_value=1.0),
+        patch("telegram_archive.connection.random.uniform", return_value=1.0),
     ):
         result = await connection._call_with_flood_retry(flaky_api)
 
@@ -109,7 +109,7 @@ class TestTelegramConnectionInit(unittest.TestCase):
             "BACKUP_PATH": self.temp_dir,
         }
         with patch.dict(os.environ, env_vars, clear=True):
-            from src.config import Config
+            from telegram_archive.config import Config
 
             config = Config()
             conn = TelegramConnection(config)
@@ -291,7 +291,7 @@ async def test_connect_creates_client_and_authenticates():
         mock_client.session = MagicMock()
         mock_client.session._conn = None
 
-        with patch("src.connection.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.connection.TelegramClient", return_value=mock_client):
             result = await conn.connect()
 
         assert result is mock_client
@@ -341,7 +341,7 @@ async def test_connect_restores_golden_backup_when_session_has_no_auth():
         mock_client.session = MagicMock()
         mock_client.session._conn = None
 
-        with patch("src.connection.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.connection.TelegramClient", return_value=mock_client):
             await conn.connect()
 
         # Verify session was restored from golden backup
@@ -385,7 +385,7 @@ async def test_connect_creates_snapshot_before_connecting():
         mock_client.session = MagicMock()
         mock_client.session._conn = None
 
-        with patch("src.connection.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.connection.TelegramClient", return_value=mock_client):
             await conn.connect()
 
         # Snapshot should exist
@@ -411,7 +411,7 @@ async def test_connect_raises_when_not_authorized():
         mock_client.is_user_authorized = AsyncMock(return_value=False)
 
         with (
-            patch("src.connection.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.connection.TelegramClient", return_value=mock_client),
             pytest.raises(RuntimeError, match="Session not authorized"),
         ):
             await conn.connect()
@@ -455,7 +455,7 @@ async def test_connect_restores_from_backup_on_auth_failure():
         mock_client.is_user_authorized = AsyncMock(return_value=False)
 
         with (
-            patch("src.connection.TelegramClient", return_value=mock_client),
+            patch("telegram_archive.connection.TelegramClient", return_value=mock_client),
             pytest.raises(RuntimeError),
         ):
             await conn.connect()
@@ -497,7 +497,7 @@ async def test_connect_flushes_wal_on_success():
         mock_client.session = MagicMock()
         mock_client.session._conn = mock_session_conn
 
-        with patch("src.connection.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.connection.TelegramClient", return_value=mock_client):
             await conn.connect()
 
         mock_session_conn.execute.assert_any_call("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -532,7 +532,7 @@ async def test_connect_wal_flush_exception_is_suppressed():
         mock_client.session = MagicMock()
         mock_client.session._conn = mock_session_conn
 
-        with patch("src.connection.TelegramClient", return_value=mock_client):
+        with patch("telegram_archive.connection.TelegramClient", return_value=mock_client):
             # Should not raise despite WAL error
             result = await conn.connect()
             assert result is mock_client
@@ -606,7 +606,7 @@ async def test_disconnect_when_connected():
     conn._client = mock_client
     conn._connected = True
 
-    with patch("src.connection.asyncio.sleep", new_callable=AsyncMock):
+    with patch("telegram_archive.connection.asyncio.sleep", new_callable=AsyncMock):
         await conn.disconnect()
 
     mock_client.disconnect.assert_awaited_once()
@@ -635,7 +635,7 @@ async def test_disconnect_handles_exception():
     conn._client = mock_client
     conn._connected = True
 
-    with patch("src.connection.asyncio.sleep", new_callable=AsyncMock):
+    with patch("telegram_archive.connection.asyncio.sleep", new_callable=AsyncMock):
         await conn.disconnect()
 
     assert conn._connected is False
@@ -758,7 +758,7 @@ async def test_connection_flood_retry_covers_premium_flood_too():
 
     with (
         patch.object(connection.asyncio, "sleep", no_sleep),
-        patch("src.connection.random.uniform", return_value=1.0),
+        patch("telegram_archive.connection.random.uniform", return_value=1.0),
     ):
         result = await connection._call_with_flood_retry(flaky_api)
 

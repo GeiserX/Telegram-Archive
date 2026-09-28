@@ -2,7 +2,7 @@
 """Docker HEALTHCHECK for the backup container (9t6.8.10).
 
 The scheduler touches a heartbeat file while its event loop is responsive
-(src/scheduler.py). A dead process, a wedged loop, or an asyncio deadlock
+(telegram_archive/scheduler.py). A dead process, a wedged loop, or an asyncio deadlock
 all stop the touches — exactly the "dead archiver looks healthy" failure
 this check exists to expose. Exit 0 = healthy, 1 = unhealthy.
 """

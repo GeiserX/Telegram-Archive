@@ -3,7 +3,7 @@ name: Lint
 on:
   push:
     branches: [main, master]
-    paths: ['src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', '.github/workflows/lint.yml']
+    paths: ['telegram_archive/**', 'src/**', 'tests/**', 'scripts/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', '.github/workflows/lint.yml']
   pull_request:
     # No paths filter: ruff is a required status check, so it must be able to run
     # on every PR (a docs- or compose-only PR would otherwise never satisfy it and

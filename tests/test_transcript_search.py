@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.db.adapter import ChatScope
+from telegram_archive.db.adapter import ChatScope
 
 sys.path.insert(0, os.path.dirname(__file__))
 

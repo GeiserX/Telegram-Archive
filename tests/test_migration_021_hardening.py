@@ -30,15 +30,15 @@ from pathlib import Path
 from typing import Any
 
 import sqlalchemy as sa
+from alembic import command
 from alembic.config import Config
 
-from alembic import command
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ALEMBIC_DIR = REPO_ROOT / "alembic"
+ALEMBIC_DIR = REPO_ROOT / "telegram_archive" / "alembic"
 
 AUDIT_INDEXES = ("idx_audit_log_username", "idx_audit_log_created")
 
@@ -99,7 +99,7 @@ def _audit_index_names(sync_url: str) -> set[str]:
 
 
 def _hash_token(plaintext: str, salt: str) -> str:
-    """Exactly the share-token hash the web layer stores (src/web/main.py)."""
+    """Exactly the share-token hash the web layer stores (telegram_archive/web/main.py)."""
     return hashlib.pbkdf2_hmac("sha256", plaintext.encode(), bytes.fromhex(salt), 600_000).hex()
 
 

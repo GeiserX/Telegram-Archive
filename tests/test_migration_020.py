@@ -12,7 +12,11 @@ from alembic.operations import Operations
 from sqlalchemy.engine import Connection
 
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260727_020_add_message_sender_name.py"
+    Path(__file__).resolve().parent.parent
+    / "telegram_archive"
+    / "alembic"
+    / "versions"
+    / "20260727_020_add_message_sender_name.py"
 )
 
 

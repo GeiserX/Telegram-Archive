@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image as PILImage
 
-from src.telegram_backup import _pre_generate_thumbnail
+from telegram_archive.telegram_backup import _pre_generate_thumbnail
 
 
 class TestPreGenerateThumbnail(unittest.TestCase):
@@ -135,7 +135,7 @@ class TestPreGenerateVideoThumbnail(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.write_bytes(b"fake-video-bytes")
 
-            with patch("src.web.thumbnails._generate_video_sync") as gen:
+            with patch("telegram_archive.web.thumbnails._generate_video_sync") as gen:
                 _pre_generate_thumbnail(str(source), str(media_root))
 
             gen.assert_called_once()
@@ -154,7 +154,7 @@ class TestPreGenerateVideoThumbnail(unittest.TestCase):
             dest.parent.mkdir(parents=True)
             dest.write_bytes(b"existing")
 
-            with patch("src.web.thumbnails._generate_video_sync") as gen:
+            with patch("telegram_archive.web.thumbnails._generate_video_sync") as gen:
                 _pre_generate_thumbnail(str(source), str(media_root))
 
             gen.assert_not_called()

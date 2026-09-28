@@ -42,8 +42,8 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_badges_"))
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
-from src.db.adapter import ChatScope
-from src.web import main as web_main
+from telegram_archive.db.adapter import ChatScope
+from telegram_archive.web import main as web_main
 
 BASE = datetime(2026, 3, 1, 10, 0, 0)
 

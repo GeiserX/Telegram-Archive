@@ -22,7 +22,7 @@ The PostgreSQL leg skips when no server is reachable; see conftest.
 
 from datetime import datetime, timedelta
 
-from src.db.models import SyncStatus
+from telegram_archive.db.models import SyncStatus
 
 BASE_DATE = datetime(2026, 3, 1, 12, 0, 0)
 
@@ -322,7 +322,7 @@ class TestImportedMediaAddressingRealEngine:
             await real_adapter.insert_message(_message(chat_id, n, offset_minutes=n), account_id=1)
         rows = [
             # msg 10: imported only — the #423 case. Note the media-root-RELATIVE
-            # file_path, which is the shape src/telegram_import.py really writes;
+            # file_path, which is the shape telegram_archive/telegram_import.py really writes;
             # the older adoption fixture uses an absolute path the importer never
             # produces, which is how #310 shipped unnoticed.
             (f"import_{chat_id}_10", 10, "document", 1),

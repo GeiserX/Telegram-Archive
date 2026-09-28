@@ -67,3 +67,53 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    # Trusted publishing: PyPI trusts this workflow and the "pypi" environment,
+    # so no API token exists anywhere. The OIDC token is the only credential.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/telegram-archive/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      # A tag that disagrees with the version files would publish a package
+      # whose version no git tag describes. Refuse before anything is built.
+      - name: Check the tag matches the project version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PROJECT_VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          PACKAGE_VERSION=$(python3 -c 'import re; print(re.search(r"^__version__ = \"([^\"]+)\"", open("telegram_archive/__init__.py").read(), re.M).group(1))')
+          echo "tag=$TAG_VERSION pyproject=$PROJECT_VERSION package=$PACKAGE_VERSION"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ] || [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml ($PROJECT_VERSION) and telegram_archive/__init__.py ($PACKAGE_VERSION)"
+            exit 1
+          fi
+
+      - name: Build the sdist and wheel
+        run: uv build
+
+      - name: Check the package before upload
+        run: |
+          uvx twine@7.0.0 check --strict dist/*
+          python3 .github/scripts/check_dist.py dist
+          .github/scripts/package_smoke.sh dist/*.whl
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

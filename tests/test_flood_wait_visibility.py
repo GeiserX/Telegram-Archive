@@ -28,45 +28,45 @@ from telethon.errors import ChatIdInvalidError, FloodWaitError, PeerIdInvalidErr
 
 
 def _patch_db_module(monkeypatch):
-    """Stub ``src.db`` so we can import telegram_backup without a real adapter.
+    """Stub ``telegram_archive.db`` so we can import telegram_backup without a real adapter.
 
-    Reloads ``src.connection`` and ``src.telegram_backup`` against the stub so
+    Reloads ``telegram_archive.connection`` and ``telegram_archive.telegram_backup`` against the stub so
     they pick up the fake module. Tests that don't import telegram_backup
     don't need this — see ``test_config_kwargs_include_flood_sleep_threshold_zero``.
     """
-    fake_db_module = types.ModuleType("src.db")
+    fake_db_module = types.ModuleType("telegram_archive.db")
     fake_db_module.DatabaseAdapter = object
     fake_db_module.create_adapter = AsyncMock()
     fake_db_module.get_db_manager = AsyncMock()
-    monkeypatch.setitem(sys.modules, "src.db", fake_db_module)
+    monkeypatch.setitem(sys.modules, "telegram_archive.db", fake_db_module)
 
-    import src.connection
-    import src.telegram_backup
+    import telegram_archive.connection
+    import telegram_archive.telegram_backup
 
-    importlib.reload(src.connection)
-    importlib.reload(src.telegram_backup)
+    importlib.reload(telegram_archive.connection)
+    importlib.reload(telegram_archive.telegram_backup)
 
 
 @pytest.fixture
 def fake_db(monkeypatch):
-    """Opt-in fixture for tests that import src.telegram_backup."""
+    """Opt-in fixture for tests that import telegram_archive.telegram_backup."""
     _patch_db_module(monkeypatch)
     yield
-    # Restore the REAL src.db before reloading: fixture teardown runs before
+    # Restore the REAL telegram_archive.db before reloading: fixture teardown runs before
     # monkeypatch's own undo, so without this the reload re-imports the modules
     # against the fake again and leaves every later test file a stale
     # create_adapter — an order-dependent poisoning, not a cleanup.
     monkeypatch.undo()
-    if "src.db" in sys.modules:
-        import src.connection
-        import src.telegram_backup
+    if "telegram_archive.db" in sys.modules:
+        import telegram_archive.connection
+        import telegram_archive.telegram_backup
 
-        importlib.reload(src.connection)
-        importlib.reload(src.telegram_backup)
+        importlib.reload(telegram_archive.connection)
+        importlib.reload(telegram_archive.telegram_backup)
 
 
 def test_config_kwargs_include_flood_sleep_threshold_zero():
-    from src.config import Config
+    from telegram_archive.config import Config
 
     env = {
         "CHAT_TYPES": "private",
@@ -84,7 +84,7 @@ def test_config_kwargs_include_flood_sleep_threshold_zero():
 
 def test_flood_env_int_parser_invalid_falls_back(fake_db, caplog):
     """Invalid retry/wait env values should fall back consistently."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     with patch.dict(os.environ, {"MAX_FLOOD_WAIT_SECONDS": "not-an-int"}), caplog.at_level(logging.WARNING):
         value = telegram_backup._get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
@@ -95,7 +95,7 @@ def test_flood_env_int_parser_invalid_falls_back(fake_db, caplog):
 
 @pytest.mark.asyncio
 async def test_connection_passes_flood_sleep_threshold_to_client(fake_db):
-    from src.connection import TelegramConnection
+    from telegram_archive.connection import TelegramConnection
 
     config = MagicMock()
     config.validate_credentials = MagicMock()
@@ -110,9 +110,9 @@ async def test_connection_passes_flood_sleep_threshold_to_client(fake_db):
     client.get_me.return_value = SimpleNamespace(first_name="Test", phone="123")
 
     with (
-        patch("src.connection.TelegramClient", return_value=client) as client_cls,
+        patch("telegram_archive.connection.TelegramClient", return_value=client) as client_cls,
         patch.object(TelegramConnection, "_session_has_auth", return_value=False),
-        patch("src.connection.shutil.copy2"),
+        patch("telegram_archive.connection.shutil.copy2"),
     ):
         connection = TelegramConnection(config)
         await connection.connect()
@@ -124,7 +124,7 @@ async def test_connection_passes_flood_sleep_threshold_to_client(fake_db):
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_logs_and_resumes_after_partial_progress(caplog, fake_db):
     """First call yields id=1 then raises; second call resumes at min_id=1."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -144,7 +144,7 @@ async def test_iter_with_flood_retry_logs_and_resumes_after_partial_progress(cap
         return None
 
     with (
-        caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
+        caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
@@ -159,7 +159,7 @@ async def test_iter_with_flood_retry_logs_and_resumes_after_partial_progress(cap
 async def test_iter_with_flood_retry_handles_flood_before_any_yield(caplog, fake_db):
     """FloodWait on the very first call (no progress) — resume_from must stay
     at the original min_id and iteration must continue once the wait clears."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -180,7 +180,7 @@ async def test_iter_with_flood_retry_handles_flood_before_any_yield(caplog, fake
         return None
 
     with (
-        caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
+        caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=100, reverse=True):
@@ -193,7 +193,7 @@ async def test_iter_with_flood_retry_handles_flood_before_any_yield(caplog, fake
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_survives_consecutive_floods(caplog, fake_db):
     """Three consecutive FloodWaitErrors before success — common in production."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -212,7 +212,7 @@ async def test_iter_with_flood_retry_survives_consecutive_floods(caplog, fake_db
         return None
 
     with (
-        caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
+        caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
@@ -226,7 +226,7 @@ async def test_iter_with_flood_retry_survives_consecutive_floods(caplog, fake_db
 async def test_iter_with_flood_retry_resets_counter_on_progress(caplog, fake_db):
     """Each successful yield must reset the retry counter so a long backfill
     that hits one flood-wait per chunk doesn't trip the cap."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -247,7 +247,7 @@ async def test_iter_with_flood_retry_resets_counter_on_progress(caplog, fake_db)
         return None
 
     with (
-        caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
+        caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
@@ -259,7 +259,7 @@ async def test_iter_with_flood_retry_resets_counter_on_progress(caplog, fake_db)
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_gives_up_after_max_retries(caplog, fake_db):
     """Flood-wait without progress past MAX_FLOOD_RETRIES must raise."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -274,7 +274,7 @@ async def test_iter_with_flood_retry_gives_up_after_max_retries(caplog, fake_db)
         return None
 
     with (
-        caplog.at_level(logging.ERROR, logger="src.telegram_backup"),
+        caplog.at_level(logging.ERROR, logger="telegram_archive.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
         pytest.raises(FloodWaitError),
     ):
@@ -288,7 +288,7 @@ async def test_iter_with_flood_retry_gives_up_after_max_retries(caplog, fake_db)
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_aborts_waits_above_max(fake_db):
     """An e.seconds value above MAX_FLOOD_WAIT_SECONDS must not retry early."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -317,7 +317,7 @@ async def test_iter_with_flood_retry_aborts_waits_above_max(fake_db):
 async def test_iter_with_flood_retry_preserves_max_id_kwarg(fake_db):
     """Gap-fill call sites pass ``max_id`` via **kwargs; it must be forwarded
     on the post-flood retry too, otherwise the gap fetch turns into a full scan."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     seen_kwargs: list[dict] = []
     calls = {"n": 0}
@@ -350,7 +350,7 @@ async def test_iter_with_flood_retry_preserves_max_id_kwarg(fake_db):
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_suppresses_short_wait_logs(caplog, fake_db):
     """FLOOD_WAIT_LOG_THRESHOLD must silence routine short waits."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -367,7 +367,7 @@ async def test_iter_with_flood_retry_suppresses_short_wait_logs(caplog, fake_db)
         return None
 
     with (
-        caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
+        caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"),
         patch.dict(os.environ, {"FLOOD_WAIT_LOG_THRESHOLD": "10"}),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
@@ -381,7 +381,7 @@ async def test_iter_with_flood_retry_suppresses_short_wait_logs(caplog, fake_db)
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_rejects_non_reverse(fake_db):
     """Wrapper must reject calls without reverse=True to prevent silent data corruption."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     with pytest.raises(ValueError, match="reverse=True"):
         async for _ in telegram_backup.iter_messages_with_flood_retry(None, "chat", min_id=0):
@@ -391,7 +391,7 @@ async def test_iter_with_flood_retry_rejects_non_reverse(fake_db):
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_clamps_negative_sleep(fake_db):
     """Negative e.seconds must be clamped to 0 — never pass a negative to asyncio.sleep."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -410,7 +410,7 @@ async def test_iter_with_flood_retry_clamps_negative_sleep(fake_db):
 
     with (
         patch.object(telegram_backup.asyncio, "sleep", record_sleep),
-        patch("src.telegram_backup.random.uniform", return_value=1.0),
+        patch("telegram_archive.telegram_backup.random.uniform", return_value=1.0),
     ):
         async for _msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             pass
@@ -422,7 +422,7 @@ async def test_iter_with_flood_retry_clamps_negative_sleep(fake_db):
 @pytest.mark.asyncio
 async def test_iter_with_flood_retry_tolerates_bad_log_threshold_env(fake_db):
     """Invalid FLOOD_WAIT_LOG_THRESHOLD must fall back to default 10, not crash."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -452,7 +452,7 @@ async def test_iter_with_flood_retry_tolerates_bad_log_threshold_env(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_retries_and_succeeds(fake_db):
     """call_with_flood_retry must retry on FloodWaitError then return the result."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
 
@@ -475,7 +475,7 @@ async def test_call_with_flood_retry_retries_and_succeeds(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_gives_up(fake_db):
     """call_with_flood_retry must raise after exceeding max retries."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     async def always_floods():
         raise FloodWaitError(request=None, capture=5)
@@ -493,7 +493,7 @@ async def test_call_with_flood_retry_gives_up(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_aborts_excessive_wait(fake_db):
     """call_with_flood_retry must not sleep when Telegram asks for an excessive wait."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     sleeps: list[float] = []
 
@@ -516,7 +516,7 @@ async def test_call_with_flood_retry_aborts_excessive_wait(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_clamps_negative_sleep(fake_db):
     """Negative e.seconds in call_with_flood_retry must be clamped to 0."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
     sleeps: list[float] = []
@@ -532,7 +532,7 @@ async def test_call_with_flood_retry_clamps_negative_sleep(fake_db):
 
     with (
         patch.object(telegram_backup.asyncio, "sleep", record_sleep),
-        patch("src.telegram_backup.random.uniform", return_value=1.0),
+        patch("telegram_archive.telegram_backup.random.uniform", return_value=1.0),
     ):
         result = await telegram_backup.call_with_flood_retry(negative_then_ok)
 
@@ -545,7 +545,7 @@ async def test_call_with_flood_retry_clamps_negative_sleep(fake_db):
 async def test_call_with_flood_retry_flood_wait_exponential_backoff(fake_db):
     """FloodWaitError retries must escalate sleep via exponential backoff,
     not just use the raw e.seconds from Telegram."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
     sleeps = []
@@ -561,7 +561,7 @@ async def test_call_with_flood_retry_flood_wait_exponential_backoff(fake_db):
 
     with (
         patch.object(telegram_backup.asyncio, "sleep", record_sleep),
-        patch("src.telegram_backup.random.uniform", return_value=1.0),
+        patch("telegram_archive.telegram_backup.random.uniform", return_value=1.0),
     ):
         result = await telegram_backup.call_with_flood_retry(always_small_flood, max_retries=5)
 
@@ -578,7 +578,7 @@ async def test_call_with_flood_retry_flood_wait_exponential_backoff(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_flood_wait_exponential_backoff_respects_env(fake_db):
     """FloodWaitError retries must respect BACKOFF_MIN_SECONDS and BACKOFF_MAX_SECONDS env vars."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
     sleeps = []
@@ -596,7 +596,7 @@ async def test_call_with_flood_retry_flood_wait_exponential_backoff_respects_env
         patch.object(telegram_backup, "BACKOFF_MIN_SECONDS", 10.0),
         patch.object(telegram_backup, "BACKOFF_MAX_SECONDS", 25.0),
         patch.object(telegram_backup.asyncio, "sleep", record_sleep),
-        patch("src.telegram_backup.random.uniform", return_value=1.0),
+        patch("telegram_archive.telegram_backup.random.uniform", return_value=1.0),
     ):
         result = await telegram_backup.call_with_flood_retry(always_small_flood, max_retries=5)
 
@@ -613,7 +613,7 @@ async def test_call_with_flood_retry_flood_wait_exponential_backoff_respects_env
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_transient_error_backoff(fake_db):
     """Verify call_with_flood_retry retries transient errors with exponential backoff."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
     sleeps = []
@@ -631,7 +631,7 @@ async def test_call_with_flood_retry_transient_error_backoff(fake_db):
         patch.object(telegram_backup, "BACKOFF_MIN_SECONDS", 2.0),
         patch.object(telegram_backup, "BACKOFF_MAX_SECONDS", 300.0),
         patch.object(telegram_backup.asyncio, "sleep", record_sleep),
-        patch("src.telegram_backup.random.uniform", return_value=1.0),
+        patch("telegram_archive.telegram_backup.random.uniform", return_value=1.0),
     ):
         result = await telegram_backup.call_with_flood_retry(flaky_api, max_retries=5)
 
@@ -647,7 +647,7 @@ async def test_call_with_flood_retry_transient_error_backoff(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_transient_error_respects_max_cap(fake_db):
     """Verify call_with_flood_retry respects BACKOFF_MAX_SECONDS."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     calls = {"n": 0}
     sleeps = []
@@ -665,7 +665,7 @@ async def test_call_with_flood_retry_transient_error_respects_max_cap(fake_db):
         patch.object(telegram_backup, "BACKOFF_MIN_SECONDS", 200.0),
         patch.object(telegram_backup, "BACKOFF_MAX_SECONDS", 250.0),
         patch.object(telegram_backup.asyncio, "sleep", record_sleep),
-        patch("src.telegram_backup.random.uniform", return_value=1.0),
+        patch("telegram_archive.telegram_backup.random.uniform", return_value=1.0),
     ):
         result = await telegram_backup.call_with_flood_retry(flaky_api, max_retries=5)
 
@@ -682,7 +682,7 @@ async def test_call_with_flood_retry_transient_error_respects_max_cap(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_gives_up_on_transient_error(fake_db):
     """Verify call_with_flood_retry raises after exceeding max retries on transient errors."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     async def broken_api():
         raise OSError("disk failure")
@@ -701,7 +701,7 @@ async def test_call_with_flood_retry_gives_up_on_transient_error(fake_db):
 @pytest.mark.asyncio
 async def test_call_with_flood_retry_rejects_terminal_peer_errors_immediately(fake_db, error_type):
     """Permanent peer identifiers must not consume transient retry delays."""
-    from src import telegram_backup
+    from telegram_archive import telegram_backup
 
     attempts = 0
 
@@ -733,7 +733,7 @@ async def test_call_with_flood_retry_rejects_terminal_peer_errors_immediately(fa
 
 @pytest.mark.asyncio
 async def test_absorb_media_floods_sets_threshold_and_restores(fake_db):
-    from src.telegram_backup import absorb_media_floods
+    from telegram_archive.telegram_backup import absorb_media_floods
 
     client = SimpleNamespace(flood_sleep_threshold=0)
     async with absorb_media_floods(client, 60):
@@ -743,7 +743,7 @@ async def test_absorb_media_floods_sets_threshold_and_restores(fake_db):
 
 @pytest.mark.asyncio
 async def test_absorb_media_floods_restores_on_exception(fake_db):
-    from src.telegram_backup import absorb_media_floods
+    from telegram_archive.telegram_backup import absorb_media_floods
 
     client = SimpleNamespace(flood_sleep_threshold=0)
     with pytest.raises(RuntimeError, match="boom"):
@@ -756,7 +756,7 @@ async def test_absorb_media_floods_restores_on_exception(fake_db):
 async def test_absorb_media_floods_refcount_overlap(fake_db):
     """Models a sweep download and a listener download overlapping on the
     shared client: the threshold is only restored when the LAST one exits."""
-    from src.telegram_backup import absorb_media_floods
+    from telegram_archive.telegram_backup import absorb_media_floods
 
     client = SimpleNamespace(flood_sleep_threshold=0)
     cm_a = absorb_media_floods(client, 60)
@@ -775,7 +775,7 @@ async def test_absorb_media_floods_refcount_overlap(fake_db):
 @pytest.mark.asyncio
 async def test_absorb_media_floods_zero_threshold_noop(fake_db):
     """Threshold 0 keeps the pre-#232 raise-immediately behavior untouched."""
-    from src.telegram_backup import absorb_media_floods
+    from telegram_archive.telegram_backup import absorb_media_floods
 
     client = SimpleNamespace(flood_sleep_threshold=0)
     async with absorb_media_floods(client, 0):
@@ -788,7 +788,7 @@ async def test_absorb_media_floods_zero_threshold_noop(fake_db):
 @pytest.mark.asyncio
 async def test_absorb_media_floods_non_int_threshold_noop(fake_db):
     """A MagicMock threshold (auto-created config attr) must be inert."""
-    from src.telegram_backup import absorb_media_floods
+    from telegram_archive.telegram_backup import absorb_media_floods
 
     client = SimpleNamespace(flood_sleep_threshold=0)
     async with absorb_media_floods(client, MagicMock()):
@@ -800,7 +800,7 @@ async def test_absorb_media_floods_non_int_threshold_noop(fake_db):
 @pytest.mark.asyncio
 async def test_fetch_media_bytes_sets_flood_threshold_during_download(fake_db):
     """_fetch_media_bytes raises the threshold for the download window only."""
-    from src.telegram_backup import TelegramBackup
+    from telegram_archive.telegram_backup import TelegramBackup
 
     backup = TelegramBackup.__new__(TelegramBackup)
     backup.account_id = 1
@@ -831,7 +831,7 @@ async def test_absorb_media_floods_restores_on_external_cancellation(fake_db):
     """Cancellation mid-transfer (e.g. a wait_for timeout) still restores the threshold."""
     import asyncio
 
-    from src.telegram_backup import absorb_media_floods
+    from telegram_archive.telegram_backup import absorb_media_floods
 
     client = SimpleNamespace(flood_sleep_threshold=0)
     entered = asyncio.Event()
@@ -853,7 +853,7 @@ async def test_absorb_media_floods_restores_on_external_cancellation(fake_db):
 
 def _make_media_backup():
     """Minimal TelegramBackup for exercising _download_media_to_path directly."""
-    from src.telegram_backup import TelegramBackup
+    from telegram_archive.telegram_backup import TelegramBackup
 
     backup = TelegramBackup.__new__(TelegramBackup)
     backup.account_id = 1
@@ -869,7 +869,7 @@ async def test_download_media_valueerror_flood_exhaustion_logged(fake_db, caplog
     backup = _make_media_backup()
     backup._fetch_media_bytes_bounded = AsyncMock(side_effect=ValueError("Request was unsuccessful 5 time(s)"))
 
-    with caplog.at_level(logging.WARNING, logger="src.telegram_backup"), pytest.raises(ValueError):
+    with caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"), pytest.raises(ValueError):
         await backup._download_media_to_path(MagicMock(), str(tmp_path / "m.part"), 123, 42)
 
     assert any("repeated in-request retries" in r.getMessage() for r in caplog.records)
@@ -881,7 +881,7 @@ async def test_download_media_foreign_valueerror_not_mislabeled(fake_db, caplog,
     backup = _make_media_backup()
     backup._fetch_media_bytes_bounded = AsyncMock(side_effect=ValueError("unrelated parsing problem"))
 
-    with caplog.at_level(logging.WARNING, logger="src.telegram_backup"), pytest.raises(ValueError):
+    with caplog.at_level(logging.WARNING, logger="telegram_archive.telegram_backup"), pytest.raises(ValueError):
         await backup._download_media_to_path(MagicMock(), str(tmp_path / "m.part"), 123, 42)
 
     assert not any("repeated in-request retries" in r.getMessage() for r in caplog.records)

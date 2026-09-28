@@ -15,7 +15,7 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_wscaps_"))
 
 pytest.importorskip("fastapi")
 
-from src.web.main import ConnectionManager  # noqa: E402
+from telegram_archive.web.main import ConnectionManager  # noqa: E402
 
 
 def _socket():
@@ -35,7 +35,7 @@ def _user():
 class TestConnectionCap:
     async def test_connect_past_cap_closes_with_1013(self):
         manager = ConnectionManager()
-        with patch("src.web.main.MAX_WS_CONNECTIONS", 2):
+        with patch("telegram_archive.web.main.MAX_WS_CONNECTIONS", 2):
             assert await manager.connect(_socket(), _user()) is True
             assert await manager.connect(_socket(), _user()) is True
             refused = _socket()
@@ -48,7 +48,7 @@ class TestConnectionCap:
 
     async def test_disconnect_frees_a_slot(self):
         manager = ConnectionManager()
-        with patch("src.web.main.MAX_WS_CONNECTIONS", 1):
+        with patch("telegram_archive.web.main.MAX_WS_CONNECTIONS", 1):
             first = _socket()
             assert await manager.connect(first, _user()) is True
             manager.disconnect(first)
@@ -61,7 +61,7 @@ class TestSubscriptionCap:
         ws = _socket()
         await manager.connect(ws, _user())
 
-        with patch("src.web.main.MAX_WS_SUBSCRIPTIONS_PER_CONNECTION", 3):
+        with patch("telegram_archive.web.main.MAX_WS_SUBSCRIPTIONS_PER_CONNECTION", 3):
             for n in range(3):
                 assert manager.subscribe(ws, f"ref-{n}") is True
             assert manager.subscribe(ws, "ref-overflow") is False
@@ -72,7 +72,7 @@ class TestSubscriptionCap:
         ws = _socket()
         await manager.connect(ws, _user())
 
-        with patch("src.web.main.MAX_WS_SUBSCRIPTIONS_PER_CONNECTION", 2):
+        with patch("telegram_archive.web.main.MAX_WS_SUBSCRIPTIONS_PER_CONNECTION", 2):
             assert manager.subscribe(ws, "ref-a") is True
             assert manager.subscribe(ws, "ref-b") is True
             assert manager.subscribe(ws, "ref-a") is True  # idempotent, not counted
@@ -89,7 +89,7 @@ class TestConcurrentConnectRace:
         passed the check first and the cap was advisory (review finding)."""
         import asyncio
 
-        from src.web import main as web_main
+        from telegram_archive.web import main as web_main
 
         manager = ConnectionManager()
 

@@ -50,7 +50,7 @@ captured it, and the `accounts` table maps each row of history to a Telegram
 user id filled in at login. The merge script copies the source's account row
 and all of its data into the target under a fresh account id. The next time
 the target starts with the second account declared, `ensure_account` (in
-`src/db/adapter.py`) matches the login's Telegram user id against the imported
+`telegram_archive/db/adapter.py`) matches the login's Telegram user id against the imported
 row and **adopts it** — the second account picks up its entire imported
 history, cursors included, as its own. Nothing about the matching depends on
 env variable order or on which install the data came from.

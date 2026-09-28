@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.config import Config, build_telegram_client_kwargs, build_telegram_proxy_from_env
+from telegram_archive.config import Config, build_telegram_client_kwargs, build_telegram_proxy_from_env
 
 
 class TestConfig(unittest.TestCase):
@@ -298,7 +298,7 @@ class TestSkipMediaChatIds(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertFalse(config.exclude_delete_existing)
-            with self.assertLogs("src.config", level="INFO") as logs:
+            with self.assertLogs("telegram_archive.config", level="INFO") as logs:
                 config.log_summary()
         joined = "\n".join(logs.output)
         self.assertIn("existing rows and files are kept", joined)
@@ -316,7 +316,7 @@ class TestSkipMediaChatIds(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertTrue(config.exclude_delete_existing)
-            with self.assertLogs("src.config", level="WARNING") as logs:
+            with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
                 config.log_summary()
         self.assertTrue(any("EXCLUDE_DELETE_EXISTING enabled" in line for line in logs.output))
 
@@ -843,25 +843,25 @@ class TestParseBoolTrueValues(unittest.TestCase):
 
     def test_parse_bool_returns_true_for_yes(self):
         """_parse_bool returns True for 'yes' input."""
-        from src.config import _parse_bool
+        from telegram_archive.config import _parse_bool
 
         self.assertTrue(_parse_bool("yes"))
 
     def test_parse_bool_returns_true_for_on(self):
         """_parse_bool returns True for 'on' input."""
-        from src.config import _parse_bool
+        from telegram_archive.config import _parse_bool
 
         self.assertTrue(_parse_bool("on"))
 
     def test_parse_bool_returns_true_for_1(self):
         """_parse_bool returns True for '1' input."""
-        from src.config import _parse_bool
+        from telegram_archive.config import _parse_bool
 
         self.assertTrue(_parse_bool("1"))
 
     def test_parse_bool_returns_true_for_true(self):
         """_parse_bool returns True for 'true' input."""
-        from src.config import _parse_bool
+        from telegram_archive.config import _parse_bool
 
         self.assertTrue(_parse_bool("true"))
 
@@ -1049,7 +1049,7 @@ class TestListenerLogging(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertEqual(config.deletion_mode, "hard")
-            with self.assertLogs("src.config", level="WARNING") as logs:
+            with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
                 config.log_summary()
         self.assertTrue(any("DELETION_MODE=hard - Messages will be DELETED" in line for line in logs.output))
 
@@ -1063,7 +1063,7 @@ class TestListenerLogging(unittest.TestCase):
         }
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
-            with self.assertLogs("src.config", level="WARNING") as logs:
+            with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
                 config.log_summary()
         joined = "\n".join(logs.output)
         self.assertIn("DELETION_MODE=soft (default)", joined)
@@ -1570,7 +1570,7 @@ class TestSetupLogging(unittest.TestCase):
 
     def test_setup_logging_sets_root_level(self):
         """setup_logging configures root logger and sets telethon to WARNING."""
-        from src.config import setup_logging
+        from telegram_archive.config import setup_logging
 
         env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "LOG_LEVEL": "DEBUG"}
         with patch.dict(os.environ, env_vars, clear=True):
@@ -1581,7 +1581,7 @@ class TestSetupLogging(unittest.TestCase):
 
     def test_setup_logging_with_info_level(self):
         """setup_logging works with INFO level."""
-        from src.config import setup_logging
+        from telegram_archive.config import setup_logging
 
         env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "LOG_LEVEL": "INFO"}
         with patch.dict(os.environ, env_vars, clear=True):
@@ -1612,7 +1612,7 @@ class TestMainBlock(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            [sys.executable, "-m", "src.config"],
+            [sys.executable, "-m", "telegram_archive.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -1631,7 +1631,7 @@ class TestMainBlock(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            [sys.executable, "-m", "src.config"],
+            [sys.executable, "-m", "telegram_archive.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -2033,7 +2033,10 @@ class TestMultiAccountConfig(unittest.TestCase):
 
     def test_indexed_mode_logs_count_only(self):
         env = self.base_env | _account_triple(1) | _account_triple(2)
-        with patch.dict(os.environ, env, clear=True), self.assertLogs("src.config", level="INFO") as captured:
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertLogs("telegram_archive.config", level="INFO") as captured,
+        ):
             Config().log_summary()
         multi = [m for m in captured.output if "Multi-account" in m]
         self.assertEqual(len(multi), 1)
@@ -2047,7 +2050,10 @@ class TestMultiAccountConfig(unittest.TestCase):
             "TELEGRAM_API_HASH": "abcdef",
             "TELEGRAM_PHONE": "+1234567890",
         }
-        with patch.dict(os.environ, env, clear=True), self.assertLogs("src.config", level="DEBUG") as captured:
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertLogs("telegram_archive.config", level="DEBUG") as captured,
+        ):
             Config().log_summary()
         self.assertFalse([m for m in captured.output if "Multi-account" in m])
 
@@ -2089,7 +2095,7 @@ class TestSchedulerConfigValidation(unittest.TestCase):
             return Config()
 
     def test_misspelled_timezone_falls_back_to_utc_with_warning(self):
-        with self.assertLogs("src.config", level="WARNING") as captured:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as captured:
             config = self._config(VIEWER_TIMEZONE="Europe/Madird")
         self.assertEqual(config.viewer_timezone, "UTC")
         self.assertTrue(any("VIEWER_TIMEZONE" in line for line in captured.output))
@@ -2099,13 +2105,13 @@ class TestSchedulerConfigValidation(unittest.TestCase):
         self.assertEqual(config.viewer_timezone, "Europe/Madrid")
 
     def test_hour_out_of_range_falls_back_to_default(self):
-        with self.assertLogs("src.config", level="WARNING") as captured:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as captured:
             config = self._config(STATS_CALCULATION_HOUR="24")
         self.assertEqual(config.stats_calculation_hour, 3)
         self.assertTrue(any("STATS_CALCULATION_HOUR" in line for line in captured.output))
 
     def test_hour_not_a_number_falls_back_to_default(self):
-        with self.assertLogs("src.config", level="WARNING"):
+        with self.assertLogs("telegram_archive.config", level="WARNING"):
             config = self._config(STATS_CALCULATION_HOUR="midnight")
         self.assertEqual(config.stats_calculation_hour, 3)
 
@@ -2194,14 +2200,14 @@ class TestEventWebhookConfig(unittest.TestCase):
         env = _get_base_env(self.temp_dir) | {"EVENT_WEBHOOK_ENABLED": "true"}
         with (
             patch.dict(os.environ, env, clear=True),
-            self.assertLogs("src.config", level="WARNING") as logs,
+            self.assertLogs("telegram_archive.config", level="WARNING") as logs,
         ):
             config = Config()
         self.assertFalse(config.event_webhook_enabled)
         self.assertTrue(any("EVENT_WEBHOOK_URL" in line for line in logs.output))
 
     def test_bad_scheme_disables_without_echoing_value(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_URL="ftp://files.example.test/x")
         self.assertFalse(config.event_webhook_enabled)
         joined = "\n".join(logs.output)
@@ -2212,25 +2218,25 @@ class TestEventWebhookConfig(unittest.TestCase):
         """ "https://" satisfies a prefix check but names no host — the sender
         would fire doomed requests forever. Hostname is required."""
         for url in ("https://", "http://", "https:///path"):
-            with self.assertLogs("src.config", level="WARNING") as logs:
+            with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
                 config = self._config(EVENT_WEBHOOK_URL=url)
             self.assertFalse(config.event_webhook_enabled)
             self.assertTrue(any("EVENT_WEBHOOK_URL" in line for line in logs.output))
 
     def test_bad_method_disables(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_METHOD="PATCH")
         self.assertFalse(config.event_webhook_enabled)
         self.assertTrue(any("EVENT_WEBHOOK_METHOD" in line for line in logs.output))
 
     def test_headers_bad_json_disables(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_HEADERS="{not json")
         self.assertFalse(config.event_webhook_enabled)
         self.assertTrue(any("EVENT_WEBHOOK_HEADERS" in line for line in logs.output))
 
     def test_headers_non_string_values_disable(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_HEADERS='{"X-Retry": 3}')
         self.assertFalse(config.event_webhook_enabled)
         self.assertTrue(any("EVENT_WEBHOOK_HEADERS" in line for line in logs.output))
@@ -2250,7 +2256,7 @@ class TestEventWebhookConfig(unittest.TestCase):
         self.assertEqual(config.event_webhook_events, {"message_deleted"})
 
     def test_unknown_event_disables(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_EVENTS="message_deleted,message_pinned")
         self.assertFalse(config.event_webhook_enabled)
         self.assertTrue(any("EVENT_WEBHOOK_EVENTS" in line for line in logs.output))
@@ -2260,29 +2266,29 @@ class TestEventWebhookConfig(unittest.TestCase):
         self.assertEqual(config.event_webhook_chat_ids, {-1001, -1002})
 
     def test_garbage_chat_ids_disable(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_CHAT_IDS="-1001,abc")
         self.assertFalse(config.event_webhook_enabled)
         self.assertTrue(any("EVENT_WEBHOOK_CHAT_IDS" in line for line in logs.output))
 
     def test_combination_warnings(self):
         """Startup names the exact reason a selected event can never fire."""
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             self._config().log_summary()  # ENABLE_LISTENER unset -> false
         self.assertTrue(any("ENABLE_LISTENER=false" in line for line in logs.output))
 
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             self._config(ENABLE_LISTENER="true").log_summary()  # LISTEN_DELETIONS defaults false
         joined = "\n".join(logs.output)
         self.assertIn("message_deleted webhooks will never fire", joined)
 
-        with self.assertLogs("src.config", level="WARNING") as logs:
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true", LISTEN_EDITS="false").log_summary()
         joined = "\n".join(logs.output)
         self.assertIn("message_edited webhooks will never fire", joined)
 
     def test_startup_log_never_contains_url(self):
-        with self.assertLogs("src.config", level="INFO") as logs:
+        with self.assertLogs("telegram_archive.config", level="INFO") as logs:
             self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true").log_summary()
         joined = "\n".join(logs.output)
         self.assertNotIn(self.URL, joined)
@@ -2348,7 +2354,7 @@ class TestNamedNumericEnvParsing(unittest.TestCase):
         self.assertEqual(config.reaction_debounce_seconds, 2.5)
 
     def test_database_timeout_keeps_the_never_abort_contract(self):
-        """#378 made src/db/base.py tolerate garbage here; the backup
+        """#378 made telegram_archive/db/base.py tolerate garbage here; the backup
         container must not crash where the viewer shrugs."""
         config = self._config(DATABASE_TIMEOUT="forever")
         self.assertEqual(config.database_timeout, 60.0)

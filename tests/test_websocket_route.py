@@ -1,4 +1,4 @@
-"""End-to-end tests for the @app.websocket("/ws/updates") route in src/web/main.py.
+"""End-to-end tests for the @app.websocket("/ws/updates") route in telegram_archive/web/main.py.
 
 Before this file, only ConnectionManager's plain-async methods had unit coverage
 (tests/test_web_main.py); nothing exercised the actual route handler -- origin
@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 # Config() creates BACKUP_PATH on import (default /data/backups, read-only in
-# this sandbox). Must be set before src.web.main is ever imported, including
+# this sandbox). Must be set before telegram_archive.web.main is ever imported, including
 # by the first module-level import below and every later importlib.reload().
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_ws_"))
 
@@ -44,7 +44,7 @@ def _make_mock_db():
 
 @pytest.fixture(autouse=True)
 def _reset_sessions():
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     main_mod._sessions.clear()
     yield
@@ -63,7 +63,7 @@ def auth_env():
 
 def _get_client():
     """Create a fresh TestClient by reloading the module with current env, like test_multi_user_auth.py."""
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
     main_mod.db = _make_mock_db()

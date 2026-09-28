@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.export_backup import BackupExporter, async_main, main
+from telegram_archive.export_backup import BackupExporter, async_main, main
 
 
 class TestBackupExporterInit(unittest.TestCase):
@@ -29,8 +29,8 @@ async def test_create_factory_initializes_db_and_returns_instance():
     mock_db = AsyncMock()
 
     with (
-        patch("src.export_backup.init_database", new_callable=AsyncMock) as mock_init,
-        patch("src.db.get_adapter", new_callable=AsyncMock, return_value=mock_db) as mock_get,
+        patch("telegram_archive.export_backup.init_database", new_callable=AsyncMock) as mock_init,
+        patch("telegram_archive.db.get_adapter", new_callable=AsyncMock, return_value=mock_db) as mock_get,
     ):
         config = MagicMock()
         exporter = await BackupExporter.create(config)
@@ -248,7 +248,7 @@ async def test_close_calls_close_database():
     mock_db = AsyncMock()
     exporter = BackupExporter(mock_db)
 
-    with patch("src.export_backup.close_database", new_callable=AsyncMock) as mock_close:
+    with patch("telegram_archive.export_backup.close_database", new_callable=AsyncMock) as mock_close:
         await exporter.close()
 
     mock_close.assert_awaited_once()
@@ -281,7 +281,11 @@ async def test_async_main_export_command():
         with (
             patch("sys.argv", ["export_backup", "export", "-o", output_file, "-c", "123"]),
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.export_backup.BackupExporter.create", new_callable=AsyncMock, return_value=mock_exporter),
+            patch(
+                "telegram_archive.export_backup.BackupExporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_exporter,
+            ),
         ):
             result = await async_main()
 
@@ -310,7 +314,11 @@ async def test_async_main_list_chats_command():
         with (
             patch("sys.argv", ["export_backup", "list-chats"]),
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.export_backup.BackupExporter.create", new_callable=AsyncMock, return_value=mock_exporter),
+            patch(
+                "telegram_archive.export_backup.BackupExporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_exporter,
+            ),
         ):
             result = await async_main()
 
@@ -339,7 +347,11 @@ async def test_async_main_stats_command():
         with (
             patch("sys.argv", ["export_backup", "stats"]),
             patch.dict(os.environ, env_vars, clear=True),
-            patch("src.export_backup.BackupExporter.create", new_callable=AsyncMock, return_value=mock_exporter),
+            patch(
+                "telegram_archive.export_backup.BackupExporter.create",
+                new_callable=AsyncMock,
+                return_value=mock_exporter,
+            ),
         ):
             result = await async_main()
 
@@ -367,7 +379,7 @@ async def test_async_main_handles_exception():
             patch("sys.argv", ["export_backup", "stats"]),
             patch.dict(os.environ, env_vars, clear=True),
             patch(
-                "src.export_backup.BackupExporter.create",
+                "telegram_archive.export_backup.BackupExporter.create",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("DB init failed"),
             ),
@@ -384,7 +396,7 @@ class TestMainEntryPoint(unittest.TestCase):
 
     def test_main_delegates_to_async_main(self):
         """main() calls asyncio.run(async_main()) and returns result."""
-        with patch("src.export_backup.asyncio.run", return_value=0) as mock_run:
+        with patch("telegram_archive.export_backup.asyncio.run", return_value=0) as mock_run:
             result = main()
 
         assert result == 0
@@ -392,7 +404,7 @@ class TestMainEntryPoint(unittest.TestCase):
 
     def test_main_returns_error_code(self):
         """main() returns non-zero on failure."""
-        with patch("src.export_backup.asyncio.run", return_value=1):
+        with patch("telegram_archive.export_backup.asyncio.run", return_value=1):
             result = main()
 
         assert result == 1

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from telethon.tl.types import ChatPhotoEmpty, UserProfilePhotoEmpty
 
-from src.avatar_utils import _get_avatar_dir, get_avatar_paths
+from telegram_archive.avatar_utils import _get_avatar_dir, get_avatar_paths
 
 
 class TestGetAvatarDir(unittest.TestCase):

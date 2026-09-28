@@ -30,10 +30,10 @@ from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_backup_"))
 
-from src.db.adapter import DatabaseAdapter  # noqa: E402
-from src.db.base import DatabaseManager  # noqa: E402
-from src.db.models import Base, Message  # noqa: E402
-from src.web import main as web_main  # noqa: E402
+from telegram_archive.db.adapter import DatabaseAdapter  # noqa: E402
+from telegram_archive.db.base import DatabaseManager  # noqa: E402
+from telegram_archive.db.models import Base, Message  # noqa: E402
+from telegram_archive.web import main as web_main  # noqa: E402
 
 try:
     from httpx import ASGITransport, AsyncClient
@@ -42,7 +42,7 @@ try:
 except Exception:
     _HTTPX_AVAILABLE = False
 
-INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 
 def _contrast_ratio_vs_white(hue: int, lightness: float) -> float:

@@ -2,8 +2,8 @@
 * @GeiserX
 
 # Core application
+/telegram_archive/ @GeiserX
 /src/ @GeiserX
-/alembic/ @GeiserX
 
 # Infrastructure and CI
 /.github/ @GeiserX

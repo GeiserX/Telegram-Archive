@@ -34,11 +34,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from PIL import Image as PILImage
 from PIL import ImageFile
 
-import src.web.thumbnails as thumbs
-from src.web.thumbnails import _MAX_SOURCE_PIXELS, _generate_sync, _generate_video_sync, ensure_thumbnail
+import telegram_archive.web.thumbnails as thumbs
+from telegram_archive.web.thumbnails import _MAX_SOURCE_PIXELS, _generate_sync, _generate_video_sync, ensure_thumbnail
 
 try:
-    from src.web.push import PushNotificationManager
+    from telegram_archive.web.push import PushNotificationManager
 
     _PUSH_AVAILABLE = True
 except Exception:
@@ -48,7 +48,9 @@ except Exception:
 
 def _skip_unless_push(cls_or_fn):
     """Skip test class/method when push module could not be imported."""
-    return unittest.skipUnless(_PUSH_AVAILABLE, "src.web.push import failed (missing py_vapid/pywebpush)")(cls_or_fn)
+    return unittest.skipUnless(_PUSH_AVAILABLE, "telegram_archive.web.push import failed (missing py_vapid/pywebpush)")(
+        cls_or_fn
+    )
 
 
 def _make_enabled_manager():
@@ -374,7 +376,7 @@ class TestPushFanout(unittest.IsolatedAsyncioTestCase):
         mgr = _make_enabled_manager()
         mgr.get_subscriptions = AsyncMock(return_value=self._subs(1))
 
-        with patch("src.web.push.webpush") as mock_webpush:
+        with patch("telegram_archive.web.push.webpush") as mock_webpush:
             await mgr.send_notification("Title", "Body", chat_id=1)
 
         timeout = mock_webpush.call_args.kwargs.get("timeout")
@@ -399,7 +401,7 @@ class TestPushFanout(unittest.IsolatedAsyncioTestCase):
 
         beat = asyncio.create_task(heartbeat())
         try:
-            with patch("src.web.push.webpush", slow_webpush):
+            with patch("telegram_archive.web.push.webpush", slow_webpush):
                 started = time.monotonic()
                 sent = await mgr.send_notification("Title", "Body", chat_id=1)
                 elapsed = time.monotonic() - started
@@ -424,7 +426,7 @@ class TestPushFanout(unittest.IsolatedAsyncioTestCase):
             if kwargs["subscription_info"]["endpoint"].endswith("sub1"):
                 raise OSError("connection reset")
 
-        with patch("src.web.push.webpush", flaky_webpush):
+        with patch("telegram_archive.web.push.webpush", flaky_webpush):
             sent = await mgr.send_notification("Title", "Body", chat_id=1)
 
         self.assertEqual(sent, 2)

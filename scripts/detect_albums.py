@@ -32,8 +32,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text
 
-from src.config import Config
-from src.db import create_adapter
+from telegram_archive.config import Config
+from telegram_archive.db import create_adapter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
     async with db.db_manager.async_session_factory() as session:
         from sqlalchemy import and_, select
 
-        from src.db.models import Media, Message
+        from telegram_archive.db.models import Media, Message
 
         # Get all photo/video messages that don't have grouped_id, ordered by chat and date
         # v6.0.0: Join with Media table to get media type

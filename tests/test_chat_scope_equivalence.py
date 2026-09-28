@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import text
 
-from src.db.adapter import ChatScope
+from telegram_archive.db.adapter import ChatScope
 
 BASE_DATE = datetime(2026, 2, 1, 9, 0, 0)
 
@@ -266,7 +266,7 @@ def test_an_empty_grant_compiles_to_an_always_false_predicate(label, scope, dial
     from sqlalchemy import select
     from sqlalchemy.dialects import postgresql, sqlite
 
-    from src.db.models import Chat
+    from telegram_archive.db.models import Chat
 
     dialect = {"postgresql": postgresql, "sqlite": sqlite}[dialect_name].dialect()
     predicates = scope.sql_predicates()

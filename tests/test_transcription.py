@@ -29,8 +29,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from src.realtime import NotificationType
-from src.transcription import (
+from telegram_archive.realtime import NotificationType
+from telegram_archive.transcription import (
     STALE_QUEUED,
     ServerInfo,
     TranscriptionClient,
@@ -39,7 +39,7 @@ from src.transcription import (
     result_columns,
     transcribe_media,
 )
-from src.transcription_contract import attempt_key, parse_events_page
+from telegram_archive.transcription_contract import attempt_key, parse_events_page
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -195,8 +195,8 @@ async def _make_stale(adapter) -> None:
 
     from sqlalchemy import update
 
-    from src.db.models import MediaTranscript
-    from src.message_utils import utcnow_naive
+    from telegram_archive.db.models import MediaTranscript
+    from telegram_archive.message_utils import utcnow_naive
 
     async with adapter.db_manager.async_session_factory() as session:
         await session.execute(
@@ -344,7 +344,7 @@ class TestClient:
 
     def test_a_language_is_stored_only_as_a_bcp47_tag(self):
         """Tags are kept, Whisper's English names map to their codes, "unknown" and the rest become NULL."""
-        from src.transcription_contract import job_outcome
+        from telegram_archive.transcription_contract import job_outcome
 
         cases = {
             "es": "es",
@@ -589,7 +589,7 @@ class TestDrain:
         await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
         asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
         assert asked["preset"] is None
-        real_hash = __import__("src.transcription", fromlist=["_file_sha256"])._file_sha256
+        real_hash = __import__("telegram_archive.transcription", fromlist=["_file_sha256"])._file_sha256
 
         def read(path):
             if "m_1_voice" in path:
@@ -598,7 +598,7 @@ class TestDrain:
 
         server = FakeServer()
         config = _config(str(tmp_path))
-        with patch("src.transcription._file_sha256", side_effect=read):
+        with patch("telegram_archive.transcription._file_sha256", side_effect=read):
             stats = await drain_transcriptions(
                 config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
             )
@@ -620,7 +620,7 @@ class TestDrain:
 
         config = _config(str(tmp_path))
         client = TranscriptionClient(config, transport=httpx.MockTransport(boom))
-        with caplog.at_level(logging.DEBUG, logger="src.transcription"):
+        with caplog.at_level(logging.DEBUG, logger="telegram_archive.transcription"):
             stats = await drain_transcriptions(config, real_adapter, account_id=1, notifier=AsyncMock(), client=client)
         assert stats == _stats()
         assert await _rows(real_adapter, "m_1_voice") == []
@@ -636,7 +636,7 @@ class TestDrain:
         config = _config(str(tmp_path))
         notifier = AsyncMock()
 
-        with caplog.at_level(logging.WARNING, logger="src.transcription"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.transcription"):
             stats = await drain_transcriptions(
                 config, real_adapter, account_id=1, notifier=notifier, client=_client(config, down)
             )
@@ -672,8 +672,8 @@ class TestDrain:
 
         from sqlalchemy import update
 
-        from src.db.models import MediaTranscript
-        from src.message_utils import utcnow_naive
+        from telegram_archive.db.models import MediaTranscript
+        from telegram_archive.message_utils import utcnow_naive
 
         async with real_adapter.db_manager.async_session_factory() as session:
             await session.execute(
@@ -824,7 +824,7 @@ class TestDrain:
             _config(str(tmp_path), transcription_url=""),
             MagicMock(),  # a bare mock config must never enable the feature
         ):
-            with caplog.at_level(logging.DEBUG, logger="src.transcription"):
+            with caplog.at_level(logging.DEBUG, logger="telegram_archive.transcription"):
                 stats = await drain_transcriptions(config, real_adapter, account_id=1, client=_client(config, server))
             assert stats == _stats()
         assert server.requests == []
@@ -836,8 +836,8 @@ class TestDrain:
 
         from sqlalchemy import update
 
-        from src.db.models import MediaTranscript
-        from src.message_utils import utcnow_naive
+        from telegram_archive.db.models import MediaTranscript
+        from telegram_archive.message_utils import utcnow_naive
 
         await _media(real_adapter, tmp_path, "m_1_voice")
         stale = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1)
@@ -891,7 +891,9 @@ class TestDrain:
             )
         # Our own lines. httpx's own request log names the URL at INFO, which
         # is why setup_logging raises that logger to WARNING (test_transcription_config).
-        joined = "\n".join(record.getMessage() for record in caplog.records if record.name.startswith("src."))
+        joined = "\n".join(
+            record.getMessage() for record in caplog.records if record.name.startswith("telegram_archive.")
+        )
         assert joined  # the control: something was logged
         assert KEY not in joined
         assert "token=" not in joined
@@ -984,7 +986,7 @@ class TestAudioCheck:
     async def test_an_answer_with_no_streams_list_is_unknown_not_silent(self, real_adapter, tmp_path, monkeypatch):
         """ffprobe saying nothing about the streams is not ffprobe finding no audio: the file is sent."""
         _fake_ffprobe(tmp_path, monkeypatch, 'echo \'{"format": {"duration": "5.0"}}\'\n')
-        monkeypatch.setattr("src.transcription._warned", set())
+        monkeypatch.setattr("telegram_archive.transcription._warned", set())
         path = tmp_path / str(CHAT) / "clip.mp4"
         path.parent.mkdir(parents=True)
         path.write_bytes(AUDIO)
@@ -1044,14 +1046,14 @@ class TestAudioCheck:
         empty = tmp_path / "empty-bin"
         empty.mkdir()
         monkeypatch.setenv("PATH", str(empty))
-        monkeypatch.setattr("src.transcription._warned", set())
+        monkeypatch.setattr("telegram_archive.transcription._warned", set())
         # No stored duration, so ffprobe is asked (a voice message with one skips it).
         await _media(real_adapter, tmp_path, "m_1_voice", duration=None)
         await _media(real_adapter, tmp_path, "m_2_voice", duration=None)
         server = FakeServer()
         config = _config(str(tmp_path))
 
-        with caplog.at_level(logging.DEBUG, logger="src.transcription"):
+        with caplog.at_level(logging.DEBUG, logger="telegram_archive.transcription"):
             stats = await _drain_all(config, real_adapter, server)
 
         assert stats == _stats(done=2)
@@ -1063,7 +1065,7 @@ class TestAudioCheck:
 
     async def test_an_ffprobe_that_hangs_is_cut_off_and_the_file_is_sent(self, real_adapter, tmp_path, monkeypatch):
         _fake_ffprobe(tmp_path, monkeypatch, "sleep 20\n")
-        monkeypatch.setattr("src.transcription.FFPROBE_TIMEOUT_SECONDS", 0.5)
+        monkeypatch.setattr("telegram_archive.transcription.FFPROBE_TIMEOUT_SECONDS", 0.5)
         await _media(real_adapter, tmp_path, "m_1_voice")
         server = FakeServer()
         config = _config(str(tmp_path))
@@ -1356,8 +1358,8 @@ async def _backdate(adapter, **delta) -> None:
 
     from sqlalchemy import update
 
-    from src.db.models import MediaTranscript
-    from src.message_utils import utcnow_naive
+    from telegram_archive.db.models import MediaTranscript
+    from telegram_archive.message_utils import utcnow_naive
 
     when = utcnow_naive() - timedelta(**delta)
     async with adapter.db_manager.async_session_factory() as session:
@@ -1466,7 +1468,7 @@ class TestJobPath:
         await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64, download_date=datetime(2026, 1, 2))
         server = AkouServer(callback_hosts=())
         config = _akou_config(tmp_path, transcription_callback_url=CALLBACK)
-        with caplog.at_level(logging.WARNING, logger="src.transcription"):
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.transcription"):
             stats = await _akou_drain(config, real_adapter, server)
         assert stats["refused"] == 1
         assert len(server.submits) == 1  # the second media was never sent
@@ -1763,8 +1765,8 @@ class TestJobPath:
 
         from sqlalchemy import update
 
-        from src.db.models import MediaTranscript
-        from src.message_utils import utcnow_naive
+        from telegram_archive.db.models import MediaTranscript
+        from telegram_archive.message_utils import utcnow_naive
 
         await _media(real_adapter, tmp_path, "m_1_voice")
         asked_long_ago = utcnow_naive() - timedelta(days=9)
@@ -2093,7 +2095,7 @@ async def _done_source(
     row, the OpenAI endpoint's otherwise. ``None`` makes a row from before 033.
     """
     if options_tag == "default":
-        from src.transcription_contract import options_tag as tag
+        from telegram_archive.transcription_contract import options_tag as tag
 
         if source == "akou":
             options_tag = tag({"preset": preset, "language": "auto", "diarize": bool(diarize)})
@@ -2388,7 +2390,7 @@ class TestCopyAcrossAccounts:
     )
     async def test_an_answer_made_with_other_options_is_never_copied(self, real_adapter, tmp_path, changed):
         """The copy rule's equivalent of the option-aware key: every option the answer depends on."""
-        from src.transcription_contract import options_tag
+        from telegram_archive.transcription_contract import options_tag
 
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
@@ -2438,7 +2440,7 @@ class TestCopyAcrossAccounts:
         """OpenAI, Groq, Mistral and self-hosted servers all write source "openai": the host tells them apart."""
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
-        from src.transcription_contract import options_tag
+        from telegram_archive.transcription_contract import options_tag
 
         # The tag the code itself records for an answer from akou.example.test:9000.
         at_first_host = _config(str(tmp_path))
@@ -2467,7 +2469,7 @@ class TestCopyAcrossAccounts:
 
     async def test_a_hotword_change_does_not_block_an_adapters_copies(self, real_adapter, tmp_path):
         """The native adapters never send the hotword prompt, so it is not part of their options."""
-        from src.transcription_contract import options_tag
+        from telegram_archive.transcription_contract import options_tag
 
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
@@ -2506,7 +2508,7 @@ class TestCopyAcrossAccounts:
     async def test_the_listener_copies_with_a_provider_known_from_the_setting_without_a_request(
         self, real_adapter, tmp_path
     ):
-        from src.transcription_contract import options_tag
+        from telegram_archive.transcription_contract import options_tag
 
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
@@ -2605,13 +2607,13 @@ class TestUpload:
         _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
         # PATH holds the fake ffprobe and nothing else, so there is no ffmpeg.
         monkeypatch.setenv("PATH", str(tmp_path / "fake-bin"))
-        monkeypatch.setattr("src.transcription._warned", set())
+        monkeypatch.setattr("telegram_archive.transcription._warned", set())
         await _video_on_disk(real_adapter, tmp_path, "m_1_video")
         await _video_on_disk(real_adapter, tmp_path, "m_2_video")
         server = FakeServer()
         config = _config(str(tmp_path), transcription_types={"video"})
 
-        with caplog.at_level(logging.DEBUG, logger="src.transcription"):
+        with caplog.at_level(logging.DEBUG, logger="telegram_archive.transcription"):
             stats = await _drain_all(config, real_adapter, server)
 
         assert stats == _stats(done=2)
@@ -2676,7 +2678,7 @@ class TestUpload:
     async def test_extract_audio_removes_its_temp_file_when_cancelled(self, tmp_path, monkeypatch):
         import threading
 
-        import src.transcription as transcription
+        import telegram_archive.transcription as transcription
 
         scratch = tmp_path / "scratch"
         scratch.mkdir()
@@ -2703,7 +2705,7 @@ class TestUpload:
         import threading
         import time
 
-        import src.transcription as transcription
+        import telegram_archive.transcription as transcription
 
         lock = threading.Lock()
         running = peak = 0
@@ -2787,7 +2789,7 @@ class TestUpload:
         assert sent.startswith(b"OggS") and b"OpusHead" in sent[:200]
         assert len(sent) < clip.stat().st_size / 3
         # The same build extracts the same bytes, so a retry keeps its key.
-        from src.transcription import extract_audio
+        from telegram_archive.transcription import extract_audio
 
         once, twice = await extract_audio(str(clip)), await extract_audio(str(clip))
         try:
@@ -2815,7 +2817,7 @@ class TestListenerEnqueue:
             transcription_types={"voice", "video_note"},
         )
         listener._download_media = AsyncMock(return_value=("/tmp/media/-100/voice.ogg", "voice.ogg", "hash123"))
-        with patch("src.listener.transcribe_media", new=AsyncMock(return_value="done")) as transcribe:
+        with patch("telegram_archive.listener.transcribe_media", new=AsyncMock(return_value="done")) as transcribe:
             await handlers[events.NewMessage](_media_event(_voice_media(duration=7, size=4321)))
             await asyncio.gather(*listener._transcription_tasks)
         transcribe.assert_awaited_once()
@@ -2849,7 +2851,7 @@ class TestListenerEnqueue:
         for overrides, media in cases:
             listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True, **overrides)
             listener._download_media = AsyncMock(return_value=("/tmp/media/-100/x.bin", "x.bin", "h"))
-            with patch("src.listener.transcribe_media", new=AsyncMock()) as transcribe:
+            with patch("telegram_archive.listener.transcribe_media", new=AsyncMock()) as transcribe:
                 await handlers[events.NewMessage](_media_event(media))
                 await asyncio.gather(*listener._transcription_tasks)
             db.insert_media.assert_called_once()
@@ -2868,7 +2870,7 @@ class TestListenerEnqueue:
             {"id": "m_4_document", "type": "document", "mime_type": None},
             {"id": "m_5_video", "type": "video", "mime_type": "video/mp4"},  # not in the configured types
         ]
-        with patch("src.listener.transcribe_media", new=AsyncMock(return_value="done")) as transcribe:
+        with patch("telegram_archive.listener.transcribe_media", new=AsyncMock(return_value="done")) as transcribe:
             for row in rows:
                 listener._enqueue_transcription(row)
             await asyncio.gather(*listener._transcription_tasks)
@@ -2885,7 +2887,7 @@ class TestListenerEnqueue:
             transcription_types={"voice"},
         )
         listener._download_media = AsyncMock(return_value=("/tmp/media/-100/voice.ogg", "voice.ogg", "hash123"))
-        with patch("src.listener.transcribe_media", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch("telegram_archive.listener.transcribe_media", new=AsyncMock(side_effect=RuntimeError("boom"))):
             await handlers[events.NewMessage](_media_event(_voice_media()))
             await asyncio.gather(*listener._transcription_tasks)
         assert listener.stats["new_messages_received"] == 1
@@ -2927,20 +2929,20 @@ class TestBackupDrain:
             case.tearDown()
 
     def test_the_drain_never_fails_the_backup_and_a_mock_config_never_enables_it(self):
-        from src.telegram_backup import TelegramBackup
+        from telegram_archive.telegram_backup import TelegramBackup
 
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.account_id = 1
         backup.db = AsyncMock()
         backup.config = SimpleNamespace(transcription_enabled=True)
         with patch(
-            "src.telegram_backup.drain_transcriptions", new=AsyncMock(side_effect=RuntimeError("boom"))
+            "telegram_archive.telegram_backup.drain_transcriptions", new=AsyncMock(side_effect=RuntimeError("boom"))
         ) as drain:
             asyncio.run(backup._drain_transcriptions())
         drain.assert_awaited_once_with(backup.config, backup.db, account_id=1)
 
         backup.config = MagicMock()
-        with patch("src.telegram_backup.drain_transcriptions", new=AsyncMock()) as drain:
+        with patch("telegram_archive.telegram_backup.drain_transcriptions", new=AsyncMock()) as drain:
             asyncio.run(backup._drain_transcriptions())
         drain.assert_not_awaited()
 
@@ -2955,7 +2957,7 @@ def test_transcript_notification_type():
 
 
 def test_the_template_fetches_the_rows_on_a_transcript_frame():
-    template = os.path.join(os.path.dirname(__file__), "..", "src", "web", "templates", "index.html")
+    template = os.path.join(os.path.dirname(__file__), "..", "telegram_archive", "web", "templates", "index.html")
     with open(template, encoding="utf-8") as handle:
         source = handle.read()
     case = source.index("case 'transcript':")
@@ -3355,7 +3357,7 @@ def test_the_route_is_absent_without_a_usable_secret():
 
 
 def test_the_viewer_config_reads_the_secret_without_telegram_credentials(tmp_path):
-    from src.config import Config
+    from telegram_archive.config import Config
 
     env = {
         "BACKUP_PATH": str(tmp_path),

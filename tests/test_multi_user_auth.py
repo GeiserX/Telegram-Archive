@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture(autouse=True)
 def _reset_auth_module():
     """Reset auth module state between tests."""
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     main_mod._sessions.clear()
     main_mod._login_attempts.clear()
@@ -91,7 +91,7 @@ def _get_client(mock_db=None):
     """Create a fresh TestClient by reloading the module with current env."""
     import importlib
 
-    import src.web.main as main_mod
+    import telegram_archive.web.main as main_mod
 
     importlib.reload(main_mod)
 
@@ -186,7 +186,7 @@ class TestViewerLogin:
     """Tests for DB-backed viewer login."""
 
     def test_viewer_login(self, auth_env):
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         mock_db = _make_mock_db()
         salt = "a1b2c3d4"
@@ -228,7 +228,7 @@ class TestPerUserFiltering:
         assert data["total"] == 3
 
     def test_viewer_filtered_chats(self, auth_env):
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         mock_db = _make_mock_db()
         salt = "abc123"
@@ -356,7 +356,7 @@ class TestAdminEndpoints:
         assert resp.status_code == 200
 
     def test_viewer_cannot_access_admin(self, auth_env):
-        import src.web.main as main_mod
+        import telegram_archive.web.main as main_mod
 
         mock_db = _make_mock_db()
         salt = "test"

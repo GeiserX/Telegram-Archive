@@ -8,7 +8,7 @@ Why it exists
 Most adapter tests build a ``MagicMock`` DatabaseManager and assert that
 ``session.execute`` was awaited. That proves the Python branch was taken; it
 does not prove the statement compiles, and it certainly does not prove the
-database accepts it. Every dialect-specific branch in ``src/db/adapter.py``
+database accepts it. Every dialect-specific branch in ``telegram_archive/db/adapter.py``
 (``sqlite_insert`` vs ``pg_insert``, ``SELECT ... FOR UPDATE`` vs the SQLite
 no-op-write lock, ``ilike`` escaping) is therefore untested against the backend
 it exists for. A test that cannot go red is not a test.
@@ -47,9 +47,9 @@ if "BACKUP_PATH" not in os.environ:
 import sqlalchemy as sa
 from sqlalchemy import text
 
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base
 
 # Backends every ``real_adapter`` test runs against. PostgreSQL is a
 # first-class supported backend, so it is in this list unconditionally and is

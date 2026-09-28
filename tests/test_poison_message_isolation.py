@@ -36,8 +36,8 @@ from telethon.errors import (
 )
 from telethon.tl.types import DocumentEmpty, MessageMediaDocument, MessageMediaPhoto
 
-from src.listener import TelegramListener
-from src.telegram_backup import (
+from telegram_archive.listener import TelegramListener
+from telegram_archive.telegram_backup import (
     _MAX_SOURCE_PIXELS,
     TelegramBackup,
     _pre_generate_thumbnail,
@@ -237,7 +237,7 @@ class TestOneBadMessageCannotWedgeAChat(unittest.TestCase):
         self._feed([1, 2, 3, 4, 5])
         self.backup._process_message = self._poison_processor()
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(self.backup._backup_dialog(MagicMock()))
 
         warnings = [r.getMessage() for r in cm.records if "could not be processed" in r.getMessage()]
@@ -310,7 +310,7 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
     def test_gap_fill_entity_failure_logs_the_type_only(self):
         self.backup.client.get_entity = AsyncMock(side_effect=ValueError(PEER_ERROR_TEXT))
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             summary = _run(self.backup._fill_gaps(chat_id=-1001234567890))
 
         self.assertEqual(summary["errors"], 1)
@@ -322,7 +322,7 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
         ]
         self.backup.client.get_messages = AsyncMock(side_effect=ValueError(PEER_ERROR_TEXT))
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(self.backup._verify_and_redownload_media())
 
         self._assert_no_peer_id(cm.records)
@@ -334,7 +334,7 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
         self.db.count_capped_media_downloads.return_value = 0
         self.backup.client.get_messages = AsyncMock(side_effect=ValueError(PEER_ERROR_TEXT))
 
-        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(self.backup._retry_pending_media_downloads())
 
         self._assert_no_peer_id(cm.records)
@@ -354,7 +354,10 @@ class TestTerminalAuthErrorsFailFast(unittest.TestCase):
 
     def _drive(self, exc):
         boom, calls = self._call_counting(exc)
-        with patch("src.telegram_backup.asyncio.sleep", new=AsyncMock()) as slept, self.assertRaises(type(exc)):
+        with (
+            patch("telegram_archive.telegram_backup.asyncio.sleep", new=AsyncMock()) as slept,
+            self.assertRaises(type(exc)),
+        ):
             _run(call_with_flood_retry(boom))
         return calls, slept
 
@@ -542,7 +545,7 @@ class TestListenerMediaDownloadDiscipline(unittest.TestCase):
         async def fake_sleep(_seconds):
             samples["sleep"].append(listener.client.flood_sleep_threshold)
 
-        with patch("src.telegram_backup.asyncio.sleep", new=fake_sleep):
+        with patch("telegram_archive.telegram_backup.asyncio.sleep", new=fake_sleep):
             result = _run(listener._download_media(self._photo_message(), self.chat_id))
 
         self.assertIsNotNone(result)

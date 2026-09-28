@@ -1,6 +1,6 @@
 """Tests for shared atomic media download finalization helpers."""
 
-from src.message_utils import finalize_atomic_download, sanitize_media_filename
+from telegram_archive.message_utils import finalize_atomic_download, sanitize_media_filename
 
 
 def test_finalize_atomic_download_uses_temporary_fallback(tmp_path):

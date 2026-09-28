@@ -44,14 +44,13 @@ from types import ModuleType
 
 import pytest
 import sqlalchemy as sa
-from alembic.config import Config
-
 from alembic import command
+from alembic.config import Config
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ALEMBIC_DIR = REPO_ROOT / "alembic"
+ALEMBIC_DIR = REPO_ROOT / "telegram_archive" / "alembic"
 MIGRATION_PATH = ALEMBIC_DIR / "versions" / "20260815_022_multi_account_keys.py"
 ENTRYPOINT_PATH = REPO_ROOT / "scripts" / "entrypoint.sh"
 
@@ -454,7 +453,7 @@ def pristine_021(tmp_path_factory) -> Path:
     path = tmp_path_factory.mktemp("pristine") / "archive.db"
     upgrade_to(f"sqlite+aiosqlite:///{path}", "021")
     seed(f"sqlite:///{path}")
-    # WAL is what src/db/base.py leaves behind, and it is load-bearing for the
+    # WAL is what telegram_archive/db/base.py leaves behind, and it is load-bearing for the
     # exclusive-access gate: in WAL mode every attached connection holds the
     # write-ahead index.
     conn = sqlite3.connect(str(path))
@@ -788,7 +787,7 @@ class TestResult:
         scripts/entrypoint.sh rather than reimplemented, because a
         reimplementation of it would test itself.
         """
-        from src.db.models import Base
+        from telegram_archive.db.models import Base
 
         path = tmp_path / "createall.db"
         engine = sa.create_engine(f"sqlite:///{path}")
@@ -1279,7 +1278,7 @@ class TestEntrypointLadder(unittest.TestCase):
         """Run the SHIPPED ladder, extracted verbatim, over an 8.0 schema."""
         import tempfile
 
-        from src.db.models import Base
+        from telegram_archive.db.models import Base
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "archive.db"

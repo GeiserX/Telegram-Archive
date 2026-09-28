@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from telethon import utils
 from telethon.errors import FileReferenceExpiredError, FloodWaitError
 
-from src.parallel_download import (
+from telegram_archive.parallel_download import (
     ParallelDownloader,
     ParallelDownloadUnavailable,
     _extract_file_size,
@@ -31,7 +31,7 @@ from src.parallel_download import (
     is_valid_part_size,
     supports_parallel_download,
 )
-from src.telegram_backup import TelegramBackup
+from telegram_archive.telegram_backup import TelegramBackup
 
 _HAS_PWRITE = hasattr(os, "pwrite")
 
@@ -596,7 +596,7 @@ class TestCapabilityProbe(_PatchHelpers, unittest.TestCase):
 class TestSenderLifecycle(_PatchHelpers, _TmpDirMixin, unittest.IsolatedAsyncioTestCase):
     async def test_download_media_refuses_when_client_incomplete(self) -> None:
         client = FakeClient(b"x" * 100)
-        self._patch("src.parallel_download.supports_parallel_download", lambda c: False)
+        self._patch("telegram_archive.parallel_download.supports_parallel_download", lambda c: False)
         dl = ParallelDownloader(client, connections=4, part_size=524288)
         with self.assertRaises(ParallelDownloadUnavailable):
             await dl.download_media(_make_message(100), str(self.tmp / "x.bin"))
@@ -803,7 +803,7 @@ class TestBackupGating(_PatchHelpers, unittest.TestCase):
 
     def test_gate_disabled_after_capability_probe_fails(self) -> None:
         backup = _make_backup(enabled=True, min_mb=1)
-        self._patch("src.telegram_backup.supports_parallel_download", lambda c: False)
+        self._patch("telegram_archive.telegram_backup.supports_parallel_download", lambda c: False)
         self.assertIs(
             backup._should_parallelize(_make_message(50 * 1024 * 1024), 50 * 1024 * 1024),
             False,
@@ -831,7 +831,7 @@ class TestFetchMediaBytes(_PatchHelpers, unittest.IsolatedAsyncioTestCase):
             async def download_media(self, message: Any, path: str) -> str:
                 raise ParallelDownloadUnavailable("nope")
 
-        self._patch("src.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
+        self._patch("telegram_archive.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
         result = await backup._fetch_media_bytes(_make_message(50 * 1024 * 1024), "/tmp/out", 50 * 1024 * 1024)
         # Transparent fallback to single-stream for this file.
         self.assertEqual(result, "/tmp/out")
@@ -845,7 +845,7 @@ class TestFetchMediaBytes(_PatchHelpers, unittest.IsolatedAsyncioTestCase):
             async def download_media(self, message: Any, path: str) -> str:
                 raise FloodWaitError(request=None)
 
-        self._patch("src.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
+        self._patch("telegram_archive.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
         with self.assertRaises(FloodWaitError):
             await backup._fetch_media_bytes(_make_message(50 * 1024 * 1024), "/tmp/out", 50 * 1024 * 1024)
         # FloodWait must NOT be swallowed into a single-stream retry here.
@@ -864,7 +864,7 @@ class TestFetchMediaBytes(_PatchHelpers, unittest.IsolatedAsyncioTestCase):
                 calls.append(path)
                 return path
 
-        self._patch("src.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
+        self._patch("telegram_archive.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
         result = await backup._fetch_media_bytes(_make_message(50 * 1024 * 1024), "/tmp/parallel", 50 * 1024 * 1024)
         self.assertEqual(result, "/tmp/parallel")
         self.assertEqual(calls, ["/tmp/parallel"])
@@ -885,7 +885,7 @@ class TestFetchMediaBytes(_PatchHelpers, unittest.IsolatedAsyncioTestCase):
             build_count["n"] += 1
             return _DL()
 
-        self._patch("src.telegram_backup.ParallelDownloader", _factory)
+        self._patch("telegram_archive.telegram_backup.ParallelDownloader", _factory)
         msg = _make_message(50 * 1024 * 1024)
         await backup._fetch_media_bytes(msg, "/tmp/a", 50 * 1024 * 1024)
         await backup._fetch_media_bytes(msg, "/tmp/b", 50 * 1024 * 1024)

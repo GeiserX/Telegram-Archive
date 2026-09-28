@@ -26,12 +26,12 @@ from sqlalchemy.pool import StaticPool
 from telethon.errors import FloodPremiumWaitError, FloodWaitError
 from telethon.tl.types import PeerChannel, UpdateMessageReactions
 
-from src.config import Config
-from src.db.adapter import DatabaseAdapter
-from src.db.base import DatabaseManager
-from src.db.models import Base, Message
-from src.message_utils import utcnow_naive
-from src.telegram_backup import TelegramBackup
+from telegram_archive.config import Config
+from telegram_archive.db.adapter import DatabaseAdapter
+from telegram_archive.db.base import DatabaseManager
+from telegram_archive.db.models import Base, Message
+from telegram_archive.message_utils import utcnow_naive
+from telegram_archive.telegram_backup import TelegramBackup
 
 CHAT = -100
 
@@ -254,7 +254,7 @@ class TestResweepReactions:
         b.client.return_value = SimpleNamespace(
             updates=[UpdateMessageReactions(peer=peer, msg_id=10, reactions=_reactions(("👍", 3)))]
         )
-        with caplog.at_level(logging.INFO, logger="src.telegram_backup"):
+        with caplog.at_level(logging.INFO, logger="telegram_archive.telegram_backup"):
             await b._resweep_reactions(MagicMock(), CHAT)
 
         text = " ".join(r.getMessage() for r in caplog.records)
@@ -357,13 +357,13 @@ class TestResweepPacing:
     async def test_requests_paced_globally_across_chats(self, monkeypatch):
         b = _backup(delay=10.0)
         clock = {"t": 100.0}
-        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        monkeypatch.setattr("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
         sleeps = []
 
         async def fake_sleep(s):
             sleeps.append(round(s, 6))
 
-        monkeypatch.setattr("src.telegram_backup.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("telegram_archive.telegram_backup.asyncio.sleep", fake_sleep)
         b.db.get_message_ids_since = AsyncMock(return_value=[1])
         b.client.return_value = SimpleNamespace(updates=[])
 
@@ -380,7 +380,7 @@ class TestResweepPacing:
         async def fake_sleep(s):
             sleeps.append(s)
 
-        monkeypatch.setattr("src.telegram_backup.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("telegram_archive.telegram_backup.asyncio.sleep", fake_sleep)
         b.db.get_message_ids_since = AsyncMock(return_value=[1])
         b.client.return_value = SimpleNamespace(updates=[])
         await b._resweep_reactions(MagicMock(), CHAT)
@@ -451,7 +451,7 @@ class TestResweepPacing:
         # passes the server-requested window the SAME run resumes — full
         # deferral to the next run only happens if the window outlives the run.
         clock = {"t": 1000.0}
-        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        monkeypatch.setattr("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
         b = _backup()
         b.db.get_message_ids_since = AsyncMock(return_value=[1])
         b.client.side_effect = [FloodWaitError(request=None, capture=50), SimpleNamespace(updates=[])]
@@ -472,7 +472,7 @@ class TestResweepPacing:
         # Repeated floods in one run signal a degraded bucket: after the cap,
         # the rest of the run defers outright instead of poking it again.
         clock = {"t": 1000.0}
-        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        monkeypatch.setattr("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
         b = _backup()
         b.db.get_message_ids_since = AsyncMock(return_value=[1])
         b.client.side_effect = FloodWaitError(request=None, capture=10)  # floods on every call
@@ -495,12 +495,12 @@ class TestResweepPacing:
         # PII guard for the flood/pause/resume log lines: seconds and counts
         # only, never the chat id.
         clock = {"t": 1000.0}
-        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        monkeypatch.setattr("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
         b = _backup()
         b.db.get_message_ids_since = AsyncMock(return_value=[1])
         b.client.side_effect = [FloodWaitError(request=None, capture=50), SimpleNamespace(updates=[])]
 
-        with caplog.at_level(logging.INFO, logger="src.telegram_backup"):
+        with caplog.at_level(logging.INFO, logger="telegram_archive.telegram_backup"):
             await b._resweep_reactions(MagicMock(), CHAT)  # flood warning
             await b._resweep_reactions(MagicMock(), -200)  # cooldown skip (silent)
             clock["t"] = 1060.0
@@ -518,7 +518,7 @@ class TestResweepPacing:
         # flood again on its later chunk: the parked offset must advance, never
         # reset — otherwise the chat re-fetches the same chunk forever.
         clock = {"t": 1000.0}
-        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        monkeypatch.setattr("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
         b = _backup()
         b.db.get_message_ids_since = AsyncMock(return_value=list(range(1, 401)))
         b.client.side_effect = [
