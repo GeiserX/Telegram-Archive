@@ -119,6 +119,8 @@ exclude_docs: |
   # The docs build dependencies. The workflow reads them from docs/; they are
   # not a page.
   requirements-docs.txt
+  # Viewer design proposals, mockups and the screenshot rig, read on GitHub.
+  design/
 
 nav:
   - Home: index.md

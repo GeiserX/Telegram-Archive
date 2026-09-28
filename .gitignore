@@ -66,3 +66,6 @@ error.log
 
 # MkDocs build output
 site/
+
+# Local viewer design rig (docs/design/rig)
+.ui-data/
