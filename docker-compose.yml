@@ -12,7 +12,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    command: ["python", "-m", "telegram_archive", "schedule"]
+    command: ["python", "-m", "src", "schedule"]
 
     # Every variable documented in .env.example reaches the container. The
     # environment: block below interpolates ${VAR} references for readable
@@ -308,7 +308,7 @@ services:
       # service runs with a read-only root filesystem, so a bind mount is the
       # only way in. Mount the FILE: a directory mounted over the static one
       # hides the app's own assets and the viewer comes up blank.
-      # - ./wallpaper.jpg:/app/telegram_archive/web/static/wallpaper.jpg:ro
+      # - ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro
     networks:
       - telegram-network
     # Security hardening
