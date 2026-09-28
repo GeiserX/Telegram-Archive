@@ -1,6 +1,6 @@
 # Using the viewer
 
-This page covers every screen and control of the web viewer, in the order you meet them. Signing in and sharing are on [Logins, viewer accounts and share links](access.md), colours on [Themes and wallpaper](themes.md), and notifications on [Live updates and notifications](live-updates.md).
+This page walks through the web viewer screen by screen. For signing in and sharing, see [Logins, viewer accounts and share links](access.md). For colours, see [Themes and wallpaper](themes.md). For notifications, see [Live updates and notifications](live-updates.md).
 
 ## Layout
 
@@ -8,9 +8,11 @@ The viewer has three panes:
 
 - The **sidebar** on the left holds the chat list and search.
 - The **chat pane** in the middle shows the messages of the open chat.
-- The **info panel** on the right opens with the chat information button in the chat header.
+- The **info panel** on the right opens when you click the chat information button in the chat header.
 
 The viewer only reads the archive. It never contacts Telegram. The interface is in English only.
+
+`VIEWER_TIMEZONE` sets the time zone for every time the viewer shows. It defaults to `Europe/Madrid`. If the zone name is unknown, the viewer logs a warning and uses UTC.
 
 On a desktop you can resize the sidebar and the info panel. Drag the handle between two panes, or focus the handle and press <kbd>Left</kbd> or <kbd>Right</kbd> to move it 16 px at a time.
 
@@ -24,26 +26,26 @@ Each browser remembers its own widths.
 
 ## Chat list
 
-The top of the sidebar shows folder tabs. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji or a folder icon and its chat count. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram.
+The top of the sidebar shows folder tabs. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji or a folder icon and its chat count. The tabs only appear when the archive holds at least one folder. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram.
 
 Chats load 50 at a time. Scroll down and the next 50 load. Each row shows `ID: <id>`, the chat's Telegram id.
 
 When you can see more than one Telegram account, each row carries a chip with the account's label. See [Multiple accounts](../configuration/multiple-accounts.md).
 
-The sidebar also shows **Last backup** with the time of the most recent backup.
+The sidebar also shows **Last backup** with the time of the most recent backup. When the listener is running, the same line shows **Real-time sync** with a green dot.
 
 ## Search
 
 One field at the top of the sidebar searches chats and messages together. Results appear 300 ms after you stop typing.
 
 - **Chats** match on title, first name, last name or username.
-- **Messages** use full-text search that matches the start of words. The newest come first, 20 at a time, and more load as you scroll. After 5,000 matches the list stops with "Showing the first 5,000 matches".
+- **Messages** use full-text search that matches the start of words. The newest match comes first. Results load 20 at a time as you scroll, and the list stops at 5,000 with "Showing the first 5,000 matches".
 
 Use <kbd>Up</kbd> and <kbd>Down</kbd> to move through both sections, <kbd>Enter</kbd> to open a result, and <kbd>Esc</kbd> to clear the field. A second <kbd>Esc</kbd> leaves the field.
 
-A hit that matched a voice transcript, not the message text, carries the label "Matched in the transcript".
+A hit found in a voice transcript carries the label "Matched in the transcript".
 
-If the archive has no full-text index yet, the message section says so. To build it, run the backup on version 8.5 or later. The backup builds the index when it starts.
+If the archive has no full-text index yet, the message section says so. The index is created by the database migrations, which shipped in 8.3.0. The backup image applies them when its container starts. On a pip install, run `telegram-archive migrate`. A SQLite build without FTS5 keeps the older substring search.
 
 You can paste a Telegram link into the field. A `t.me/c/<id>/<msg>` or `t.me/<username>/<msg>` link opens that message when the chat is in the archive. Otherwise the sidebar says "That link points at a chat this archive does not hold".
 
@@ -80,7 +82,7 @@ Photos and videos sent together render as one grid:
 | 4 | two by two |
 | 5 or more | three columns |
 
-The caption comes from whichever item carries it. Only the first message of an album renders. Reactions on the other messages of the album are not shown.
+The caption comes from whichever item carries it. The viewer renders only the first message of an album and does not show reactions on the other messages.
 
 ![A four-photo album with its caption under a day separator](../images/screenshots/chat-album.png)
 
@@ -93,7 +95,7 @@ The caption comes from whichever item carries it. Only the first message of an a
 - **Dice, venues, invoices, stories, giveaways, live locations and games** show as a chip.
 - **Link previews** show the archived card with site name, title, description and image.
 
-When a file is not in the archive, the bubble says why. The four texts and the setting behind each one are listed under [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer).
+When a file is not in the archive, the bubble says why. [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer) lists each message and the setting behind it.
 
 Voice messages and other audio can carry a transcript that opens under the player. See [Voice transcription](../configuration/transcription.md).
 
@@ -103,7 +105,7 @@ Reactions show as chips with the emoji and, when above one, the count.
 
 An edited message shows "edited", or "edited(N)" when it was edited N times. Click it to open the **Versions** drawer, which lists up to 100 earlier texts.
 
-A deleted message stays in place, faded, with a "deleted" marker. This only happens with `DELETION_MODE=soft`, the default.
+A deleted message stays in place, faded, with a "deleted" marker. The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
 
 ### Service messages
 
@@ -129,9 +131,9 @@ While you scroll, a pill at the top of the pane shows the day you are looking at
 
 Every message has an address of the form `/?chat=<ref>&msg=<id>`. Opening it loads the chat around that message.
 
-To get the link, open the info panel, select the message and click **Copy message link**. On a plain `http` address the browser does not allow copying, so the link appears in a notice instead.
+To get the link, select the message with the info panel open, or open the sender's details, and click **Copy message link**. On a plain `http` address the browser does not allow copying, so the link appears in a notice instead.
 
-The link names the chat by a random-looking 22-character reference, never by its Telegram id.
+The link names the chat by its chat ref, not its Telegram chat id. A chat ref is a random 22-character handle that never changes.
 
 ## Forum topics
 
@@ -151,7 +153,7 @@ The **Shared Media Gallery** button in the chat header opens the chat's files in
 
 Items load 50 at a time. Click **Load more** for the next page.
 
-Photos, videos, GIFs and image documents open in the lightbox. Press <kbd>Esc</kbd> to close it and <kbd>Left</kbd> or <kbd>Right</kbd> to move between items. The download button is hidden for no-download logins. Other files open in a new tab.
+Photos, videos and GIFs open in the lightbox. A round video tile jumps to its message. Press <kbd>Esc</kbd> to close the lightbox and <kbd>Left</kbd> or <kbd>Right</kbd> to move between items. Files have a download button and a go-to-message button. Download buttons are hidden for [no-download logins](access.md#no-download-logins).
 
 How thumbnails are made and cached is on [Media downloads](../configuration/media.md).
 
@@ -187,7 +189,7 @@ The master login also sees each file's **Archive path** and a **Copy path** butt
 
 Two more buttons, **Open** and **Show in folder**, appear for the master login when the viewer host sets `MEDIA_OPEN_CMD` or `MEDIA_OPEN_PATH_CMD`. Use them only when the viewer runs directly on your own computer, outside Docker.
 
-Each variable holds a shell command. The placeholders `%PATH%`, `%DIR%` and `%FILENAME%` are replaced with the shell-quoted file path, its folder and its name. **Open** only accepts images, videos, audio and PDF files. The viewer removes variables whose names look like secrets from the command's environment.
+Each variable holds a shell command. The viewer replaces `%PATH%`, `%DIR%` and `%FILENAME%` with the shell-quoted file path, its folder and its name. **Open** only accepts images, videos, audio and PDF files.
 
 ```bash
 # macOS example for a native run
@@ -196,7 +198,7 @@ export MEDIA_OPEN_PATH_CMD='open -R %PATH%'
 ```
 
 !!! warning "These buttons run a shell command on the viewer host"
-    Anyone who can sign in as the master can trigger that command. The stock `docker-compose.yml` does not pass these variables to the viewer on purpose. Leave them unset on any viewer that other people can reach.
+    Anyone who can use them runs that command. See [Commands that run on the viewer host](exposing.md#commands-that-run-on-the-viewer-host).
 
 ## Audio player
 
@@ -204,11 +206,13 @@ Playing a voice message or an audio file opens one player bar for the whole app.
 
 Voice and music each keep their own speed. Playback continues when you switch chats. When one item ends, the player moves on to the next audio in the chat.
 
+[No-download logins](access.md#no-download-logins) cannot play audio. Their play buttons are disabled and the player bar does not appear.
+
 ## What changed
 
 The clock button in the sidebar header opens **What changed**. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time.
 
-Deletions appear here only with `DELETION_MODE=soft`.
+Deletions appear here only when the archive learns about them: the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=hard` a deleted row is removed instead of kept.
 
 ## Export a chat
 
@@ -216,18 +220,18 @@ The **Export Chat to JSON** button in the chat header downloads the open chat as
 
 The file is named `<title>_export.json`. It holds the chat, the filters you used, the messages and their earlier versions. It holds no media files.
 
-No-download logins cannot export.
+[No-download logins](access.md#no-download-logins) cannot export.
 
 ## Statistics
 
-The **Stats** dropdown in the sidebar header shows the number of chats, messages and media files, the storage used and when the numbers were calculated.
+The **Stats** dropdown in the sidebar header shows the number of chats, messages and media files, the storage used and when the numbers were calculated. The dropdown appears once the numbers have been calculated for the first time.
 
-The numbers are cached. They are recalculated:
+The numbers are cached. These recalculate them:
 
-- by the viewer once a day at `STATS_CALCULATION_HOUR`, 3 by default, in `VIEWER_TIMEZONE`;
-- by the viewer once at startup, if they were never calculated;
-- by the backup after each run;
-- on request by the master, through `POST /api/stats/refresh`.
+- The viewer, once a day at `STATS_CALCULATION_HOUR` in `VIEWER_TIMEZONE`. The default hour is 3.
+- The viewer, once at startup, if the numbers were never calculated.
+- The backup, after each run.
+- The master login, on request, through `POST /api/stats/refresh`.
 
 Logins restricted to some chats see counts for their own chats only. The message, media and size figures in a chat's header are cached for 60 seconds.
 
@@ -236,8 +240,6 @@ Logins restricted to some chats see counts for their own chats only. The message
 !!! note "Setting the stats hour under Docker"
     The stock `docker-compose.yml` does not pass `STATS_CALCULATION_HOUR` to the viewer. Add it to the viewer's `environment:` block. See [Environment variables](../reference/environment-variables.md).
 
-`VIEWER_TIMEZONE` defaults to `Europe/Madrid`. It sets every time the viewer displays. An unknown zone name falls back to UTC with a warning.
-
 ### Archive status
 
 The master login has an **Archive Status** button, the heart icon next to the user name at the top of the sidebar. It opens a panel with:
@@ -245,7 +247,7 @@ The master login has an **Archive Status** button, the heart icon next to the us
 | Row | Shows |
 |-----|-------|
 | Backup | running now, the time of the last run, or never ran |
-| Listener (one per account) | active since when, or not running |
+| [Listener](../configuration/listener.md), one row per Telegram account | active since when, or not running |
 | Media pipeline | files downloaded, pending, given up and skipped by settings |
 | Stats freshness | when the statistics were last calculated |
 | Transcription | off, on with no server configured, server not detected yet, or the server's name and version |

@@ -111,12 +111,10 @@ When a wallpaper is set, message bubbles and chips turn opaque so text stays rea
           VIEWER_CHAT_BACKGROUND: wallpaper.jpg
         volumes:
           - ./data:/data
-          - ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro
+          - ./wallpaper.jpg:/app/telegram_archive/web/static/wallpaper.jpg:ro
     ```
 
     The file name in the mount and in `VIEWER_CHAT_BACKGROUND` must match. The stock compose file already passes `VIEWER_CHAT_BACKGROUND` from `.env`, so you can set it there instead.
-
-    This path works on the 8.16.1 image that the stock compose file pins. Images newer than 8.16.1 also accept `/app/telegram_archive/web/static/wallpaper.jpg`.
 
     !!! danger "Mount the file, not a directory"
         Never mount a directory over the static directory. It hides the viewer's own scripts and styles, and the page comes up blank.

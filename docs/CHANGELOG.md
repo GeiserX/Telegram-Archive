@@ -6,20 +6,34 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
-Telegram Archive is now a Python package named `telegram-archive`, ready for PyPI. The next release publishes it. Docker deployments need no changes.
+### Added
+- **End every session.** The master can log out every browser at once from the new **Sessions** tab in Admin Settings, for example after a master password change. It ends the sessions of the master login, of every viewer account and of every share token. **End all but this one** keeps the browser you click it in. The same action is `POST /api/admin/sessions/end-all`, with `keep_current` to keep your own session. See [End every session](viewer/access.md#end-every-session). ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
+
+### Changed
+- **A second viewer drops ended sessions within 60 seconds.** A viewer checks each session it holds in memory against the database again once a minute. A session ended on one viewer, by the end-all action, by editing an account or by revoking a token, stops working on a second viewer on the same database within that minute. It used to keep working there until a restart or until `AUTH_SESSION_DAYS` ran out. A browser there that only holds a live connection is closed by the sweep every 900 seconds. ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
+
+## [8.17.0] - 2026-09-29
+
+Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.
 
 ### Added
 - **Install with pip.** `pip install telegram-archive` gives the `telegram-archive` command and `python -m telegram_archive`. The templates, static files and every database migration ship inside the package. ([#492](https://github.com/GeiserX/Telegram-Archive/issues/492))
 - **`telegram-archive migrate`** runs `alembic upgrade head` to create or upgrade the database schema. It is meant for pip installs and fresh databases. Run it before the first backup and after each upgrade. The Docker image still migrates on start and still detects older schemas.
 - **A small Python API.** `from telegram_archive import Config, TelegramBackup, run_backup`, then `asyncio.run(run_backup(Config()))` runs one backup of every configured account. The names load lazily, so the viewer image, which has no telethon, can still import the package.
+- **Transcription with any provider.** `TRANSCRIPTION_PROVIDER` picks akou, any OpenAI-compatible endpoint, Deepgram, AssemblyAI or ElevenLabs. The default, `auto`, behaves as before. `TRANSCRIPTION_MODEL` replaces the fixed `whisper-1` model name, and `TRANSCRIPTION_HOTWORDS` now fills the prompt field. ([#489](https://github.com/GeiserX/Telegram-Archive/pull/489))
+- **A documentation site** at [geiserx.github.io/Telegram-Archive](https://geiserx.github.io/Telegram-Archive/), written from the code: every setting with its default, every command, the viewer, upgrading and troubleshooting. The README is now a short overview. ([#494](https://github.com/GeiserX/Telegram-Archive/pull/494), [#495](https://github.com/GeiserX/Telegram-Archive/pull/495))
 - **PyPI publishing.** Each release tag builds the package, checks that the tag matches the version, and uploads it with PyPI trusted publishing. A new Package check builds and installs the wheel on every pull request.
-- **End every session.** The master can log out every browser at once from the new **Sessions** tab in Admin Settings, for example after a master password change. It ends the master's, every viewer account's and every share link's sessions; **End all but this one** keeps the browser you click it in. The same action is `POST /api/admin/sessions/end-all`, with `keep_current` to keep your own session. See [End every session](viewer/access.md#end-every-session).
 
 ### Changed
 - **The code moved from `src/` to `telegram_archive/`.** Both images keep a small `src` package, so compose files that run `python -m src schedule`, `python -m src auth` or `uvicorn src.web.main:app` keep working and run the same code. The old name prints a one-line notice at start. Switch to `python -m telegram_archive` and `telegram_archive.web.main:app` when convenient. The images' default commands and [`docker-compose.yml`](../docker-compose.yml) use the new name.
 - **The viewer wallpaper has a new mount path**, `/app/telegram_archive/web/static/<file>`. The old path, `/app/src/web/static/<file>`, is a link to it in the viewer image, so an existing mount keeps working.
 - **The migrations moved into the package.** From a checkout, run `alembic -c telegram_archive/alembic.ini ...`. Inside the backup container a bare `alembic ...` still works.
-- **A viewer checks its cached sessions against the database once a minute.** A session ended on one viewer, by the end-all action or by editing an account, stops working on a second viewer on the same database within that minute. A browser there that only holds a live connection is closed by the sweep every 900 seconds.
+- **The Docker examples use the new name.** The compose file, `init_auth.sh`, `init_auth.bat` and `.env.example` run `python -m telegram_archive` and mount the wallpaper at the new path.
+- **A misconfigured transcription server no longer uses up voice notes.** A refusal about the server's setup (401, 402, 403, 429, and 404 on the direct path) keeps the file queued and ends the run. Two refused files with nothing answered end the run with a warning to check the model and language. A 413 affects only its own file, which is sent once more as its audio track. ([#489](https://github.com/GeiserX/Telegram-Archive/pull/489))
+- **Each transcript records the options it was made with**, and an answer made with another provider, model, language hint, hotword list or preset is never reused for a new request. Migration 033 adds the column. ([#489](https://github.com/GeiserX/Telegram-Archive/pull/489))
+
+### Fixed
+- **More of each transcription answer is read.** Word timings nested under segments (whisper.cpp), a segment's speaker id (Mistral), the detected language confidence, and ElevenLabs' three-letter language codes and audio duration. ([#489](https://github.com/GeiserX/Telegram-Archive/pull/489))
 
 ## [8.16.1] - 2026-09-26
 
