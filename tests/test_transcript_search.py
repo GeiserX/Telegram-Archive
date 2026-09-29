@@ -357,7 +357,7 @@ def test_the_marks_reach_the_transcript_text() -> None:
 def test_a_transcript_hit_says_why_it_matched_in_the_sidebar() -> None:
     """A voice message usually has no text, so its snippet alone would be empty."""
     html = _html()
-    row = html[html.index('<span v-html="searchSnippetHtml(row.text)"></span>') :]
+    row = html[html.index('<span dir="auto" v-html="searchSnippetHtml(row.text)"></span>') :]
     row = row[: row.index("</p>")]
     assert "<span v-if=\"row.matched_in === 'transcript'\"" in row
     assert "Matched in the transcript" in row

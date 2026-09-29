@@ -214,11 +214,11 @@ def test_message_versions_are_loaded_only_from_click_handler():
 
 
 def test_message_versions_trigger_is_plain_text():
-    """The edited trigger stays quiet: the word Telegram uses, a small history icon,
-    and the count of versions the archive kept, which no Telegram app shows.
+    """The edited trigger stays quiet: the word Telegram uses and a small history icon.
 
-    The count stays visible (a tooltip never shows on a touch screen), and the
-    button carries a 40px hit area.
+    The count of versions the archive kept rides the tooltip and the accessible
+    name, and the edit history it opens states it first, so a touch screen still
+    gets it in one tap. The button carries a 40px hit area.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
@@ -228,7 +228,9 @@ def test_message_versions_trigger_is_plain_text():
     assert "edited({{ msg.version_count }})" not in html
     start = html.index('<button v-if="Number(msg.version_count) > 0"')
     button = html[start : html.index("</button>", start)]
-    assert "</svg>edited · {{ msg.version_count }}" in button
+    assert "</svg>edited\n" in button
+    assert "edited · {{ msg.version_count }}" not in button
+    assert "kept. Open edit history" in button
     assert 'class="hit-40 order-2' in button
     assert "earlier ${Number(msg.version_count) === 1 ? 'version' : 'versions'}" in button
     assert ":aria-label=" in button
@@ -601,59 +603,63 @@ def test_pagination_reset_called_at_all_entry_points():
 
 
 def test_chat_wallpaper_is_a_theme_token_not_a_per_render_style_read():
-    """The bubble alpha switches in CSS, so no bubble reads computed style to draw itself.
+    """The bubble fill is a token, so no bubble reads computed style to draw itself.
 
     getMessageBackground runs once per bubble per render, on every poll tick.
     Reading a custom property off documentElement there forces a style
-    recalculation for a value the server fixed before the page was sent.
+    recalculation for a value the palette fixes.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     start = html.index("const getMessageBackground = (msg) =>")
     body = html[start : html.index("\n                const ", start + 10)]
     assert "getComputedStyle" not in body
-    assert "rgb(var(--tg-own) / var(--tg-bubble-alpha-own))" in body
-    assert "rgb(var(--tg-other) / var(--tg-bubble-alpha-other))" in body
+    # Bubbles are opaque in every palette: a pattern or a picture never shows through text.
+    assert "'rgb(var(--tg-own))'" in body
+    assert "'rgb(var(--tg-other))'" in body
+    assert "bubble-alpha" not in html
+    # A gradient outgoing bubble (iOS Night) lays its image over the flat fill,
+    # through the side alias the deleted wash also layers over.
+    assert "--tg-bubble-image: var(--tg-own-image);" in html
+    assert "background-image: var(--tg-bubble-image, none);" in html
 
-    # The defaults are the translucency the themes are drawn with. They live in
-    # the block every theme shares; the service colours are per palette.
     root = html[html.index("        :root {\n            --tg-font:") :]
     root = root[: root.index("\n        }")]
-    slate = html[html.index("        :root {\n            /* Surfaces.") :]
-    slate = slate[: slate.index("\n        }")]
     assert "--viewer-chat-background: none;" in root
     assert "--viewer-chat-tint: none;" in root
-    assert "--tg-bubble-alpha-own: 0.95;" in root
-    assert "--tg-bubble-alpha-other: 0.80;" in root
-    # The other surfaces that float over the pane are translucent by design and
-    # unreadable over a picture, so they carry tokens too. Every default here is
-    # the value the pane already used: with no wallpaper, nothing changes.
-    assert "--tg-chip-bg: rgb(var(--tg-sidebar) / 0.85);" in root
-    assert "--tg-service-bg: rgba(0, 0, 0, 0.3);" in slate
-    assert "--tg-service-fg: rgba(255, 255, 255, 0.8);" in slate
-    # The note is drawn at full strength: --tg-muted carries the de-emphasis
-    # and passes 4.5:1 on the pane, which it would not at half opacity.
-    assert "--tg-pane-note-opacity: 1;" in root
-    assert "background-color: var(--tg-chip-bg);" in html
+    # Everything drawn over the pane sits on the service pill: dates, service
+    # messages and the notes (loading, empty, start of history).
+    assert "--tg-chip-bg" not in html
+    assert "--tg-pane-note-opacity" not in html
+    assert "background-color: var(--tg-service-bg);" in html
+    assert "color: var(--tg-service-fg);" in html
     assert 'style="background: var(--tg-service-bg); color: var(--tg-service-fg);"' in html
-    assert "opacity: 'var(--tg-pane-note-opacity)'" in html
+    assert '<span class="pane-note">Beginning of chat history</span>' in html
     # Nothing may keep the hardcoded fills those tokens replaced.
     assert "background: rgba(0,0,0,0.3)" not in html
     assert "background-color: rgb(var(--tg-sidebar) / 0.85)" not in html
     # The server's block is its own rule after every palette. `:root[data-theme]`
-    # ties with a palette block on specificity and wins by order, so a wallpaper
-    # turns the bubbles and pills opaque under every theme, not only Slate.
+    # ties with a palette block on specificity and wins by order, so the
+    # operator's wallpaper replaces the palette's own under every theme.
     assert html.count("__VIEWER_CHAT_BACKGROUND__") == 1
     injection = html.index(
         "        :root,\n        :root[data-theme] {\n            __VIEWER_CHAT_BACKGROUND__\n        }"
     )
     assert html.rindex(':root[data-theme="') < injection
-    assert html.index("--tg-bubble-alpha-own: 0.95;") < injection
 
-    # The pane paints the tint over the image; both are none until the server says otherwise.
-    pane_start = html.index("        .messages-scroll {")
+    # The pane paints the operator's tint and picture over the palette's pattern
+    # and gradient; the first two are none until the server says otherwise.
+    pane_start = html.index("        .messages-scroll,\n        .chat-wallpaper {")
     pane = html[pane_start : html.index("\n        }", pane_start)]
-    assert "background-image: var(--viewer-chat-tint), var(--viewer-chat-background);" in pane
+    assert (
+        "background-image: var(--viewer-chat-tint), var(--viewer-chat-background), var(--tg-wall-pattern), var(--tg-wall-gradient);"
+        in pane
+    )
+    # The gradient token holds several layers: a short size or repeat list would
+    # repeat itself and tile the gradient like the pattern.
+    for prop in ("background-size", "background-repeat", "background-position"):
+        values = re.search(prop + r": ([^;]+);", pane).group(1).split(", ")
+        assert len(values) >= 7, prop
     # `fixed` repaints the whole layer per scroll frame in mobile Safari, and this
     # pane is the viewport for its own scrolling, so the default already holds it still.
     assert "background-attachment" not in pane
@@ -1158,8 +1164,12 @@ def test_date_separators_are_not_individually_sticky():
     separator_css = html[separator_css_start : html.index("}", separator_css_start)]
     assert "position: sticky" not in separator_css
 
-    # ...and no other rule may reintroduce per-day stickiness.
-    assert "position: sticky" not in html
+    # ...and no other rule may reintroduce per-day stickiness. The one sticky box
+    # in the page is the phone sheet's grab bar, which has nothing to do with dates.
+    assert html.count("position: sticky") == 1
+    grab_bar = html[html.index("html .popover-sheet::before {") :]
+    grab_bar = grab_bar[: grab_bar.index("}")]
+    assert "position: sticky" in grab_bar
 
 
 def test_floating_date_pill_is_a_single_element_outside_the_scroller():
@@ -3750,7 +3760,7 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
         """Row-wide, not span-by-span: a NEW status span must not regress it."""
-        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-tg-meta"')
+        row_start = self.bubble.index('class="flex items-center gap-2 mt-0.5 text-xs text-tg-meta"')
         row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
         spans = re.findall(r"<span\b[^>]*>", row)
         self.assertGreaterEqual(len(spans), 3)
@@ -3784,8 +3794,13 @@ class TestReplyQuoteNamesItsSender(unittest.TestCase):
         self.assertNotIn(">Reply to</div>", block)
         # A long sender name must not break per character either (#267's rule
         # applies to this block too — it is inside the same bubble). The colour is
-        # the bubble side's quote colour.
-        self.assertIn('class="font-semibold text-tg-quote mb-0.5 truncate"', block)
+        # the bubble side's quote colour. The quote shows the name alone, as the
+        # Telegram apps do; "Reply to" is said to screen readers only.
+        self.assertIn('class="font-semibold text-tg-quote truncate"', block)
+        self.assertIn('<span class="sr-only">Reply to</span>', block)
+        # A solid 3px bar in the quote colour, not a faded 2px one.
+        self.assertIn("border-s-[3px] border-tg-quote ", block)
+        self.assertNotIn("border-tg-quote/50", block)
 
     def test_helpers_are_exported_to_the_template(self) -> None:
         self.assertIn("\n                    replyToLabel,\n", self.html)
@@ -3824,17 +3839,17 @@ const cases = [
         self.assertEqual(
             out,
             [
-                ["Reply to Ada L", "see below"],
-                ["Reply to Ada L", "Photo"],
-                ["Reply to Ada L", "Voice message"],
-                # Target not in the archive: exactly the pre-#268 output.
-                ["Reply to", "Message"],
+                ["Ada L", "see below"],
+                ["Ada L", "Photo"],
+                ["Ada L", "Voice message"],
+                # Target not in the archive: no name to show.
+                ["Reply", "Message"],
                 # Unmapped media kind: the raw type beats the bare word.
-                ["Reply to Ada L", "venue"],
+                ["Ada L", "venue"],
                 # Older backend, neither key present.
-                ["Reply to", "Message"],
-                ["Reply to", "Message"],
-                ["Reply to", "Message"],
+                ["Reply", "Message"],
+                ["Reply", "Message"],
+                ["Reply", "Message"],
             ],
         )
 
@@ -4583,20 +4598,21 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         self.assertIn("h-9", anchor)
         self.assertIn("shrink-0", anchor)
 
-    def test_the_note_icon_cannot_be_squeezed_out_of_the_filename_row(self) -> None:
-        """The bare emoji span was the last unprotected item in that row.
+    def test_the_player_row_has_no_note_emoji_and_names_only_music(self) -> None:
+        """The row is a player drawn on the bubble, as Telegram draws it.
 
-        It is a flex item beside a ``truncate`` filename, and ``.message-bubble``
-        sets ``overflow-wrap: anywhere``, which drops a text box's min-content
-        width to a single character — so without ``shrink-0`` the icon can be
-        squeezed away whenever the row is under pressure, the same class of bug
-        as the duration spans in #267.
+        The emoji note is gone, and a voice note shows no file name (every one
+        is voice.ogg); a music file keeps its title. The info panel keeps the
+        file name for both.
         """
         start = self.html.index('<div v-else-if="isAudioFile(msg)"')
         bubble = self.html[start : self.html.index("<!-- GIFs / Animations", start)]
-        icon_start = bubble.index("🎵")
-        icon_span = bubble[bubble.rindex("<span", 0, icon_start) : icon_start]
-        self.assertIn("shrink-0", icon_span)
+        self.assertNotIn("🎵", bubble)
+        self.assertNotIn("from-tg-n800", bubble)
+        self.assertNotIn("shadow-lg", bubble)
+        self.assertIn(
+            '<div v-if="msg.media?.type !== \'voice\'" class="flex items-center text-sm font-medium">', bubble
+        )
 
 
 def test_gif_observer_watcher_is_shallow_and_ordered():
@@ -4758,7 +4774,7 @@ def test_body_height_is_not_overridden_with_a_dynamic_viewport_unit():
         "the layout root is sized with a dynamic viewport unit again; that left "
         f"a dead band at the bottom on iOS (8.4.0 regression): {offenders}"
     )
-    assert 'class="bg-tg-bg text-tg-ink h-screen overflow-hidden"' in html, (
+    assert 'class="bg-tg-header text-tg-ink h-screen overflow-hidden"' in html, (
         "body must keep h-screen: it is what gives the app its height"
     )
 
@@ -4793,13 +4809,15 @@ def test_theme_boot_allowlist_matches_the_picker():
     assert picker is not None
     picker_ids = re.findall(r"\{ id: '([a-z]+)', label:", picker.group(1))
     assert boot_ids == picker_ids, f"boot {boot_ids} != picker {picker_ids}"
-    assert len(boot_ids) == 7
+    assert boot_ids[0] == "system"
+    assert len(boot_ids) == 12
+    # Ids reach the page through _sanitize_theme_slug, which keeps 3 to 16 letters.
+    assert all(re.fullmatch(r"[a-z]{3,16}", theme_id) for theme_id in boot_ids)
 
 
 def _theme_blocks(html: str) -> dict[str, dict[str, str]]:
-    """Every palette's declarations: Slate's bare :root block and each data-theme block."""
-    slate = html[html.index("        :root {\n            /* Surfaces.") :]
-    blocks = {"slate": slate[: slate.index("\n        }")]}
+    """Every palette's declarations, one data-theme block each (Telegram Day's is also the bare :root)."""
+    blocks = {}
     for match in re.finditer(r':root\[data-theme="([a-z]+)"\]\s*\{([^}]*)\}', html):
         blocks[match.group(1)] = match.group(2)
     return {
@@ -4809,10 +4827,10 @@ def _theme_blocks(html: str) -> dict[str, dict[str, str]]:
 
 
 def test_every_theme_restates_every_colour_token():
-    """A palette that misses a token silently falls through to Slate's value.
+    """A palette that misses a token silently falls through to Telegram Day's value.
 
     That is how a light theme ends up with one dark surface, so every palette
-    block declares exactly the set Slate declares: the surfaces, the whole
+    block declares exactly the set Telegram Day declares: the surfaces, the whole
     neutral scale (the dark palettes no longer inherit it), the bubble sides,
     the seven peer colours and avatar fills, the status colours and the
     colour-scheme the native controls follow.
@@ -4822,11 +4840,14 @@ def test_every_theme_restates_every_colour_token():
     boot = re.search(r"const KNOWN_THEMES = \[([^\]]*)\]", html)
     # "system" is a choice, not a palette: it resolves to one of the others.
     assert sorted(themes) == sorted(set(re.findall(r"'([a-z]+)'", boot.group(1))) - {"system"})
-    slate = set(themes["slate"])
+    # Telegram Day is the fallback: the bare :root carries it too, for a page
+    # whose data-theme is missing or unknown.
+    assert ':root,\n        :root[data-theme="telegram"] {' in html
+    base = set(themes["telegram"])
     for required in ("color-scheme", "--tg-n950", "--tg-quote-out", "--tg-meta-in", "--tg-peer-6", "--tg-avatar-6"):
-        assert required in slate
+        assert required in base
     for name, tokens in themes.items():
-        assert set(tokens) == slate, f"{name}: missing {slate - set(tokens)}, extra {set(tokens) - slate}"
+        assert set(tokens) == base, f"{name}: missing {base - set(tokens)}, extra {set(tokens) - base}"
         assert tokens["color-scheme"] in ("light", "dark")
 
 
@@ -4877,13 +4898,48 @@ def test_the_two_media_rows_hide_only_when_the_figure_is_absent():
 
 @unittest.skipIf(NODE is None, "node executable is not installed")
 class TestFormatSizeSubMiB(unittest.TestCase):
-    """Storage row and per-chat badge: a few KiB of media must not read as "0 MiB"."""
+    """Storage row and per-chat badge: a measured figure, never a placeholder.
 
-    def test_sub_half_mib_reads_as_under_one_not_zero(self):
+    Under 1 MiB in whole KiB (a few KiB of media must not read as "0 MiB" or
+    "<1 MiB"), one decimal up to 10 MiB, whole MiB up to 1 GiB, then GiB and TiB.
+    """
+
+    def test_each_tier_reads_as_measured(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        out = _run_setup_helpers(html, ("const formatSize = (sizeMB) =>",), "[0, 0.29, 0.5, 12.3].map(formatSize)")
-        # 0 stays "0 MiB"; 0.5 and 12.3 are pinned to the output before this change.
-        self.assertEqual(out, ["0 MiB", "<1 MiB", "1 MiB", "12 MiB"])
+        out = _run_setup_helpers(
+            html,
+            ("const formatSize = (sizeMB, exactBytes) =>",),
+            "[[0], [0.29], [0.5], [1.6], [9.96], [12.3], [1023.7], [1536], [3 * 1024 * 1024],"
+            " [0, 0], [0, 512], [0, 1048371], [2, 1677722]].map(args => formatSize(...args))",
+        )
+        self.assertEqual(
+            out,
+            [
+                "0 KiB",
+                "297 KiB",
+                "512 KiB",
+                "1.6 MiB",
+                # Rounds up into the next tier instead of reading "10.0 MiB".
+                "10 MiB",
+                "12 MiB",
+                "1.0 GiB",
+                "1.5 GiB",
+                "3.00 TiB",
+                # The exact byte count wins over the rounded MiB figure.
+                "0 KiB",
+                "<1 KiB",
+                "1.0 MiB",
+                "1.6 MiB",
+            ],
+        )
+
+    def test_the_chat_figures_carry_the_exact_bytes(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        self.assertIn(
+            ':title="formatBytesTitle(chatStats.total_size_bytes)">{{ formatSize(chatStats.total_size_mb, chatStats.total_size_bytes) }}',
+            html,
+        )
+        self.assertNotIn("'<1 MiB'", html)
 
 
 # ---------------------------------------------------------------------------
@@ -4919,11 +4975,13 @@ def test_bubble_type_follows_the_browser_font_size():
 
 
 def test_forward_header_has_its_own_colour_token():
+    """Two plain lines in the forward colour: no box and no bar, so it never reads as a reply."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     start = html.index('class="forward-header')
     header = html[start : html.index("</div>", start)]
-    assert "border-tg-forward/50" in header
     assert "text-tg-forward" in header
+    assert "border-" not in header
+    assert "bg-tg-quote-bg" not in header
     assert "--tg-forward: var(--tg-forward-in);" in html
     assert "--tg-forward: var(--tg-forward-out);" in html
 
@@ -4959,13 +5017,24 @@ def test_reply_quote_is_reachable_from_the_keyboard():
 
 
 def test_deleted_text_stays_readable():
-    """A deleted message keeps its text colour; the bubble edge and the meta row mark it."""
+    """A deleted message keeps its text colour; a faint wash, a start-edge bar and the meta row mark it.
+
+    No ring round the whole bubble: that read as an error or a selection.
+    """
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "{ 'opacity-50': msg.is_deleted }" not in html
     assert "message-text-deleted" not in html
     assert "msg.is_deleted ? 'is-deleted' : ''" in html
-    assert ".message-bubble.is-deleted {" in html
-    assert "box-shadow: inset 2px 0 0 rgb(var(--tg-danger) / 0.6), var(--tg-bubble-shadow);" in html
+    rule = html[html.index(".message-bubble.is-deleted {") :]
+    rule = rule[: rule.index("}")]
+    assert (
+        "background-image: linear-gradient(var(--tg-deleted-wash), var(--tg-deleted-wash)), var(--tg-bubble-image, none);"
+        in rule
+    )
+    assert "box-shadow: inset 3px 0 0 0 rgb(var(--tg-deleted-bar)), var(--tg-bubble-shadow);" in rule
+    assert "inset 0 0 0 1.5px" not in html
+    assert "--tg-deleted-bar: var(--tg-deleted-bar-in);" in html
+    assert "--tg-deleted-bar: var(--tg-deleted-bar-out);" in html
     assert ".message-meta .meta-deleted {" in html
 
 
@@ -5032,5 +5101,128 @@ def test_archive_figures_use_one_icon_set_not_emoji():
         assert emoji not in html, emoji
     assert html.count('class="stats-row"') >= 2
     assert html.count('class="stats-inline"') == 3
-    assert html.count('class="info-row"') == 4
+    # Messages, media, disk use, oldest, and the two kept-changes rows.
+    assert html.count('class="info-row"') == 6
     assert 'aria-label="Archive"' in html
+
+
+# ---------------------------------------------------------------------------
+# Viewer redesign, phase 2 review: palettes reach every surface they paint.
+# ---------------------------------------------------------------------------
+
+
+def test_page_chrome_paints_the_header_not_the_wallpaper():
+    """--tg-bg is the wallpaper base; the safe-area insets and the bounce show the page.
+
+    With --tg-bg there, a home-screen app on Telegram Day drew a green status bar
+    strip above a white header.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    for selector in ("        html {", "        body {"):
+        rule = html[html.index(selector) :]
+        rule = rule[: rule.index("\n        }")]
+        assert "background-color: rgb(var(--tg-header));" in rule, selector
+        assert "--tg-bg" not in rule, selector
+    assert '<div v-else class="flex w-full h-full bg-tg-header">' in html
+
+
+def test_no_palette_shadow_is_none():
+    """A shadow token is composed into lists (the deleted ring); `none` there drops the rule."""
+    themes = _theme_blocks(INDEX_HTML.read_text(encoding="utf-8"))
+    for name, tokens in themes.items():
+        for token, value in tokens.items():
+            if "shadow" in token:
+                assert value.strip() != "none", f"{name} {token}"
+
+
+def test_every_palette_token_is_read():
+    """A token nothing reads is a promise the page does not keep (the old --tg-tail)."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    base = _theme_blocks(html)["telegram"]
+    for token in base:
+        if token == "color-scheme" or re.fullmatch(r"--tg-avatar-\d", token):
+            continue  # avatars are read as var(--tg-avatar-${index}) by getChatAvatarFill
+        assert f"var({token})" in html or f"var({token}," in html, token
+    assert "`var(--tg-avatar-${getPeerIndex(" in html
+
+
+def test_every_static_file_a_palette_names_exists():
+    """The wallpaper patterns are files; a missing one silently drops the pattern."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    static = INDEX_HTML.parents[1] / "static"
+    urls = set()
+    for tokens in _theme_blocks(html).values():
+        for value in tokens.values():
+            urls.update(re.findall(r"url\('/static/([^']+)'\)", value))
+    assert urls, "no palette names a static file: the check would pass on nothing"
+    for rel in urls:
+        assert (static / rel).is_file(), rel
+
+
+def test_accent_is_a_fill_never_panel_text():
+    """--tg-accent is the fill colour; as text it misses 4.5:1 on the light panels.
+
+    Link-coloured text on a panel is accent-soft, measured in every palette.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert not re.search(r"text-tg-accent(?![-\w])", html)
+    assert "hover:bg-tg-accent " not in html
+    assert "hover:bg-tg-n500" not in html
+
+
+def test_bubbles_draw_no_neutral_scale_text():
+    """Inside a bubble, text takes the side's colours (text, meta, quote): the neutral
+    scale is measured on the panels, not on an outgoing bubble."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index("<!-- Regular Message. Album")
+    rows = html[start : html.index("<!-- Scroll to Bottom Button -->", start)]
+    assert not re.search(r"text-tg-n\d00", rows)
+    assert "opacity-80" not in rows
+    assert ".message-bubble.bubble-out {\n            --tg-focus: var(--tg-quote-out);" in html
+
+
+def test_a_jump_marks_its_target_in_the_selection_colour():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "bg-tg-warning/10" not in html
+    assert "el.classList.add('message-flash')" in html
+    flash = html[html.index("@keyframes message-flash") :]
+    assert "var(--tg-selection-bg)" in flash[: flash.index("}")]
+
+
+def test_a_failed_load_does_not_look_like_loading():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert html.count('class="pane-note is-error"') == 2
+    assert ".pane-note.is-error {" in html
+    start = html.index('@click="retryNewerMessages"')
+    assert "min-h-[40px]" in html[start : html.index(">", start)]
+
+
+def test_the_info_panel_counts_what_the_archive_kept():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert '<div v-if="chatStats.deleted_messages > 0" class="info-row">' in html
+    assert '<div v-if="chatStats.edited_messages > 0" class="info-row">' in html
+    status = html[html.index('<span v-if="infoPanelMessage.is_deleted"') :]
+    assert "bg-tg-danger/15 text-tg-danger-fg" in status[: status.index("</span>")]
+
+
+def test_search_fields_keep_16px_and_40px_on_a_phone():
+    """iOS Safari zooms the page into any field under 16px and stays zoomed.
+
+    Every search or filter field keeps 16px text and a 40px height below the
+    desktop breakpoint; the smaller desktop size rides a breakpoint prefix.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    fields = []
+    # Attribute values can hold ">" (a Vue expression), so the tag ends at the
+    # first ">" outside quotes.
+    for match in re.finditer(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", html, re.S):
+        tag = match.group(0)
+        label = re.search(r'aria-label="([^"]*)"', tag)
+        if label and re.match(r"(Search|Filter)", label.group(1)):
+            fields.append((label.group(1), re.search(r'\bclass="([^"]*)"', tag).group(1).split()))
+    assert len(fields) >= 3, fields
+    for label, classes in fields:
+        assert "text-base" in classes, label
+        assert not {"text-sm", "text-xs"} & set(classes), f"{label}: bare small text"
+        assert "h-10" in classes, label
+        assert "h-9" not in classes, f"{label}: bare 36px height"

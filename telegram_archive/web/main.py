@@ -743,21 +743,22 @@ def _chat_background_css(name: str) -> str:
     """The declarations that turn the wallpaper on, or "" when there is none.
 
     Injected into its own rule after every palette block, so it overrides the
-    shared defaults and each palette's service colours. The bubbles go opaque
-    with it: the themes make them translucent so the flat background shows
-    through, and over a photo that would put a picture behind running text. The
-    tint is the theme's own background colour, so one image sits correctly under
-    a light and a dark palette instead of only one of them.
+    shared defaults and each palette's own wallpaper. The operator's picture
+    replaces the palette's line pattern and gradient. The tint is the palette's
+    neutral canvas (--tg-n950: near white on the light palettes, near black on
+    the dark ones), so one image sits correctly under a light and a dark palette
+    instead of only one of them. The pills over the pane (dates, the floating
+    date, service messages, notes) turn into the panel colour with the panel's
+    text, because a translucent pill over a photo is not readable.
     """
     if not name:
         return ""
     return (
         f"--viewer-chat-background: url('/static/{name}');"
-        " --viewer-chat-tint: linear-gradient(rgb(var(--tg-bg) / 0.55), rgb(var(--tg-bg) / 0.55));"
-        " --tg-bubble-alpha-own: 1; --tg-bubble-alpha-other: 1;"
-        " --tg-chip-bg: rgb(var(--tg-sidebar));"
-        " --tg-service-bg: rgb(var(--tg-other)); --tg-service-fg: rgb(var(--tg-text));"
-        " --tg-pane-note-opacity: 1;"
+        " --viewer-chat-tint: linear-gradient(rgb(var(--tg-n950) / 0.55), rgb(var(--tg-n950) / 0.55));"
+        " --tg-wall-pattern: none; --tg-wall-gradient: none;"
+        " --tg-service-bg: rgb(var(--tg-sidebar)); --tg-service-fg: rgb(var(--tg-text));"
+        " --tg-float-pill-bg: rgb(var(--tg-sidebar));"
     )
 
 
@@ -4180,7 +4181,7 @@ async def get_chat_stats(chat: ChatContext = Depends(require_chat)):
         return cached
 
     try:
-        stats = await db.get_chat_stats(chat.chat_id, account_id=chat.account_id)
+        stats = await db.get_chat_stats(chat.chat_id, account_id=chat.account_id, with_kept_changes=True)
         _set_cached_chat_stats(cache_key, stats)
         return stats
     except Exception as e:

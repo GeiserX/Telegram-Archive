@@ -1009,8 +1009,11 @@ def test_floating_day_pill_costs_log_rect_reads_not_one_per_day() -> None:
             """
 const ref = value => ({ value });
 const FLOATING_DATE_TRIP_PX = 12;
+const FLOATING_DATE_PILL_PX = 26;
+const FLOATING_DATE_COVER_PX = 48;
 const floatingDateLabel = ref('');
 const floatingDateIso = ref(null);
+const floatingDateCovered = ref(false);
 let rectReads = 0;
 let markers = [];
 const container = {
@@ -1071,7 +1074,8 @@ for (const reversed of [true, false]) {
 }
 // A linear scan would read all 400 every frame; a binary search reads ~log2(400).
 assert.equal(markers.length, 400);
-assert.ok(worstReads <= 20, `read ${worstReads} rects per frame for ${markers.length} separators`);
+// One more read per frame decides whether the day's own separator covers the pill.
+assert.ok(worstReads <= 21, `read ${worstReads} rects per frame for ${markers.length} separators`);
 
 // Boundaries: an empty list clears the pill, one separator still resolves.
 floatingDateLabel.value = 'stale';
@@ -1082,6 +1086,20 @@ assert.equal(floatingDateLabel.value, '');
 markers = buildMarkers(0, true).slice(0, 1);
 updateFloatingDate();
 assert.equal(floatingDateLabel.value, 'day-399');
+
+// The pill hides while its own day's separator sits in the band under it, and
+// only then: the date is drawn once, never twice a few pixels apart.
+const coveredAt = top => {
+    markers = [{ top, dataset: { dateLabel: 'd', dateIso: 'x' }, getBoundingClientRect() { return { top: this.top }; } }];
+    updateFloatingDate();
+    return floatingDateCovered.value;
+};
+assert.equal(coveredAt(10), true, 'separator right under the pill');
+assert.equal(coveredAt(-20), true, 'separator half under the pill');
+assert.equal(coveredAt(-400), false, 'separator scrolled away above');
+assert.equal(coveredAt(47), true);
+// Below the trip line it is still the day shown, but clear of the pill.
+assert.equal(coveredAt(52), false);
 """,
         ]
     )

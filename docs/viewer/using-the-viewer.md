@@ -65,9 +65,9 @@ A `#hashtag` or `$CASHTAG` opens a tag view with three tabs: **This Chat**, **My
 
 ### Replies and forwards
 
-A reply shows a quote of the message it answers. Click the quote to jump to the original.
+A reply shows a quote of the message it answers: the sender's name and one line of the text, beside a bar in the quote colour. Click the quote to jump to the original.
 
-A forward shows "Forwarded from" and the source. When the source chat is also in the archive, click the header to open the original message.
+A forward shows "Forwarded from" and the source on two plain lines. When the source chat is also in the archive, a link icon follows its name. Click the header to open the original message.
 
 ![Replies with quoted context, an edited message and a forward from a channel](../images/screenshots/chat-replies-forward.png)
 
@@ -103,9 +103,9 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 Reactions show as chips with the emoji and, when above one, the count.
 
-An edited message shows "edited", or "edited(N)" when it was edited N times. Click it to open the **Versions** drawer, which lists up to 100 earlier texts.
+An edited message shows "edited" beside its time. When the archive kept earlier texts, "edited" is a button, and its tooltip says how many. Click it to open the **Edit history**. It shows the original, each edit and the current text as bubbles, oldest first, with the words each edit added marked in the quote colour and the words it removed struck through. It lists up to 100 earlier texts.
 
-A deleted message stays in place, faded, with a "deleted" marker. The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
+A deleted message stays in place with its text in full. A faint red wash and a red bar on the bubble's edge mark it, and its time reads "deleted" with a trash icon. The info panel shows when Telegram deleted it. The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
 
 ### Service messages
 
@@ -167,6 +167,7 @@ The info panel shows the open chat:
 - earlier profile photos the archive recorded
 - description or bio, username and Telegram ID
 - account chips, when more than one account is visible
+- what the archive holds for the chat: messages, media files, disk use, the oldest message, and how many deleted and edited messages it kept
 - shortcuts into the shared media
 
 With the panel open, click a message to select it. The panel then also shows:
@@ -210,7 +211,7 @@ Voice and music each keep their own speed. Playback continues when you switch ch
 
 ## What changed
 
-The clock button in the sidebar header opens **What changed**. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time.
+The clock button in the sidebar header opens **What changed**. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time. A message edited more than once is one card with every text the archive kept, oldest first, and the older ones struck through. On a phone the list opens as a full-height sheet.
 
 Deletions appear here only when the archive learns about them: the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=hard` a deleted row is removed instead of kept.
 

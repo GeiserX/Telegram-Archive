@@ -2512,13 +2512,17 @@ class DatabaseAdapter:
             async for row in result.scalars():
                 yield self._message_version_to_dict(row)
 
-    async def get_chat_stats(self, chat_id: int, *, account_id: int | None = None) -> dict[str, Any]:
+    async def get_chat_stats(
+        self, chat_id: int, *, account_id: int | None = None, with_kept_changes: bool = False
+    ) -> dict[str, Any]:
         """Get statistics for a specific chat (message count, media count, total size).
 
         None account_id = unscoped until phase 4.
 
         Returns:
-            Dict with keys: messages, media_files, total_size_bytes, first_message_date, last_message_date
+            Dict with keys: messages, media_files, total_size_bytes, first_message_date,
+            last_message_date. With ``with_kept_changes`` also deleted_messages (deleted
+            in Telegram, kept here) and edited_messages (edited at least once).
         """
         msg_where = [Message.chat_id == chat_id]
         media_where = [Media.chat_id == chat_id]
@@ -2538,7 +2542,9 @@ class DatabaseAdapter:
             media_count = media_row[0] or 0
             total_size = media_row[1] or 0
 
-            # First and last message dates
+            # First and last message dates. Only MIN and MAX here: PostgreSQL
+            # answers those from the date index when they are the query's only
+            # aggregates, and any other aggregate beside them reads every row.
             date_result = await session.execute(
                 select(func.min(Message.date), func.max(Message.date)).where(and_(*msg_where))
             )
@@ -2546,7 +2552,7 @@ class DatabaseAdapter:
             first_message = date_row[0]
             last_message = date_row[1]
 
-            return {
+            stats = {
                 "chat_id": chat_id,
                 "messages": int(message_count),
                 "media_files": int(media_count),
@@ -2555,6 +2561,22 @@ class DatabaseAdapter:
                 "first_message_date": first_message.isoformat() if first_message else None,
                 "last_message_date": last_message.isoformat() if last_message else None,
             }
+            if not with_kept_changes:
+                return stats
+
+            # What the archive kept that the chat itself no longer shows, in its
+            # own query so the date query above keeps its index shortcut. Only
+            # the viewer's chat info asks for it; the import pre-check does not.
+            kept_result = await session.execute(
+                select(
+                    func.coalesce(func.sum(case((Message.is_deleted == 1, 1), else_=0)), 0),
+                    func.coalesce(func.sum(case((Message.edit_date.isnot(None), 1), else_=0)), 0),
+                ).where(and_(*msg_where))
+            )
+            kept_row = kept_result.one()
+            stats["deleted_messages"] = int(kept_row[0] or 0)
+            stats["edited_messages"] = int(kept_row[1] or 0)
+            return stats
 
     # ========== Media Operations ==========
 

@@ -72,9 +72,8 @@ def _hex(value: str) -> tuple[int, int, int]:
 
 
 def _palettes(html: str) -> dict[str, dict[str, str]]:
-    """Every palette's --tg-* declarations: Slate's bare :root block and each data-theme block."""
-    slate = html[html.index("        :root {\n            /* Surfaces.") :]
-    blocks = {"slate": slate[: slate.index("\n        }")]}
+    """Every palette's --tg-* declarations, one data-theme block each."""
+    blocks = {}
     for match in re.finditer(r':root\[data-theme="([a-z]+)"\]\s*\{([^}]*)\}', html):
         blocks[match.group(1)] = match.group(2)
     return {name: dict(re.findall(r"(--tg-[a-z0-9-]+):\s*([^;]+);", body)) for name, body in blocks.items()}
@@ -209,26 +208,27 @@ def _over(colour: tuple[int, int, int], alpha: float, under: tuple[int, int, int
 class TestPeerColourContrast(unittest.TestCase):
     """Every palette's text pairs stay readable (WCAG AA, 4.5:1) where they are drawn.
 
-    Bubbles are measured as painted: --tg-other at 0.80 and --tg-own at 0.95 over
-    the pane (the --tg-bubble-alpha-* defaults), with the tints drawn on them
-    composited on top. Measuring against the opaque fill passes colours that fail
-    on screen.
+    Bubbles are opaque in every palette, so they are measured on their fill, with
+    the tints drawn on them composited on top. Text drawn over the pane sits on
+    the service pill, which is measured over the pane colour and over every
+    stop of the palette's wallpaper gradient.
     """
 
     @classmethod
     def setUpClass(cls):
         html = INDEX_HTML.read_text(encoding="utf-8")
         cls.palettes = _palettes(html)
-        root = html[html.index("        :root {\n            --tg-font:") :]
-        root = root[: root.index("\n        }")]
-        cls.alpha = {
-            "in": float(re.search(r"--tg-bubble-alpha-other:\s*([\d.]+);", root).group(1)),
-            "out": float(re.search(r"--tg-bubble-alpha-own:\s*([\d.]+);", root).group(1)),
-        }
 
     def _bubble(self, tokens: dict[str, str], side: str) -> tuple[int, int, int]:
-        fill = _triplet(tokens["--tg-other" if side == "in" else "--tg-own"])
-        return _over(fill, self.alpha[side], _triplet(tokens["--tg-bg"]))
+        return _triplet(tokens["--tg-other" if side == "in" else "--tg-own"])
+
+    def _fills(self, tokens: dict[str, str], side: str) -> list[tuple[int, int, int]]:
+        """Every colour the side's bubble paints: its flat fill and, for a gradient
+        outgoing bubble (iOS Night), each stop of the gradient laid over it."""
+        fills = [self._bubble(tokens, side)]
+        if side == "out":
+            fills += [_hex(stop) for stop in re.findall(r"#[0-9A-Fa-f]{6}", tokens["--tg-own-image"])]
+        return fills
 
     def _tinted(self, tokens: dict[str, str], token: str, under: tuple[int, int, int]) -> tuple[int, int, int]:
         colour, alpha = _tint(tokens[token])
@@ -239,8 +239,9 @@ class TestPeerColourContrast(unittest.TestCase):
             self.assertGreaterEqual(round(_contrast(fg, bg), 2), minimum, f"{theme}: {label}")
 
     def test_every_palette_is_checked(self):
+        self.assertIn("telegram", self.palettes)
         self.assertIn("slate", self.palettes)
-        self.assertGreaterEqual(len(self.palettes), 7)
+        self.assertGreaterEqual(len(self.palettes), 11)
 
     def test_initials_clear_both_gradient_stops(self):
         # The initials sit in the centre of the circle, and a 135deg gradient
@@ -264,6 +265,8 @@ class TestPeerColourContrast(unittest.TestCase):
         import colorsys
 
         for name, tokens in self.palettes.items():
+            if len({tokens[f"--tg-peer-{index}"] for index in range(7)}) == 1:
+                continue  # one ink for every name, by design (Minimal, Graphite)
             hues = []
             for index in (0, 6):
                 r, g, b = _triplet(tokens[f"--tg-peer-{index}"])
@@ -280,8 +283,8 @@ class TestPeerColourContrast(unittest.TestCase):
 
     def test_bubble_text_pairs_read_on_both_sides(self):
         for name, tokens in self.palettes.items():
-            for side in ("in", "out"):
-                bubble = self._bubble(tokens, side)
+            pairs = [(each, fill) for each in ("in", "out") for fill in self._fills(tokens, each)]
+            for side, bubble in pairs:
                 quote_bg = self._tinted(tokens, f"--tg-quote-bg-{side}", bubble)
                 quote = _triplet(tokens[f"--tg-quote-{side}"])
                 meta = _triplet(tokens[f"--tg-meta-{side}"])
@@ -290,21 +293,105 @@ class TestPeerColourContrast(unittest.TestCase):
                 self._check(name, f"quote-{side} on bubble", quote, bubble)
                 self._check(name, f"quote-{side} on quote-bg", quote, quote_bg)
                 self._check(name, f"forward-{side} on quote-bg", _triplet(tokens[f"--tg-forward-{side}"]), quote_bg)
+                # The forward header is two plain lines on the bubble itself.
+                self._check(name, f"forward-{side} on bubble", _triplet(tokens[f"--tg-forward-{side}"]), bubble)
                 # The time, the deleted text and the archive status lines
                 # (not downloaded, no speech detected), on the bubble and in a quote box.
                 self._check(name, f"meta-{side} on bubble", meta, bubble)
                 self._check(name, f"meta-{side} on quote-bg", meta, quote_bg)
                 preview_bg = self._tinted(tokens, f"--tg-preview-bg-{side}", bubble)
                 self._check(name, f"quote-{side} on preview-bg", quote, preview_bg)
+                # The reply snippet and a transcript are the side's text on its quote box.
+                self._check(name, f"text-{side} on quote-bg", _triplet(tokens[f"--tg-text-{side}"]), quote_bg)
+                # The play disc is the quote colour with the bubble's fill as its glyph,
+                # and the focus ring inside a bubble is the quote colour: both are the
+                # quote-on-bubble pair above, so the disc and the ring clear 4.5:1 too.
                 # The account chip inside a bubble is an outline in the quote colour.
                 self._check(name, f"chip-{side}", quote, bubble)
                 # The "deleted" marker in the meta row.
                 self._check(name, f"danger-fg-{side} on bubble", _triplet(tokens["--tg-danger-fg"]), bubble)
 
+    def test_a_deleted_bubble_stays_readable_and_marked(self):
+        """The deleted wash keeps every text pair at 4.5:1, and the start-edge bar
+        is a non-text mark at 3:1 against the side's washed fill."""
+        for name, tokens in self.palettes.items():
+            wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
+            for side in ("in", "out"):
+                for fill in self._fills(tokens, side):
+                    washed = _over(wash, wash_alpha, fill)
+                    for token in (f"--tg-text-{side}", f"--tg-meta-{side}", f"--tg-quote-{side}", "--tg-danger-fg"):
+                        self._check(name, f"{token} on the deleted {side} bubble", _triplet(tokens[token]), washed)
+                    bar = _triplet(tokens[f"--tg-deleted-bar-{side}"])
+                    self._check(name, f"deleted bar on the {side} bubble", bar, washed, 3.0)
+
+    def test_the_deleted_bar_check_can_fail(self):
+        # Positive control: the palette danger red on Telegram Night's outgoing blue.
+        self.assertLess(_contrast((248, 113, 113), (43, 82, 120)), 3.0)
+
+    def test_the_floating_pill_reads_over_any_content(self):
+        """The floating date passes over photos and bubbles: its text is measured
+        over black and over white, not only over the wallpaper."""
+        for name, tokens in self.palettes.items():
+            fg = _triplet(re.fullmatch(r"rgb\(([\d ]+)\)", tokens["--tg-service-fg"]).group(1))
+            for under in ((0, 0, 0), (255, 255, 255)):
+                pill = self._tinted(tokens, "--tg-float-pill-bg", under)
+                self._check(name, f"floating pill text over {under}", fg, pill)
+
+    def test_a_focus_ring_on_the_pane_is_seen(self):
+        """Focus rings drawn on the pane (Retry, the sender avatars) take --tg-focus-pane,
+        a non-text indicator at 3:1 against the pane and every wallpaper stop."""
+        for name, tokens in self.palettes.items():
+            focus = _triplet(tokens["--tg-focus-pane"])
+            unders = [_triplet(tokens["--tg-bg"])]
+            unders += [_hex(stop) for stop in re.findall(r"#[0-9A-Fa-f]{6}", tokens["--tg-wall-gradient"])]
+            for under in unders:
+                self._check(name, f"pane focus over {under}", focus, under, 3.0)
+
+    def test_the_panel_controls_and_banners(self):
+        for name, tokens in self.palettes.items():
+            # The migration banner and the transcription nudge: text, icon and
+            # Dismiss in accent-faint on accent-dim, a tint of the panel.
+            dim = _triplet(tokens["--tg-accent-dim"])
+            self._check(name, "accent-faint on the banner", _triplet(tokens["--tg-accent-faint"]), dim)
+            self._check(name, "focus on the banner", _triplet(tokens["--tg-focus"]), dim, 3.0)
+            # The What changed cards sit on n950; their kind pills.
+            card = _triplet(tokens["--tg-n950"])
+            self._check(name, "card text n200 on n950", _triplet(tokens["--tg-n200"]), card)
+            danger_pill = _over(_triplet(tokens["--tg-danger"]), 0.15, card)
+            self._check(name, "deleted pill on the card", _triplet(tokens["--tg-danger-fg"]), danger_pill)
+            # The theme picker: the rows' dim text on the popover and on a hovered
+            # row, and the "Match system" hint on the selected row (n700 at 70%).
+            popover = _triplet(tokens["--tg-n800"])
+            n300 = _triplet(tokens["--tg-n300"])
+            selected = _over(_triplet(tokens["--tg-n700"]), 0.7, popover)
+            self._check(name, "n300 on the popover", n300, popover)
+            self._check(name, "n300 on a hovered row", n300, _triplet(tokens["--tg-n700"]))
+            self._check(name, "hint n300 on the selected row", n300, selected)
+            # Chat header controls, the search field's icon and the archived-chats
+            # folder avatar: non-text marks at 3:1.
+            self._check(
+                name, "bar icon on the header", _triplet(tokens["--tg-bar-icon"]), _triplet(tokens["--tg-header"]), 3.0
+            )
+            self._check(
+                name, "search icon on the field", _triplet(tokens["--tg-n400"]), _triplet(tokens["--tg-field"]), 3.0
+            )
+            self._check(
+                name,
+                "folder icon on the archive avatar",
+                _triplet(tokens["--tg-sidebar"]),
+                _triplet(tokens["--tg-archive-avatar"]),
+                3.0,
+            )
+            # The sign-in method switch: the chosen label on its raised thumb.
+            self._check(
+                name, "ink on the segment thumb", _triplet(tokens["--tg-ink"]), _triplet(tokens["--tg-seg-thumb"])
+            )
+
     def test_sidebar_and_selection_pairs(self):
         for name, tokens in self.palettes.items():
             muted = _triplet(tokens["--tg-muted"])
-            for surface in ("--tg-bg", "--tg-sidebar", "--tg-header", "--tg-field"):
+            # n950 is the well that boxes on a panel sit in (versions, file cards).
+            for surface in ("--tg-sidebar", "--tg-header", "--tg-field", "--tg-n950"):
                 self._check(name, f"muted on {surface}", muted, _triplet(tokens[surface]))
             active = _triplet(tokens["--tg-active"])
             self._check(name, "active-text on active", _triplet(tokens["--tg-active-text"]), active)
@@ -322,12 +409,47 @@ class TestPeerColourContrast(unittest.TestCase):
             self._check(name, "accent-bright on hover", _triplet(tokens["--tg-accent-bright"]), hover)
             # An input's outline is its only edge: 3:1 against the field and what surrounds it.
             field_border = _triplet(tokens["--tg-field-border"])
-            for surface in ("--tg-field", "--tg-sidebar", "--tg-header", "--tg-bg"):
+            for surface in ("--tg-field", "--tg-sidebar", "--tg-header"):
                 self._check(name, f"field-border on {surface}", field_border, _triplet(tokens[surface]), 3.0)
-            # A focus ring is a non-text indicator: 3:1 on the selected row and the sidebar.
+            # A focus ring is a non-text indicator: 3:1 on the panels. On the
+            # selected row it takes active-text (see the rule checked below),
+            # measured above at 4.5:1.
             focus = _triplet(tokens["--tg-focus"])
-            self._check(name, "focus on active", focus, active, 3.0)
             self._check(name, "focus on sidebar", focus, _triplet(tokens["--tg-sidebar"]), 3.0)
+            self._check(name, "focus on header", focus, _triplet(tokens["--tg-header"]), 3.0)
+            # Link-coloured text on the panels (the info panel's links).
+            for surface in ("--tg-sidebar", "--tg-header"):
+                self._check(
+                    name, f"accent-soft on {surface}", _triplet(tokens["--tg-accent-soft"]), _triplet(tokens[surface])
+                )
+            # The admin chips: outlined on the n700 well, name in n300, account in n400.
+            well = _triplet(tokens["--tg-n700"])
+            self._check(name, "n300 chip text on n700", _triplet(tokens["--tg-n300"]), well)
+            self._check(name, "n400 chip text on n700", _triplet(tokens["--tg-n400"]), well)
+            # The deleted status chip and the pane's error pill.
+            danger_chip = _over(_triplet(tokens["--tg-danger"]), 0.15, _triplet(tokens["--tg-sidebar"]))
+            self._check(name, "danger-fg on the deleted chip", _triplet(tokens["--tg-danger-fg"]), danger_chip)
+            self._check(
+                name,
+                "warning-fg on warning-bg",
+                _triplet(tokens["--tg-warning-fg"]),
+                _triplet(tokens["--tg-warning-bg"]),
+            )
+
+    def test_the_selected_row_ring_is_its_text_colour(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        self.assertIn(".chat-row.is-active {\n            --tg-focus: var(--tg-active-text);", html)
+
+    def test_pills_read_over_the_wallpaper(self):
+        # Dates, service messages and the pane notes. The pane is --tg-bg under
+        # the palette's gradient, so the pill is measured over both.
+        for name, tokens in self.palettes.items():
+            fg = _triplet(re.fullmatch(r"rgb\(([\d ]+)\)", tokens["--tg-service-fg"]).group(1))
+            unders = [_triplet(tokens["--tg-bg"])]
+            unders += [_hex(stop) for stop in re.findall(r"#[0-9A-Fa-f]{6}", tokens["--tg-wall-gradient"])]
+            for under in unders:
+                pill = self._tinted(tokens, "--tg-service-bg", under)
+                self._check(name, f"pill text over {under}", fg, pill)
 
     def test_the_check_can_fail(self):
         # Positive control: the Night palette's old secondary text fails on its sidebar.

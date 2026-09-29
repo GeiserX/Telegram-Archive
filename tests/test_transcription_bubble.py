@@ -82,12 +82,15 @@ class TestBubbleMarkup(unittest.TestCase):
         bubble = _audio_bubble(_html())
         button = _between(bubble, '<button v-if="hasTranscriptButton(msg)"', "</button>")
         self.assertIn('type="button"', button)
-        self.assertIn('class="transcript-btn"', button)
+        # hit-40: a 40px touch target around the 28px square.
+        self.assertIn('class="transcript-btn hit-40"', button)
         self.assertIn(":aria-expanded=\"isTranscriptExpanded(msg) ? 'true' : 'false'\"", button)
         self.assertIn(':aria-controls="transcriptRegionId(msg)"', button)
         self.assertIn(":aria-busy=\"transcriptStatus(msg) === 'loading' ? 'true' : 'false'\"", button)
         self.assertIn("'Hide transcript' : 'Show transcript'", button)
-        self.assertIn("isTranscriptExpanded(msg) ? 'A→' : '→A'", button)
+        # One stroke icon in both states; aria-expanded carries the state.
+        self.assertIn('<svg class="transcript-icon"', button)
+        self.assertNotIn("A→", button)
         self.assertIn('class="transcript-loop"', button)
         self.assertIn('pathLength="100"', button)
 
@@ -122,7 +125,7 @@ class TestBubbleMarkup(unittest.TestCase):
         block = _video(_html())
         _assert_accessible_toggle(self, block)
         overlay = _between(block, "<button v-if=", "</button>")
-        self.assertIn('class="transcript-btn transcript-btn--overlay"', overlay)
+        self.assertIn('class="transcript-btn transcript-btn--overlay hit-40"', overlay)
         self.assertIn(":class=\"isOwnMessage(msg) ? 'left-1' : 'right-1'\"", overlay)
         # Inside the player that opens the lightbox, so the press must not open it too.
         self.assertLess(block.index('@click="msg.mediaLoadFailed || openMedia(msg)"'), block.index("<button v-if="))
@@ -175,8 +178,9 @@ class TestBubbleMarkup(unittest.TestCase):
     def test_the_button_styles_read_theme_tokens(self):
         html = _html()
         css = _between(html, ".transcript-btn {", "@media (prefers-reduced-motion: reduce)")
-        self.assertIn("rgb(var(--tg-n300))", css)
-        self.assertIn("rgb(var(--tg-accent))", css)
+        # The bubble side's link colour on its quote tint, measured in every palette.
+        self.assertIn("color: rgb(var(--tg-quote));", css)
+        self.assertIn("background: var(--tg-quote-bg);", css)
         # The overlay's white-on-scrim is the media pill's tokens, like the other media overlays.
         self.assertIn("color: var(--tg-media-meta-fg);", css)
         self.assertIn("background: var(--tg-media-meta-bg);", css)
@@ -199,6 +203,7 @@ class TestBubbleMarkup(unittest.TestCase):
             "doneTranscripts",
             "pickTranscript",
             "transcriptCaption",
+            "transcriptTitle",
             "transcriptErrorText",
             "transcriptHtml",
             "pressTranscript",
@@ -513,6 +518,7 @@ def test_attribution_picker_and_settings_row() -> None:
             assert.equal(selectedTranscript(msg).id, 9, 'the newest done row is the default')
             assert.deepEqual(transcriptCaption(msg),
                 { engine: 'akou', link: 'https://github.com/GeiserX/akou', rest: ['parakeet-v3', 'es', '2026-01-02'] })
+            assert.equal(transcriptTitle(msg), 'Transcribed by akou · parakeet-v3 · es · 2026-01-02')
             pickTranscript(msg, '7')
             assert.equal(selectedTranscript(msg).id, 7)
             assert.deepEqual(transcriptCaption(msg), { engine: 'speaches', link: null, rest: ['whisper-1', 'en', '2026-01-01'] })

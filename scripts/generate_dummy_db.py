@@ -248,6 +248,10 @@ class ChatScript:
             "is_pinned": 1 if pinned else 0,
             "reply_to_top_id": topic,
         }
+        if sender in USERS:
+            # The backup stores the sender's name as seen at capture time.
+            first, last, _username = USERS[sender]
+            msg["sender_name"] = f"{first} {last}"
         if reply is not None:
             msg["reply_to_msg_id"] = reply
             msg["reply_to_text"] = (self.by_id[reply]["text"] or "")[:100]

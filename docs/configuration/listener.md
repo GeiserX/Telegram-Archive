@@ -58,7 +58,7 @@ Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_
 
 The listener applies an edit only when the text changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. Edits to messages that are not in the archive are skipped.
 
-When an edit is applied, the previous text is saved as a version. The viewer marks the message `edited(N)`, where N is the number of saved versions, and lets you open the earlier texts.
+When an edit is applied, the previous text is saved as a version. The viewer marks the message "edited", with the number of saved versions in its tooltip, and lets you open the earlier texts.
 
 ![A group chat with a message marked edited(1)](../images/screenshots/chat-replies-forward.png)
 

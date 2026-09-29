@@ -211,11 +211,11 @@ The callback URL must be reachable from akou. See [Exposing the viewer safely](.
 
 ### The button
 
-Each transcribable file gets a small rounded button with the `→A` glyph. It flips to `A→` while the text is open.
+Each transcribable file gets a small rounded button with a waveform-and-lines glyph. It fills in while the text is open.
 
 | Media | Where the button sits |
 |---|---|
-| Voice and audio | Right of the waveform |
+| Voice and audio | Right after the duration |
 | Round videos | Over the bottom corner, right for incoming and left for outgoing. Opening the text turns the round video into a voice-style bubble. |
 | Videos | Over the bottom corner of the player |
 | Videos sent as a file | Beside the file name |
@@ -247,7 +247,7 @@ The button has five states:
 
 ### The text
 
-An open transcript shows the full text, or "No speech detected" when the server returned no words. A caption under it names the engine, the model, the language and the date.
+An open transcript shows the full text in the message's own text colour, or "No speech detected" when the server returned no words. A small "Transcript" label under it says where the text came from. Point at the label to see the engine, the model, the language and the date. The message's details in the info panel show the same.
 
 When a file has more than one finished transcript, a picker labelled "1 of N" switches between them, newest first.
 

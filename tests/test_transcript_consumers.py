@@ -389,7 +389,8 @@ def test_the_markup_uses_what_the_setup_returns() -> None:
     for name in ("mediaGalleryFilter", "galleryVoiceItems", "galleryTranscriptLine"):
         assert f"                    {name},\n" in returned, name
     # The changes panel renders the transcript kind with its own body, not as an edit.
-    assert "v-else-if=\"change.kind === 'transcript'\"" in html
+    # The feed renders cards (changeCards), one per message.
+    assert "v-else-if=\"card.kind === 'transcript'\"" in html
 
 
 pytest.importorskip("fastapi")

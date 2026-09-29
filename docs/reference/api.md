@@ -196,7 +196,7 @@ All of these need a login that can see the chat.
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
 | `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
 | `GET /api/chats/{chat_ref}/topics` | None | `{topics}` for a forum chat |
-| `GET /api/chats/{chat_ref}/stats` | None | `{chat_id, messages, media_files, total_size_bytes, total_size_mb, first_message_date, last_message_date}`, cached for 60 seconds |
+| `GET /api/chats/{chat_ref}/stats` | None | `{chat_id, messages, media_files, total_size_bytes, total_size_mb, first_message_date, last_message_date, deleted_messages, edited_messages}`, cached for 60 seconds. `deleted_messages` counts the messages deleted in Telegram that the archive kept, `edited_messages` the messages edited at least once |
 | `GET /api/chats/{chat_ref}/avatars` | None | `[{photo_id, seen_at, url, available}]` |
 
 ### Paging through messages
