@@ -41,7 +41,7 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 | Needs an authorized Telegram session | Database only, no Telegram credentials |
 |--------------------------------------|----------------------------------------|
-| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import` |
+| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import`, `merge` |
 
 !!! warning "One client per session"
     Stop the backup service before any command that connects to Telegram. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
@@ -237,6 +237,28 @@ It prints `Import complete:` with the number of chats, messages and media files,
 
 It exits 0 on success. On failure it prints `Import failed: <error>` on stderr and exits 1.
 
+## merge { #merge }
+
+```text
+telegram-archive [--data-dir PATH] merge --source SOURCE [--source-media DIR] [--account LABEL_OR_ID] [--add-missing-parents] [--dry-run]
+```
+
+| Short | Long | Argument | Required | Meaning |
+|-------|------|----------|----------|---------|
+| | `--source` | `SOURCE` | yes | The other archive: a SQLite file path or a database URL. |
+| | `--source-media` | `DIR` | no | The other archive's media folder. Defaults to `media` beside a SQLite source file. |
+| | `--account` | `LABEL_OR_ID` | no | Merge only this source account, by label or account id. A label wins when a value could be both. Without it, every account. |
+| | `--add-missing-parents` | | no | Add an empty placeholder chat, message, folder or user for each source row whose parent row the source lacks. Needed to merge such a SQLite source into PostgreSQL. |
+| | `--dry-run` | | no | Run every check and print the counts and the media size without writing. |
+
+Copies every Telegram account of another archive, the source, into this archive under new account ids, with the rows each account owns and their media files. Both archives must be at the same, current schema revision. Stop both installs first.
+
+The source is only read. Nothing already in the target is changed or deleted. Viewer accounts, viewer sessions, share links and push subscriptions are not merged. A SQLite source whose `-wal` file still holds changes needs a writable folder, because SQLite writes a `-shm` file beside it to read them. What it copies, what it refuses and a worked example are in [Merge two archives](../operations/maintenance.md#merge-two-archives).
+
+It prints `Merge complete:`, then one `Source account <n> -> target account <n>` line per account and the rows added per table. When `--add-missing-parents` added placeholder rows, it lists them per table. When `--account` left out the transcript that a copied transcript points at, a `Transcript copy links left empty` line gives the count. Then come the media files copied, `_shared` files copied, links created, files already in the target, files missing in the source folder, avatar files and the size in MB. Without a source media folder, those media lines are replaced by `Media files: not copied (no source media folder; pass --source-media)`. With `--dry-run` the heading is `[DRY RUN] Merge plan, nothing written:`.
+
+It exits 0 on success. When a check fails, it prints `Merge refused: <reason>` on stderr and exits 1. On any other error it prints `Merge failed: <error type>. Nothing was committed to the target database.` on stderr and exits 1.
+
 ## fill-gaps { #fill-gaps }
 
 ```text
@@ -358,7 +380,7 @@ Most of them find the database through the same variables as the application. `m
 | `cleanup_legacy_avatars.py` | Deletes old-style avatar files that have a new-style replacement. | `--dry-run`, `--backup-path PATH` (default `/data/backups`) |
 | `migrate_media_paths.py` | Renames old media folders of groups and channels to their marked ids and updates the database paths. | `--dry-run`, `--media-path PATH` (default `$MEDIA_PATH` or `/data/backups/media`), `--db-url URL` |
 | `healthcheck_backup.py`, `healthcheck_viewer.py` | The container health checks described above. | none |
-| `fix_reactions_sequence.sql`, `migrate_to_marked_ids.sql`, `migrate_to_marked_ids_sqlite.sql`, `merge/merge_sqlite.sql`, `merge/merge_postgres.sql` | SQL helpers. Run them with `sqlite3` or `psql` outside the image. The merge scripts only accept databases at schema revision 023. | none |
+| `fix_reactions_sequence.sql`, `migrate_to_marked_ids.sql`, `migrate_to_marked_ids_sqlite.sql` | SQL helpers. Run them with `sqlite3` or `psql` outside the image. | none |
 | `generate_dummy_db.py` | A development tool that builds a demo archive. | `--data-dir`, `--force` |
 | `fix_media_sizes.py` | Broken. It fails with `ImportError`. | none |
 

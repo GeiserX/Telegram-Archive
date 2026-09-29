@@ -223,7 +223,7 @@ It copies each table in primary-key order and merges rows, so a row that already
     - The mover does not copy avatar history. The avatar files stay on disk and the current avatar carries over, but the viewer no longer lists earlier profile photos.
     - There is no way back from PostgreSQL to SQLite. Keep the SQLite file.
 
-There is no supported way to merge two archives on a current release. To hold a second account, declare it in the same install and let it fetch that account's history again. See [Multiple accounts](multiple-accounts.md). The scripts for archives still on 8.0.0 or 8.0.1 are described in [Merge two archives](../operations/maintenance.md#merge-two-archives).
+To combine two archives, SQLite or PostgreSQL in any mix, use `telegram-archive merge`. See [Merge two archives](../operations/maintenance.md#merge-two-archives).
 
 ## PostgreSQL backups
 

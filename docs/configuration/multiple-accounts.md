@@ -160,6 +160,6 @@ A small label with the account name, called an account chip, appears on chat row
 - Imports from Telegram Desktop always land in the first account row, the one the account at index 1 claimed on its first login. Renumbering accounts later does not change that.
 - `backfill-topics` sets `CHAT_IDS` to the chat you name. For an account with `TG_ACCOUNT_<N>_CHAT_IDS`, the command uses that list instead.
 - `scripts/auth_noninteractive.py` logs in one account from `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` and `SESSION_NAME`, and ignores `TG_ACCOUNT_<N>_*`. To log in account N with it, pass that account's values in those variables and its session name in `SESSION_NAME`. It does not check the phone number.
-- You cannot merge two existing archives.
+- To combine two existing archives that hold different Telegram accounts, use the `merge` command. See [Merge two archives](../operations/maintenance.md#merge-two-archives).
 
 See [Import and maintenance tasks](../operations/maintenance.md) for imports and `backfill-topics`, and [Upgrading](../operations/upgrading.md) for moving from 7.x.
