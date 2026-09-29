@@ -41,7 +41,7 @@ docker compose run --rm telegram-backup python -m telegram_archive auth
 docker compose up -d   # starts drumsergio/telegram-archive:8.17.0 and drumsergio/telegram-archive-viewer:8.17.0
 ```
 
-The `auth` step asks for the code Telegram sends you and, if the account has two-step verification, for that password, which shows on screen as you type. Then open [http://127.0.0.1:8000](http://127.0.0.1:8000) and sign in with the viewer username and password; the first backup is already running. [Run with Docker](https://geiserx.github.io/Telegram-Archive/getting-started/docker/) has every step in detail, and [Log in to Telegram](https://geiserx.github.io/Telegram-Archive/getting-started/telegram-login/) covers a login that fails or must run without a terminal.
+The `auth` step asks for the code Telegram sends you (and your two-step verification password, which shows on screen as you type); then open [http://127.0.0.1:8000](http://127.0.0.1:8000), sign in with the viewer username and password, and the first backup is already running. [Run with Docker](https://geiserx.github.io/Telegram-Archive/getting-started/docker/) has every step in detail, and [Log in to Telegram](https://geiserx.github.io/Telegram-Archive/getting-started/telegram-login/) covers a login that fails or must run without a terminal.
 
 ## Documentation
 
