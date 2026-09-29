@@ -59,7 +59,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     2. Pull the models once before the first start:
 
         ```bash
-        docker run --rm -v ./akou/models:/models drumsergio/akou:0.5.1 models pull fast
+        docker run --rm -v ./akou/data:/data -v ./akou/models:/models drumsergio/akou:0.5.1 models pull fast
         ```
 
     3. In a container, akou must accept connections from other containers. It only does that when its settings say it runs behind a proxy. Set `server.behind_proxy` to `true` in akou's settings.

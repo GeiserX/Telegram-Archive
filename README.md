@@ -36,7 +36,7 @@ You need Docker Compose, and an `api_id` and `api_hash` for your account from [m
 ```bash
 git clone https://github.com/GeiserX/Telegram-Archive.git && cd Telegram-Archive
 cp .env.example .env   # set TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE; uncomment and set VIEWER_USERNAME, VIEWER_PASSWORD
-mkdir -p data && sudo chown -R 1000:1000 data   # both containers run as uid 1000; on macOS skip the chown
+mkdir -p data && sudo chown -R 1000:1000 data   # both containers run as uid 1000; with Colima on macOS, skip the chown
 docker compose run --rm telegram-backup python -m telegram_archive auth
 docker compose up -d   # starts drumsergio/telegram-archive:8.17.0 and drumsergio/telegram-archive-viewer:8.17.0
 ```
