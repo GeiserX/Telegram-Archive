@@ -25,6 +25,7 @@ RUN uv sync --locked --no-install-project --only-group viewer-runtime
 COPY telegram_archive/__init__.py ./telegram_archive/
 COPY telegram_archive/config.py ./telegram_archive/
 COPY telegram_archive/realtime.py ./telegram_archive/
+COPY telegram_archive/status.py ./telegram_archive/
 COPY telegram_archive/message_utils.py ./telegram_archive/
 COPY telegram_archive/transcription_contract.py ./telegram_archive/
 COPY telegram_archive/db/ ./telegram_archive/db/

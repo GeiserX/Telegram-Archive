@@ -7,6 +7,7 @@ backup execution, scheduling, and data export.
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ GETTING STARTED:
   4. View and export data:
      telegram-archive list-chats   # List all backed up chats
      telegram-archive stats        # Show backup statistics
+     telegram-archive status       # Is the archive healthy? (exit code 1 if not)
      telegram-archive export -o file.json  # Export to JSON
 
   5. Import Telegram Desktop exports:
@@ -112,6 +114,19 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         help="Show backup statistics",
         description="Display statistics about backed up chats, messages, and media.",
     )
+
+    # Status command
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show whether the archive is healthy (exit code 1 if not)",
+        description=(
+            "Report the last backup run, listener state, media pipeline counts and "
+            "database size, the same answer as the viewer's status panel, without "
+            "the viewer. Exits 1 when no backup has run, the last backup did not "
+            "finish, SCHEDULE has missed a run, or the database cannot be read."
+        ),
+    )
+    status_parser.add_argument("--json", action="store_true", help="Print the status as JSON")
 
     # List chats command
     list_parser = subparsers.add_parser(
@@ -253,6 +268,34 @@ async def run_stats(args) -> int:
     except Exception as e:
         print(f"Stats failed: {e}", file=sys.stderr)
         return 1
+
+
+async def run_status(args) -> int:
+    """Run status command: 0 when the archive is healthy, 1 when it is not."""
+    from .config import Config, setup_logging
+    from .db import DatabaseAdapter, close_database, init_database
+    from .status import collect_status, format_status, health_problems
+
+    try:
+        config = Config()
+        setup_logging(config)
+        config.log_summary()
+
+        try:
+            manager = await init_database()
+            status = await collect_status(DatabaseAdapter(manager), config)
+        finally:
+            await close_database()
+        problems = health_problems(status, config.schedule)
+    except Exception as e:
+        print(f"Status failed: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps({**status, "healthy": not problems, "problems": problems}, indent=2))
+    else:
+        print(format_status(status, problems))
+    return 1 if problems else 0
 
 
 async def run_list_chats(args) -> int:
@@ -487,6 +530,8 @@ def main() -> int:
         return asyncio.run(run_export(args))
     elif args.command == "stats":
         return asyncio.run(run_stats(args))
+    elif args.command == "status":
+        return asyncio.run(run_status(args))
     elif args.command == "list-chats":
         return asyncio.run(run_list_chats(args))
     elif args.command == "import":

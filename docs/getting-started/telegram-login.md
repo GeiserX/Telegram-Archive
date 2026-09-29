@@ -173,7 +173,7 @@ While `schedule` runs, do not run any of these against the same session:
 - `scripts/auth_noninteractive.py`
 - `scripts/restore_chat.py`
 
-Stop the backup service first, run the command, then start the service again. `export`, `stats` and `list-chats` only read the database, so they are safe while the service runs.
+Stop the backup service first, run the command, then start the service again. `export`, `stats`, `status` and `list-chats` only read the database, so they are safe while the service runs.
 
 Never point two installs at the same session file.
 
