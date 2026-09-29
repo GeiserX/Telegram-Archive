@@ -475,6 +475,7 @@ let loadFailureStreak = 2;
 const hasMoreNewer = ref(true);
 const loadingNewer = ref(true);
 const newerLoadError = ref('e');
+const messagesLoadError = ref(false);
 let newestMessageId = 5;
 let newerLoadRequestSeq = 0;
 const resetCalendarAvailability = () => {};
@@ -1143,6 +1144,9 @@ const getMediaUrl = () => { throw new Error('the handler built the media URL'); 
 const msg = { id: 5, chat_id: -1001234567890, media: { type: 'video' } };
 const img = { onerror: () => {}, style: {}, onclick: () => {} };
 const video = { parentElement: { set innerHTML(value) { throw new Error('wrote innerHTML'); } } };
+// The image placeholder reads the palette's neutral colours off <html>.
+const document = { documentElement: {} };
+const getComputedStyle = () => ({ getPropertyValue: () => ' 55 65 81' });
 """,
             _extract_const_arrow_function(html, "handleImageError", asynchronous=False),
             _extract_const_arrow_function(html, "handleMediaError", asynchronous=False),

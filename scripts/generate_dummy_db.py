@@ -4,7 +4,8 @@
 Every person, chat and message in it is invented. The archive holds two
 accounts, private chats, groups, a forum with topics and channels, with
 photos, an album, a sticker, voice notes with transcripts, a round video, a
-document, replies, forwards, reactions, edits and pinned messages.
+document, replies, forwards, reactions, edits with their earlier versions,
+messages deleted in Telegram that the archive kept, and pinned messages.
 
 Usage:
     python scripts/generate_dummy_db.py --data-dir ./demo-data
@@ -229,9 +230,10 @@ class ChatScript:
         raw: dict | None = None,
         pinned: bool = False,
         topic: int | None = None,
-        edited_from: str | None = None,
+        edited_from: str | list[str] | None = None,
         react: dict[str, int] | None = None,
         forward: tuple[int, int, str] | None = None,
+        deleted_after: timedelta | None = None,
     ) -> int:
         mid = self.next_id
         self.next_id += 1
@@ -255,8 +257,15 @@ class ChatScript:
             raw["forward_from_name"] = origin_name
             raw["forward_origin"] = {"chat_id": origin_chat, "message_id": origin_msg}
         if edited_from is not None:
-            msg["edit_date"] = when + timedelta(minutes=3)
-            self.versions.append((mid, edited_from, when))
+            # Oldest first: each earlier text is kept as a version, a few minutes apart.
+            earlier = [edited_from] if isinstance(edited_from, str) else list(edited_from)
+            for step, old_text in enumerate(earlier):
+                self.versions.append((mid, old_text, when + timedelta(minutes=2 * step)))
+            msg["edit_date"] = when + timedelta(minutes=2 * len(earlier) + 1)
+        if deleted_after is not None:
+            # Deleted in Telegram, kept by the archive (soft deletion).
+            msg["is_deleted"] = 1
+            msg["deleted_at"] = when + deleted_after
         if media is not None:
             media = dict(media)
             media["message_id"] = mid
@@ -414,7 +423,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         ESME,
         "The north lot. It fills up by 8, so get there early.",
         reply=q,
-        edited_from="The north lot. It fills up by 9.",
+        edited_from=["The north lot.", "The north lot. It fills up by 9."],
     )
     s.add(t + timedelta(minutes=25), OWNER_PERSONAL, "Adding this one to the list for next month.")
     s.add(
@@ -479,7 +488,20 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         pinned=True,
         react={"👌": 4},
     )
+    s.add(
+        t + timedelta(minutes=96),
+        HUGO,
+        "Parking at the north lot is free before nine, after that it's the paid lot by the café.",
+        deleted_after=timedelta(minutes=4),
+    )
     s.add(t + timedelta(minutes=97), OWNER_PERSONAL, "I can drive, room for three more.")
+    s.add(
+        t + timedelta(minutes=98),
+        KOFI,
+        "Blurry one, sorry",
+        media={"type": "photo", "seed": 26},
+        deleted_after=timedelta(minutes=2),
+    )
     s.add(t + timedelta(minutes=99), ESME, "Perfect, save me a seat 🙌", react={"❤️": 1})
     scripts.append(s)
 

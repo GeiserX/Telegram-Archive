@@ -742,11 +742,12 @@ def _sanitize_chat_background(value: str) -> str:
 def _chat_background_css(name: str) -> str:
     """The declarations that turn the wallpaper on, or "" when there is none.
 
-    Injected at the end of :root so it overrides the defaults declared there.
-    The bubbles go opaque with it: the themes make them translucent so the flat
-    background shows through, and over a photo that would put a picture behind
-    running text. The tint is the theme's own background colour, so one image
-    sits correctly under a light and a dark palette instead of only one of them.
+    Injected into its own rule after every palette block, so it overrides the
+    shared defaults and each palette's service colours. The bubbles go opaque
+    with it: the themes make them translucent so the flat background shows
+    through, and over a photo that would put a picture behind running text. The
+    tint is the theme's own background colour, so one image sits correctly under
+    a light and a dark palette instead of only one of them.
     """
     if not name:
         return ""

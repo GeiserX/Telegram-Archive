@@ -3,8 +3,8 @@
 Covers three slices:
 
 * US-210 (slice 1): the pure-frontend initials circle — getSenderInitials /
-  getAvatarFill exist in the template and the darker fill clears white-text
-  contrast (WCAG AA) on every hue.
+  getAvatarFill exist in the template, and every palette's seven avatar fills
+  and peer name colours clear WCAG AA contrast.
 * US-211 (slice 2a): the media-ACL fix that serves member avatars for users
   who spoke in a visible chat, plus per-message sender_avatar_url resolution
   from files already on disk.
@@ -16,8 +16,10 @@ idiom of test_database_viewer.py (TestAvatarPathLookup).
 """
 
 import asyncio
-import colorsys
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime
@@ -45,16 +47,37 @@ except Exception:
 INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
 
 
-def _contrast_ratio_vs_white(hue: int, lightness: float) -> float:
-    """WCAG contrast ratio of white text over hsl(hue, 65%, lightness)."""
-
+def _luminance(rgb: tuple[int, int, int]) -> float:
     def _channel(c: float) -> float:
+        c = c / 255
         return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
 
-    r, g, b = colorsys.hls_to_rgb(hue / 360, lightness, 0.65)
-    fill_luminance = 0.2126 * _channel(r) + 0.7152 * _channel(g) + 0.0722 * _channel(b)
-    white_luminance = 1.0
-    return (white_luminance + 0.05) / (fill_luminance + 0.05)
+    r, g, b = rgb
+    return 0.2126 * _channel(r) + 0.7152 * _channel(g) + 0.0722 * _channel(b)
+
+
+def _contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    """WCAG 2 contrast ratio of two opaque sRGB colours."""
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _triplet(value: str) -> tuple[int, int, int]:
+    r, g, b = (int(part) for part in value.split())
+    return (r, g, b)
+
+
+def _hex(value: str) -> tuple[int, int, int]:
+    return (int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16))
+
+
+def _palettes(html: str) -> dict[str, dict[str, str]]:
+    """Every palette's --tg-* declarations: Slate's bare :root block and each data-theme block."""
+    slate = html[html.index("        :root {\n            /* Surfaces.") :]
+    blocks = {"slate": slate[: slate.index("\n        }")]}
+    for match in re.finditer(r':root\[data-theme="([a-z]+)"\]\s*\{([^}]*)\}', html):
+        blocks[match.group(1)] = match.group(2)
+    return {name: dict(re.findall(r"(--tg-[a-z0-9-]+):\s*([^;]+);", body)) for name, body in blocks.items()}
 
 
 class TestSenderInitialsTemplate(unittest.TestCase):
@@ -84,10 +107,35 @@ class TestSenderInitialsTemplate(unittest.TestCase):
         # Must NOT reintroduce the getChatName 'DA' fallback.
         self.assertNotIn("getChatName", body)
 
-    def test_avatar_fill_is_the_darker_gradient(self):
+    def test_avatar_fill_and_name_colour_are_theme_tokens(self):
+        # The index picks one of seven per-theme tokens; no hue is computed in JS.
         start = self.html.index("const getAvatarFill = (msg) =>")
-        body = self.html[start : start + 500]
-        self.assertIn("linear-gradient(135deg, hsl(${hue}, 65%, 27%), hsl(${hue}, 65%, 18%))", body)
+        body = self.html[start : start + 300]
+        self.assertIn("`var(--tg-avatar-${getSenderColor(msg)})`", body)
+        start = self.html.index("const getSenderNameColor = (msg) =>")
+        body = self.html[start : start + 300]
+        self.assertIn("`rgb(var(--tg-peer-${getSenderColor(msg)}))`", body)
+        self.assertNotIn("hsl(", self.html[self.html.index("const getPeerIndex") : start])
+
+    @unittest.skipUnless(shutil.which("node"), "node is required to execute the helper")
+    def test_peer_index_is_the_bare_telegram_id_modulo_seven(self):
+        start = self.html.index("const getPeerIndex = (id) => {")
+        end = self.html.index("\n                }\n", start) + len("\n                }\n")
+        script = (
+            self.html[start:end]
+            + """
+const assert = require('node:assert/strict');
+assert.equal(getPeerIndex(7), 0);
+assert.equal(getPeerIndex(15), 1);
+// A basic group -<id> and a channel -100<id> take the colour of the bare id.
+assert.equal(getPeerIndex(-15), 1);
+assert.equal(getPeerIndex(-1001234567890), 1234567890 % 7);
+assert.equal(getPeerIndex('4000000008'), 4000000008 % 7);
+for (const bad of [null, undefined, 'x', NaN]) assert.equal(getPeerIndex(bad), 0);
+"""
+        )
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestSenderInitialsLogic(unittest.TestCase):
@@ -145,36 +193,145 @@ class TestSenderInitialsLogic(unittest.TestCase):
         self.assertEqual(self._initials({"first_name": "", "last_name": ""}), "?")
 
 
-class TestAvatarFillContrast(unittest.TestCase):
-    """US-210: white text over the WHOLE avatar circle must clear WCAG AA (4.5:1).
+def _tint(value: str) -> tuple[tuple[int, int, int], float]:
+    """An `rgb(r g b / a)` or `rgba(r, g, b, a)` token as a colour and its alpha."""
+    match = re.fullmatch(r"rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)\s*[/,]\s*([\d.]+)\s*\)", value.strip())
+    assert match is not None, value
+    r, g, b, a = match.groups()
+    return (int(r), int(g), int(b)), float(a)
 
-    Both gradient stops sit in the safe zone so tall letters / anti-aliasing
-    reaching the lighter (top-left) corner stay legible — not just the center.
+
+def _over(colour: tuple[int, int, int], alpha: float, under: tuple[int, int, int]) -> tuple[int, int, int]:
+    """colour at alpha composited over an opaque colour."""
+    return tuple(round(c * alpha + u * (1 - alpha)) for c, u in zip(colour, under, strict=True))
+
+
+class TestPeerColourContrast(unittest.TestCase):
+    """Every palette's text pairs stay readable (WCAG AA, 4.5:1) where they are drawn.
+
+    Bubbles are measured as painted: --tg-other at 0.80 and --tg-own at 0.95 over
+    the pane (the --tg-bubble-alpha-* defaults), with the tints drawn on them
+    composited on top. Measuring against the opaque fill passes colours that fail
+    on screen.
     """
 
-    # Both stops of getAvatarFill: linear-gradient hsl(h,65%,27%) -> hsl(h,65%,18%).
-    LIGHTER_STOP = 0.27
-    DARKER_STOP = 0.18
+    @classmethod
+    def setUpClass(cls):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        cls.palettes = _palettes(html)
+        root = html[html.index("        :root {\n            --tg-font:") :]
+        root = root[: root.index("\n        }")]
+        cls.alpha = {
+            "in": float(re.search(r"--tg-bubble-alpha-other:\s*([\d.]+);", root).group(1)),
+            "out": float(re.search(r"--tg-bubble-alpha-own:\s*([\d.]+);", root).group(1)),
+        }
 
-    def test_both_stops_meet_aa_on_all_hues(self):
-        # The lighter stop is the contrast-limiting one; assert BOTH stops clear
-        # 4.5:1 on every hue so the entire circle is guaranteed legible. (27%
-        # gives min ~5.08, 18% gives min ~8.94 — both above 4.5 with margin.)
-        for hue in range(0, 360, 5):
-            for stop in (self.LIGHTER_STOP, self.DARKER_STOP):
-                with self.subTest(hue=hue, stop=stop):
-                    self.assertGreaterEqual(_contrast_ratio_vs_white(hue, stop), 4.5)
+    def _bubble(self, tokens: dict[str, str], side: str) -> tuple[int, int, int]:
+        fill = _triplet(tokens["--tg-other" if side == "in" else "--tg-own"])
+        return _over(fill, self.alpha[side], _triplet(tokens["--tg-bg"]))
 
-    def test_lighter_stop_is_below_the_safe_ceiling(self):
-        # Guards against a future edit lightening the top stop past the point
-        # where every hue clears AA: at S=65 the ceiling is ~29% lightness.
-        self.assertLessEqual(self.LIGHTER_STOP, 0.29)
+    def _tinted(self, tokens: dict[str, str], token: str, under: tuple[int, int, int]) -> tuple[int, int, int]:
+        colour, alpha = _tint(tokens[token])
+        return _over(colour, alpha, under)
 
-    def test_bright_name_palette_would_fail_contrast(self):
-        # Sanity anchor: the old bright name color is NOT contrast-safe for a
-        # white-text fill, documenting why a darker fill was introduced.
-        failing = [h for h in range(360) if _contrast_ratio_vs_white(h, 0.65) < 4.5]
-        self.assertTrue(failing)
+    def _check(self, theme: str, label: str, fg: tuple[int, int, int], bg: tuple[int, int, int], minimum: float = 4.5):
+        with self.subTest(theme=theme, pair=label):
+            self.assertGreaterEqual(round(_contrast(fg, bg), 2), minimum, f"{theme}: {label}")
+
+    def test_every_palette_is_checked(self):
+        self.assertIn("slate", self.palettes)
+        self.assertGreaterEqual(len(self.palettes), 7)
+
+    def test_initials_clear_both_gradient_stops(self):
+        # The initials sit in the centre of the circle, and a 135deg gradient
+        # spans the whole disc, so both stops and the midpoint carry the letters.
+        for name, tokens in self.palettes.items():
+            fg = _triplet(tokens["--tg-avatar-fg"])
+            for index in range(7):
+                stops = [_hex(stop) for stop in re.findall(r"#[0-9A-Fa-f]{6}", tokens[f"--tg-avatar-{index}"])]
+                self.assertEqual(len(stops), 2, f"{name} avatar-{index}")
+                middle = tuple(round((a + b) / 2) for a, b in zip(*stops, strict=True))
+                for label, stop in (("first stop", stops[0]), ("second stop", stops[1]), ("midpoint", middle)):
+                    self._check(name, f"avatar-{index} {label}", fg, stop)
+
+    def test_the_avatar_check_can_fail(self):
+        # Positive control: a bright Telegram stop under white initials fails.
+        self.assertLess(_contrast((255, 255, 255), _hex("#6DBE4E")), 4.5)
+
+    def test_peer_colours_are_told_apart(self):
+        # Red (0) and pink (6) are the closest pair on the wheel; at the same
+        # lightness they must still sit 30 degrees or more apart.
+        import colorsys
+
+        for name, tokens in self.palettes.items():
+            hues = []
+            for index in (0, 6):
+                r, g, b = _triplet(tokens[f"--tg-peer-{index}"])
+                hues.append(colorsys.rgb_to_hls(r / 255, g / 255, b / 255)[0] * 360)
+            gap = abs(hues[0] - hues[1])
+            with self.subTest(theme=name):
+                self.assertGreaterEqual(min(gap, 360 - gap), 30, name)
+
+    def test_names_read_on_the_incoming_bubble(self):
+        for name, tokens in self.palettes.items():
+            bubble = self._bubble(tokens, "in")
+            for index in range(7):
+                self._check(name, f"peer-{index}", _triplet(tokens[f"--tg-peer-{index}"]), bubble)
+
+    def test_bubble_text_pairs_read_on_both_sides(self):
+        for name, tokens in self.palettes.items():
+            for side in ("in", "out"):
+                bubble = self._bubble(tokens, side)
+                quote_bg = self._tinted(tokens, f"--tg-quote-bg-{side}", bubble)
+                quote = _triplet(tokens[f"--tg-quote-{side}"])
+                meta = _triplet(tokens[f"--tg-meta-{side}"])
+                self._check(name, f"text-{side} on bubble", _triplet(tokens[f"--tg-text-{side}"]), bubble)
+                # Links, mentions and the reply label.
+                self._check(name, f"quote-{side} on bubble", quote, bubble)
+                self._check(name, f"quote-{side} on quote-bg", quote, quote_bg)
+                self._check(name, f"forward-{side} on quote-bg", _triplet(tokens[f"--tg-forward-{side}"]), quote_bg)
+                # The time, the deleted text and the archive status lines
+                # (not downloaded, no speech detected), on the bubble and in a quote box.
+                self._check(name, f"meta-{side} on bubble", meta, bubble)
+                self._check(name, f"meta-{side} on quote-bg", meta, quote_bg)
+                preview_bg = self._tinted(tokens, f"--tg-preview-bg-{side}", bubble)
+                self._check(name, f"quote-{side} on preview-bg", quote, preview_bg)
+                # The account chip inside a bubble is an outline in the quote colour.
+                self._check(name, f"chip-{side}", quote, bubble)
+                # The "deleted" marker in the meta row.
+                self._check(name, f"danger-fg-{side} on bubble", _triplet(tokens["--tg-danger-fg"]), bubble)
+
+    def test_sidebar_and_selection_pairs(self):
+        for name, tokens in self.palettes.items():
+            muted = _triplet(tokens["--tg-muted"])
+            for surface in ("--tg-bg", "--tg-sidebar", "--tg-header", "--tg-field"):
+                self._check(name, f"muted on {surface}", muted, _triplet(tokens[surface]))
+            active = _triplet(tokens["--tg-active"])
+            self._check(name, "active-text on active", _triplet(tokens["--tg-active-text"]), active)
+            self._check(name, "active-muted on active", _triplet(tokens["--tg-active-muted"]), active)
+            on_accent = _triplet(tokens["--tg-on-accent"])
+            self._check(name, "on-accent on accent-strong", on_accent, _triplet(tokens["--tg-accent-strong"]))
+            self._check(name, "on-accent on accent-hover", on_accent, _triplet(tokens["--tg-accent-hover"]))
+            chip_bg = self._tinted(tokens, "--tg-account-chip-bg", _triplet(tokens["--tg-sidebar"]))
+            self._check(name, "account chip", _triplet(tokens["--tg-account-chip-fg"]), chip_bg)
+            chip_active_bg = self._tinted(tokens, "--tg-account-chip-active-bg", active)
+            self._check(name, "account chip on the selected row", _triplet(tokens["--tg-active-text"]), chip_active_bg)
+            # A hovered chat row lifts its second line to text-dim and its accent to accent-bright.
+            hover = _triplet(tokens["--tg-hover"])
+            self._check(name, "text-dim on hover", _triplet(tokens["--tg-text-dim"]), hover)
+            self._check(name, "accent-bright on hover", _triplet(tokens["--tg-accent-bright"]), hover)
+            # An input's outline is its only edge: 3:1 against the field and what surrounds it.
+            field_border = _triplet(tokens["--tg-field-border"])
+            for surface in ("--tg-field", "--tg-sidebar", "--tg-header", "--tg-bg"):
+                self._check(name, f"field-border on {surface}", field_border, _triplet(tokens[surface]), 3.0)
+            # A focus ring is a non-text indicator: 3:1 on the selected row and the sidebar.
+            focus = _triplet(tokens["--tg-focus"])
+            self._check(name, "focus on active", focus, active, 3.0)
+            self._check(name, "focus on sidebar", focus, _triplet(tokens["--tg-sidebar"]), 3.0)
+
+    def test_the_check_can_fail(self):
+        # Positive control: the Night palette's old secondary text fails on its sidebar.
+        self.assertLess(_contrast((108, 120, 131), (23, 33, 43)), 4.5)
 
 
 class TestSenderAvatarUrl(unittest.TestCase):

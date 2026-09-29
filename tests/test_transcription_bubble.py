@@ -142,13 +142,13 @@ class TestBubbleMarkup(unittest.TestCase):
         html = _html()
         pairs = re.findall(
             r'<p dir="auto" class="transcript-text[^\n]*v-if="selectedTranscript\(msg\)\.text"></p>\n'
-            r' *<p v-else class="text-\[11px\] text-tg-n400">No speech detected</p>',
+            r' *<p v-else class="text-\[11px\] text-tg-meta">No speech detected</p>',
             html,
         )
         self.assertEqual(len(pairs), 4)
         self.assertEqual(len(pairs), html.count('class="transcript-text text-sm'))
         # The same small grey style as the failed and skipped reasons.
-        self.assertIn('class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>', html)
+        self.assertIn('class="text-[11px] text-tg-meta">{{ transcriptErrorText(msg) }}</p>', html)
 
     def test_a_polite_live_region_announces_the_result(self):
         html = _html()
@@ -177,8 +177,10 @@ class TestBubbleMarkup(unittest.TestCase):
         css = _between(html, ".transcript-btn {", "@media (prefers-reduced-motion: reduce)")
         self.assertIn("rgb(var(--tg-n300))", css)
         self.assertIn("rgb(var(--tg-accent))", css)
-        # Only the overlay's white-on-scrim is a literal, like the other media overlays.
-        self.assertEqual(re.findall(r"#[0-9a-fA-F]{3,6}\b", css), ["#fff"])
+        # The overlay's white-on-scrim is the media pill's tokens, like the other media overlays.
+        self.assertIn("color: var(--tg-media-meta-fg);", css)
+        self.assertIn("background: var(--tg-media-meta-bg);", css)
+        self.assertEqual(re.findall(r"#[0-9a-fA-F]{3,6}\b", css), [])
 
     def test_the_setup_returns_what_the_markup_uses(self):
         html = _html()

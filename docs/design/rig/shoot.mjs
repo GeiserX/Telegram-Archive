@@ -6,7 +6,11 @@
 //
 // Usage:
 //   node docs/design/rig/shoot.mjs --css <file|none> --out <dir> --port <n>
-//        [--theme <name>] [--only 02,08]
+//        [--theme <id>] [--scheme light|dark] [--only 02,08]
+//
+// --theme passes any id through ?theme= unchanged, so a theme the app does not
+// know yet still reaches it. --scheme sets the colour scheme the page sees
+// (prefers-color-scheme) before every navigation.
 //
 // Credentials come from VIEWER_USERNAME and VIEWER_PASSWORD, with the demo
 // defaults admin and demo-not-a-secret.
@@ -20,14 +24,17 @@ const PLAYWRIGHT = process.env.PLAYWRIGHT_PATH || 'playwright'
 const { chromium } = require(PLAYWRIGHT)
 
 function parseArgs(argv) {
-    const args = { css: 'none', out: null, port: null, theme: null, only: null }
+    const args = { css: 'none', out: null, port: null, theme: null, scheme: null, only: null }
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i].replace(/^--/, '')
         if (!(key in args)) throw new Error(`unknown option ${argv[i]}`)
         args[key] = argv[++i]
     }
     if (!args.out || !args.port) {
-        throw new Error('usage: shoot.mjs --css <file|none> --out <dir> --port <n> [--theme <name>] [--only 02,08]')
+        throw new Error('usage: shoot.mjs --css <file|none> --out <dir> --port <n> [--theme <id>] [--scheme light|dark] [--only 02,08]')
+    }
+    if (args.scheme && !['light', 'dark'].includes(args.scheme)) {
+        throw new Error(`--scheme must be light or dark, got ${args.scheme}`)
     }
     return args
 }
@@ -77,6 +84,7 @@ async function shot(page, name) {
 
 async function newPage(context) {
     const page = await context.newPage()
+    if (args.scheme) await page.emulateMedia({ colorScheme: args.scheme })
     page.on('framenavigated', (frame) => {
         if (frame === page.mainFrame()) page.waitForLoadState('domcontentloaded').then(() => injectCss(page)).catch(() => {})
     })

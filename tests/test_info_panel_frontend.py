@@ -359,9 +359,8 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
         r"\b(?:text|bg|border|ring|from|via|to)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green"
         r"|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b"
     )
-    avatar_gradient = "bg-gradient-to-br from-blue-500 to-purple-600"  # the chat list's own initials fill
-    assert aside.count(avatar_gradient) == 1
-    assert palette.findall(aside.replace(avatar_gradient, "")) == [], "the panel uses theme tokens only"
+    assert palette.findall(aside) == [], "the panel uses theme tokens only"
+    assert "getChatAvatarFill(selectedChat)" in aside, "the initials fill is the chat's peer colour"
     assert aside.count('class="pane-resize-handle hidden md:block"') == 1, "the grab strip is a desktop affordance"
     assert 'ref="infoPanelCloseBtn"' in aside
     assert "formatDateFull(infoPanelMessage.date)" in aside and "formatTime(infoPanelMessage.date)" in aside

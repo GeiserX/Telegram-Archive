@@ -103,6 +103,7 @@ def test_load_newer_messages_pages_to_topic_tail_without_duplicates() -> None:
 const ref = value => ({ value });
 const loadingNewer = ref(false);
 const newerLoadError = ref('');
+const messagesLoadError = ref(false);
 const hasMoreNewer = ref(true);
 const selectedChat = ref({ id: 77, ref: 'opaque-cal-a' });
 const isAuthenticated = ref(true);
@@ -186,6 +187,7 @@ def test_newer_failure_requires_manual_retry_and_preserves_forward_paging() -> N
 const ref = value => ({ value });
 const loadingNewer = ref(false);
 const newerLoadError = ref('');
+const messagesLoadError = ref(false);
 const hasMoreNewer = ref(true);
 const selectedChat = ref({ id: 88, ref: 'opaque-cal-b' });
 const isAuthenticated = ref(true);

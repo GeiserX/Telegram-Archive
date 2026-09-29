@@ -118,7 +118,10 @@ class TestSenderPresentation(unittest.TestCase):
         self.assertIn("message-run-break", self.html)
         self.assertIn("const getSenderRunKey = (msg) =>", self.html)
         self.assertIn("const isSenderBreak = (index) =>", self.html)
-        self.assertGreaterEqual(self.html.count("getSenderRunKey("), 4)
+        # Run positions are keyed once per list change, not per row per render.
+        self.assertIn("const keys = rows.map(getSenderRunKey)", self.html)
+        self.assertIn("const showSenderName = (index) => runPositions.value[index]?.start ?? true", self.html)
+        self.assertIn("const isRunEnd = (index) => runPositions.value[index]?.end ?? true", self.html)
         self.assertIn("return index > 0 && isRunEnd(index)", self.html)
         self.assertIn("isSenderBreak,", self.html)
 
@@ -211,13 +214,24 @@ def test_message_versions_are_loaded_only_from_click_handler():
 
 
 def test_message_versions_trigger_is_plain_text():
-    """The edited trigger should stay visually quiet in message metadata."""
+    """The edited trigger stays quiet: the word Telegram uses, a small history icon,
+    and the count of versions the archive kept, which no Telegram app shows.
+
+    The count stays visible (a tooltip never shows on a touch screen), and the
+    button carries a 40px hit area.
+    """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert "fa-solid fa-pen" not in html
     assert "decoration-dotted" not in html
     assert "underline-offset-2" not in html
-    assert "edited({{ msg.version_count }})" in html
+    assert "edited({{ msg.version_count }})" not in html
+    start = html.index('<button v-if="Number(msg.version_count) > 0"')
+    button = html[start : html.index("</button>", start)]
+    assert "</svg>edited · {{ msg.version_count }}" in button
+    assert 'class="hit-40 order-2' in button
+    assert "earlier ${Number(msg.version_count) === 1 ? 'version' : 'versions'}" in button
+    assert ":aria-label=" in button
 
 
 def test_edited_without_versions_is_not_clickable():
@@ -274,8 +288,14 @@ def test_message_status_badges_show_timestamps_on_hover():
     assert edited_title in html
     assert deleted_title in html
     assert html.index(deleted_title) < html.index(edited_title)
-    assert '<span v-if="msg.is_deleted" class="order-1"' in html
-    assert '<span class="order-3">{{ formatTime(msg.date) }}</span>' in html
+    assert '<span v-if="msg.is_deleted" class="meta-deleted order-1 inline-flex items-center gap-1"' in html
+    # The time's own tooltip carries the full date, the edit and the deletion.
+    assert '<span class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
+    start = html.index("const messageTimeTitle = (msg) =>")
+    body = html[start : html.index("\n                }\n", start)]
+    assert "formatMetadataTimestampTitle('Edited', msg.edit_date)" in body
+    assert "formatMetadataTimestampTitle('Deleted', msg.deleted_at)" in body
+    assert "earlier ${versions === 1 ? 'version' : 'versions'} kept" in body
     assert "const formatMetadataTimestampTitle = (label, dateStr) =>" in html
     assert "`${label} ${formatDateFull(dateStr)} ${formatTime(dateStr)}`" in html
 
@@ -493,7 +513,8 @@ def test_scroll_to_message_uses_id_anchor_not_positional_index():
     scroll_start = html.index("const scrollToMessage = (msgId) =>")
     scroll_body = html[scroll_start : html.index("const openDatePicker", scroll_start)]
     assert "findMessageElement(msgId)" in scroll_body
-    assert "scrollIntoView({ behavior: 'smooth', block: 'center' })" in scroll_body
+    # Smooth unless the reader asked for reduced motion.
+    assert "scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })" in scroll_body
 
 
 def test_websocket_new_message_respects_pinned_window_and_search():
@@ -594,10 +615,12 @@ def test_chat_wallpaper_is_a_theme_token_not_a_per_render_style_read():
     assert "rgb(var(--tg-own) / var(--tg-bubble-alpha-own))" in body
     assert "rgb(var(--tg-other) / var(--tg-bubble-alpha-other))" in body
 
-    # The defaults are the translucency the themes are drawn with, and the
-    # server's block is the last thing in :root so it can override them.
-    root = html[html.index("        :root {\n            --tg-bg:") :]
+    # The defaults are the translucency the themes are drawn with. They live in
+    # the block every theme shares; the service colours are per palette.
+    root = html[html.index("        :root {\n            --tg-font:") :]
     root = root[: root.index("\n        }")]
+    slate = html[html.index("        :root {\n            /* Surfaces.") :]
+    slate = slate[: slate.index("\n        }")]
     assert "--viewer-chat-background: none;" in root
     assert "--viewer-chat-tint: none;" in root
     assert "--tg-bubble-alpha-own: 0.95;" in root
@@ -606,17 +629,26 @@ def test_chat_wallpaper_is_a_theme_token_not_a_per_render_style_read():
     # unreadable over a picture, so they carry tokens too. Every default here is
     # the value the pane already used: with no wallpaper, nothing changes.
     assert "--tg-chip-bg: rgb(var(--tg-sidebar) / 0.85);" in root
-    assert "--tg-service-bg: rgba(0, 0, 0, 0.3);" in root
-    assert "--tg-service-fg: rgba(255, 255, 255, 0.8);" in root
-    assert "--tg-pane-note-opacity: 0.5;" in root
+    assert "--tg-service-bg: rgba(0, 0, 0, 0.3);" in slate
+    assert "--tg-service-fg: rgba(255, 255, 255, 0.8);" in slate
+    # The note is drawn at full strength: --tg-muted carries the de-emphasis
+    # and passes 4.5:1 on the pane, which it would not at half opacity.
+    assert "--tg-pane-note-opacity: 1;" in root
     assert "background-color: var(--tg-chip-bg);" in html
     assert 'style="background: var(--tg-service-bg); color: var(--tg-service-fg);"' in html
     assert "opacity: 'var(--tg-pane-note-opacity)'" in html
     # Nothing may keep the hardcoded fills those tokens replaced.
     assert "background: rgba(0,0,0,0.3)" not in html
     assert "background-color: rgb(var(--tg-sidebar) / 0.85)" not in html
-    assert root.index("--tg-bubble-alpha-own: 0.95;") < root.index("__VIEWER_CHAT_BACKGROUND__")
+    # The server's block is its own rule after every palette. `:root[data-theme]`
+    # ties with a palette block on specificity and wins by order, so a wallpaper
+    # turns the bubbles and pills opaque under every theme, not only Slate.
     assert html.count("__VIEWER_CHAT_BACKGROUND__") == 1
+    injection = html.index(
+        "        :root,\n        :root[data-theme] {\n            __VIEWER_CHAT_BACKGROUND__\n        }"
+    )
+    assert html.rindex(':root[data-theme="') < injection
+    assert html.index("--tg-bubble-alpha-own: 0.95;") < injection
 
     # The pane paints the tint over the image; both are none until the server says otherwise.
     pane_start = html.index("        .messages-scroll {")
@@ -933,7 +965,7 @@ def test_pane_topic_scope_survives_sidebar_navigation():
     assert "selectedPaneTopic.value" not in back_body
     assert "Main panel keeps showing current topic messages" in back_body
 
-    assert ":class=\"{'bg-tg-active': selectedPaneTopic?.id === topic.id}\"" in html
+    assert ":class=\"{'is-active': selectedPaneTopic?.id === topic.id}\"" in html
     assert '<template v-if="selectedPaneTopic?.title">' in html
 
 
@@ -2544,6 +2576,7 @@ const loading = { value: false }
 const hasMoreNewer = { value: false }
 const loadingNewer = { value: false }
 const newerLoadError = { value: '' }
+const messagesLoadError = { value: false }
 const viewingPinnedWindow = { value: false }
 const unseenMessageCount = { value: 0 }
 const messageHighlight = { value: null }
@@ -3314,6 +3347,7 @@ const loading = ref(false)
 const hasMoreNewer = ref(false)
 const loadingNewer = ref(false)
 const newerLoadError = ref('')
+const messagesLoadError = ref(false)
 const viewingPinnedWindow = ref(false)
 const unseenMessageCount = ref(0)
 const messageHighlight = ref(null)
@@ -3716,7 +3750,7 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
         """Row-wide, not span-by-span: a NEW status span must not regress it."""
-        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-tg-n400"')
+        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-tg-meta"')
         row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
         spans = re.findall(r"<span\b[^>]*>", row)
         self.assertGreaterEqual(len(spans), 3)
@@ -3725,9 +3759,7 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_the_specific_spans_reported_in_267(self) -> None:
         self.assertIn('<span v-if="msg.media?.duration" class="whitespace-nowrap">', self.bubble)
-        self.assertIn(
-            '<span v-if="isCurrentAudioMessage(msg)" class="text-tg-accent-soft whitespace-nowrap">', self.bubble
-        )
+        self.assertIn('<span v-if="isCurrentAudioMessage(msg)" class="text-tg-quote whitespace-nowrap">', self.bubble)
         self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>', self.bubble)
 
     def test_the_filename_span_keeps_its_own_protection(self) -> None:
@@ -3751,8 +3783,9 @@ class TestReplyQuoteNamesItsSender(unittest.TestCase):
         self.assertNotIn("msg.reply_to_text || 'Message'", block)
         self.assertNotIn(">Reply to</div>", block)
         # A long sender name must not break per character either (#267's rule
-        # applies to this block too — it is inside the same bubble).
-        self.assertIn('class="font-semibold text-tg-accent-soft mb-0.5 truncate"', block)
+        # applies to this block too — it is inside the same bubble). The colour is
+        # the bubble side's quote colour.
+        self.assertIn('class="font-semibold text-tg-quote mb-0.5 truncate"', block)
 
     def test_helpers_are_exported_to_the_template(self) -> None:
         self.assertIn("\n                    replyToLabel,\n", self.html)
@@ -4763,41 +4796,38 @@ def test_theme_boot_allowlist_matches_the_picker():
     assert len(boot_ids) == 7
 
 
-def test_light_themes_define_the_full_token_set():
-    """day/paper restate every token the light flip depends on.
+def _theme_blocks(html: str) -> dict[str, dict[str, str]]:
+    """Every palette's declarations: Slate's bare :root block and each data-theme block."""
+    slate = html[html.index("        :root {\n            /* Surfaces.") :]
+    blocks = {"slate": slate[: slate.index("\n        }")]}
+    for match in re.finditer(r':root\[data-theme="([a-z]+)"\]\s*\{([^}]*)\}', html):
+        blocks[match.group(1)] = match.group(2)
+    return {
+        name: dict(re.findall(r"^\s*((?:--tg-[a-z0-9-]+)|color-scheme):\s*([^;]+);", body, re.M))
+        for name, body in blocks.items()
+    }
 
-    The dark palettes inherit the neutral scale from :root (it IS the dark
-    scale); a light palette that misses one token silently renders that
-    surface dark - so day/paper must define core + ink + n-scale + name-l.
+
+def test_every_theme_restates_every_colour_token():
+    """A palette that misses a token silently falls through to Slate's value.
+
+    That is how a light theme ends up with one dark surface, so every palette
+    block declares exactly the set Slate declares: the surfaces, the whole
+    neutral scale (the dark palettes no longer inherit it), the bubble sides,
+    the seven peer colours and avatar fills, the status colours and the
+    colour-scheme the native controls follow.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
-    core = [
-        "bg",
-        "sidebar",
-        "hover",
-        "active",
-        "text",
-        "text-dim",
-        "muted",
-        "own",
-        "other",
-        "border",
-        "border-strong",
-        "accent",
-        "accent-strong",
-        "accent-hover",
-        "accent-soft",
-        "accent-bright",
-        "accent-faint",
-        "accent-dim",
-    ]
-    neutrals = ["ink"] + [f"n{v}" for v in (100, 200, 300, 400, 500, 600, 700, 800, 900, 950)]
-    for theme in ("day", "paper"):
-        match = re.search(r':root\[data-theme="' + theme + r'"\]\s*\{([^}]*)\}', html)
-        assert match is not None, f"no token block for {theme}"
-        block = match.group(1)
-        for token in core + neutrals + ["name-l"]:
-            assert f"--tg-{token}:" in block, f"{theme} is missing --tg-{token}"
+    themes = _theme_blocks(html)
+    boot = re.search(r"const KNOWN_THEMES = \[([^\]]*)\]", html)
+    # "system" is a choice, not a palette: it resolves to one of the others.
+    assert sorted(themes) == sorted(set(re.findall(r"'([a-z]+)'", boot.group(1))) - {"system"})
+    slate = set(themes["slate"])
+    for required in ("color-scheme", "--tg-n950", "--tg-quote-out", "--tg-meta-in", "--tg-peer-6", "--tg-avatar-6"):
+        assert required in slate
+    for name, tokens in themes.items():
+        assert set(tokens) == slate, f"{name}: missing {slate - set(tokens)}, extra {set(tokens) - slate}"
+        assert tokens["color-scheme"] in ("light", "dark")
 
 
 # ---------------------------------------------------------------------------
@@ -4854,3 +4884,153 @@ class TestFormatSizeSubMiB(unittest.TestCase):
         out = _run_setup_helpers(html, ("const formatSize = (sizeMB) =>",), "[0, 0.29, 0.5, 12.3].map(formatSize)")
         # 0 stays "0 MiB"; 0.5 and 12.3 are pinned to the output before this change.
         self.assertEqual(out, ["0 MiB", "<1 MiB", "1 MiB", "12 MiB"])
+
+
+# ---------------------------------------------------------------------------
+# Viewer redesign, phase 1 review: tokens reach the markup that needs them.
+# ---------------------------------------------------------------------------
+
+
+def _lightbox_block(html: str) -> str:
+    start = html.index("<!-- Lightbox Modal for Images -->")
+    return html[start : html.index("<!-- Admin Panel", start)]
+
+
+def test_lightbox_controls_are_drawn_for_the_scrim():
+    """The scrim is black in every palette, so its controls are on-scrim, never ink.
+
+    Ink is near-black on the light palettes, which made the close and download
+    icons disappear on Day and Paper.
+    """
+    lightbox = _lightbox_block(INDEX_HTML.read_text(encoding="utf-8"))
+    assert "text-tg-ink" not in lightbox
+    assert lightbox.count("lightbox-control absolute") == 2
+    assert 'aria-label="Close"' in lightbox
+    assert 'aria-label="Download"' in lightbox
+
+
+def test_bubble_type_follows_the_browser_font_size():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    root = html[html.index("        :root {\n            --tg-font:") :]
+    root = root[: root.index("\n        }")]
+    for token in ("--tg-text-size", "--tg-line-height", "--tg-bubble-pad-y", "--tg-bubble-pad-x"):
+        value = re.search(token + r":\s*([^;]+);", root).group(1)
+        assert value.endswith("rem"), f"{token} is {value}"
+
+
+def test_forward_header_has_its_own_colour_token():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index('class="forward-header')
+    header = html[start : html.index("</div>", start)]
+    assert "border-tg-forward/50" in header
+    assert "text-tg-forward" in header
+    assert "--tg-forward: var(--tg-forward-in);" in html
+    assert "--tg-forward: var(--tg-forward-out);" in html
+
+
+def test_selected_chat_row_is_a_class_hover_cannot_override():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "'is-active': selectedChat?.ref === chat.ref" in html
+    assert "'bg-tg-active': selectedChat" not in html
+    assert ".chat-row.is-active:hover {" in html
+    assert "color: rgb(var(--tg-active-muted));" in html
+
+
+def test_bubble_account_chip_shows_when_several_archived_accounts_speak():
+    """The chip follows the senders in the loaded rows, not the accounts that hold the chat.
+
+    A private chat between two archived accounts belongs to one of them, yet both
+    write in it; hiding the chip there would draw both sides as the same identity.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "chatAccountLabels(selectedChat.value).length > 1" not in html
+    assert "if (row.sender_account_id != null) ids.add(row.sender_account_id)" in html
+    assert "bubbleAccountIds.value.size > 1 ? senderAccountLabel(msg) : ''" in html
+    assert '<span v-if="bubbleAccountLabel(msg)" class="account-chip">' in html
+    assert '<span v-if="senderAccountLabel(msg)" class="account-chip">' not in html
+
+
+def test_reply_quote_is_reachable_from_the_keyboard():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index('<div v-if="msg.reply_to_msg_id" @click="jumpToReply(msg.reply_to_msg_id)"')
+    quote = html[start : html.index(">", html.index('class="reply-quote', start))]
+    assert 'role="button" tabindex="0"' in quote
+    assert '@keydown.enter.prevent="jumpToReply(msg.reply_to_msg_id)"' in quote
+
+
+def test_deleted_text_stays_readable():
+    """A deleted message keeps its text colour; the bubble edge and the meta row mark it."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "{ 'opacity-50': msg.is_deleted }" not in html
+    assert "message-text-deleted" not in html
+    assert "msg.is_deleted ? 'is-deleted' : ''" in html
+    assert ".message-bubble.is-deleted {" in html
+    assert "box-shadow: inset 2px 0 0 rgb(var(--tg-danger) / 0.6), var(--tg-bubble-shadow);" in html
+    assert ".message-meta .meta-deleted {" in html
+
+
+def test_a_failed_load_is_not_an_empty_chat():
+    """After failed fetches the pane offers a retry instead of saying the chat is empty."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'v-else-if="!loading && messagesLoadError && sortedMessages.length === 0"' in html
+    assert html.index("messagesLoadError && sortedMessages.length === 0") < html.index(
+        "No messages to show in this chat"
+    )
+    assert "if (chatVersion === myVersion) messagesLoadError.value = true" in html
+    assert '@click="retryLoadMessages"' in html
+
+
+def test_an_empty_chat_says_so():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'v-else-if="!loading && !hasMore && sortedMessages.length === 0"' in html
+    assert "No messages to show in this chat" in html
+
+
+def test_search_hits_take_the_chat_rows_peer_colour():
+    """A message hit carries the chat's ref, not its id, so its colour comes from the chat list."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert ':style="{ background: getSearchChatAvatarFill(row.chat) }"' in html
+    assert "getChatAvatarFill(row.chat)" not in html
+    start = html.index("const getSearchChatAvatarFill = (chat) =>")
+    body = html[start : html.index("\n                }\n", start)]
+    assert "chats.value.find(c => c.ref === chat?.ref)" in body
+    assert "return `var(--tg-avatar-${hash % 7})`" in body
+
+
+def test_header_popovers_are_a_bottom_sheet_on_phones():
+    """On a phone the theme and stats menus span the screen instead of running off its edge."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert html.count('class="popover-sheet ') == 2
+    sheet = html[html.index("        @media (max-width: 767px) {\n            html .popover-sheet {") :]
+    sheet = sheet[: sheet.index("\n        }\n")]
+    for rule in ("position: fixed;", "left: 0;", "right: 0;", "bottom: 0;", "max-height: 70vh;", "var(--sab)"):
+        assert rule in sheet
+    assert "min-height: 48px;" in sheet
+
+
+def test_the_viewer_uses_the_system_font_and_ships_no_webfont():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "inter.css" not in html
+    assert "'Inter'" not in html
+    assert '--tg-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,' in html
+
+
+def test_the_meta_row_is_twelve_pixels_with_tabular_figures():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "--tg-meta-size: 0.75rem;" in html
+    meta = html[html.index("        .message-meta {") :]
+    meta = meta[: meta.index("\n        }")]
+    assert "font-size: var(--tg-meta-size);" in meta
+    assert "font-variant-numeric: tabular-nums;" in meta
+    assert 'class="message-meta text-[10px]' not in html
+
+
+def test_archive_figures_use_one_icon_set_not_emoji():
+    """The stats menu, the chat header figures and the info panel's Archive section."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    for emoji in ("📊", "💬 Chats", "📬", "🖼️ Media", "💾"):
+        assert emoji not in html, emoji
+    assert html.count('class="stats-row"') >= 2
+    assert html.count('class="stats-inline"') == 3
+    assert html.count('class="info-row"') == 4
+    assert 'aria-label="Archive"' in html
