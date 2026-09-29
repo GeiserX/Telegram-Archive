@@ -2154,6 +2154,31 @@ class TestListenerConnectNotAuthorized:
             await listener.connect()
 
 
+class TestListenerConnectDeviceIdentity:
+    """The listener's own client names this app under Settings, Devices."""
+
+    async def test_connect_sends_the_device_identity(self):
+        from telegram_archive.config import Config, telegram_device_kwargs
+
+        config = _make_config()
+        config.telegram_proxy = None
+        config.telegram_device_model = "Test Device A"
+        config.get_telegram_client_kwargs = lambda: Config.get_telegram_client_kwargs(config)
+        listener = TelegramListener(config, _make_db(), account_id=1)
+
+        mock_client = AsyncMock()
+        mock_client.is_user_authorized = AsyncMock(return_value=False)
+
+        with (
+            patch("telegram_archive.listener.TelegramClient", return_value=mock_client) as client_cls,
+            pytest.raises(RuntimeError, match="Session not authorized"),
+        ):
+            await listener.connect()
+
+        client_cls.assert_called_once()
+        assert client_cls.call_args.kwargs == {"flood_sleep_threshold": 0, **telegram_device_kwargs("Test Device A")}
+
+
 # ===========================================================================
 # _get_marked_id fallback returns raw value (line 385)
 # ===========================================================================
