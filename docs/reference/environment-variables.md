@@ -57,6 +57,7 @@ Feature page: [Log in to Telegram](../getting-started/telegram-login.md).
 | <span id="telegram_phone"></span>`TELEGRAM_PHONE` | unset | backup | Phone number with country code. Required in single-account mode. Ignored in indexed mode. |
 | <span id="session_name"></span>`SESSION_NAME` | `telegram_backup` | backup | Session file name inside `SESSION_DIR` for the single account. Also the fallback name for account 1 in indexed mode. |
 | <span id="session_dir"></span>`SESSION_DIR` | `session` beside `BACKUP_PATH`, so `/data/session` | backup | Directory for session files. Made absolute and created at startup. `--data-dir PATH` sets it to `PATH/session`. |
+| <span id="telegram_device_model"></span>`TELEGRAM_DEVICE_MODEL` | `Telegram Archive` | backup | Device name this install shows in Telegram under Settings, Devices. One name for every account of the install. A blank value uses the default. Give each install its own name to tell them apart. |
 
 ## Multiple accounts {#multiple-accounts}
 

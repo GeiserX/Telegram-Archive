@@ -11,6 +11,7 @@ import pytest
 from telethon.errors import FloodPremiumWaitError, FloodWaitError
 
 from telegram_archive import connection
+from telegram_archive.config import Config, telegram_device_kwargs
 from telegram_archive.connection import TelegramConnection
 
 
@@ -302,6 +303,43 @@ async def test_connect_creates_client_and_authenticates():
         mock_client.get_me.assert_awaited_once()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_connect_sends_the_device_identity():
+    """The client is built with Config's device fields, so Settings, Devices names this app."""
+    config = MagicMock()
+    config.session_path = "/tmp/test-device-session"
+    config.api_id = 12345
+    config.api_hash = "abcdef"
+    config.telegram_proxy = None
+    config.should_skip_topic = MagicMock(return_value=False)
+    config.download_youtube_videos = False
+    config.telegram_device_model = "Test Device A"
+    config.get_telegram_client_kwargs = lambda: Config.get_telegram_client_kwargs(config)
+    _wire_default_account(config)
+    conn = TelegramConnection(config)
+
+    mock_client = AsyncMock()
+    mock_client.is_user_authorized = AsyncMock(return_value=True)
+    mock_client.get_me = AsyncMock(return_value=MagicMock())
+    mock_client.session = MagicMock()
+    mock_client.session._conn = None
+
+    with (
+        patch("telegram_archive.connection.TelegramClient", return_value=mock_client) as client_cls,
+        patch.object(TelegramConnection, "_session_has_auth", return_value=False),
+        patch("telegram_archive.connection.shutil.copy2"),
+    ):
+        await conn.connect()
+
+    client_cls.assert_called_once_with(
+        "/tmp/test-device-session",
+        12345,
+        "abcdef",
+        flood_sleep_threshold=0,
+        **telegram_device_kwargs("Test Device A"),
+    )
 
 
 @pytest.mark.asyncio

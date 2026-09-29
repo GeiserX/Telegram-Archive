@@ -47,6 +47,7 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
+from ..status import collect_status
 from ..transcription_contract import (
     apply_job_outcome,
     event_data,
@@ -518,6 +519,7 @@ async def session_cleanup_task():
                         logger.info(f"Cleaned up {db_cleaned} expired sessions from database")
                 except Exception as e:
                     logger.warning(f"DB session cleanup failed: {e}")
+            await _revalidate_all_cached_sessions()
             stale_ips = [ip for ip, ts in _login_attempts.items() if all(now - t > _LOGIN_RATE_WINDOW for t in ts)]
             for ip in stale_ips:
                 _login_attempts.pop(ip, None)
@@ -794,6 +796,12 @@ AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
 AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
 _MAX_SESSIONS_PER_USER = 10
 _SESSION_CLEANUP_INTERVAL = 900  # 15 minutes
+# A cached session is checked against viewer_sessions again once this old, so a
+# session ended by another viewer process stops working here too.
+_SESSION_REVALIDATE_SECONDS = 60
+# After a failed re-check the next one waits this long, so a database outage
+# costs one read and one warning per session every few seconds, not per request.
+_SESSION_REVALIDATE_RETRY_SECONDS = 10
 _LOGIN_RATE_LIMIT = 15  # max attempts
 _LOGIN_RATE_WINDOW = 300  # per 5 minutes
 
@@ -836,6 +844,7 @@ class SessionData:
     source_token_id: int | None = None  # v7.2.0: tracks originating share token for revocation
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
+    validated_at: float = field(default_factory=time.time)  # last time its database row was seen
 
 
 _sessions: dict[str, SessionData] = {}
@@ -1109,7 +1118,9 @@ async def _create_session(
         last_accessed=now,
     )
 
-    # Persist to database
+    # Persist to database. A failed write keeps the login, but only until the
+    # first re-check that can read the table: a session without a row counts
+    # as ended there, see _revalidate_cached_session.
     if db:
         try:
             accounts_json = json.dumps(sorted(allowed_accounts)) if allowed_accounts is not None else None
@@ -1227,11 +1238,84 @@ def _get_secure_cookies(request: Request) -> bool:
     return forwarded_proto == "https" or str(request.url.scheme) == "https"
 
 
+async def _drop_cached_sessions(tokens: Iterable[str]) -> None:
+    """Forget cached sessions whose database rows are gone, and close their sockets."""
+    tokens = list(tokens)
+    for token in tokens:
+        _sessions.pop(token, None)
+    if tokens:
+        await ws_manager.close_for(session_keys=tokens)
+
+
+async def _revalidate_cached_session(auth_cookie: str, session: SessionData) -> SessionData | None:
+    """Return the cached session, or None once its database row is gone.
+
+    The cache is per process. Another viewer on the same database, or the
+    end-all admin action, deletes rows this process still holds in memory, so
+    a cached entry is re-read from viewer_sessions once it is older than
+    _SESSION_REVALIDATE_SECONDS. A missing row always means ended, also for a
+    login whose write failed: writing that row back later would bring back a
+    session an end-all on another viewer already ended. A database error keeps
+    the session and tries again _SESSION_REVALIDATE_RETRY_SECONDS later.
+    """
+    now = time.time()
+    if not db or now - session.validated_at < _SESSION_REVALIDATE_SECONDS:
+        return session
+    try:
+        row = await db.get_session(auth_cookie)
+    except Exception as e:
+        logger.warning(f"Session revalidation failed ({type(e).__name__}); keeping the cached session")
+        session.validated_at = _revalidate_retry_at(now)
+        return session
+    if row is None:
+        await _drop_cached_sessions((auth_cookie,))
+        return None
+    session.validated_at = now
+    return session
+
+
+def _revalidate_retry_at(now: float) -> float:
+    """The validated_at that makes the next re-check due _SESSION_REVALIDATE_RETRY_SECONDS from now."""
+    return now - _SESSION_REVALIDATE_SECONDS + _SESSION_REVALIDATE_RETRY_SECONDS
+
+
+async def _revalidate_all_cached_sessions() -> None:
+    """Sweep twin of _revalidate_cached_session for sessions that make no requests.
+
+    A browser that only holds a socket never passes through _resolve_session,
+    so the sweep checks every stale cache entry against one read of the table
+    and closes the sockets of the ones whose rows are gone.
+    """
+    if not db:
+        return
+    cutoff = time.time() - _SESSION_REVALIDATE_SECONDS
+    stale = {token: session for token, session in _sessions.items() if session.validated_at < cutoff}
+    if not stale:
+        return
+    try:
+        live = {row["token"] for row in await db.load_all_sessions()}
+    except Exception as e:
+        logger.warning(f"Session revalidation sweep failed ({type(e).__name__})")
+        return
+    now = time.time()
+    gone = []
+    for token, session in stale.items():
+        if _sessions.get(token) is not session:
+            continue  # replaced or removed while the table was read
+        if token in live:
+            session.validated_at = now
+        else:
+            gone.append(token)
+    await _drop_cached_sessions(gone)
+    if gone:
+        logger.info(f"Dropped {len(gone)} cached sessions whose database rows are gone")
+
+
 async def _resolve_session(auth_cookie: str) -> SessionData | None:
     """Look up session from in-memory cache, falling back to DB if needed."""
     session = _sessions.get(auth_cookie)
     if session:
-        return session
+        return await _revalidate_cached_session(auth_cookie, session)
 
     if not db:
         return None
@@ -3715,30 +3799,11 @@ async def get_operator_status(user: UserContext = Depends(require_master)):
     Aggregates signals the system already writes: last backup run and
     in-progress flag, per-account listener liveness, the media pipeline's
     pending/exhausted split, stats freshness and database size. Counts and
-    timestamps only — never ids, titles or content.
+    timestamps only — never ids, titles or content. ``telegram-archive status``
+    reads the same payload from ``collect_status``.
     """
     try:
-        payload: dict = {
-            "backup": {
-                "last_run": await db.get_metadata("last_backup_time"),
-                "in_progress": (await db.get_metadata("backup_in_progress")) == "1",
-            },
-            "stats_calculated_at": await db.get_metadata("stats_calculated_at"),
-        }
-        try:
-            account_ids = list(await db.get_account_ids())
-        except Exception:
-            account_ids = [DEFAULT_ACCOUNT_ID]
-        listeners = []
-        for account_id in account_ids:
-            since = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
-            listeners.append({"account_id": account_id, "active": bool(since), "active_since": since})
-        payload["listeners"] = listeners
-        payload["media"] = await db.get_operator_status_counts(max_attempts=config.max_media_download_attempts)
-        payload["database"] = {
-            "backend": "sqlite" if db.db_manager._is_sqlite else "postgresql",
-            "size_bytes": await db.get_database_size_bytes(),
-        }
+        payload = await collect_status(db, config)
         return JSONResponse(payload, headers={"Cache-Control": "private, no-store"})
     except Exception as e:
         logger.error(f"Error building operator status: {type(e).__name__}")
@@ -4783,6 +4848,87 @@ async def delete_token(token_id: int, request: Request, user: UserContext = Depe
     )
 
     return {"success": True}
+
+
+# ============================================================================
+# End every session — Master-only
+# ============================================================================
+
+
+async def _keep_current_from_body(request: Request) -> bool:
+    """Read ``keep_current`` from an optional JSON body. No body means False."""
+    raw = await request.body()
+    if not raw.strip():
+        return False
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    keep_current = body.get("keep_current", False)
+    if not isinstance(keep_current, bool):
+        raise HTTPException(status_code=400, detail="keep_current must be true or false")
+    return keep_current
+
+
+def _caller_session_token(user: UserContext, auth_cookie: str | None) -> str | None:
+    """The session key the caller is logged in with, or None (proxy identity, no cookie)."""
+    session = _sessions.get(auth_cookie) if auth_cookie else None
+    if session is None or session.username != user.username:
+        return None
+    return auth_cookie
+
+
+@app.post("/api/admin/sessions/end-all")
+async def end_all_sessions(
+    request: Request,
+    keep_current: bool | None = None,
+    user: UserContext = Depends(require_master),
+    auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
+):
+    """End every viewer session: master, viewer accounts and share links.
+
+    Deletes every row of viewer_sessions, empties this process's cache, closes
+    the sockets of the ended sessions and deletes the push subscriptions of
+    their users. The caller's own session ends too unless ``keep_current`` is
+    true (query string or JSON body). Another viewer process on the same
+    database drops its cached copies through _revalidate_cached_session.
+    """
+    if keep_current is None:
+        keep_current = await _keep_current_from_body(request)
+    caller_token = _caller_session_token(user, auth_cookie)
+    keep_token = caller_token if keep_current else None
+
+    deleted = await db.delete_all_sessions(keep_token=keep_token)
+    # Read the cache after the delete: a session cached during that await has
+    # no row left either, unless it was created after the DELETE, and such a
+    # session is read back from the database on its next request.
+    ended = {token: session.username for token, session in _sessions.items() if token != keep_token}
+    ended.update(deleted)
+    await _drop_cached_sessions(ended)
+    for username in set(ended.values()):
+        await _purge_push_subscriptions(username)
+
+    # Best-effort: the sessions are already gone, so a failed audit write must
+    # not turn this into an error that leaves the caller's cookie in place.
+    try:
+        await db.create_audit_log(
+            username=user.username,
+            role="master",
+            action="sessions_ended_all:kept_current" if keep_token else "sessions_ended_all",
+            endpoint="/api/admin/sessions/end-all",
+            ip_address=request.client.host if request.client else None,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to write audit log ({type(e).__name__})")
+    logger.info(f"Ended {len(ended)} viewer sessions by admin action")
+
+    current_session_ended = caller_token is not None and keep_token is None
+    response = JSONResponse({"success": True, "ended": len(ended), "current_session_ended": current_session_ended})
+    if current_session_ended:
+        response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
 
 
 # ============================================================================

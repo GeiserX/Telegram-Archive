@@ -222,7 +222,7 @@ Run any command with a fresh container:
 docker compose run --rm telegram-backup python -m telegram_archive <command>
 ```
 
-`export`, `stats` and `list-chats` only read the database, so you can also run them inside the running container:
+`export`, `stats`, `status` and `list-chats` never change archived data and never connect to Telegram, so you can also run them inside the running container:
 
 ```bash
 docker compose exec telegram-backup python -m telegram_archive stats

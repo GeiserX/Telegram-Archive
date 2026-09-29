@@ -275,6 +275,33 @@ class TestConnect(unittest.TestCase):
         ):
             _run(backup.connect())
 
+    def test_connect_sends_the_device_identity(self):
+        """The owned client is built with Config's device fields."""
+        from telegram_archive.config import Config, telegram_device_kwargs
+
+        backup = _make_backup()
+        backup.client = None
+        backup._owns_client = True
+        backup.config.session_path = "/tmp/test.session"
+        backup.config.api_id = 12345
+        backup.config.api_hash = "abc"
+        backup.config.telegram_proxy = None
+        backup.config.telegram_device_model = "Test Device A"
+        backup.config.get_telegram_client_kwargs = lambda: Config.get_telegram_client_kwargs(backup.config)
+
+        mock_client = AsyncMock()
+        mock_client.session = MagicMock(spec=[])
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
+
+        with patch("telegram_archive.telegram_backup.TelegramClient", return_value=mock_client) as client_cls:
+            _run(backup.connect())
+
+        self.assertEqual(client_cls.call_count, 1)
+        self.assertEqual(
+            client_cls.call_args.kwargs,
+            {"flood_sleep_threshold": 0, **telegram_device_kwargs("Test Device A")},
+        )
+
 
 # ===========================================================================
 # disconnect() (lines 149-151)

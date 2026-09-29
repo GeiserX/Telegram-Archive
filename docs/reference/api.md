@@ -335,7 +335,7 @@ Event frames all carry `type` and `chat_ref`:
 | `reaction` | `message_id`, `reactions` |
 | `transcript` | `message_id`, `transcript_id`, `status` |
 
-The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, or an admin change to the viewer account or share token behind it. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).
+The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, an admin change to the viewer account or share token behind it, or the end-all action. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).
 
 ## Push notifications
 
@@ -426,6 +426,7 @@ There is no route that lists or ends sessions by id. These calls end sessions:
 | `DELETE /api/admin/viewers/{id}` | The same, and removes the account |
 | `PUT /api/admin/tokens/{id}` changing `is_revoked`, `allowed_chat_refs` or `no_download` | Every session opened with that token, with its sockets and push subscriptions |
 | `DELETE /api/admin/tokens/{id}` | The same, and removes the token |
+| `POST /api/admin/sessions/end-all` | Every session: the master login's, every viewer account's and every share token's, with their sockets and push subscriptions. `keep_current=true`, in the query string or as the JSON body `{"keep_current": true}`, keeps the caller's own session. Answers `{success, ended, current_session_ended}` and clears the cookie when the caller's session ended. |
 
 Lock a viewer out without deleting the account:
 
@@ -441,7 +442,13 @@ curl -s -b jar.txt -X PUT -H 'Content-Type: application/json' \
   -d '{"is_revoked":true}' http://localhost:8000/api/admin/tokens/5
 ```
 
-None of these calls ends a master session, and neither does changing `VIEWER_PASSWORD`.
+End every session but your own, for example after changing `VIEWER_PASSWORD`:
+
+```bash
+curl -s -b jar.txt -X POST "http://localhost:8000/api/admin/sessions/end-all?keep_current=true"
+```
+
+Only `POST /api/admin/sessions/end-all` ends a session of the master login. Changing `VIEWER_PASSWORD` does not. A second viewer on the same database drops the ended sessions within 60 seconds. See [A second viewer](../viewer/access.md#a-second-viewer).
 
 ### Audit log and settings
 

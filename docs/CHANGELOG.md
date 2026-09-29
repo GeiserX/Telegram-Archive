@@ -7,7 +7,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ## [Unreleased]
 
 ### Added
+- **The archive shows under its own name in Telegram's device list.** Every Telegram client the app builds now reports the device `Telegram Archive`, the operating system and the app version, so the entry under Settings, Devices is easy to recognise. `TELEGRAM_DEVICE_MODEL` sets another name per install. Existing logins keep working. ([#500](https://github.com/GeiserX/Telegram-Archive/pull/500))
+- **`telegram-archive status`** says whether the archive is healthy without a browser: last run, listener state per Telegram account, media counts and database size. `--json` prints the same payload as the Archive Status panel plus `healthy` and `problems`, and the exit code is 1 when a run never happened, did not finish or was missed, so cron and monitoring can use it. ([#499](https://github.com/GeiserX/Telegram-Archive/pull/499))
+- **End every session.** The master can log out every browser at once from the new **Sessions** tab in Admin Settings, for example after a master password change. It ends the sessions of the master login, of every viewer account and of every share token. **End all but this one** keeps the browser you click it in. The same action is `POST /api/admin/sessions/end-all`, with `keep_current` to keep your own session. See [End every session](viewer/access.md#end-every-session). ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
 - **`telegram-archive merge`** combines two archives that hold different Telegram accounts, on SQLite and PostgreSQL in any combination, on current releases. It copies every account-scoped row under a new account id in one transaction, copies media by content, refuses a schema mismatch or a duplicate Telegram account, and deletes or overwrites nothing. `--dry-run` shows the counts first. The 8.0-only SQL scripts in `scripts/merge/` are removed. ([#502](https://github.com/GeiserX/Telegram-Archive/pull/502))
+
+### Changed
+- **A second viewer drops ended sessions within 60 seconds.** A viewer checks each session it holds in memory against the database again once a minute. A session ended on one viewer, by the end-all action, by editing an account or by revoking a token, stops working on a second viewer on the same database within that minute. It used to keep working there until a restart or until `AUTH_SESSION_DAYS` ran out. A browser there that only holds a live connection is closed by the sweep every 900 seconds. ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
 
 ## [8.17.0] - 2026-09-29
 

@@ -35,6 +35,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    true,
     tuple_,
     union,
     union_all,
@@ -6313,6 +6314,38 @@ class DatabaseAdapter:
             result = await session.execute(delete(ViewerSession).where(ViewerSession.source_token_id == token_id))
             await session.commit()
             return result.rowcount
+
+    _SESSION_DELETE_CHUNK = 500
+
+    @retry_on_locked()
+    async def delete_all_sessions(self, *, keep_token: str | None = None) -> list[tuple[str, str]]:
+        """Delete every viewer session, or every one but ``keep_token``.
+
+        Returns the ``(token, username)`` of each deleted row, so the caller can
+        close the sockets and purge the push channels those sessions held. One
+        DELETE ... RETURNING, so a session cannot be deleted without being
+        reported. SQLite before 3.35 has no RETURNING; there the rows are read
+        first and only those are deleted, so the guarantee holds and a session
+        created between the two statements survives. Sessions are credentials,
+        not archive state.
+        """
+        condition = ViewerSession.token != keep_token if keep_token is not None else true()
+        async with self.db_manager.async_session_factory() as session:
+            if self.db_manager.engine.dialect.delete_returning:
+                stmt = delete(ViewerSession).where(condition)
+                result = await session.execute(stmt.returning(ViewerSession.token, ViewerSession.username))
+                deleted = [(row[0], row[1]) for row in result.all()]
+            else:
+                result = await session.execute(select(ViewerSession.token, ViewerSession.username).where(condition))
+                deleted = [(row[0], row[1]) for row in result.all()]
+                tokens = [token for token, _ in deleted]
+                # Chunked: those same old SQLite builds cap a statement at 999
+                # bound variables, one per token here.
+                for start in range(0, len(tokens), self._SESSION_DELETE_CHUNK):
+                    chunk = tokens[start : start + self._SESSION_DELETE_CHUNK]
+                    await session.execute(delete(ViewerSession).where(ViewerSession.token.in_(chunk)))
+            await session.commit()
+            return deleted
 
     @retry_on_locked()
     async def delete_push_subscriptions_for_username(self, *, username: str) -> int:

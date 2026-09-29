@@ -2348,6 +2348,49 @@ class TestOperatorStatus(_MasterTestBase):
         assert payload["database"] == {"backend": "sqlite", "size_bytes": 4096}
         self.mock_db.get_operator_status_counts.assert_awaited_once()
 
+    async def test_route_answers_exactly_what_collect_status_builds(self):
+        """The route and ``telegram-archive status`` share one payload builder.
+
+        Same data in, same JSON out, in the same key order, and the route keeps
+        its no-store header.
+        """
+        from telegram_archive.status import collect_status
+
+        async def fake_metadata(key):
+            return {
+                "last_backup_time": "2026-08-22T06:00:00Z",
+                "backup_in_progress": "1",
+                "stats_calculated_at": "2026-08-22T03:00:00",
+                "listener_active_since": "2026-08-22T05:00:00",
+            }.get(key)
+
+        self.mock_db.get_metadata = AsyncMock(side_effect=fake_metadata)
+        self.mock_db.get_account_ids = AsyncMock(return_value=[1])
+        self.mock_db.get_operator_status_counts = AsyncMock(
+            return_value={"downloaded": 7, "pending": 0, "exhausted": 3, "skipped": 1}
+        )
+        self.mock_db.get_database_size_bytes = AsyncMock(return_value=8192)
+        self.mock_db.db_manager = MagicMock(_is_sqlite=False)
+
+        async with self._client() as client:
+            resp = await client.get("/api/status")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["cache-control"] == "private, no-store"
+        expected = {
+            "backup": {"last_run": "2026-08-22T06:00:00Z", "in_progress": True},
+            "stats_calculated_at": "2026-08-22T03:00:00",
+            "listeners": [{"account_id": 1, "active": True, "active_since": "2026-08-22T05:00:00"}],
+            "media": {"downloaded": 7, "pending": 0, "exhausted": 3, "skipped": 1},
+            "database": {"backend": "postgresql", "size_bytes": 8192},
+        }
+        payload = resp.json()
+        assert payload == expected
+        assert list(payload) == list(expected)
+        direct = await collect_status(self.mock_db, web_main.config)
+        assert payload == direct
+        assert list(payload) == list(direct)
+
     async def test_account_list_failure_degrades_to_the_default_account(self):
         """Advisory status only: a broken get_account_ids falls back to the
         legacy single-account key instead of failing the whole panel."""
