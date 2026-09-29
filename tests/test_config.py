@@ -6,7 +6,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from telegram_archive.config import Config, build_telegram_client_kwargs, build_telegram_proxy_from_env
+from telegram_archive import __version__
+from telegram_archive.config import (
+    DEFAULT_TELEGRAM_DEVICE_MODEL,
+    Config,
+    build_telegram_client_kwargs,
+    build_telegram_proxy_from_env,
+    telegram_device_kwargs,
+    telegram_device_model_from_env,
+    telegram_system_version,
+)
 
 
 class TestConfig(unittest.TestCase):
@@ -385,8 +394,9 @@ class TestTelegramProxyConfig(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertIsNone(config.telegram_proxy)
-            self.assertEqual(config.get_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
-            self.assertEqual(build_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
+            stock = {"flood_sleep_threshold": 0, **telegram_device_kwargs(DEFAULT_TELEGRAM_DEVICE_MODEL)}
+            self.assertEqual(config.get_telegram_client_kwargs(), stock)
+            self.assertEqual(build_telegram_client_kwargs(), stock)
 
     def test_proxy_rdns_false_alone_does_not_enable_proxy(self):
         """Regression for #193: stock docker-compose injects
@@ -402,7 +412,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             config = Config()
             self.assertIsNone(config.telegram_proxy)
             self.assertIsNone(build_telegram_proxy_from_env())
-            self.assertEqual(config.get_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
+            stock = {"flood_sleep_threshold": 0, **telegram_device_kwargs(DEFAULT_TELEGRAM_DEVICE_MODEL)}
+            self.assertEqual(config.get_telegram_client_kwargs(), stock)
 
     def test_proxy_rdns_true_alone_does_not_enable_proxy(self):
         """rdns is a modifier, not an enabler: rdns=true with no host/port
@@ -443,7 +454,11 @@ class TestTelegramProxyConfig(unittest.TestCase):
         )
         self.assertEqual(
             config.get_telegram_client_kwargs(),
-            {"flood_sleep_threshold": 0, "proxy": config.telegram_proxy},
+            {
+                "flood_sleep_threshold": 0,
+                **telegram_device_kwargs(DEFAULT_TELEGRAM_DEVICE_MODEL),
+                "proxy": config.telegram_proxy,
+            },
         )
 
     def test_proxy_requires_required_fields(self):
@@ -2427,3 +2442,81 @@ class TestFilterIdNormalization(unittest.TestCase):
         self.assertEqual(corrected, 1)
         self.assertEqual(scoped.skip_media_chat_ids, {self.MARKED})  # mutable surface
         self.assertFalse(scoped.should_download_media_for_chat(self.MARKED))  # frozen surface
+
+
+class TestTelegramDeviceIdentity(unittest.TestCase):
+    """TELEGRAM_DEVICE_MODEL and the device fields sent on every connect."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_device_kwargs_values(self):
+        """The helper names the device, the OS, this release and English."""
+        with (
+            patch("telegram_archive.config.platform.system", return_value="Linux"),
+            patch("telegram_archive.config.platform.release", return_value="6.1.0-99-generic"),
+        ):
+            kwargs = telegram_device_kwargs("Test Device A")
+
+        self.assertEqual(
+            kwargs,
+            {
+                "device_model": "Test Device A",
+                "system_version": "Linux 6.1.0",
+                "app_version": __version__,
+                "lang_code": "en",
+                "system_lang_code": "en",
+            },
+        )
+
+    def test_system_version_keeps_a_release_without_suffix(self):
+        """A release with no "-" is sent whole."""
+        with (
+            patch("telegram_archive.config.platform.system", return_value="Darwin"),
+            patch("telegram_archive.config.platform.release", return_value="24.0.0"),
+        ):
+            self.assertEqual(telegram_system_version(), "Darwin 24.0.0")
+
+    def test_system_version_unknown_when_platform_reports_nothing(self):
+        """platform returns empty strings when it cannot tell; never send a blank."""
+        with (
+            patch("telegram_archive.config.platform.system", return_value=""),
+            patch("telegram_archive.config.platform.release", return_value=""),
+        ):
+            self.assertEqual(telegram_system_version(), "Unknown")
+
+    def test_device_model_defaults_to_telegram_archive(self):
+        """Unset TELEGRAM_DEVICE_MODEL gives the default name."""
+        with patch.dict(os.environ, {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}, clear=True):
+            config = Config()
+            self.assertEqual(telegram_device_model_from_env(), "Telegram Archive")
+
+        self.assertEqual(config.telegram_device_model, "Telegram Archive")
+        self.assertEqual(config.get_telegram_client_kwargs()["device_model"], "Telegram Archive")
+
+    def test_blank_device_model_falls_back_to_default(self):
+        """A blank value (compose files often pass VAR=) keeps the default."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "TELEGRAM_DEVICE_MODEL": "   "}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+
+        self.assertEqual(config.telegram_device_model, DEFAULT_TELEGRAM_DEVICE_MODEL)
+
+    def test_device_model_override(self):
+        """TELEGRAM_DEVICE_MODEL names the device, trimmed, in both builders."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_DEVICE_MODEL": "  Test Archive B  ",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            module_kwargs = build_telegram_client_kwargs()
+
+        self.assertEqual(config.telegram_device_model, "Test Archive B")
+        self.assertEqual(config.get_telegram_client_kwargs()["device_model"], "Test Archive B")
+        self.assertEqual(module_kwargs["device_model"], "Test Archive B")
+        self.assertEqual(module_kwargs["app_version"], __version__)

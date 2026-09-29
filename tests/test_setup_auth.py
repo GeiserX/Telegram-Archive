@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from telegram_archive.config import Config, telegram_device_kwargs
 from telegram_archive.setup_auth import _print_permission_error_help, _same_phone_number, main, setup_authentication
 
 
@@ -112,6 +113,47 @@ async def test_setup_succeeds_when_the_session_matches_the_configured_number():
         result = await setup_authentication()
 
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_setup_sends_the_device_identity():
+    """The login client is built with Config's device fields, so the new login is named."""
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.session_path = "/tmp/test-session-device"
+    config.api_id = 12345
+    config.api_hash = "hash"
+    config.phone = "+1 555 0100"
+    config.telegram_proxy = None
+    config.should_skip_topic = MagicMock(return_value=False)
+    config.download_youtube_videos = False
+    config.telegram_device_model = "Test Device A"
+    config.get_telegram_client_kwargs = lambda: Config.get_telegram_client_kwargs(config)
+    config._indexed_accounts = False
+    config.accounts = [
+        MagicMock(index=1, session_path=config.session_path, api_id=config.api_id, api_hash=config.api_hash)
+    ]
+    config.accounts[0].phone = config.phone
+
+    client = AsyncMock()
+    client.is_user_authorized.return_value = True
+    client.get_me.return_value = MagicMock(phone="15550100")
+
+    with (
+        patch("telegram_archive.config.Config", return_value=config),
+        patch("telegram_archive.config.setup_logging"),
+        patch("telegram_archive.setup_auth.TelegramClient", return_value=client) as client_cls,
+    ):
+        result = await setup_authentication()
+
+    assert result is True
+    client_cls.assert_called_once_with(
+        "/tmp/test-session-device",
+        12345,
+        "hash",
+        flood_sleep_threshold=0,
+        **telegram_device_kwargs("Test Device A"),
+    )
 
 
 class TestPrintPermissionErrorHelp(unittest.TestCase):

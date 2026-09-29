@@ -102,7 +102,7 @@ docker compose run --rm telegram-backup python scripts/auth_noninteractive.py ve
 
 Limits of this script:
 
-- It reads `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `SESSION_NAME`, `SESSION_DIR`, `BACKUP_PATH`, `TELEGRAM_PHONE_CODE_HASH` and the `TELEGRAM_PROXY_*` variables. It logs in a single account and ignores `TG_ACCOUNT_<N>_*`.
+- It reads `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `SESSION_NAME`, `SESSION_DIR`, `BACKUP_PATH`, `TELEGRAM_PHONE_CODE_HASH`, `TELEGRAM_DEVICE_MODEL` and the `TELEGRAM_PROXY_*` variables. It logs in a single account and ignores `TG_ACCOUNT_<N>_*`.
 - Its own usage text names a compose service called `backup`. The service is `telegram-backup`.
 - It does not check that the phone number matches, unlike the `auth` command.
 - When the session file is already authorized, both `send` and `verify` print `Already authorized` and stop.
@@ -138,7 +138,7 @@ When authorization fails, the service restores the session from the `.authentica
 
 ### What Telegram sees
 
-The login counts as a new device on the account and appears in Telegram under Settings, Devices. The backup sets no device name, so the entry shows `PC 64bit` on x86_64 or the machine type on other architectures, the kernel release of the host or container, and the Telethon version. Ending that entry in Telegram invalidates the session file. The backup then logs `Session not authorized` until you [log in again](#log-in-again). A service with one account that starts in this state exits, and the container restarts into the same error. A running service, or a service with several accounts, keeps retrying, so watch the log. The `.authenticated` and `.bak` copies hold the same key, so they do not help here. They only cover a session file that is damaged on disk.
+The login counts as a new device on the account and appears in Telegram under Settings, Devices. The entry is named `Telegram Archive`, with the operating system and its version, and the Telegram Archive version as the app version. Set [`TELEGRAM_DEVICE_MODEL`](../reference/environment-variables.md#telegram_device_model) to give an install its own name, so several installs are easy to tell apart. The name is sent each time the backup connects. An existing login keeps working after a change, and you do not need to log in again. Telegram may keep showing the old name for an existing entry. A new login always shows the current one. Ending that entry in Telegram invalidates the session file. The backup then logs `Session not authorized` until you [log in again](#log-in-again). A service with one account that starts in this state exits, and the container restarts into the same error. A running service, or a service with several accounts, keeps retrying, so watch the log. The `.authenticated` and `.bak` copies hold the same key, so they do not help here. They only cover a session file that is damaged on disk.
 
 ## Log in again
 
@@ -173,7 +173,7 @@ While `schedule` runs, do not run any of these against the same session:
 - `scripts/auth_noninteractive.py`
 - `scripts/restore_chat.py`
 
-Stop the backup service first, run the command, then start the service again. `export`, `stats` and `list-chats` only read the database, so they are safe while the service runs.
+Stop the backup service first, run the command, then start the service again. `export`, `stats`, `status` and `list-chats` only read the database, so they are safe while the service runs.
 
 Never point two installs at the same session file.
 
