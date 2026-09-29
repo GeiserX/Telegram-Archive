@@ -124,7 +124,7 @@ Restore the database and the media from the same backup. A database newer than i
 
 When the backup container starts, it migrates a restored copy from an older release to the current one. With a pip install, run `telegram-archive migrate` before you start anything else. See [Upgrading](upgrading.md) for how migrations run.
 
-To move a SQLite archive to PostgreSQL, see [SQLite and PostgreSQL](../configuration/database.md). Merging two archives is not supported on a current release. See [Multiple accounts](../configuration/multiple-accounts.md) for the supported way to hold a second account in one archive.
+To move a SQLite archive to PostgreSQL, see [SQLite and PostgreSQL](../configuration/database.md). To combine two archives into one, see [Merge two archives](maintenance.md#merge-two-archives).
 
 ## Before an upgrade
 

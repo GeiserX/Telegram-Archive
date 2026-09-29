@@ -155,13 +155,141 @@ The `chats` list in the file always holds every chat in the archive, even with `
 
 ## Merge two archives
 
-The SQL scripts in `scripts/merge` combine two archives. They accept only databases at schema revision 023, the newest revision in 8.0.0 and 8.0.1, and refuse every later one. Use them only on an archive that never left 8.0.0 or 8.0.1.
+The `merge` command copies every Telegram account of another archive, the source, into this archive, the target. Use it when two installs each backed up a different Telegram account and you want one archive and one viewer for both. The command needs no Telegram login.
 
-The scripts do not carry data added after revision 023: avatar history, transcripts, chat avatar photo ids, media skip reasons and the search tables. Downgrading with `docker compose run --rm telegram-backup alembic downgrade 023` drops that same data, and the project does not document or test that path. From a checkout, the command is `alembic -c telegram_archive/alembic.ini downgrade 023`.
+It reads the target from the same settings as every other command: `DATABASE_URL` or the other database variables, and `--data-dir`. The source is only read, and nothing already in the target is changed or deleted.
 
-For an archive still on 8.0.x, the scripts need the `sqlite3` command line tool 3.33.0 or newer on the host for SQLite, or `postgres_fdw` on PostgreSQL. Neither app image contains them.
+### What it copies
 
-The supported way to hold two accounts in one archive is to declare both accounts in one install and let it fetch the second account's history again from Telegram. See [Multiple accounts](../configuration/multiple-accounts.md).
+Each source Telegram account is added to the target under the next free account id. Every row the account owns follows it under that id:
+
+- its chats, messages, edit history, reactions, media rows and transcripts
+- forum topics, folders and folder membership, its [positions](../reference/glossary.md#position) and avatar history
+- its per-account records: followed chat migrations, failed-message records and import progress
+
+Chats keep their chat ids and their [chat refs](../reference/glossary.md#chat-ref). A message keeps its media, its edit history and its reactions, because they share its chat id and message id. A transcript that was copied from another transcript still points at its copy in the target.
+
+Users, the table of senders shared by every account, are added only when the target does not know them. The target's row for a user it already has stays as it is. With `--account`, only the users the merged account points at are added: its message senders, the users who reacted, and the other party of its private chats. People only the other source accounts ever saw stay behind.
+
+Media rows are rewritten to paths relative to the target's media folder. The files come across the way the backup writes them:
+
+- A plain file in a chat folder is copied.
+- A file stored once in `media/_shared` is copied by content hash. When one of the target's own media rows names a `_shared` file with the same hash, and that file's bytes match the hash, the new chat-folder link points at that file and nothing is copied. The chat-folder entry is created as a relative symlink into `_shared`.
+- The avatar files of the merged accounts' chats and senders are copied when the target lacks them.
+
+A name the target already uses for the same bytes counts as already there. A file the source's database lists but its media folder lacks is counted as missing, and its row is still copied.
+
+### What it never touches
+
+- Rows already in the target. Nothing is updated in place or removed, in the database or in the media folder.
+- The source archive. PostgreSQL is read in a read-only transaction. A SQLite source that was closed cleanly is opened as an unchanging file, so nothing is written beside it and a read-only folder works. When its `-wal` file still holds changes, SQLite has to write a `-shm` file beside it to read them, so that folder must be writable.
+- Viewer state. Viewer accounts, viewer sessions, share links, push subscriptions, the viewer audit log and viewer settings are not merged. They describe who may read the source install, not what it archived. A viewer account in the target that is limited to some accounts does not see the merged accounts until you grant them.
+- The target's own records: owner id, last backup time, the backup running flag, the cached statistics and the push keys. The viewer's counts include the merged accounts after the next backup run or the daily recount.
+- The Telegram session files. They live outside the database. Copy them yourself, as the example shows.
+
+### The dry run
+
+`--dry-run` runs every check, then prints the row counts per table and the media plan: files, `_shared` files, links, avatars and their size. It writes nothing. The real run prints the same report, and it matches the dry run.
+
+### When it refuses
+
+The command checks everything before it writes, and stops with `Merge refused: <reason>` when:
+
+- The source and the target are the same database.
+- The source or the target is not a SQLite or PostgreSQL database.
+- The target's records say one of its backups is running, or, on SQLite, another process is writing to the target database. Stop the target install. If it is already stopped and the backup flag stays set, a run was cut off: start the target, let one backup finish, stop it and try again.
+- The source database file, the target database file or the `--source-media` folder does not exist.
+- Either archive is not at this release's newest schema revision. Upgrade both installs to the same release and start each once, or run `telegram-archive migrate` against it.
+- The source has no account, or `--account` matches none, or two source accounts share the label you passed.
+- An account on either side has never logged in, so it has no Telegram user id yet. Start that install once.
+- A source account is the same Telegram account as one in the target. Two archives of one account are not merged.
+- A chat ref or a per-account record key from the source already exists in the target.
+- A file name in the target's media folder holds different bytes than the source file of the same name.
+- The SQLite source's `-wal` file still holds changes and its folder is read-only. Start and stop the source install once, or copy the database with its `-wal` file to a writable folder.
+- The source is SQLite, the target is PostgreSQL, and the source holds rows whose parent row it lacks, for example a reaction whose message is gone. SQLite keeps such rows and PostgreSQL refuses them. The reason lists the count per table. Run again with `--add-missing-parents`, described below.
+
+The rows are then copied in one transaction, counted again, and the media files copied. If anything fails before the commit, the whole transaction is rolled back and the target database is as it was. Files copied before the failure stay: they are new names, never replacements, and the next run counts them as already there.
+
+### Example
+
+Two installs, each with one Telegram account. The target is the install you keep. Stop both first: nothing may write to either database during the merge. Take a backup of the target, see [Backing up the archive](backup-and-restore.md).
+
+1. Copy the other install's `backups` folder, which holds its database and its `media` folder, under the target's data folder:
+
+    ```bash
+    docker compose stop telegram-backup telegram-viewer
+    cp -a /srv/other-archive/data/backups ./data/incoming
+    ```
+
+2. Run the dry run and read the counts:
+
+    ```bash
+    docker compose run --rm telegram-backup \
+      python -m telegram_archive merge --source /data/incoming/telegram_backup.db --dry-run
+    ```
+
+    ```text
+    [DRY RUN] Merge plan, nothing written:
+      Source account 1 -> target account 2
+      Rows per table:
+        accounts: 1
+        users: 42
+        chats: 17
+        chat_folders: 2
+        messages: 12000
+        ...
+      Media files copied: 310
+      Shared files copied: 95
+      Links created: 120
+      Already in the target: 8
+      Missing in the source folder: 0
+      Avatar files copied: 25 (already there: 3, target's own kept: 0)
+      Size: 1840.2 MB
+    ```
+
+3. Run it again without `--dry-run`. The heading becomes `Merge complete:`.
+
+4. To keep backing up the merged account from the target install, declare it in `.env` as a second account, as [Going from one account to two](../configuration/multiple-accounts.md#going-from-one-account-to-two) describes, and copy its session file into the target's `data/session` folder under that account's session name. With the session file in place, the account needs no new login.
+
+    ```bash
+    cp /srv/other-archive/data/session/telegram_backup.session ./data/session/telegram_backup_account2.session
+    ```
+
+    ```dotenv
+    TG_ACCOUNT_2_API_ID=87654321
+    TG_ACCOUNT_2_API_HASH=fedcba9876543210fedcba9876543210
+    TG_ACCOUNT_2_PHONE_NUMBER=+15550100002
+    TG_ACCOUNT_2_LABEL=Work
+    ```
+
+    After login the archive finds the account's rows by its Telegram user id, so the index in `.env` does not have to match the account id the merge printed. The positions came across with the rows, so the next backup run continues where the source install stopped.
+
+5. Start the stack. Once the viewer shows both accounts, remove `data/incoming`, which the target never reads.
+
+A source in PostgreSQL is named by its URL, and its media folder with `--source-media`. The container must be able to reach that server:
+
+```bash
+docker compose run --rm telegram-backup \
+  python -m telegram_archive merge --source postgresql://telegram:change-me@other-db:5432/telegram_backup \
+  --source-media /data/incoming/media --dry-run
+```
+
+Without `--source-media`, the command looks for a `media` folder beside a SQLite source file. When there is none, the rows are merged and no file is copied, and the report says so.
+
+`--account` merges one source account, by label or by account id. A label wins: a value made of digits picks the account with that label, and the account with that id only when no label matches. A transcript copied from a transcript of an account you left out keeps its text, and the report counts its link to the other copy as left empty. Users follow the rule above: only the ones the merged account points at are added.
+
+### Rows whose parent is missing
+
+A SQLite archive can hold rows whose parent row is gone: a message whose chat row is missing, a reaction or a media row whose message is missing, a folder entry whose folder is missing, or a reaction by a user no archive knows. SQLite keeps them. A PostgreSQL target refuses them, so the merge refuses such a source before it writes anything.
+
+`--add-missing-parents` keeps every one of those rows. For each missing parent it adds an empty placeholder row to the target under the merged account's new id:
+
+- a chat with an empty title, typed from its id: supergroup, group or private
+- a message with no text, dated 1 January 1970, so it sits at the very top of its chat
+- a folder with an empty title
+- a user with only its id
+
+The rows that point at them are then copied as they are. The report and the dry run list the placeholders per table under `Placeholder parent rows added`. The option works with a SQLite target too. Without it, a SQLite target takes the rows without parents, as the source held them.
 
 ## Maintenance scripts
 
