@@ -1009,14 +1009,14 @@ def test_floating_day_pill_costs_log_rect_reads_not_one_per_day() -> None:
             """
 const ref = value => ({ value });
 const FLOATING_DATE_TRIP_PX = 12;
-const FLOATING_DATE_PILL_PX = 26;
-const FLOATING_DATE_COVER_PX = 48;
+const FLOATING_DATE_PILL_TOP = 8;
 const floatingDateLabel = ref('');
 const floatingDateIso = ref(null);
 const floatingDateCovered = ref(false);
 let rectReads = 0;
 let markers = [];
 const container = {
+    clientHeight: 600,
     getBoundingClientRect: () => ({ top: 0 }),
     querySelectorAll: selector => {
         assert.equal(selector, '.date-separator');
@@ -1087,19 +1087,26 @@ markers = buildMarkers(0, true).slice(0, 1);
 updateFloatingDate();
 assert.equal(floatingDateLabel.value, 'day-399');
 
-// The pill hides while its own day's separator sits in the band under it, and
-// only then: the date is drawn once, never twice a few pixels apart.
+// The pill hides while its own day's separator is on screen at or below the
+// pill's slot, and only then: the date is drawn once, never twice. It takes over
+// the moment the separator reaches its slot, so a date is always readable.
 const coveredAt = top => {
     markers = [{ top, dataset: { dateLabel: 'd', dateIso: 'x' }, getBoundingClientRect() { return { top: this.top }; } }];
     updateFloatingDate();
     return floatingDateCovered.value;
 };
 assert.equal(coveredAt(10), true, 'separator right under the pill');
-assert.equal(coveredAt(-20), true, 'separator half under the pill');
+assert.equal(coveredAt(8), true, 'separator exactly in the pill slot');
+assert.equal(coveredAt(7), false, 'separator passing under the pill');
+assert.equal(coveredAt(-20), false, 'separator half under the pill');
 assert.equal(coveredAt(-400), false, 'separator scrolled away above');
 assert.equal(coveredAt(47), true);
-// Below the trip line it is still the day shown, but clear of the pill.
-assert.equal(coveredAt(52), false);
+// Below the trip line (the start of history, a short chat) it is still the day
+// shown, and its separator is on screen: one date, in its place.
+assert.equal(coveredAt(52), true);
+assert.equal(coveredAt(400), true);
+// Below the pane it is not on screen: the pill names the day.
+assert.equal(coveredAt(700), false);
 """,
         ]
     )

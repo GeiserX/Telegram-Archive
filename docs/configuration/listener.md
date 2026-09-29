@@ -116,7 +116,7 @@ The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the sch
 
 ## Checking that it runs
 
-In the viewer, the chat list header shows **Real-time sync** next to the last backup time while a listener is active. For the master login, the Archive Status panel shows one Listener row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+In the viewer, the sidebar header shows **Real-time sync** under the archive's name while a listener is active, with the last backup time in its tooltip. For the master login, the Archive Status panel shows one Listener row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter.
 

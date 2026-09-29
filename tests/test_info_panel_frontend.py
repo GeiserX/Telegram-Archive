@@ -382,7 +382,7 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert 'class="chat-list-pane relative bg-tg-sidebar' in html, "the chat list width is a CSS variable"
     assert "'--chat-list-width': chatListWidth + 'px'" in html
     assert '@click="selectMessage(msg, $event)"' in html
-    assert 'class="message-row flex items-end gap-2"' in html, "the keyboard walk selects on this class"
+    assert 'class="message-row flex items-end"' in html, "the keyboard walk selects on this class"
     assert "querySelectorAll('.message-row[data-msg-id]')" in html
     assert "isSelectedMessage(msg) ? 'message-info-selected' : ''" in html
     assert 'aria-controls="info-panel"' in html

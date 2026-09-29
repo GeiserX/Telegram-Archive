@@ -12,7 +12,7 @@ The saved data: the media folder and session files under the data directory, plu
 
 ## Archive Status panel
 
-A panel in the viewer that only the master login can open, through the heart icon next to the user name. It has rows for the backup, one listener per Telegram account, the media pipeline, statistics, transcription and the database. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+A panel in the viewer that only the master login can open, through the account menu at the top of the sidebar. It has rows for the backup, one listener per Telegram account, the media pipeline, statistics, transcription and the database. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 ## Audit log
 

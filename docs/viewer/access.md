@@ -84,7 +84,7 @@ The password belongs to the reverse proxy or the identity provider in front of i
 
 The master can log out every browser at once, for example after a master password change. This ends the master's sessions, every viewer account's sessions and every share-token session. Accounts and share tokens stay as they are, so people log in again with their current password or link.
 
-Open the gear icon, **Admin Settings**, then the **Sessions** tab. It has two buttons, and each asks you to confirm:
+Open the account menu (the person icon at the top of the sidebar), **Admin Settings**, then the **Sessions** tab. It has two buttons, and each asks you to confirm:
 
 - **End every session** logs out everyone, you included. The page returns to the login.
 - **End all but this one** keeps the browser you click it in and logs out everything else, your other browsers included.
@@ -108,7 +108,7 @@ When `current_session_ended` is `true`, the answer also clears the cookie. A cal
 
 ## Viewer accounts
 
-The master login manages accounts in the viewer itself. Open the gear icon, **Admin Settings**, then the **Viewer Accounts** tab. The **Create Viewer** form has these fields:
+The master login manages accounts in the viewer itself. Open the account menu, **Admin Settings**, then the **Viewer Accounts** tab. The **Create Viewer** form has these fields:
 
 | Field | Meaning |
 |-------|---------|

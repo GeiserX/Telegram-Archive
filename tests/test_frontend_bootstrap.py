@@ -119,11 +119,59 @@ class TestSenderPresentation(unittest.TestCase):
         self.assertIn("const getSenderRunKey = (msg) =>", self.html)
         self.assertIn("const isSenderBreak = (index) =>", self.html)
         # Run positions are keyed once per list change, not per row per render.
-        self.assertIn("const keys = rows.map(getSenderRunKey)", self.html)
+        self.assertIn("const runKeys = computed(() => sortedMessages.value.map(getRunKey))", self.html)
+        self.assertIn("computeRunPositions(runKeys.value)", self.html)
         self.assertIn("const showSenderName = (index) => runPositions.value[index]?.start ?? true", self.html)
         self.assertIn("const isRunEnd = (index) => runPositions.value[index]?.end ?? true", self.html)
         self.assertIn("return index > 0 && isRunEnd(index)", self.html)
         self.assertIn("isSenderBreak,", self.html)
+
+    @unittest.skipUnless(NODE, "node is required to run the run-position helper")
+    def test_runs_skip_unpainted_rows_and_end_at_a_break(self) -> None:
+        """Index 0 is the newest row. A null key (an album duplicate) is skipped,
+        so the album row keeps the run's top and its sender's avatar at the bottom;
+        a different key (another sender, another day, a service pill) ends a run."""
+        positions = _run_setup_program(
+            self.html,
+            ("const computeRunPositions = (keys) =>",),
+            "",
+            "console.log(JSON.stringify(computeRunPositions(['a', 'a', null, 'a', 'b', 'svc', 'b'])))",
+        )
+        self.assertEqual(
+            [(p["start"], p["end"]) for p in positions],
+            [
+                (False, True),  # newest 'a': bottom of the run, where the tail and avatar go
+                (False, False),
+                (True, True),  # unpainted: no run
+                (True, False),  # oldest 'a': top of the run, past the skipped row
+                (True, True),
+                (True, True),  # the service pill
+                (True, True),  # 'b' again, but the pill ended its run
+            ],
+        )
+
+    @unittest.skipUnless(NODE, "node is required to run the run-position helpers")
+    def test_a_run_that_opens_frameless_names_its_sender_on_the_next_bubble(self) -> None:
+        """A sticker or a round video stands with no bubble to hold a name, so the
+        name moves to the run's first framed bubble; a run of only frameless rows
+        shows none, and an unpainted row never takes it."""
+        names = _run_setup_program(
+            self.html,
+            ("const computeRunPositions = (keys) =>", "const computeNameRows = (keys, positions, isFramelessAt) =>"),
+            "",
+            "const keys = ['a', 'a', null, 'a', 'b', 'c', 'c'];\n"
+            "const frameless = new Set([3, 4, 6]);\n"
+            "console.log(JSON.stringify(computeNameRows(keys, computeRunPositions(keys), (i) => frameless.has(i))))",
+        )
+        # Index 0 is the newest row. Run 'a' opens with a sticker (3), skips the
+        # unpainted row (2), and names its sender on row 1. Run 'b' is one
+        # sticker: no name. Run 'c' opens frameless (6): the name goes on 5.
+        self.assertEqual(names, [False, True, False, False, False, True, False])
+
+    def test_the_name_template_reads_the_name_rows(self) -> None:
+        self.assertIn("const showNameAt = (index) => nameRows.value[index] ?? true", self.html)
+        self.assertIn('<span v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)" dir="auto"', self.html)
+        self.assertNotIn('isFramelessMedia(msg, index)"', self.html)
 
     def test_sender_snapshot_precedes_current_profile_name(self) -> None:
         """Archived names must not be rewritten in the UI by mutable user profiles."""
@@ -290,9 +338,9 @@ def test_message_status_badges_show_timestamps_on_hover():
     assert edited_title in html
     assert deleted_title in html
     assert html.index(deleted_title) < html.index(edited_title)
-    assert '<span v-if="msg.is_deleted" class="meta-deleted order-1 inline-flex items-center gap-1"' in html
+    assert '<span v-else-if="msg.is_deleted" class="meta-deleted order-1 inline-flex items-center gap-1"' in html
     # The time's own tooltip carries the full date, the edit and the deletion.
-    assert '<span class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
+    assert '<span v-else class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
     start = html.index("const messageTimeTitle = (msg) =>")
     body = html[start : html.index("\n                }\n", start)]
     assert "formatMetadataTimestampTitle('Edited', msg.edit_date)" in body
@@ -3760,7 +3808,9 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
         """Row-wide, not span-by-span: a NEW status span must not regress it."""
-        row_start = self.bubble.index('class="flex items-center gap-2 mt-0.5 text-xs text-tg-meta"')
+        row_start = self.bubble.index(
+            'class="flex items-center gap-1.5 mt-0.5 text-[13px] leading-[18px] tabular-nums text-tg-meta"'
+        )
         row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
         spans = re.findall(r"<span\b[^>]*>", row)
         self.assertGreaterEqual(len(spans), 3)
@@ -4071,7 +4121,7 @@ class TestServiceMessageFallback(unittest.TestCase):
         self.assertIn("if (!isRenderedMessageRow(olderMsg, older)) continue", body)
         # The bail-out precedes any date comparison, and the walk replaced the
         # bare index + 1 neighbour lookup.
-        self.assertLess(body.index("isRenderedMessageRow(currMsg, index)"), body.index("moment.utc(currMsg.date)"))
+        self.assertLess(body.index("isRenderedMessageRow(currMsg, index)"), body.index("messageDayKey(currMsg)"))
         self.assertNotIn("sortedMessages.value[index + 1]", body)
 
         rendered = _code_only(_setup_slice(self.html, "const isRenderedMessageRow = (msg, index) =>"))
@@ -4136,6 +4186,8 @@ const moment = {{ utc: (s) => ({{ tz: () => ({{ format: () => String(s).slice(0,
                 "const isFirstInAlbum = (msg, index) =>",
                 "const isHiddenAlbumMessage = (msg, index) =>",
                 "const isRenderedMessageRow = (msg, index) =>",
+                "const dayKeyCache = new WeakMap()",
+                "const messageDayKey = (msg) =>",
                 "const showDateSeparator = (index) =>",
             ),
             "[showDateSeparator(0), showDateSeparator(1), showDateSeparator(2)]",
@@ -4592,10 +4644,10 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         exactly as it was pre-fix."""
         anchor = self._download_anchor_tag()
         self.assertIn("bubble-icon-action", anchor)
-        # The opt-out is meaningless without the actual 36px sizing utilities
-        # it is meant to protect.
-        self.assertIn("w-9", anchor)
-        self.assertIn("h-9", anchor)
+        # The opt-out is meaningless without the actual 28px sizing utilities
+        # it is meant to protect (the transcript button's size, beside it).
+        self.assertIn("w-7", anchor)
+        self.assertIn("h-7", anchor)
         self.assertIn("shrink-0", anchor)
 
     def test_the_player_row_has_no_note_emoji_and_names_only_music(self) -> None:
@@ -5017,9 +5069,10 @@ def test_reply_quote_is_reachable_from_the_keyboard():
 
 
 def test_deleted_text_stays_readable():
-    """A deleted message keeps its text colour; a faint wash, a start-edge bar and the meta row mark it.
+    """A deleted message keeps its text colour; a wash of the danger colour and the meta row mark it.
 
-    No ring round the whole bubble: that read as an error or a selection.
+    No ring round the whole bubble (it read as an error or a selection) and no
+    bar down its start edge (it curled into the corner and cut the tail off).
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "{ 'opacity-50': msg.is_deleted }" not in html
@@ -5031,11 +5084,50 @@ def test_deleted_text_stays_readable():
         "background-image: linear-gradient(var(--tg-deleted-wash), var(--tg-deleted-wash)), var(--tg-bubble-image, none);"
         in rule
     )
-    assert "box-shadow: inset 3px 0 0 0 rgb(var(--tg-deleted-bar)), var(--tg-bubble-shadow);" in rule
+    assert "box-shadow" not in rule
     assert "inset 0 0 0 1.5px" not in html
-    assert "--tg-deleted-bar: var(--tg-deleted-bar-in);" in html
-    assert "--tg-deleted-bar: var(--tg-deleted-bar-out);" in html
+    assert "--tg-deleted-bar" not in html
     assert ".message-meta .meta-deleted {" in html
+    # The tail takes the wash too.
+    assert (
+        "background: linear-gradient(var(--tg-deleted-wash), var(--tg-deleted-wash)), rgb(var(--tg-bubble-tail));"
+        in html
+    )
+
+
+def test_deleted_boxes_skip_the_wash():
+    """The tinted boxes in a deleted bubble paint their tint over the plain fill.
+
+    Their text pairs are measured on the plain fill; over the wash, the quote
+    colour on its tint falls under 4.5:1 in Telegram Day (see the positive
+    control in test_sender_avatars).
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    for selector, token in (
+        (".bg-tg-quote-bg", "--tg-quote-bg"),
+        (".bg-tg-preview-bg", "--tg-preview-bg"),
+        (".tg-blockquote", "--tg-blockquote-bg"),
+        (".reaction-chip", "--tg-reaction-bg"),
+    ):
+        rule = html[html.index(f".message-bubble.is-deleted {selector} {{") :]
+        rule = rule[: rule.index("}")]
+        assert f"background: linear-gradient(var({token}), var({token})), rgb(var(--tg-bubble-fill));" in rule
+
+
+def test_the_tail_takes_the_bubble_bottom_colour():
+    """iOS Night draws outgoing bubbles with a gradient; the tail takes its last stop, not the top fill."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    tail = html[html.index(".message-row.run-end > .message-bubble::after {") :]
+    tail = tail[: tail.index("}")]
+    assert "background: rgb(var(--tg-bubble-tail));" in tail
+    assert "--tg-bubble-tail: var(--tg-other);" in html
+    assert "--tg-bubble-tail: var(--tg-own-tail);" in html
+    blocks = _theme_blocks(html)
+    assert blocks["iosnight"]["--tg-own-tail"] == "28 77 184"
+    assert "#1C4DB8)" in blocks["iosnight"]["--tg-own-image"]
+    for name, tokens in blocks.items():
+        if tokens["--tg-own-image"] == "none":
+            assert tokens["--tg-own-tail"] == tokens["--tg-own"], name
 
 
 def test_a_failed_load_is_not_an_empty_chat():
@@ -5067,9 +5159,9 @@ def test_search_hits_take_the_chat_rows_peer_colour():
 
 
 def test_header_popovers_are_a_bottom_sheet_on_phones():
-    """On a phone the theme and stats menus span the screen instead of running off its edge."""
+    """On a phone the theme, stats and account menus span the screen instead of running off its edge."""
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert html.count('class="popover-sheet ') == 2
+    assert html.count('class="popover-sheet ') == 3
     sheet = html[html.index("        @media (max-width: 767px) {\n            html .popover-sheet {") :]
     sheet = sheet[: sheet.index("\n        }\n")]
     for rule in ("position: fixed;", "left: 0;", "right: 0;", "bottom: 0;", "max-height: 70vh;", "var(--sab)"):
@@ -5095,12 +5187,13 @@ def test_the_meta_row_is_twelve_pixels_with_tabular_figures():
 
 
 def test_archive_figures_use_one_icon_set_not_emoji():
-    """The stats menu, the chat header figures and the info panel's Archive section."""
+    """The stats menu and the info panel's Archive section. The chat header carries
+    no figures: it is one bar, and the panel shows them with room to read."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     for emoji in ("📊", "💬 Chats", "📬", "🖼️ Media", "💾"):
         assert emoji not in html, emoji
     assert html.count('class="stats-row"') >= 2
-    assert html.count('class="stats-inline"') == 3
+    assert "stats-inline" not in html
     # Messages, media, disk use, oldest, and the two kept-changes rows.
     assert html.count('class="info-row"') == 6
     assert 'aria-label="Archive"' in html
@@ -5226,3 +5319,111 @@ def test_search_fields_keep_16px_and_40px_on_a_phone():
         assert not {"text-sm", "text-xs"} & set(classes), f"{label}: bare small text"
         assert "h-10" in classes, label
         assert "h-9" not in classes, f"{label}: bare 36px height"
+
+
+# ---------------------------------------------------------------------------
+# Viewer redesign, phase 3 review.
+# ---------------------------------------------------------------------------
+
+
+def test_a_media_only_picture_keeps_its_top_edge():
+    """The edge block's first-child rule pulls a picture up by the bubble's top
+    padding. A media-only bubble has no padding, so that pull cut the top 6px
+    off every caption-less photo. The media-only rule must match the
+    first-child selector's weight (0,4,0) and reset the margin."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert ".message-bubble .media-block.is-edge:first-child {" in html
+    rule_start = html.index(".message-bubble.bubble-media-only .media-block,\n")
+    rule = html[rule_start : html.index("}", rule_start)]
+    assert ".message-bubble.bubble-media-only .media-block.is-edge:first-child {" in rule
+    assert "margin: 0;" in rule
+    # And it comes after the first-child rule, so equal weight resolves its way.
+    assert html.index(".message-bubble .media-block.is-edge:first-child {") < rule_start
+
+
+@unittest.skipUnless(NODE, "node is required to run the frame helpers")
+def test_only_a_drawn_picture_stands_without_a_frame():
+    """A round video with its transcript open or failed, a clip that failed to
+    load, and an animated sticker (a text label) all keep a bubble."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    result = _run_setup_program(
+        html,
+        ("const isStickerImage = (msg) =>", "const rendersAsPicture = (msg) =>"),
+        "const getDocumentDisplayName = (msg) => msg.name || '';\n"
+        "const hasTranscriptButton = (msg) => Boolean(msg.transcribable);\n"
+        "const isTranscriptExpanded = (msg) => Boolean(msg.open);\n"
+        "const transcriptStatus = (msg) => msg.status || 'idle';\n",
+        "const cases = {\n"
+        "  sticker: { media: { type: 'sticker' }, name: 'a.webp' },\n"
+        "  animatedSticker: { media: { type: 'sticker' }, name: 'a.tgs' },\n"
+        "  round: { media: { type: 'video_note' }, transcribable: true },\n"
+        "  roundOpen: { media: { type: 'video_note' }, transcribable: true, open: true },\n"
+        "  roundError: { media: { type: 'video_note' }, transcribable: true, status: 'error' },\n"
+        "  roundFailed: { media: { type: 'video_note' }, mediaLoadFailed: true },\n"
+        "  video: { media: { type: 'video' } },\n"
+        "  videoOpen: { media: { type: 'video' }, transcribable: true, open: true },\n"
+        "};\n"
+        "console.log(JSON.stringify(Object.fromEntries(Object.entries(cases).map(([k, m]) => [k, rendersAsPicture(m)]))))",
+    )
+    assert result == {
+        "sticker": True,
+        "animatedSticker": False,
+        "round": True,
+        "roundOpen": False,
+        "roundError": False,
+        "roundFailed": False,
+        "video": True,
+        "videoOpen": False,
+    }
+    only = html[html.index("const isMediaOnlyMessage = (msg, index) =>") :]
+    only = only[: only.index("\n                }\n")]
+    assert "if (!rendersAsPicture(msg)) return false" in only
+
+
+def test_an_incoming_video_keeps_its_time_off_the_transcript_button():
+    """The transcript button sits on the bottom right of an incoming video; the
+    time pill takes the bottom left, as on a round video, and a video's open
+    transcript takes the bubble's padding back inside the edge block."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    rule_start = html.index(".message-bubble.bubble-media-only.bubble-in:has(.transcript-btn--overlay) .message-meta {")
+    rule = html[rule_start : html.index("}", rule_start)]
+    assert "left: 6px;" in rule and "right: auto;" in rule
+    assert 'class="transcript-region mt-2">' in html
+    region = html[html.index(".message-bubble .media-block.is-edge .transcript-region {") :]
+    assert "padding: 0 var(--tg-bubble-pad-x);" in region[: region.index("}")]
+
+
+def test_closing_the_chat_search_returns_focus_to_its_button():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    close = html[html.index("const closeChatSearch = async () =>") :]
+    close = close[: close.index("\n                }\n")]
+    assert close.index("chatSearchOpen.value = false") < close.index("await nextTick()")
+    assert close.rstrip().endswith("chatSearchButton.value?.focus()")
+    assert 'ref="chatSearchButton"' in html
+    # Focus moving between the field and its close button keeps the bar open.
+    out = html[html.index("const onChatSearchFocusOut = (event) =>") :]
+    assert "event.currentTarget.contains(event.relatedTarget)" in out[: out.index("\n                }\n")]
+    assert '@focusout="onChatSearchFocusOut"' in html
+    # A topic switch inside a forum closes it as a chat switch does.
+    assert (
+        "watch(() => [selectedChat.value?.ref, selectedPaneTopic.value?.id], () => { chatSearchOpen.value = false })"
+        in html
+    )
+
+
+def test_pictures_open_from_the_keyboard():
+    """Photos, album tiles and gallery tiles are buttons that open the lightbox."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert '<button type="button" class="album-item media-open' in html
+    assert 'class="media-open cursor-pointer hover:opacity-90 transition"' in html
+    assert 'aria-label="Open photo" @click="openMedia(msg)"' in html
+    assert 'class="media-open aspect-square relative cursor-pointer group overflow-hidden"' in html
+    ring = html[html.index(".media-open:focus-visible::after {") :]
+    assert "inset 0 0 0 3px rgb(var(--tg-focus))" in ring[: ring.index("}")]
+
+
+def test_one_pinned_message_is_not_plural():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'View all ${pinnedMessages.length} pinned messages`"' not in html.replace(
+        "pinnedMessages.length === 1 ? 'Open pinned message' : `View all ${pinnedMessages.length} pinned messages`", ""
+    )

@@ -311,9 +311,12 @@ class TestPeerColourContrast(unittest.TestCase):
                 # The "deleted" marker in the meta row.
                 self._check(name, f"danger-fg-{side} on bubble", _triplet(tokens["--tg-danger-fg"]), bubble)
 
-    def test_a_deleted_bubble_stays_readable_and_marked(self):
-        """The deleted wash keeps every text pair at 4.5:1, and the start-edge bar
-        is a non-text mark at 3:1 against the side's washed fill."""
+    def test_a_deleted_bubble_stays_readable(self):
+        """The deleted wash keeps every text pair drawn straight on the bubble at
+        4.5:1: the text, the time, links and the poll's figures, and the red
+        "deleted" marker. The tinted boxes inside a deleted bubble are drawn over
+        the plain fill (see test_deleted_boxes_skip_the_wash), so their pairs are
+        the ones test_bubble_text_pairs_read_on_both_sides measures."""
         for name, tokens in self.palettes.items():
             wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
             for side in ("in", "out"):
@@ -321,12 +324,23 @@ class TestPeerColourContrast(unittest.TestCase):
                     washed = _over(wash, wash_alpha, fill)
                     for token in (f"--tg-text-{side}", f"--tg-meta-{side}", f"--tg-quote-{side}", "--tg-danger-fg"):
                         self._check(name, f"{token} on the deleted {side} bubble", _triplet(tokens[token]), washed)
-                    bar = _triplet(tokens[f"--tg-deleted-bar-{side}"])
-                    self._check(name, f"deleted bar on the {side} bubble", bar, washed, 3.0)
+                    # The reaction count is the side's text colour on the reaction tint.
+                    reaction = self._tinted(tokens, f"--tg-reaction-bg-{side}", fill)
+                    self._check(
+                        name, f"text-{side} on the reaction tint", _triplet(tokens[f"--tg-text-{side}"]), reaction
+                    )
 
-    def test_the_deleted_bar_check_can_fail(self):
-        # Positive control: the palette danger red on Telegram Night's outgoing blue.
-        self.assertLess(_contrast((248, 113, 113), (43, 82, 120)), 3.0)
+    def test_the_wash_would_break_a_boxed_pair(self):
+        # Positive control: Telegram Day's incoming quote colour on its quote tint
+        # passes on the plain fill and fails once the deleted wash sits under it,
+        # which is why the boxes are drawn over the plain fill.
+        tokens = self.palettes["telegram"]
+        fill = _triplet(tokens["--tg-other"])
+        quote = _triplet(tokens["--tg-quote-in"])
+        self.assertGreaterEqual(_contrast(quote, self._tinted(tokens, "--tg-quote-bg-in", fill)), 4.5)
+        wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
+        washed = _over(wash, wash_alpha, fill)
+        self.assertLess(_contrast(quote, self._tinted(tokens, "--tg-quote-bg-in", washed)), 4.5)
 
     def test_the_floating_pill_reads_over_any_content(self):
         """The floating date passes over photos and bubbles: its text is measured

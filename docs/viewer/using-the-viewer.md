@@ -26,9 +26,9 @@ Each browser remembers its own widths.
 
 ## Chat list
 
-The top of the sidebar shows folder tabs. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji or a folder icon and its chat count. The tabs only appear when the archive holds at least one folder. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram.
+The top of the sidebar shows folder tabs under the search field. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji when it has one and its chat count. The tabs only appear when the archive holds at least one folder. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram.
 
-Chats load 50 at a time. Scroll down and the next 50 load. Each row shows `ID: <id>`, the chat's Telegram id.
+Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message, then its username, what kind of chat it is and its member count, for example `group · 24 members`. The chat's Telegram id is in the info panel.
 
 When you can see more than one Telegram account, each row carries a chip with the account's label. See [Multiple accounts](../configuration/multiple-accounts.md).
 
@@ -49,7 +49,7 @@ If the archive has no full-text index yet, the message section says so. The inde
 
 You can paste a Telegram link into the field. A `t.me/c/<id>/<msg>` or `t.me/<username>/<msg>` link opens that message when the chat is in the archive. Otherwise the sidebar says "That link points at a chat this archive does not hold".
 
-Inside an open chat, the search box in the chat header searches that chat only, with the same 300 ms delay.
+Inside an open chat, the search button in the chat header opens a field that searches that chat only, with the same 300 ms delay. On a phone the field covers the header. Press <kbd>Esc</kbd> or the close button to clear it.
 
 ![Global search for "trail" with message hits in the sidebar and the chat opened at the clicked hit](../images/screenshots/search-results.png)
 
@@ -105,7 +105,7 @@ Reactions show as chips with the emoji and, when above one, the count.
 
 An edited message shows "edited" beside its time. When the archive kept earlier texts, "edited" is a button, and its tooltip says how many. Click it to open the **Edit history**. It shows the original, each edit and the current text as bubbles, oldest first, with the words each edit added marked in the quote colour and the words it removed struck through. It lists up to 100 earlier texts.
 
-A deleted message stays in place with its text in full. A faint red wash and a red bar on the bubble's edge mark it, and its time reads "deleted" with a trash icon. The info panel shows when Telegram deleted it. The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
+A deleted message stays in place with its text in full. A faint red wash marks it, and its time reads "deleted" with a red trash icon. The info panel shows when Telegram deleted it. The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
 
 ### Service messages
 
@@ -170,7 +170,7 @@ The info panel shows the open chat:
 - what the archive holds for the chat: messages, media files, disk use, the oldest message, and how many deleted and edited messages it kept
 - shortcuts into the shared media
 
-With the panel open, click a message to select it. The panel then also shows:
+With the panel open, click a message to select it. On a touch screen, or in a window under 768 px wide, tap a message's time or its "deleted" marker instead: the panel opens on that message. The panel then also shows:
 
 - sender
 - sent time
@@ -211,13 +211,13 @@ Voice and music each keep their own speed. Playback continues when you switch ch
 
 ## What changed
 
-The clock button in the sidebar header opens **What changed**. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time. A message edited more than once is one card with every text the archive kept, oldest first, and the older ones struck through. On a phone the list opens as a full-height sheet.
+The clock button in the sidebar header opens **What changed**. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time. A message edited more than once is one card with every text the archive kept, oldest first, and the older ones struck through. Click a card to open its message in the chat. An edit card also opens the message's edit history. On a phone the list opens as a full-height sheet.
 
 Deletions appear here only when the archive learns about them: the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=hard` a deleted row is removed instead of kept.
 
 ## Export a chat
 
-The **Export Chat to JSON** button in the chat header downloads the open chat as a JSON file. You can set a from date, a to date, both or neither. A to date on its own includes that whole day.
+The export button in the chat header downloads the open chat as a JSON file. On a phone it is in the info panel. You can set a from date, a to date, both or neither. A to date on its own includes that whole day.
 
 The file is named `<title>_export.json`. It holds the chat, the filters you used, the messages and their earlier versions. It holds no media files.
 
@@ -225,7 +225,7 @@ The file is named `<title>_export.json`. It holds the chat, the filters you used
 
 ## Statistics
 
-The **Stats** dropdown in the sidebar header shows the number of chats, messages and media files, the storage used and when the numbers were calculated. The dropdown appears once the numbers have been calculated for the first time.
+The statistics button (the chart icon) in the sidebar header shows the number of chats, messages and media files, the storage used and when the numbers were calculated. The dropdown appears once the numbers have been calculated for the first time.
 
 The numbers are cached. These recalculate them:
 
@@ -234,7 +234,7 @@ The numbers are cached. These recalculate them:
 - The backup, after each run.
 - The master login, on request, through `POST /api/stats/refresh`.
 
-Logins restricted to some chats see counts for their own chats only. The message, media and size figures in a chat's header are cached for 60 seconds.
+Logins restricted to some chats see counts for their own chats only. The message, media and size figures in a chat's info panel are cached for 60 seconds.
 
 `SHOW_STATS=false` hides the dropdown. The statistics API still answers.
 
@@ -243,7 +243,7 @@ Logins restricted to some chats see counts for their own chats only. The message
 
 ### Archive status
 
-The master login has an **Archive Status** button, the heart icon next to the user name at the top of the sidebar. It opens a panel with:
+The master login has **Archive Status** in the account menu, the person icon at the top of the sidebar. It opens a panel with:
 
 | Row | Shows |
 |-----|-------|
@@ -279,13 +279,13 @@ After you upgrade the viewer, reload any open tabs or app windows. An open page 
 | Key | Where | Does |
 |-----|-------|------|
 | <kbd>Esc</kbd> | search field | clears the field, then leaves it |
-| <kbd>Esc</kbd> | info panel, lightbox, Versions drawer, Jump to Date, sender details | closes it |
+| <kbd>Esc</kbd> | info panel, lightbox, Versions drawer, Jump to Date, sender details, What changed, sidebar menus | closes it |
 | <kbd>Up</kbd> <kbd>Down</kbd> | search results | moves between chats and messages |
 | <kbd>Up</kbd> <kbd>Down</kbd> | open info panel | selects the previous or next message |
 | <kbd>Left</kbd> <kbd>Right</kbd> | lightbox | previous or next item |
 | <kbd>Left</kbd> <kbd>Right</kbd> | focused resize handle | resizes the pane by 16 px |
 | <kbd>Enter</kbd> | search results | opens the highlighted result |
 | <kbd>Enter</kbd> <kbd>Space</kbd> | spoiler, round video | reveals the spoiler, toggles the sound |
-| <kbd>Tab</kbd> | Jump to Date, sender details | stays inside the dialog |
+| <kbd>Tab</kbd> | Jump to Date, sender details, Versions drawer, What changed | stays inside the dialog |
 
 There are no single-letter shortcuts such as `j` and `k`.
