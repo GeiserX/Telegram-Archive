@@ -1,0 +1,2180 @@
+/* Telegram Archive viewer: "telegram-mobile" mockup.
+   The iOS app look. A light default with Telegram's green-wallpaper chat
+   (white incoming, light green outgoing bubbles), and a dark variant from the
+   iOS night theme (black lists, blue outgoing bubbles). Mobile first.
+
+   How it is wired, for this mockup only:
+   - The bare :root (the default when no theme is chosen) becomes iOS Day.
+   - :root[data-theme="night"] becomes iOS Night.
+   - The other dark themes get the dark neutral scale back, because the
+     default block now holds a light one.
+   A real change would add these as new themes; see README.md. */
+
+/* ---------------------------------------------------------------- tokens */
+
+:root {
+    --tg-bg: 255 255 255;
+    --tg-sidebar: 255 255 255;
+    --tg-hover: 242 242 247;
+    --tg-active: 226 238 253;
+    --tg-text: 0 0 0;
+    --tg-text-dim: 60 60 67;
+    --tg-muted: 115 115 120;
+    --tg-own: 225 255 199;
+    --tg-other: 255 255 255;
+    --tg-border: 200 199 204;
+    --tg-border-strong: 174 174 178;
+    --tg-accent: 0 136 255;
+    --tg-accent-strong: 0 122 255;
+    --tg-accent-hover: 0 102 214;
+    --tg-accent-soft: 0 106 214;
+    --tg-accent-bright: 0 84 178;
+    --tg-accent-faint: 0 64 140;
+    --tg-accent-dim: 229 241 255;
+    --tg-on-accent: 255 255 255;
+    --tg-ink: 0 0 0;
+    --tg-n100: 0 0 0;
+    --tg-n200: 28 28 30;
+    --tg-n300: 60 60 67;
+    --tg-n400: 138 138 142;
+    --tg-n500: 142 142 147;
+    --tg-n600: 199 199 204;
+    --tg-n700: 229 229 234;
+    --tg-n800: 242 242 247;
+    --tg-n900: 238 238 240;
+    --tg-n950: 246 246 248;
+    --tg-name-l: 40%;
+    --tg-bubble-alpha-own: 1;
+    --tg-bubble-alpha-other: 1;
+    --tg-chip-bg: rgb(60 96 50 / 0.65);
+    --tg-service-bg: rgb(60 96 50 / 0.65);
+    --tg-service-fg: #fff;
+    --tg-pane-note-opacity: 0.8;
+
+    /* New tokens this design needs. */
+    --tgm-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+    --tgm-nav: 247 247 247;
+    --tgm-nav-alpha: 0.94;
+    --tgm-hairline: 0 0 0 / 0.16;
+    --tgm-r: 17px;
+    --tgm-r-small: 6px;
+    --tgm-bubble-shadow: 0 1px 1px rgb(0 0 0 / 0.12);
+    --tgm-own-image: none;
+    --tgm-own-tail: rgb(var(--tg-own));
+    --tgm-own-text: 0 0 0;
+    --tgm-own-accent: 30 128 40;
+    --tgm-in-accent: 0 110 220;
+    --tgm-time-in: 0 0 0 / 0.55;
+    --tgm-time-out: 0 130 8;
+    --tgm-media-time-bg: rgb(0 0 0 / 0.42);
+    --tgm-fab-bg: 255 255 255;
+    --tgm-search-fill: 118 118 128 / 0.12;
+    --tgm-wallpaper:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cg fill='none' stroke='%23000' stroke-opacity='0.07' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='28' cy='30' r='9'/%3E%3Cpath d='M120 18l6 12 13 2-9 9 2 13-12-6-12 6 2-13-9-9 13-2z'/%3E%3Cpath d='M40 120c0-8 11-8 11 0 0-8 11-8 11 0 0 9-11 15-11 15s-11-6-11-15z'/%3E%3Cpath d='M112 112l34-14-12 34-6-14z'/%3E%3Cpath d='M78 70h22M89 59v22'/%3E%3Crect x='150' y='150' width='16' height='12' rx='3'/%3E%3Cpath d='M10 160q10-12 20 0t20 0'/%3E%3C/g%3E%3C/svg%3E"),
+        radial-gradient(circle at 12% 8%, #dbddbb 0, rgb(219 221 187 / 0) 55%),
+        radial-gradient(circle at 92% 18%, #6ba587 0, rgb(107 165 135 / 0) 55%),
+        radial-gradient(circle at 8% 92%, #d5d88d 0, rgb(213 216 141 / 0) 60%),
+        radial-gradient(circle at 88% 88%, #88b884 0, rgb(136 184 132 / 0) 60%),
+        linear-gradient(#a8c79b, #a8c79b);
+
+    /* Telegram's seven peer colours: red, orange, violet, green, cyan, blue, pink. */
+    --tgm-peer-0: #d0453c;
+    --tgm-peer-1: #b35f0a;
+    --tgm-peer-2: #8a4fd6;
+    --tgm-peer-3: #2a8a26;
+    --tgm-peer-4: #16808f;
+    --tgm-peer-5: #2a7fcc;
+    --tgm-peer-6: #c4437f;
+    --tgm-avatar-0: linear-gradient(#ff885e, #ff516a);
+    --tgm-avatar-1: linear-gradient(#ffcd6a, #ffa85c);
+    --tgm-avatar-2: linear-gradient(#82b1ff, #665fff);
+    --tgm-avatar-3: linear-gradient(#a0de7e, #54cb68);
+    --tgm-avatar-4: linear-gradient(#53edd6, #28c9b7);
+    --tgm-avatar-5: linear-gradient(#72d5fd, #2a9ef1);
+    --tgm-avatar-6: linear-gradient(#e0a2f3, #d669ed);
+}
+
+/* iOS Night. */
+:root[data-theme="night"] {
+    --tg-bg: 0 0 0;
+    --tg-sidebar: 0 0 0;
+    --tg-hover: 28 28 30;
+    --tg-active: 26 44 70;
+    --tg-text: 255 255 255;
+    --tg-text-dim: 220 220 225;
+    --tg-muted: 141 142 147;
+    --tg-own: 44 108 232;
+    --tg-other: 38 38 41;
+    --tg-border: 56 56 58;
+    --tg-border-strong: 84 84 88;
+    --tg-accent: 62 136 247;
+    --tg-accent-strong: 44 116 236;
+    --tg-accent-hover: 37 96 214;
+    --tg-accent-soft: 110 174 255;
+    --tg-accent-bright: 156 200 255;
+    --tg-accent-faint: 204 227 255;
+    --tg-accent-dim: 18 38 66;
+}
+
+/* Every dark theme gets back a dark neutral scale and dark extras. */
+:root[data-theme="night"],
+:root[data-theme="amoled"],
+:root[data-theme="forest"],
+:root[data-theme="aubergine"] {
+    --tg-ink: 255 255 255;
+    --tg-n100: 242 242 247;
+    --tg-n200: 229 229 234;
+    --tg-n300: 199 199 204;
+    --tg-n400: 142 142 147;
+    --tg-n500: 110 110 115;
+    --tg-n600: 72 72 74;
+    --tg-n700: 44 44 46;
+    --tg-n800: 28 28 30;
+    --tg-n900: 28 28 30;
+    --tg-n950: 10 10 10;
+    --tg-name-l: 70%;
+    --tg-bubble-alpha-own: 1;
+    --tg-bubble-alpha-other: 1;
+    --tg-chip-bg: rgb(0 0 0 / 0.55);
+    --tg-service-bg: rgb(0 0 0 / 0.55);
+    --tg-service-fg: #fff;
+    --tg-pane-note-opacity: 0.7;
+    --tgm-nav: 22 22 23;
+    --tgm-nav-alpha: 0.92;
+    --tgm-hairline: 255 255 255 / 0.13;
+    --tgm-bubble-shadow: none;
+    --tgm-own-text: 255 255 255;
+    --tgm-own-accent: 255 255 255;
+    --tgm-in-accent: 110 174 255;
+    --tgm-time-in: 255 255 255 / 0.5;
+    --tgm-time-out: 255 255 255 / 0.8;
+    --tgm-fab-bg: 36 36 38;
+    --tgm-search-fill: 118 118 128 / 0.24;
+    --tgm-wallpaper: none;
+    --tgm-peer-0: #ff7b72;
+    --tgm-peer-1: #ffa95a;
+    --tgm-peer-2: #b98cff;
+    --tgm-peer-3: #7dd87a;
+    --tgm-peer-4: #5dd2e0;
+    --tgm-peer-5: #6dbbf5;
+    --tgm-peer-6: #ff72b0;
+}
+
+:root[data-theme="night"] {
+    /* iOS draws the outgoing bubble as a blue gradient with white text.
+       Both stops are a little deeper than iOS so white text keeps 4.5:1. */
+    --tgm-own-image: linear-gradient(rgb(50 116 236), rgb(38 98 220));
+    --tgm-own-tail: rgb(38 98 220);
+    --tgm-wallpaper:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cg fill='none' stroke='%23fff' stroke-opacity='0.05' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='28' cy='30' r='9'/%3E%3Cpath d='M120 18l6 12 13 2-9 9 2 13-12-6-12 6 2-13-9-9 13-2z'/%3E%3Cpath d='M40 120c0-8 11-8 11 0 0-8 11-8 11 0 0 9-11 15-11 15s-11-6-11-15z'/%3E%3Cpath d='M112 112l34-14-12 34-6-14z'/%3E%3Cpath d='M78 70h22M89 59v22'/%3E%3Crect x='150' y='150' width='16' height='12' rx='3'/%3E%3Cpath d='M10 160q10-12 20 0t20 0'/%3E%3C/g%3E%3C/svg%3E"),
+        radial-gradient(circle at 15% 10%, #0f1d17 0, rgb(15 29 23 / 0) 60%),
+        radial-gradient(circle at 90% 85%, #0c1624 0, rgb(12 22 36 / 0) 60%),
+        linear-gradient(#050807, #050807);
+}
+
+/* The light extras above suit Day and Paper, but not the green wallpaper. */
+:root[data-theme="day"],
+:root[data-theme="paper"] {
+    --tgm-wallpaper: none;
+    --tg-chip-bg: rgb(var(--tg-sidebar) / 0.9);
+    --tg-service-bg: rgb(0 0 0 / 0.08);
+    --tg-service-fg: rgb(var(--tg-text-dim));
+}
+
+/* ------------------------------------------------------------- base type */
+
+body,
+#app button,
+#app input,
+#app select {
+    font-family: var(--tgm-font);
+}
+
+body {
+    -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* ------------------------------------------------------------ chat list */
+
+/* Nav bar: the user name and the account actions sit in one iOS bar. */
+#app .chat-list-pane {
+    border-right: 0.5px solid rgb(var(--tgm-hairline));
+}
+
+#app .chat-list-pane > .border-b.px-3.py-1 {
+    border: 0;
+    padding: 10px 12px 2px 16px;
+    min-height: 40px;
+}
+
+#app .chat-list-pane > .border-b.px-3.py-1 > span {
+    font-size: 14px;
+    color: rgb(var(--tg-muted));
+}
+
+#app .chat-list-pane > .border-b.px-3.py-1 > button {
+    color: rgb(var(--tg-accent));
+    font-size: 17px;
+    padding: 4px 6px;
+}
+
+/* Large title block. The title gets its own row, the tool icons move up
+   into the nav bar row, and the last-backup line becomes the subtitle. */
+#app .chat-list-pane > .p-4.border-b {
+    display: flex;
+    flex-direction: column;
+    padding: 0 16px 0;
+    border: 0;
+}
+
+#app .chat-list-pane > .p-4.border-b > .justify-between {
+    order: 1;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-bottom: 0;
+}
+
+#app .chat-list-pane:has(> .border-b.px-3.py-1) > .p-4.border-b > .justify-between {
+    margin-top: -36px;
+    padding-right: 104px;
+    min-height: 36px;
+}
+
+#app .chat-list-pane > .p-4.border-b > .justify-between > .flex.items-center.gap-3 {
+    display: contents;
+}
+
+#app .chat-list-pane h1 {
+    order: 10;
+    flex: 1 0 100%;
+    font-size: 30px;
+    line-height: 38px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-top: 2px;
+    color: rgb(var(--tg-text));
+}
+
+#app .chat-list-pane > .p-4.border-b > .justify-between > .flex > button,
+#app .chat-list-pane > .p-4.border-b > .justify-between > .flex > .relative > button {
+    color: rgb(var(--tg-accent));
+    font-size: 17px;
+    padding: 4px 6px;
+    margin-left: 2px;
+}
+
+/* Stats: a text button like the iOS nav bar, no emoji. */
+#app .chat-list-pane > .p-4.border-b > .justify-between > .flex > .relative > button.text-xs {
+    font-size: 15px;
+    gap: 2px;
+}
+
+#app .chat-list-pane > .p-4.border-b > .justify-between > .flex > .relative > button.text-xs > span:first-child {
+    display: none;
+}
+
+#app .chat-list-pane > .p-4.border-b > .justify-between > .flex > .relative > button.text-xs:hover {
+    background: transparent;
+    color: rgb(var(--tg-accent-hover));
+}
+
+/* Last backup, as a quiet subtitle under the large title. */
+#app .chat-list-pane > .p-4.border-b > .text-xs.text-tg-muted {
+    order: 2;
+    font-size: 13px;
+    margin: 0 0 8px;
+}
+
+/* Search field. */
+#app .chat-list-pane > .p-4.border-b > .relative.mb-3 {
+    order: 3;
+    margin-bottom: 8px;
+}
+
+#app .chat-list-pane input[aria-label="Search chats and messages"] {
+    background: rgb(var(--tgm-search-fill));
+    border-radius: 10px;
+    height: 36px;
+    padding-top: 0;
+    padding-bottom: 0;
+    padding-left: 32px;
+    font-size: 16px;
+    color: rgb(var(--tg-text));
+}
+
+#app .chat-list-pane input[aria-label="Search chats and messages"]::placeholder {
+    color: rgb(var(--tg-muted));
+}
+
+#app .chat-list-pane input[aria-label="Search chats and messages"] + svg {
+    width: 17px;
+    height: 17px;
+    left: 9px;
+    top: 9.5px;
+    color: rgb(var(--tg-muted));
+}
+
+/* Folder tabs: iOS text tabs with an underline, not pills. */
+#app .chat-list-pane > .p-4.border-b > .flex.gap-1 {
+    order: 4;
+    gap: 18px;
+    margin: 0 -16px;
+    padding: 0 16px;
+    border-bottom: 0.5px solid rgb(var(--tgm-hairline));
+}
+
+#app .chat-list-pane > .p-4.border-b > .flex.gap-1 > button {
+    background: transparent;
+    border-radius: 0;
+    padding: 8px 0 9px;
+    font-size: 15px;
+    font-weight: 500;
+    color: rgb(var(--tg-muted));
+    position: relative;
+}
+
+#app .chat-list-pane > .p-4.border-b > .flex.gap-1 > button:hover {
+    background: transparent;
+    color: rgb(var(--tg-text));
+}
+
+#app .chat-list-pane > .p-4.border-b > .flex.gap-1 > button.bg-tg-accent-strong {
+    color: rgb(var(--tg-accent));
+}
+
+#app .chat-list-pane > .p-4.border-b > .flex.gap-1 > button.bg-tg-accent-strong::after {
+    content: "";
+    position: absolute;
+    left: -2px;
+    right: -2px;
+    bottom: 0;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+    background: rgb(var(--tg-accent));
+}
+
+#app .chat-list-pane > .p-4.border-b > .flex.gap-1 > button > span {
+    font-size: 13px;
+}
+
+/* Rows: big avatar, two lines, a hairline under the text only. */
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 {
+    padding: 0 0 0 10px;
+    gap: 11px;
+    border: 0;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .w-12.h-12 {
+    width: 60px;
+    height: 60px;
+    font-size: 22px;
+    font-weight: 600;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .w-12.h-12 > svg {
+    width: 30px;
+    height: 30px;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    row-gap: 1px;
+    align-content: center;
+    min-height: 76px;
+    padding: 8px 14px 8px 0;
+    border-bottom: 0.5px solid rgb(var(--tgm-hairline));
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 > :first-child {
+    grid-column: 1 / -1;
+    align-items: baseline;
+    gap: 8px;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 h3 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: rgb(var(--tg-text));
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 h3 + span {
+    font-size: 14px;
+    color: rgb(var(--tg-muted));
+    flex-shrink: 0;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 > p.text-sm,
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 > p.text-xs {
+    grid-column: 1;
+    font-size: 15px;
+    line-height: 20px;
+    color: rgb(var(--tg-muted));
+}
+
+/* No monospace, no blue username, no raw id. */
+#app .chat-list-pane .cursor-pointer .font-mono {
+    font-family: inherit;
+    color: inherit;
+}
+
+#app .chat-list-pane .cursor-pointer .text-tg-accent-soft\/70 {
+    color: inherit;
+}
+
+#app .chat-list-pane .cursor-pointer .text-xs.font-mono.ml-1 {
+    display: none;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 > p.mt-1 {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+}
+
+/* Archived row: a grey circle like iOS, text in the normal colour. */
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .w-12.h-12.rounded-full.bg-tg-accent-strong\/30 {
+    background: linear-gradient(#b8bec6, #9aa2ac);
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .w-12.h-12.rounded-full.bg-tg-accent-strong\/30 svg {
+    color: #fff;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 h3.text-tg-accent-soft {
+    color: rgb(var(--tg-text));
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > svg {
+    display: none;
+}
+
+#app .chat-list-pane .cursor-pointer.bg-tg-active {
+    background: rgb(var(--tg-active));
+}
+
+#app .chat-list-pane .cursor-pointer.bg-tg-active > .flex-1.min-w-0 {
+    border-bottom-color: transparent;
+}
+
+/* Search results: the snippet is the preview line. */
+#app .chat-list-pane [role="presentation"].uppercase {
+    font-size: 13px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    background: rgb(var(--tg-n800));
+    padding: 6px 16px;
+    border: 0;
+}
+
+#app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 > p.line-clamp-2 {
+    grid-column: 1 / -1;
+}
+
+#app .chat-list-pane mark,
+#app .chat-list-pane .cursor-pointer .bg-tg-accent\/30 {
+    color: rgb(var(--tg-accent-soft));
+}
+
+/* Placeholder avatars: the iOS blue gradient, white initials. */
+#app .bg-gradient-to-br.from-blue-500.to-purple-600 {
+    background-image: linear-gradient(#72d5fd, #2a9ef1);
+    color: #fff;
+}
+
+.account-chip {
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 18px;
+    padding: 0 7px;
+}
+
+/* ------------------------------------------------------------ chat pane */
+
+/* The wallpaper sits on the whole pane, so the empty state has it too. */
+#app .chat-list-pane ~ .flex-1.flex-col {
+    background-color: rgb(var(--tg-bg));
+    background-image: var(--tgm-wallpaper);
+    background-size: 180px 180px, cover, cover, cover, cover, cover;
+    background-repeat: repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+}
+
+:root[data-theme="night"] #app .chat-list-pane ~ .flex-1.flex-col {
+    background-size: 180px 180px, cover, cover, cover;
+    background-repeat: repeat, no-repeat, no-repeat, no-repeat;
+}
+
+#app .messages-scroll {
+    position: relative;
+    background: transparent;
+    padding: 8px 8px 12px;
+}
+
+/* Chat header: a translucent iOS nav bar with a hairline. */
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 {
+    position: relative;
+    background: rgb(var(--tgm-nav) / var(--tgm-nav-alpha));
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 0.5px solid rgb(var(--tgm-hairline));
+    box-shadow: none;
+    min-height: 56px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 h2 {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 22px;
+}
+
+/* Title column: name on top, type and account chips on one line under it. */
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 6px;
+    max-width: none;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] > h2 {
+    flex: 1 0 100%;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] > p {
+    font-size: 13px;
+    line-height: 18px;
+    margin: 0;
+    color: rgb(var(--tg-muted));
+}
+
+/* The emoji stats strip moves to the info panel in the real change. */
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .bg-tg-n800\/50 {
+    display: none;
+}
+
+/* Header icons in the accent colour, like iOS bar buttons. */
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 button.tap-target {
+    color: rgb(var(--tg-accent));
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 button.tap-target.bg-tg-n700 {
+    background: rgb(var(--tg-accent) / 0.12);
+}
+
+/* In-chat search collapses to an icon and opens on focus. */
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28 {
+    width: 40px;
+    height: 36px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28 > input {
+    height: 36px;
+    background: transparent;
+    padding: 0 0 0 36px;
+    color: transparent;
+    cursor: pointer;
+    border-radius: 10px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28 > input::placeholder {
+    color: transparent;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28 > svg {
+    width: 20px;
+    height: 20px;
+    left: 10px;
+    top: 8px;
+    color: rgb(var(--tg-accent));
+    pointer-events: none;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28:focus-within {
+    position: absolute;
+    z-index: 5;
+    left: 8px;
+    right: 8px;
+    width: auto;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28:focus-within > input {
+    background: rgb(var(--tgm-search-fill));
+    color: rgb(var(--tg-text));
+    cursor: text;
+}
+
+#app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28:focus-within > input::placeholder {
+    color: rgb(var(--tg-muted));
+}
+
+/* Pinned bar: nav colour, a thin accent line instead of the pin icon. */
+#app .chat-list-pane ~ .flex-1 > .backdrop-blur-sm.border-b {
+    background: rgb(var(--tgm-nav) / var(--tgm-nav-alpha));
+    border-bottom: 0.5px solid rgb(var(--tgm-hairline));
+    padding: 6px 12px 6px 14px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .backdrop-blur-sm.border-b > .text-tg-accent-soft:first-child {
+    width: 2px;
+    align-self: stretch;
+    border-radius: 2px;
+    background: rgb(var(--tg-accent));
+    margin: 2px 0;
+}
+
+#app .chat-list-pane ~ .flex-1 > .backdrop-blur-sm.border-b > .text-tg-accent-soft:first-child > svg {
+    display: none;
+}
+
+#app .chat-list-pane ~ .flex-1 > .backdrop-blur-sm.border-b .text-xs.text-tg-accent-soft {
+    font-size: 13px;
+    color: rgb(var(--tg-accent));
+}
+
+#app .chat-list-pane ~ .flex-1 > .backdrop-blur-sm.border-b .text-sm.text-tg-n300 {
+    font-size: 14px;
+    color: rgb(var(--tg-text));
+}
+
+/* --------------------------------------------------------------- bubbles */
+
+#app .message-row .message-bubble {
+    position: relative;
+    padding: 6px 10px 6px 11px;
+    font-size: 15px;
+    line-height: 20px;
+    border-radius: var(--tgm-r);
+    box-shadow: var(--tgm-bubble-shadow);
+    color: rgb(var(--tg-text));
+}
+
+#app .message-row.justify-end .message-bubble {
+    color: rgb(var(--tgm-own-text));
+    background-image: var(--tgm-own-image);
+}
+
+/* Grouping. The row above continues into this one: join the top corner on
+   the sender side. This row continues into the one below: join the bottom
+   corner. The last bubble of a run carries the tail instead. */
+#app .message-row.justify-start:has(+ .message-row > .message-bubble:not(.bubble-in):not(.bubble-out)) > .message-bubble {
+    border-top-left-radius: var(--tgm-r-small);
+}
+
+#app .message-row.justify-end:has(+ .message-row > .message-bubble:not(.bubble-in):not(.bubble-out)) > .message-bubble {
+    border-top-right-radius: var(--tgm-r-small);
+}
+
+#app .message-row.justify-start > .message-bubble:not(.bubble-in):not(.bubble-out) {
+    border-bottom-left-radius: var(--tgm-r-small);
+}
+
+#app .message-row.justify-end > .message-bubble:not(.bubble-in):not(.bubble-out) {
+    border-bottom-right-radius: var(--tgm-r-small);
+}
+
+#app .message-row .message-bubble.bubble-in {
+    border-bottom-left-radius: 0;
+}
+
+#app .message-row .message-bubble.bubble-out {
+    border-bottom-right-radius: 0;
+}
+
+.message-run-continue {
+    margin-bottom: 2px;
+}
+
+.message-run-break {
+    margin-bottom: 8px;
+}
+
+/* The tail: an iOS-style curve, filled with the bubble's own colour. */
+#app .message-row .message-bubble.bubble-in::before,
+#app .message-row .message-bubble.bubble-out::before {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    width: 9px;
+    height: 17px;
+    background: inherit;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 17'%3E%3Cpath d='M3 17h6V0c-.193 2.84-.876 5.767-2.05 8.782-.904 2.325-2.446 4.485-4.625 6.48A1 1 0 003 17z'/%3E%3C/svg%3E") no-repeat center / 100% 100%;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 17'%3E%3Cpath d='M3 17h6V0c-.193 2.84-.876 5.767-2.05 8.782-.904 2.325-2.446 4.485-4.625 6.48A1 1 0 003 17z'/%3E%3C/svg%3E") no-repeat center / 100% 100%;
+    pointer-events: none;
+}
+
+#app .message-row .message-bubble.bubble-in::before {
+    left: -8.5px;
+}
+
+#app .message-row .message-bubble.bubble-out::before {
+    right: -8.5px;
+    transform: scaleX(-1);
+    background: var(--tgm-own-tail);
+}
+
+/* Leave room for the tail on the sender side. */
+#app .message-row.justify-start {
+    padding-left: 8px;
+}
+
+#app .message-row.justify-end {
+    padding-right: 8px;
+}
+
+/* One avatar per run, pinned beside the tail on the run's last bubble.
+   The avatar is rendered on the first bubble, so it is placed with anchor
+   positioning on the gutter of the run's last row. The real fix is to
+   render it there (see README). */
+#app .message-row > .w-8 {
+    width: 34px;
+}
+
+/* The run's last row: its gutter becomes an absolutely placed anchor at the
+   same spot. An absolutely placed anchor only counts for elements after it
+   in the document, and the rows are in newest-first order, so the avatar of
+   the run's first row finds this run's last row and no other. */
+#app .message-row:has(> .message-bubble.bubble-in) > .w-8 {
+    position: absolute;
+    height: 34px;
+    anchor-name: --tgm-run-end;
+}
+
+#app .message-row:has(> .message-bubble.bubble-in) > .w-8 + .message-bubble {
+    margin-left: 42px;
+}
+
+#app .message-row > .w-8 > button {
+    width: 34px;
+    height: 34px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+}
+
+#app .message-row:not(:has(> .message-bubble.bubble-in)) > .w-8 > button {
+    position: absolute;
+    position-anchor: --tgm-run-end;
+    left: anchor(left);
+    bottom: anchor(bottom);
+}
+
+/* Sender name. */
+#app .message-bubble > .flex.items-baseline.mb-1 {
+    margin-bottom: 1px;
+}
+
+#app .message-bubble > .flex.items-baseline.mb-1 > span.font-bold {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 18px;
+}
+
+/* Time, inline at the end of the last line. The text reserves room for it,
+   and the time is pulled up into that room. */
+#app .message-row .message-bubble > div:last-child {
+    font-size: 11px;
+    line-height: 14px;
+    height: 14px;
+    opacity: 1;
+    margin-top: 2px;
+    margin-right: -2px;
+    color: rgb(var(--tgm-time-in));
+    font-variant-numeric: tabular-nums;
+    gap: 3px;
+}
+
+#app .message-row.justify-end .message-bubble > div:last-child {
+    color: rgb(var(--tgm-time-out));
+}
+
+#app .message-row .message-bubble > .message-text:not(:empty):has(+ div:last-child)::after {
+    content: "";
+    display: inline-block;
+    width: 38px;
+    height: 1px;
+}
+
+#app .message-row .message-bubble:has(> div:last-child .order-2, > div:last-child .order-1) > .message-text:not(:empty):has(+ div:last-child)::after {
+    width: 96px;
+}
+
+#app .message-row .message-bubble > .message-text:not(:empty) + div:last-child {
+    margin-top: -15px;
+}
+
+/* Reactions share a row with the time. */
+#app .message-bubble > .mt-2.flex.flex-wrap {
+    margin-top: 5px;
+    padding-right: 42px;
+    gap: 4px;
+}
+
+#app .message-bubble:has(> div:last-child .order-2, > div:last-child .order-1) > .mt-2.flex.flex-wrap {
+    padding-right: 100px;
+}
+
+#app .message-bubble > .mt-2.flex.flex-wrap + div:last-child {
+    margin-top: -16px;
+    margin-bottom: 3px;
+}
+
+#app .message-bubble > .mt-2.flex.flex-wrap > div {
+    padding: 2px 8px 2px 6px;
+    background: rgb(var(--tgm-in-accent) / 0.12);
+    color: rgb(var(--tgm-in-accent));
+}
+
+#app .message-row.justify-end .message-bubble > .mt-2.flex.flex-wrap > div {
+    background: rgb(var(--tgm-own-accent) / 0.16);
+    color: rgb(var(--tgm-own-accent));
+}
+
+#app .message-bubble > .mt-2.flex.flex-wrap > div > span:last-child {
+    opacity: 1;
+    font-weight: 600;
+}
+
+/* Media: edge to edge, corners follow the bubble. */
+#app .message-bubble > .mb-2.space-y-1:has(.album-grid, img.max-h-64) {
+    margin: 0 -11px 6px -12px;
+    overflow: hidden;
+}
+
+/* The pending-download box renders empty once the file exists. */
+#app .message-bubble > .mb-2.space-y-1:empty {
+    display: none;
+}
+
+#app .message-bubble > .mb-2.space-y-1:empty:first-child + .mb-2.space-y-1:has(.album-grid, img.max-h-64),
+#app .message-bubble > .mb-2.space-y-1:has(.album-grid, img.max-h-64):first-child {
+    margin-top: -6px;
+    border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
+}
+
+#app .message-bubble:has(> .message-text:empty) > .mb-2.space-y-1:has(.album-grid, img.max-h-64) {
+    margin-bottom: -6px;
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: inherit;
+}
+
+#app .message-bubble:has(> .message-text:empty) > .mb-2.space-y-1:has(.album-grid, img.max-h-64) ~ div:last-child {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    height: 18px;
+    line-height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: var(--tgm-media-time-bg);
+    color: #fff;
+    margin: 0;
+}
+
+#app .message-bubble .album-grid {
+    max-width: none;
+}
+
+#app .message-bubble .album-grid .grid {
+    gap: 2px;
+    border-radius: 0;
+}
+
+#app .message-bubble .album-item {
+    border-radius: 0;
+    max-height: 220px;
+}
+
+#app .message-bubble img.max-h-64 {
+    border-radius: 0;
+    max-height: 320px;
+    display: block;
+}
+
+#app .message-bubble:has(.album-grid, img.max-h-64) {
+    min-width: 240px;
+}
+
+@media (min-width: 768px) {
+    #app .message-bubble:has(.album-grid) {
+        width: 400px;
+    }
+}
+
+/* Reply quote: a tinted block with a bar, in the side's accent colour. */
+#app .message-bubble > .border-l-2.border-tg-accent-soft\/50 {
+    border-left: 3px solid rgb(var(--tgm-in-accent));
+    background: rgb(var(--tgm-in-accent) / 0.1);
+    border-radius: 5px;
+    padding: 3px 8px 4px 7px;
+    margin: 2px 0 5px;
+    font-size: 14px;
+    line-height: 18px;
+}
+
+#app .message-bubble > .border-l-2.border-tg-accent-soft\/50:hover {
+    background: rgb(var(--tgm-in-accent) / 0.16);
+}
+
+#app .message-bubble > .border-l-2.border-tg-accent-soft\/50 > .font-semibold {
+    color: rgb(var(--tgm-in-accent));
+    margin-bottom: 0;
+}
+
+#app .message-bubble > .border-l-2.border-tg-accent-soft\/50 > .opacity-70 {
+    opacity: 1;
+    color: rgb(var(--tg-text));
+}
+
+#app .message-row.justify-end .message-bubble > .border-l-2.border-tg-accent-soft\/50 {
+    border-left-color: rgb(var(--tgm-own-accent));
+    background: rgb(var(--tgm-own-accent) / 0.14);
+}
+
+#app .message-row.justify-end .message-bubble > .border-l-2.border-tg-accent-soft\/50 > .font-semibold {
+    color: rgb(var(--tgm-own-accent));
+}
+
+#app .message-row.justify-end .message-bubble > .border-l-2.border-tg-accent-soft\/50 > .opacity-70 {
+    color: rgb(var(--tgm-own-text));
+}
+
+/* Forward header: two plain lines, no box. */
+#app .message-bubble > .border-l-2.border-green-400\/50 {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    margin: 0 0 4px;
+    font-size: 14px;
+    line-height: 18px;
+    color: rgb(var(--tgm-in-accent));
+}
+
+#app .message-bubble > .border-l-2.border-green-400\/50 > .font-semibold {
+    color: inherit;
+    font-weight: 400;
+    margin: 0;
+}
+
+#app .message-bubble > .border-l-2.border-green-400\/50 > .truncate {
+    opacity: 1;
+    font-weight: 600;
+}
+
+#app .message-row.justify-end .message-bubble > .border-l-2.border-green-400\/50 {
+    color: rgb(var(--tgm-own-accent));
+}
+
+/* Poll: drawn straight on the bubble. */
+#app .message-bubble > .max-w-sm.bg-black\/20 {
+    background: transparent;
+    padding: 2px 0 0;
+    margin-bottom: 4px;
+    min-width: 240px;
+}
+
+#app .message-bubble > .max-w-sm.bg-black\/20 .border-tg-ink\/10 {
+    border: 0;
+    background: rgb(var(--tg-ink) / 0.05);
+    border-radius: 8px;
+}
+
+#app .message-bubble > .max-w-sm.bg-black\/20 .bg-tg-accent\/30 {
+    background: rgb(var(--tgm-in-accent) / 0.2);
+}
+
+#app .message-bubble > .max-w-sm.bg-black\/20 > .mt-3 {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-size: 13px;
+    opacity: 1;
+    color: rgb(var(--tg-muted));
+}
+
+/* Other boxes that used a fixed black overlay. */
+#app .message-bubble > .inline-flex.bg-black\/20,
+#app .message-bubble > .bg-black\/10 {
+    background: rgb(var(--tgm-in-accent) / 0.08);
+}
+
+#app .message-bubble > .bg-black\/10 {
+    border-left: 3px solid rgb(var(--tgm-in-accent));
+    border-radius: 5px;
+}
+
+.tg-code,
+.tg-pre {
+    background: rgb(var(--tg-ink) / 0.07);
+}
+
+.tg-blockquote {
+    background: rgb(var(--tgm-in-accent) / 0.1);
+    border-left-color: rgb(var(--tgm-in-accent));
+}
+
+#app .message-row .message-text a,
+#app .message-row .tg-mention {
+    color: rgb(var(--tgm-in-accent));
+}
+
+#app .message-row.justify-end .message-text a,
+#app .message-row.justify-end .tg-mention {
+    color: rgb(var(--tgm-own-accent));
+}
+
+/* Voice: play button, waveform and duration straight on the bubble. */
+#app .message-bubble .max-w-md.bg-gradient-to-r {
+    background: transparent;
+    box-shadow: none;
+    padding: 2px 0 0;
+    min-width: 230px;
+}
+
+#app .message-bubble .max-w-md.bg-gradient-to-r button.w-10 {
+    width: 44px;
+    height: 44px;
+    background: rgb(var(--tgm-in-accent));
+    color: #fff;
+}
+
+#app .message-row.justify-end .message-bubble .max-w-md.bg-gradient-to-r button.w-10 {
+    background: rgb(var(--tgm-own-accent));
+    color: rgb(var(--tg-own));
+}
+
+:root[data-theme="night"] #app .message-row.justify-end .message-bubble .max-w-md.bg-gradient-to-r button.w-10 {
+    color: rgb(38 98 220);
+}
+
+/* Voice notes (.ogg) get a waveform in place of the file name. The bars
+   here are a fixed picture; the real one would come from the waveform
+   Telegram stores with every voice note. */
+#app .message-bubble .max-w-md.bg-gradient-to-r > .flex:has(a[download$=".ogg"], a[download$=".oga"], a[download$=".opus"]) .min-w-0.flex-1 > div:first-child {
+    width: 158px;
+    max-width: 100%;
+    height: 20px;
+    background: rgb(var(--tgm-in-accent) / 0.55);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 158 20'%3E%3Crect x='0' y='17' width='2' height='3' rx='1'/%3E%3Crect x='4' y='15' width='2' height='5' rx='1'/%3E%3Crect x='8' y='12' width='2' height='8' rx='1'/%3E%3Crect x='12' y='14' width='2' height='6' rx='1'/%3E%3Crect x='16' y='10' width='2' height='10' rx='1'/%3E%3Crect x='20' y='6' width='2' height='14' rx='1'/%3E%3Crect x='24' y='11' width='2' height='9' rx='1'/%3E%3Crect x='28' y='8' width='2' height='12' rx='1'/%3E%3Crect x='32' y='4' width='2' height='16' rx='1'/%3E%3Crect x='36' y='9' width='2' height='11' rx='1'/%3E%3Crect x='40' y='13' width='2' height='7' rx='1'/%3E%3Crect x='44' y='7' width='2' height='13' rx='1'/%3E%3Crect x='48' y='2' width='2' height='18' rx='1'/%3E%3Crect x='52' y='5' width='2' height='15' rx='1'/%3E%3Crect x='56' y='10' width='2' height='10' rx='1'/%3E%3Crect x='60' y='12' width='2' height='8' rx='1'/%3E%3Crect x='64' y='8' width='2' height='12' rx='1'/%3E%3Crect x='68' y='3' width='2' height='17' rx='1'/%3E%3Crect x='72' y='6' width='2' height='14' rx='1'/%3E%3Crect x='76' y='11' width='2' height='9' rx='1'/%3E%3Crect x='80' y='14' width='2' height='6' rx='1'/%3E%3Crect x='84' y='9' width='2' height='11' rx='1'/%3E%3Crect x='88' y='5' width='2' height='15' rx='1'/%3E%3Crect x='92' y='8' width='2' height='12' rx='1'/%3E%3Crect x='96' y='12' width='2' height='8' rx='1'/%3E%3Crect x='100' y='10' width='2' height='10' rx='1'/%3E%3Crect x='104' y='7' width='2' height='13' rx='1'/%3E%3Crect x='108' y='11' width='2' height='9' rx='1'/%3E%3Crect x='112' y='14' width='2' height='6' rx='1'/%3E%3Crect x='116' y='12' width='2' height='8' rx='1'/%3E%3Crect x='120' y='9' width='2' height='11' rx='1'/%3E%3Crect x='124' y='13' width='2' height='7' rx='1'/%3E%3Crect x='128' y='15' width='2' height='5' rx='1'/%3E%3Crect x='132' y='11' width='2' height='9' rx='1'/%3E%3Crect x='136' y='14' width='2' height='6' rx='1'/%3E%3Crect x='140' y='16' width='2' height='4' rx='1'/%3E%3Crect x='144' y='13' width='2' height='7' rx='1'/%3E%3Crect x='148' y='15' width='2' height='5' rx='1'/%3E%3Crect x='152' y='17' width='2' height='3' rx='1'/%3E%3Crect x='156' y='16' width='2' height='4' rx='1'/%3E%3C/svg%3E") no-repeat 0 0 / 158px 20px;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 158 20'%3E%3Crect x='0' y='17' width='2' height='3' rx='1'/%3E%3Crect x='4' y='15' width='2' height='5' rx='1'/%3E%3Crect x='8' y='12' width='2' height='8' rx='1'/%3E%3Crect x='12' y='14' width='2' height='6' rx='1'/%3E%3Crect x='16' y='10' width='2' height='10' rx='1'/%3E%3Crect x='20' y='6' width='2' height='14' rx='1'/%3E%3Crect x='24' y='11' width='2' height='9' rx='1'/%3E%3Crect x='28' y='8' width='2' height='12' rx='1'/%3E%3Crect x='32' y='4' width='2' height='16' rx='1'/%3E%3Crect x='36' y='9' width='2' height='11' rx='1'/%3E%3Crect x='40' y='13' width='2' height='7' rx='1'/%3E%3Crect x='44' y='7' width='2' height='13' rx='1'/%3E%3Crect x='48' y='2' width='2' height='18' rx='1'/%3E%3Crect x='52' y='5' width='2' height='15' rx='1'/%3E%3Crect x='56' y='10' width='2' height='10' rx='1'/%3E%3Crect x='60' y='12' width='2' height='8' rx='1'/%3E%3Crect x='64' y='8' width='2' height='12' rx='1'/%3E%3Crect x='68' y='3' width='2' height='17' rx='1'/%3E%3Crect x='72' y='6' width='2' height='14' rx='1'/%3E%3Crect x='76' y='11' width='2' height='9' rx='1'/%3E%3Crect x='80' y='14' width='2' height='6' rx='1'/%3E%3Crect x='84' y='9' width='2' height='11' rx='1'/%3E%3Crect x='88' y='5' width='2' height='15' rx='1'/%3E%3Crect x='92' y='8' width='2' height='12' rx='1'/%3E%3Crect x='96' y='12' width='2' height='8' rx='1'/%3E%3Crect x='100' y='10' width='2' height='10' rx='1'/%3E%3Crect x='104' y='7' width='2' height='13' rx='1'/%3E%3Crect x='108' y='11' width='2' height='9' rx='1'/%3E%3Crect x='112' y='14' width='2' height='6' rx='1'/%3E%3Crect x='116' y='12' width='2' height='8' rx='1'/%3E%3Crect x='120' y='9' width='2' height='11' rx='1'/%3E%3Crect x='124' y='13' width='2' height='7' rx='1'/%3E%3Crect x='128' y='15' width='2' height='5' rx='1'/%3E%3Crect x='132' y='11' width='2' height='9' rx='1'/%3E%3Crect x='136' y='14' width='2' height='6' rx='1'/%3E%3Crect x='140' y='16' width='2' height='4' rx='1'/%3E%3Crect x='144' y='13' width='2' height='7' rx='1'/%3E%3Crect x='148' y='15' width='2' height='5' rx='1'/%3E%3Crect x='152' y='17' width='2' height='3' rx='1'/%3E%3Crect x='156' y='16' width='2' height='4' rx='1'/%3E%3C/svg%3E") no-repeat 0 0 / 158px 20px;
+}
+
+#app .message-row.justify-end .message-bubble .max-w-md.bg-gradient-to-r > .flex:has(a[download$=".ogg"], a[download$=".oga"], a[download$=".opus"]) .min-w-0.flex-1 > div:first-child {
+    background: rgb(var(--tgm-own-accent) / 0.6);
+}
+
+#app .message-bubble .max-w-md.bg-gradient-to-r > .flex:has(a[download$=".ogg"], a[download$=".oga"], a[download$=".opus"]) .min-w-0.flex-1 > div:first-child > * {
+    visibility: hidden;
+}
+
+#app .message-bubble .max-w-md.bg-gradient-to-r .min-w-0.flex-1 > div:first-child > span.shrink-0 {
+    display: none;
+}
+
+#app .message-bubble .max-w-md.bg-gradient-to-r .text-\[11px\] {
+    font-size: 12px;
+    color: rgb(var(--tgm-time-in));
+    margin-top: 3px;
+}
+
+#app .message-row.justify-end .message-bubble .max-w-md.bg-gradient-to-r .text-\[11px\] {
+    color: rgb(var(--tgm-time-out));
+}
+
+#app .message-bubble .max-w-md.bg-gradient-to-r .bubble-icon-action,
+#app .message-bubble .transcript-btn {
+    color: rgb(var(--tgm-in-accent));
+}
+
+#app .message-bubble .transcript-btn {
+    background: rgb(var(--tgm-in-accent) / 0.12);
+    border-radius: 8px;
+}
+
+#app .message-row.justify-end .message-bubble .max-w-md.bg-gradient-to-r .bubble-icon-action,
+#app .message-row.justify-end .message-bubble .transcript-btn {
+    color: rgb(var(--tgm-own-accent));
+}
+
+#app .message-bubble .transcript-text {
+    font-size: 15px;
+    line-height: 20px;
+    color: rgb(var(--tg-text));
+}
+
+#app .message-bubble [id^="transcript-"] .text-\[11px\] {
+    color: rgb(var(--tg-muted));
+}
+
+/* Account chip inside a bubble takes the side's colour. */
+#app .message-row .message-bubble .account-chip {
+    color: rgb(var(--tgm-in-accent));
+    background: rgb(var(--tgm-in-accent) / 0.12);
+}
+
+#app .message-row.justify-end .message-bubble .account-chip {
+    color: rgb(var(--tgm-own-accent));
+    background: rgb(var(--tgm-own-accent) / 0.16);
+}
+
+/* ------------------------------------------------ pills, service, buttons */
+
+.date-separator {
+    margin: 8px 0 8px;
+}
+
+.floating-date-pill {
+    top: 8px;
+}
+
+.floating-date-pill button,
+.date-separator button {
+    color: var(--tg-service-fg);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 12px;
+    box-shadow: none;
+    background-color: var(--tg-service-bg);
+}
+
+.date-separator button:hover {
+    background-color: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+    filter: brightness(0.95);
+}
+
+#app .service-message {
+    font-size: 13px;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 12px;
+}
+
+.scroll-to-bottom-btn {
+    background: rgb(var(--tgm-fab-bg));
+    border: 0;
+    color: rgb(var(--tg-muted));
+    box-shadow: 0 1px 6px rgb(0 0 0 / 0.18);
+    width: 40px;
+    height: 40px;
+    right: 12px;
+    bottom: 14px;
+}
+
+.scroll-to-bottom-btn:hover {
+    background: rgb(var(--tgm-fab-bg));
+}
+
+.loading-spinner {
+    border-color: rgb(var(--tg-ink) / 0.12);
+    border-top-color: rgb(var(--tg-accent));
+}
+
+/* ------------------------------------------------------------ desktop */
+
+@media (min-width: 768px) {
+    #app .chat-list-pane h1 {
+        font-size: 24px;
+        line-height: 30px;
+    }
+
+    #app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .w-12.h-12 {
+        width: 54px;
+        height: 54px;
+        font-size: 20px;
+    }
+
+    #app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 {
+        min-height: 72px;
+    }
+
+    #app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 h3 {
+        font-size: 15px;
+    }
+
+    #app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 > .flex-1.min-w-0 > p.text-sm {
+        font-size: 14px;
+    }
+
+    #app .chat-list-pane .cursor-pointer.flex.items-center.gap-3 h3 + span {
+        font-size: 13px;
+    }
+
+    /* A centred reading column, as Telegram Web does on wide windows. */
+    #app .messages-scroll > * {
+        width: 100%;
+        max-width: 760px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    #app .message-row .message-bubble {
+        max-width: min(78%, 520px);
+    }
+}
+
+/* -------------------------------------------------------------- mobile */
+
+@media (max-width: 767px) {
+    #app .chat-list-pane {
+        border-right: 0;
+    }
+
+    #app .message-row .message-bubble {
+        font-size: 16px;
+        line-height: 21px;
+        max-width: 82%;
+    }
+
+    #app .message-row .message-text {
+        line-height: 21px;
+    }
+
+    /* Header: back chevron, title, three icons, and the chat photo on the
+       right, as the iOS app does. Export and the transcript toggle move to
+       the info page in the real change. */
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 {
+        padding-left: 4px;
+        padding-right: 52px;
+        min-height: 52px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .flex-1 > button.tap-target {
+        color: rgb(var(--tg-accent));
+        margin-left: 0;
+        min-width: 36px;
+        padding: 4px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .flex-1 > button.tap-target svg {
+        width: 26px;
+        height: 26px;
+        stroke-width: 2.4;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .flex-1 > .w-10.h-10 {
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        margin-top: -19px;
+        width: 38px;
+        height: 38px;
+        min-width: 38px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .flex-1 {
+        gap: 2px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .shrink-0 {
+        gap: 0;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .shrink-0 > button.tap-target {
+        min-width: 38px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .shrink-0 > button[title="Export Chat to JSON"],
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .shrink-0 > button[aria-pressed] {
+        display: none;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28 {
+        width: 38px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 > .shrink-0 svg {
+        width: 22px;
+        height: 22px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28 > svg {
+        left: 8px;
+    }
+
+    #app .chat-list-pane ~ .flex-1 > .shadow-md.z-10 .relative.w-28:focus-within {
+        right: 52px;
+    }
+}
+
+/* ------------------------------------------------------ gallery, empty */
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 {
+    background: rgb(var(--tg-sidebar));
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > .border-b {
+    border-bottom: 0.5px solid rgb(var(--tgm-hairline));
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :first-child button {
+    color: rgb(var(--tg-accent));
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :first-child h3 {
+    font-size: 17px;
+    font-weight: 600;
+}
+
+/* Gallery tabs: one iOS segmented control. */
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :nth-child(2) {
+    gap: 0;
+    padding: 8px 16px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :nth-child(2) > button {
+    flex: 1;
+    background: rgb(var(--tgm-search-fill));
+    color: rgb(var(--tg-text));
+    border-radius: 0;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 8px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :nth-child(2) > button:first-child {
+    border-radius: 9px 0 0 9px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :nth-child(2) > button:last-child {
+    border-radius: 0 9px 9px 0;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > :nth-child(2) > button.bg-tg-accent-strong {
+    background: rgb(var(--tg-accent));
+    color: #fff;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 > .flex-1.overflow-y-auto {
+    padding: 2px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 .grid.gap-1 {
+    gap: 2px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex.flex-col.h-full.flex-1.min-h-0 .grid.gap-1 > .rounded {
+    border-radius: 0;
+}
+
+/* Empty pane: the hint sits in a service pill on the wallpaper. */
+#app .chat-list-pane ~ .flex-1 > .flex-1.flex.items-center.justify-center > p {
+    background: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 14px;
+}
+
+#app .chat-list-pane ~ .flex-1 > .flex-1.flex.items-center.justify-center > .bg-tg-sidebar {
+    background: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+}
+
+/* --------------------------------------------------- stickers, files */
+
+/* Stickers stand free on the wallpaper, as in the apps. */
+#app .message-row .message-bubble:has(.max-w-\[200px\] > img):has(> .message-text:empty) {
+    background: transparent !important;
+    box-shadow: none;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+#app .message-row .message-bubble:has(.max-w-\[200px\] > img):has(> .message-text:empty)::before {
+    display: none;
+}
+
+#app .message-row .message-bubble:has(.max-w-\[200px\] > img):has(> .message-text:empty) > .flex.items-baseline.mb-1 {
+    display: inline-flex;
+    padding: 2px 8px;
+    margin-bottom: 4px;
+    border-radius: 10px;
+    background: rgb(var(--tg-other));
+}
+
+#app .message-row .message-bubble:has(.max-w-\[200px\] > img):has(> .message-text:empty) > div:last-child {
+    position: absolute;
+    right: 4px;
+    bottom: 8px;
+    height: 18px;
+    line-height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: var(--tgm-media-time-bg);
+    color: #fff;
+    margin: 0;
+}
+
+/* Every other box that used a fixed black overlay. */
+#app .message-bubble :where(.bg-black\/20:not(.absolute)) {
+    background: rgb(var(--tgm-in-accent) / 0.08);
+}
+
+#app .message-row.justify-end .message-bubble :where(.bg-black\/20:not(.absolute)) {
+    background: rgb(var(--tgm-own-accent) / 0.12);
+}
+
+/* ---- Peer colours (generated). Stand-in for colour = sender id mod 7. ---- */
+#app .message-bubble span[style*="hsl(6,"],
+#app .message-bubble span[style*="hsl(13,"],
+#app .message-bubble span[style*="hsl(20,"],
+#app .message-bubble span[style*="hsl(27,"],
+#app .message-bubble span[style*="hsl(34,"],
+#app .message-bubble span[style*="hsl(41,"],
+#app .message-bubble span[style*="hsl(48,"],
+#app .message-bubble span[style*="hsl(55,"],
+#app .message-bubble span[style*="hsl(62,"],
+#app .message-bubble span[style*="hsl(69,"],
+#app .message-bubble span[style*="hsl(76,"],
+#app .message-bubble span[style*="hsl(83,"],
+#app .message-bubble span[style*="hsl(90,"],
+#app .message-bubble span[style*="hsl(97,"],
+#app .message-bubble span[style*="hsl(104,"],
+#app .message-bubble span[style*="hsl(111,"],
+#app .message-bubble span[style*="hsl(118,"],
+#app .message-bubble span[style*="hsl(125,"],
+#app .message-bubble span[style*="hsl(132,"],
+#app .message-bubble span[style*="hsl(139,"],
+#app .message-bubble span[style*="hsl(146,"],
+#app .message-bubble span[style*="hsl(153,"],
+#app .message-bubble span[style*="hsl(160,"],
+#app .message-bubble span[style*="hsl(167,"],
+#app .message-bubble span[style*="hsl(174,"],
+#app .message-bubble span[style*="hsl(181,"],
+#app .message-bubble span[style*="hsl(188,"],
+#app .message-bubble span[style*="hsl(195,"],
+#app .message-bubble span[style*="hsl(202,"],
+#app .message-bubble span[style*="hsl(209,"],
+#app .message-bubble span[style*="hsl(216,"],
+#app .message-bubble span[style*="hsl(223,"],
+#app .message-bubble span[style*="hsl(230,"],
+#app .message-bubble span[style*="hsl(237,"],
+#app .message-bubble span[style*="hsl(244,"],
+#app .message-bubble span[style*="hsl(251,"],
+#app .message-bubble span[style*="hsl(258,"],
+#app .message-bubble span[style*="hsl(265,"],
+#app .message-bubble span[style*="hsl(272,"],
+#app .message-bubble span[style*="hsl(279,"],
+#app .message-bubble span[style*="hsl(286,"],
+#app .message-bubble span[style*="hsl(293,"],
+#app .message-bubble span[style*="hsl(300,"],
+#app .message-bubble span[style*="hsl(307,"],
+#app .message-bubble span[style*="hsl(314,"],
+#app .message-bubble span[style*="hsl(321,"],
+#app .message-bubble span[style*="hsl(328,"],
+#app .message-bubble span[style*="hsl(335,"],
+#app .message-bubble span[style*="hsl(342,"],
+#app .message-bubble span[style*="hsl(349,"],
+#app .message-bubble span[style*="hsl(356,"] {
+    color: var(--tgm-peer-0) !important;
+}
+#app .message-row:has(span[style*="hsl(6,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(13,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(20,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(27,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(34,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(41,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(48,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(55,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(62,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(69,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(76,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(83,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(90,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(97,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(104,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(111,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(118,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(125,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(132,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(139,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(146,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(153,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(160,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(167,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(174,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(181,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(188,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(195,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(202,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(209,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(216,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(223,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(230,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(237,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(244,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(251,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(258,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(265,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(272,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(279,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(286,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(293,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(300,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(307,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(314,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(321,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(328,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(335,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(342,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(349,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(356,"]) > .w-8 > button {
+    background: var(--tgm-avatar-0) !important;
+}
+#app .message-bubble span[style*="hsl(0,"],
+#app .message-bubble span[style*="hsl(7,"],
+#app .message-bubble span[style*="hsl(14,"],
+#app .message-bubble span[style*="hsl(21,"],
+#app .message-bubble span[style*="hsl(28,"],
+#app .message-bubble span[style*="hsl(35,"],
+#app .message-bubble span[style*="hsl(42,"],
+#app .message-bubble span[style*="hsl(49,"],
+#app .message-bubble span[style*="hsl(56,"],
+#app .message-bubble span[style*="hsl(63,"],
+#app .message-bubble span[style*="hsl(70,"],
+#app .message-bubble span[style*="hsl(77,"],
+#app .message-bubble span[style*="hsl(84,"],
+#app .message-bubble span[style*="hsl(91,"],
+#app .message-bubble span[style*="hsl(98,"],
+#app .message-bubble span[style*="hsl(105,"],
+#app .message-bubble span[style*="hsl(112,"],
+#app .message-bubble span[style*="hsl(119,"],
+#app .message-bubble span[style*="hsl(126,"],
+#app .message-bubble span[style*="hsl(133,"],
+#app .message-bubble span[style*="hsl(140,"],
+#app .message-bubble span[style*="hsl(147,"],
+#app .message-bubble span[style*="hsl(154,"],
+#app .message-bubble span[style*="hsl(161,"],
+#app .message-bubble span[style*="hsl(168,"],
+#app .message-bubble span[style*="hsl(175,"],
+#app .message-bubble span[style*="hsl(182,"],
+#app .message-bubble span[style*="hsl(189,"],
+#app .message-bubble span[style*="hsl(196,"],
+#app .message-bubble span[style*="hsl(203,"],
+#app .message-bubble span[style*="hsl(210,"],
+#app .message-bubble span[style*="hsl(217,"],
+#app .message-bubble span[style*="hsl(224,"],
+#app .message-bubble span[style*="hsl(231,"],
+#app .message-bubble span[style*="hsl(238,"],
+#app .message-bubble span[style*="hsl(245,"],
+#app .message-bubble span[style*="hsl(252,"],
+#app .message-bubble span[style*="hsl(259,"],
+#app .message-bubble span[style*="hsl(266,"],
+#app .message-bubble span[style*="hsl(273,"],
+#app .message-bubble span[style*="hsl(280,"],
+#app .message-bubble span[style*="hsl(287,"],
+#app .message-bubble span[style*="hsl(294,"],
+#app .message-bubble span[style*="hsl(301,"],
+#app .message-bubble span[style*="hsl(308,"],
+#app .message-bubble span[style*="hsl(315,"],
+#app .message-bubble span[style*="hsl(322,"],
+#app .message-bubble span[style*="hsl(329,"],
+#app .message-bubble span[style*="hsl(336,"],
+#app .message-bubble span[style*="hsl(343,"],
+#app .message-bubble span[style*="hsl(350,"],
+#app .message-bubble span[style*="hsl(357,"] {
+    color: var(--tgm-peer-1) !important;
+}
+#app .message-row:has(span[style*="hsl(0,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(7,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(14,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(21,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(28,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(35,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(42,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(49,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(56,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(63,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(70,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(77,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(84,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(91,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(98,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(105,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(112,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(119,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(126,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(133,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(140,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(147,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(154,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(161,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(168,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(175,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(182,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(189,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(196,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(203,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(210,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(217,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(224,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(231,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(238,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(245,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(252,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(259,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(266,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(273,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(280,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(287,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(294,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(301,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(308,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(315,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(322,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(329,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(336,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(343,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(350,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(357,"]) > .w-8 > button {
+    background: var(--tgm-avatar-1) !important;
+}
+#app .message-bubble span[style*="hsl(1,"],
+#app .message-bubble span[style*="hsl(8,"],
+#app .message-bubble span[style*="hsl(15,"],
+#app .message-bubble span[style*="hsl(22,"],
+#app .message-bubble span[style*="hsl(29,"],
+#app .message-bubble span[style*="hsl(36,"],
+#app .message-bubble span[style*="hsl(43,"],
+#app .message-bubble span[style*="hsl(50,"],
+#app .message-bubble span[style*="hsl(57,"],
+#app .message-bubble span[style*="hsl(64,"],
+#app .message-bubble span[style*="hsl(71,"],
+#app .message-bubble span[style*="hsl(78,"],
+#app .message-bubble span[style*="hsl(85,"],
+#app .message-bubble span[style*="hsl(92,"],
+#app .message-bubble span[style*="hsl(99,"],
+#app .message-bubble span[style*="hsl(106,"],
+#app .message-bubble span[style*="hsl(113,"],
+#app .message-bubble span[style*="hsl(120,"],
+#app .message-bubble span[style*="hsl(127,"],
+#app .message-bubble span[style*="hsl(134,"],
+#app .message-bubble span[style*="hsl(141,"],
+#app .message-bubble span[style*="hsl(148,"],
+#app .message-bubble span[style*="hsl(155,"],
+#app .message-bubble span[style*="hsl(162,"],
+#app .message-bubble span[style*="hsl(169,"],
+#app .message-bubble span[style*="hsl(176,"],
+#app .message-bubble span[style*="hsl(183,"],
+#app .message-bubble span[style*="hsl(190,"],
+#app .message-bubble span[style*="hsl(197,"],
+#app .message-bubble span[style*="hsl(204,"],
+#app .message-bubble span[style*="hsl(211,"],
+#app .message-bubble span[style*="hsl(218,"],
+#app .message-bubble span[style*="hsl(225,"],
+#app .message-bubble span[style*="hsl(232,"],
+#app .message-bubble span[style*="hsl(239,"],
+#app .message-bubble span[style*="hsl(246,"],
+#app .message-bubble span[style*="hsl(253,"],
+#app .message-bubble span[style*="hsl(260,"],
+#app .message-bubble span[style*="hsl(267,"],
+#app .message-bubble span[style*="hsl(274,"],
+#app .message-bubble span[style*="hsl(281,"],
+#app .message-bubble span[style*="hsl(288,"],
+#app .message-bubble span[style*="hsl(295,"],
+#app .message-bubble span[style*="hsl(302,"],
+#app .message-bubble span[style*="hsl(309,"],
+#app .message-bubble span[style*="hsl(316,"],
+#app .message-bubble span[style*="hsl(323,"],
+#app .message-bubble span[style*="hsl(330,"],
+#app .message-bubble span[style*="hsl(337,"],
+#app .message-bubble span[style*="hsl(344,"],
+#app .message-bubble span[style*="hsl(351,"],
+#app .message-bubble span[style*="hsl(358,"] {
+    color: var(--tgm-peer-2) !important;
+}
+#app .message-row:has(span[style*="hsl(1,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(8,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(15,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(22,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(29,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(36,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(43,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(50,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(57,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(64,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(71,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(78,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(85,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(92,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(99,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(106,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(113,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(120,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(127,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(134,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(141,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(148,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(155,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(162,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(169,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(176,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(183,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(190,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(197,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(204,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(211,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(218,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(225,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(232,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(239,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(246,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(253,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(260,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(267,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(274,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(281,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(288,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(295,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(302,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(309,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(316,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(323,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(330,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(337,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(344,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(351,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(358,"]) > .w-8 > button {
+    background: var(--tgm-avatar-2) !important;
+}
+#app .message-bubble span[style*="hsl(2,"],
+#app .message-bubble span[style*="hsl(9,"],
+#app .message-bubble span[style*="hsl(16,"],
+#app .message-bubble span[style*="hsl(23,"],
+#app .message-bubble span[style*="hsl(30,"],
+#app .message-bubble span[style*="hsl(37,"],
+#app .message-bubble span[style*="hsl(44,"],
+#app .message-bubble span[style*="hsl(51,"],
+#app .message-bubble span[style*="hsl(58,"],
+#app .message-bubble span[style*="hsl(65,"],
+#app .message-bubble span[style*="hsl(72,"],
+#app .message-bubble span[style*="hsl(79,"],
+#app .message-bubble span[style*="hsl(86,"],
+#app .message-bubble span[style*="hsl(93,"],
+#app .message-bubble span[style*="hsl(100,"],
+#app .message-bubble span[style*="hsl(107,"],
+#app .message-bubble span[style*="hsl(114,"],
+#app .message-bubble span[style*="hsl(121,"],
+#app .message-bubble span[style*="hsl(128,"],
+#app .message-bubble span[style*="hsl(135,"],
+#app .message-bubble span[style*="hsl(142,"],
+#app .message-bubble span[style*="hsl(149,"],
+#app .message-bubble span[style*="hsl(156,"],
+#app .message-bubble span[style*="hsl(163,"],
+#app .message-bubble span[style*="hsl(170,"],
+#app .message-bubble span[style*="hsl(177,"],
+#app .message-bubble span[style*="hsl(184,"],
+#app .message-bubble span[style*="hsl(191,"],
+#app .message-bubble span[style*="hsl(198,"],
+#app .message-bubble span[style*="hsl(205,"],
+#app .message-bubble span[style*="hsl(212,"],
+#app .message-bubble span[style*="hsl(219,"],
+#app .message-bubble span[style*="hsl(226,"],
+#app .message-bubble span[style*="hsl(233,"],
+#app .message-bubble span[style*="hsl(240,"],
+#app .message-bubble span[style*="hsl(247,"],
+#app .message-bubble span[style*="hsl(254,"],
+#app .message-bubble span[style*="hsl(261,"],
+#app .message-bubble span[style*="hsl(268,"],
+#app .message-bubble span[style*="hsl(275,"],
+#app .message-bubble span[style*="hsl(282,"],
+#app .message-bubble span[style*="hsl(289,"],
+#app .message-bubble span[style*="hsl(296,"],
+#app .message-bubble span[style*="hsl(303,"],
+#app .message-bubble span[style*="hsl(310,"],
+#app .message-bubble span[style*="hsl(317,"],
+#app .message-bubble span[style*="hsl(324,"],
+#app .message-bubble span[style*="hsl(331,"],
+#app .message-bubble span[style*="hsl(338,"],
+#app .message-bubble span[style*="hsl(345,"],
+#app .message-bubble span[style*="hsl(352,"],
+#app .message-bubble span[style*="hsl(359,"] {
+    color: var(--tgm-peer-3) !important;
+}
+#app .message-row:has(span[style*="hsl(2,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(9,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(16,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(23,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(30,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(37,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(44,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(51,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(58,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(65,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(72,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(79,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(86,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(93,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(100,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(107,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(114,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(121,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(128,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(135,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(142,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(149,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(156,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(163,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(170,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(177,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(184,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(191,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(198,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(205,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(212,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(219,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(226,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(233,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(240,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(247,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(254,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(261,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(268,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(275,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(282,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(289,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(296,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(303,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(310,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(317,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(324,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(331,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(338,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(345,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(352,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(359,"]) > .w-8 > button {
+    background: var(--tgm-avatar-3) !important;
+}
+#app .message-bubble span[style*="hsl(3,"],
+#app .message-bubble span[style*="hsl(10,"],
+#app .message-bubble span[style*="hsl(17,"],
+#app .message-bubble span[style*="hsl(24,"],
+#app .message-bubble span[style*="hsl(31,"],
+#app .message-bubble span[style*="hsl(38,"],
+#app .message-bubble span[style*="hsl(45,"],
+#app .message-bubble span[style*="hsl(52,"],
+#app .message-bubble span[style*="hsl(59,"],
+#app .message-bubble span[style*="hsl(66,"],
+#app .message-bubble span[style*="hsl(73,"],
+#app .message-bubble span[style*="hsl(80,"],
+#app .message-bubble span[style*="hsl(87,"],
+#app .message-bubble span[style*="hsl(94,"],
+#app .message-bubble span[style*="hsl(101,"],
+#app .message-bubble span[style*="hsl(108,"],
+#app .message-bubble span[style*="hsl(115,"],
+#app .message-bubble span[style*="hsl(122,"],
+#app .message-bubble span[style*="hsl(129,"],
+#app .message-bubble span[style*="hsl(136,"],
+#app .message-bubble span[style*="hsl(143,"],
+#app .message-bubble span[style*="hsl(150,"],
+#app .message-bubble span[style*="hsl(157,"],
+#app .message-bubble span[style*="hsl(164,"],
+#app .message-bubble span[style*="hsl(171,"],
+#app .message-bubble span[style*="hsl(178,"],
+#app .message-bubble span[style*="hsl(185,"],
+#app .message-bubble span[style*="hsl(192,"],
+#app .message-bubble span[style*="hsl(199,"],
+#app .message-bubble span[style*="hsl(206,"],
+#app .message-bubble span[style*="hsl(213,"],
+#app .message-bubble span[style*="hsl(220,"],
+#app .message-bubble span[style*="hsl(227,"],
+#app .message-bubble span[style*="hsl(234,"],
+#app .message-bubble span[style*="hsl(241,"],
+#app .message-bubble span[style*="hsl(248,"],
+#app .message-bubble span[style*="hsl(255,"],
+#app .message-bubble span[style*="hsl(262,"],
+#app .message-bubble span[style*="hsl(269,"],
+#app .message-bubble span[style*="hsl(276,"],
+#app .message-bubble span[style*="hsl(283,"],
+#app .message-bubble span[style*="hsl(290,"],
+#app .message-bubble span[style*="hsl(297,"],
+#app .message-bubble span[style*="hsl(304,"],
+#app .message-bubble span[style*="hsl(311,"],
+#app .message-bubble span[style*="hsl(318,"],
+#app .message-bubble span[style*="hsl(325,"],
+#app .message-bubble span[style*="hsl(332,"],
+#app .message-bubble span[style*="hsl(339,"],
+#app .message-bubble span[style*="hsl(346,"],
+#app .message-bubble span[style*="hsl(353,"] {
+    color: var(--tgm-peer-4) !important;
+}
+#app .message-row:has(span[style*="hsl(3,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(10,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(17,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(24,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(31,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(38,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(45,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(52,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(59,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(66,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(73,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(80,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(87,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(94,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(101,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(108,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(115,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(122,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(129,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(136,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(143,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(150,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(157,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(164,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(171,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(178,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(185,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(192,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(199,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(206,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(213,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(220,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(227,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(234,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(241,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(248,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(255,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(262,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(269,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(276,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(283,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(290,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(297,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(304,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(311,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(318,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(325,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(332,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(339,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(346,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(353,"]) > .w-8 > button {
+    background: var(--tgm-avatar-4) !important;
+}
+#app .message-bubble span[style*="hsl(4,"],
+#app .message-bubble span[style*="hsl(11,"],
+#app .message-bubble span[style*="hsl(18,"],
+#app .message-bubble span[style*="hsl(25,"],
+#app .message-bubble span[style*="hsl(32,"],
+#app .message-bubble span[style*="hsl(39,"],
+#app .message-bubble span[style*="hsl(46,"],
+#app .message-bubble span[style*="hsl(53,"],
+#app .message-bubble span[style*="hsl(60,"],
+#app .message-bubble span[style*="hsl(67,"],
+#app .message-bubble span[style*="hsl(74,"],
+#app .message-bubble span[style*="hsl(81,"],
+#app .message-bubble span[style*="hsl(88,"],
+#app .message-bubble span[style*="hsl(95,"],
+#app .message-bubble span[style*="hsl(102,"],
+#app .message-bubble span[style*="hsl(109,"],
+#app .message-bubble span[style*="hsl(116,"],
+#app .message-bubble span[style*="hsl(123,"],
+#app .message-bubble span[style*="hsl(130,"],
+#app .message-bubble span[style*="hsl(137,"],
+#app .message-bubble span[style*="hsl(144,"],
+#app .message-bubble span[style*="hsl(151,"],
+#app .message-bubble span[style*="hsl(158,"],
+#app .message-bubble span[style*="hsl(165,"],
+#app .message-bubble span[style*="hsl(172,"],
+#app .message-bubble span[style*="hsl(179,"],
+#app .message-bubble span[style*="hsl(186,"],
+#app .message-bubble span[style*="hsl(193,"],
+#app .message-bubble span[style*="hsl(200,"],
+#app .message-bubble span[style*="hsl(207,"],
+#app .message-bubble span[style*="hsl(214,"],
+#app .message-bubble span[style*="hsl(221,"],
+#app .message-bubble span[style*="hsl(228,"],
+#app .message-bubble span[style*="hsl(235,"],
+#app .message-bubble span[style*="hsl(242,"],
+#app .message-bubble span[style*="hsl(249,"],
+#app .message-bubble span[style*="hsl(256,"],
+#app .message-bubble span[style*="hsl(263,"],
+#app .message-bubble span[style*="hsl(270,"],
+#app .message-bubble span[style*="hsl(277,"],
+#app .message-bubble span[style*="hsl(284,"],
+#app .message-bubble span[style*="hsl(291,"],
+#app .message-bubble span[style*="hsl(298,"],
+#app .message-bubble span[style*="hsl(305,"],
+#app .message-bubble span[style*="hsl(312,"],
+#app .message-bubble span[style*="hsl(319,"],
+#app .message-bubble span[style*="hsl(326,"],
+#app .message-bubble span[style*="hsl(333,"],
+#app .message-bubble span[style*="hsl(340,"],
+#app .message-bubble span[style*="hsl(347,"],
+#app .message-bubble span[style*="hsl(354,"] {
+    color: var(--tgm-peer-5) !important;
+}
+#app .message-row:has(span[style*="hsl(4,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(11,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(18,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(25,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(32,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(39,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(46,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(53,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(60,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(67,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(74,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(81,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(88,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(95,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(102,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(109,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(116,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(123,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(130,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(137,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(144,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(151,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(158,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(165,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(172,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(179,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(186,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(193,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(200,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(207,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(214,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(221,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(228,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(235,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(242,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(249,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(256,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(263,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(270,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(277,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(284,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(291,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(298,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(305,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(312,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(319,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(326,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(333,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(340,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(347,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(354,"]) > .w-8 > button {
+    background: var(--tgm-avatar-5) !important;
+}
+#app .message-bubble span[style*="hsl(5,"],
+#app .message-bubble span[style*="hsl(12,"],
+#app .message-bubble span[style*="hsl(19,"],
+#app .message-bubble span[style*="hsl(26,"],
+#app .message-bubble span[style*="hsl(33,"],
+#app .message-bubble span[style*="hsl(40,"],
+#app .message-bubble span[style*="hsl(47,"],
+#app .message-bubble span[style*="hsl(54,"],
+#app .message-bubble span[style*="hsl(61,"],
+#app .message-bubble span[style*="hsl(68,"],
+#app .message-bubble span[style*="hsl(75,"],
+#app .message-bubble span[style*="hsl(82,"],
+#app .message-bubble span[style*="hsl(89,"],
+#app .message-bubble span[style*="hsl(96,"],
+#app .message-bubble span[style*="hsl(103,"],
+#app .message-bubble span[style*="hsl(110,"],
+#app .message-bubble span[style*="hsl(117,"],
+#app .message-bubble span[style*="hsl(124,"],
+#app .message-bubble span[style*="hsl(131,"],
+#app .message-bubble span[style*="hsl(138,"],
+#app .message-bubble span[style*="hsl(145,"],
+#app .message-bubble span[style*="hsl(152,"],
+#app .message-bubble span[style*="hsl(159,"],
+#app .message-bubble span[style*="hsl(166,"],
+#app .message-bubble span[style*="hsl(173,"],
+#app .message-bubble span[style*="hsl(180,"],
+#app .message-bubble span[style*="hsl(187,"],
+#app .message-bubble span[style*="hsl(194,"],
+#app .message-bubble span[style*="hsl(201,"],
+#app .message-bubble span[style*="hsl(208,"],
+#app .message-bubble span[style*="hsl(215,"],
+#app .message-bubble span[style*="hsl(222,"],
+#app .message-bubble span[style*="hsl(229,"],
+#app .message-bubble span[style*="hsl(236,"],
+#app .message-bubble span[style*="hsl(243,"],
+#app .message-bubble span[style*="hsl(250,"],
+#app .message-bubble span[style*="hsl(257,"],
+#app .message-bubble span[style*="hsl(264,"],
+#app .message-bubble span[style*="hsl(271,"],
+#app .message-bubble span[style*="hsl(278,"],
+#app .message-bubble span[style*="hsl(285,"],
+#app .message-bubble span[style*="hsl(292,"],
+#app .message-bubble span[style*="hsl(299,"],
+#app .message-bubble span[style*="hsl(306,"],
+#app .message-bubble span[style*="hsl(313,"],
+#app .message-bubble span[style*="hsl(320,"],
+#app .message-bubble span[style*="hsl(327,"],
+#app .message-bubble span[style*="hsl(334,"],
+#app .message-bubble span[style*="hsl(341,"],
+#app .message-bubble span[style*="hsl(348,"],
+#app .message-bubble span[style*="hsl(355,"] {
+    color: var(--tgm-peer-6) !important;
+}
+#app .message-row:has(span[style*="hsl(5,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(12,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(19,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(26,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(33,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(40,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(47,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(54,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(61,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(68,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(75,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(82,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(89,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(96,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(103,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(110,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(117,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(124,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(131,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(138,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(145,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(152,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(159,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(166,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(173,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(180,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(187,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(194,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(201,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(208,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(215,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(222,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(229,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(236,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(243,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(250,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(257,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(264,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(271,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(278,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(285,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(292,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(299,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(306,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(313,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(320,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(327,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(334,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(341,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(348,"]) > .w-8 > button,
+#app .message-row:has(span[style*="hsl(355,"]) > .w-8 > button {
+    background: var(--tgm-avatar-6) !important;
+}

@@ -1,0 +1,688 @@
+/* Refined slate: the viewer's dark slate look, polished.
+   Loaded after the page's own styles. Selectors are prefixed with a parent
+   (.messages-scroll, .chat-list-pane, #app) so they outrank the Tailwind
+   utilities the runtime generates, whatever order the style tags end in. */
+
+/* ---------- 1. Palette ---------------------------------------------------- */
+
+/* Slate, retuned: a calmer blue-grey canvas, Telegram blue as the accent,
+   Telegram Night's outgoing blue for own bubbles, a slate neutral scale. */
+:root:not([data-theme]) {
+    --tg-bg: 16 23 33;
+    --tg-sidebar: 23 32 45;
+    --tg-hover: 32 43 58;
+    --tg-active: 41 78 120;
+    --tg-text: 231 236 242;
+    --tg-text-dim: 196 205 216;
+    --tg-muted: 133 147 166;
+    --tg-own: 43 82 122;
+    --tg-other: 30 40 55;
+    --tg-border: 45 57 74;
+    --tg-border-strong: 74 89 110;
+    --tg-accent: 51 144 236;
+    --tg-accent-strong: 40 121 209;
+    --tg-accent-hover: 33 104 184;
+    --tg-accent-soft: 106 179 243;
+    --tg-accent-bright: 146 200 247;
+    --tg-accent-faint: 196 225 251;
+    --tg-accent-dim: 25 52 84;
+    --tg-n100: 241 244 248;
+    --tg-n200: 222 228 236;
+    --tg-n300: 196 205 216;
+    --tg-n400: 139 152 170;
+    --tg-n500: 104 118 138;
+    --tg-n600: 72 86 106;
+    --tg-n700: 42 54 71;
+    --tg-n800: 28 38 52;
+    --tg-n900: 14 20 30;
+    --tg-n950: 8 12 19;
+    --tg-chip-bg: rgb(23 32 45 / 0.88);
+    --tg-service-bg: rgb(23 32 45 / 0.88);
+    --tg-service-fg: rgb(196 205 216);
+}
+
+/* Shared by every palette. Bubbles are opaque; the tints that used to be
+   black overlays now come from the theme's own ink and accent, so the
+   light palettes get readable quotes, polls and code for free. */
+:root {
+    --tg-bubble-alpha-own: 1;
+    --tg-bubble-alpha-other: 1;
+    --rs-radius: 16px;
+    --rs-radius-join: 6px;
+    --rs-pad-y: 7px;
+    --rs-pad-x: 11px;
+    --rs-quote-bg: rgb(var(--tg-accent-soft) / 0.12);
+    --rs-quote-bar: rgb(var(--tg-accent-soft));
+    --rs-tint: rgb(var(--tg-ink) / 0.07);
+    --rs-meta-in: 125 142 162;
+    --rs-meta-out: 150 186 224;
+    --rs-chip-in: rgb(var(--tg-accent-soft) / 0.16);
+    --rs-chip-out: rgb(255 255 255 / 0.14);
+    --rs-bubble-shadow: none;
+    /* Telegram's seven peer colours, Night variant (names on dark). */
+    --rs-p0: #fb6169; --rs-p1: #faa357; --rs-p2: #b48bf2; --rs-p3: #85de85;
+    --rs-p4: #62d4e3; --rs-p5: #65bdf3; --rs-p6: #ff5694;
+}
+
+/* Day, repaired: a light slate canvas so white incoming bubbles stand out,
+   Telegram's day-blue outgoing bubble, Telegram blue accent. */
+:root[data-theme="day"] {
+    --tg-bg: 226 232 239;
+    --tg-sidebar: 255 255 255;
+    --tg-hover: 241 244 248;
+    --tg-active: 51 144 236;
+    --tg-own: 222 241 253;
+    --tg-other: 255 255 255;
+    --tg-accent: 51 144 236;
+    --tg-accent-strong: 40 121 209;
+    --tg-accent-hover: 33 104 184;
+    --tg-accent-soft: 17 120 185;
+    --tg-accent-bright: 12 96 150;
+    --tg-chip-bg: rgb(255 255 255 / 0.9);
+    --tg-service-bg: rgb(255 255 255 / 0.9);
+    --tg-service-fg: rgb(51 65 85);
+    --rs-meta-in: 128 139 153;
+    --rs-meta-out: 76 146 196;
+    --rs-chip-out: rgb(var(--tg-accent) / 0.14);
+    --rs-bubble-shadow: 0 1px 1px rgb(15 23 42 / 0.12);
+}
+/* The selected chat row is solid accent on Day, so its text turns white. */
+:root[data-theme="day"] .chat-list-pane div.p-3.cursor-pointer.bg-tg-active :is(h3, p, span, .text-tg-muted) { color: #fff; }
+
+:root[data-theme="day"],
+:root[data-theme="paper"] {
+    --rs-p0: #c03d33; --rs-p1: #ce671b; --rs-p2: #8544d6; --rs-p3: #3f9a26;
+    --rs-p4: #2996ad; --rs-p5: #168acd; --rs-p6: #cd4073;
+}
+
+/* ---------- 2. Base type ------------------------------------------------- */
+
+#app { font-feature-settings: "cv11", "ss01"; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--tg-border-strong) / 0.6); }
+
+/* ---------- 3. Sidebar --------------------------------------------------- */
+
+/* User bar: one quiet 32px strip. */
+.chat-list-pane > div.border-b.px-3.py-1 {
+    min-height: 32px;
+    border-color: rgb(var(--tg-n700) / 0.6);
+}
+.chat-list-pane > div.border-b.px-3.py-1 button { font-size: 13px; }
+
+/* Title block: one line, smaller type, tighter spacing. */
+.chat-list-pane > div.p-4.border-b {
+    padding: 10px 12px 8px;
+    border-color: rgb(var(--tg-n700) / 0.6);
+}
+.chat-list-pane > div.p-4 > div.mb-3 { margin-bottom: 10px; }
+.chat-list-pane > div.p-4 h1.text-xl {
+    font-size: 16px;
+    line-height: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+}
+.chat-list-pane > div.p-4 > div.mb-3 > div.gap-3 { gap: 6px; }
+/* Stats button: drop the chart emoji, keep the word. */
+.chat-list-pane > div.p-4 div.relative > button.gap-1\.5 > span:first-child { display: none; }
+
+/* Search: a 36px pill. */
+.chat-list-pane > div.p-4 > div.relative.mb-3 { margin-bottom: 10px; }
+.chat-list-pane input[aria-label="Search chats and messages"] {
+    height: 36px;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-radius: 18px;
+    font-size: 14px;
+    background: rgb(var(--tg-hover));
+}
+.chat-list-pane input[aria-label="Search chats and messages"] + svg {
+    top: 9px;
+    width: 18px;
+    height: 18px;
+}
+
+/* Folder tabs: smaller pills, no counts in brackets competing with names. */
+.chat-list-pane > div.p-4 > div.flex.gap-1.mb-3 { margin-bottom: 8px; gap: 6px; }
+.chat-list-pane > div.p-4 > div.flex.gap-1 > button {
+    padding: 3px 10px;
+    font-size: 12.5px;
+    font-weight: 500;
+}
+.chat-list-pane > div.p-4 > div.flex.gap-1 > button > span.opacity-70 { opacity: 0.55; }
+.chat-list-pane > div.p-4 > div.text-xs.text-tg-muted { font-size: 11.5px; }
+
+/* Rows: 66px, two lines, no id, no monospace. */
+.chat-list-pane div.p-3.cursor-pointer.flex.items-center {
+    position: relative;
+    padding: 9px 12px 9px 10px;
+    gap: 12px;
+    border-color: transparent;
+}
+.chat-list-pane div.p-3.cursor-pointer .w-12.h-12 {
+    width: 48px;
+    height: 48px;
+}
+.chat-list-pane div.p-3.cursor-pointer h3 {
+    font-size: 15px;
+    line-height: 21px;
+    font-weight: 600;
+}
+.chat-list-pane div.p-3.cursor-pointer h3 + span {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    margin-left: 8px;
+    flex-shrink: 0;
+}
+.chat-list-pane div.p-3.cursor-pointer p.text-sm.truncate,
+.chat-list-pane div.p-3.cursor-pointer p.text-xs {
+    font-size: 13.5px;
+    line-height: 20px;
+    margin-top: 1px;
+}
+.chat-list-pane div.p-3.cursor-pointer p.truncate > span.font-mono {
+    font-family: inherit;
+    color: inherit;
+}
+.chat-list-pane div.p-3.cursor-pointer p.truncate > span.font-mono.ml-1 { display: none; }
+/* The account chip moves to the bottom-right corner, where Telegram puts the
+   unread badge, so the row keeps two lines. */
+.chat-list-pane div.p-3.cursor-pointer p.mt-1.flex-wrap {
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
+    margin: 0;
+}
+.chat-list-pane div.p-3.cursor-pointer:has(p.mt-1.flex-wrap) p.truncate { padding-right: 68px; }
+.chat-list-pane .account-chip {
+    font-size: 11px;
+    line-height: 18px;
+    padding: 0 7px;
+    font-weight: 500;
+}
+/* Selected row: accent fill that hover does not wash out, readable secondary text. */
+.chat-list-pane div.p-3.cursor-pointer.bg-tg-active { background-color: rgb(var(--tg-active)); }
+.chat-list-pane div.p-3.cursor-pointer.bg-tg-active .text-tg-muted { color: rgb(var(--tg-text) / 0.72); }
+.chat-list-pane div.p-3.cursor-pointer.bg-tg-active .account-chip {
+    color: rgb(var(--tg-text));
+    background: rgb(255 255 255 / 0.16);
+}
+/* Archived row. */
+.chat-list-pane div.p-3.cursor-pointer.border-b { border-bottom: 1px solid rgb(var(--tg-n700) / 0.6); }
+.chat-list-pane div.p-3.cursor-pointer.border-b > div.w-12 { background: rgb(var(--tg-accent) / 0.18); }
+
+/* ---------- 4. Chat header ----------------------------------------------- */
+
+.bg-tg-bg.relative > div.shadow-md.bg-tg-sidebar {
+    position: relative;
+    min-height: 56px;
+    padding: 7px 12px 7px 16px;
+    box-shadow: none;
+    border-color: rgb(var(--tg-n700) / 0.7);
+}
+.bg-tg-bg.relative > div.shadow-md .w-10.h-10 { width: 42px; height: 42px; min-width: 42px; }
+.bg-tg-bg.relative > div.shadow-md h2 {
+    font-size: 16px;
+    line-height: 21px;
+    font-weight: 600;
+}
+.bg-tg-bg.relative > div.shadow-md h2 + p { font-size: 13px; line-height: 18px; }
+.bg-tg-bg.relative > div.shadow-md > div.min-w-0 > div.min-w-0.flex-1 { max-width: none; }
+
+/* Desktop: two lines. Title on top, then "group · 72 msgs · 13 media". */
+@media (min-width: 768px) {
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 {
+        display: grid;
+        grid-template-columns: 42px max-content minmax(0, 1fr);
+        grid-template-areas: "av title title" "av sub stats";
+        column-gap: 0;
+        row-gap: 1px;
+        align-items: center;
+    }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 { grid-area: av; margin-right: 12px; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 + div { display: contents; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 + div > h2 { grid-area: title; margin-left: 12px; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 + div > h2 + p { grid-area: sub; margin-left: 12px; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 + div > p.mt-0\.5 { display: none; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 + div > h2 { align-self: end; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > .w-10 + div > h2 + p { align-self: start; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > div.ml-4 {
+        grid-area: stats;
+        align-self: start;
+        display: block;
+        margin: 0;
+        padding: 0;
+        background: none;
+        font-size: 13px;
+        line-height: 18px;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+    /* Each stat opens with an emoji. A negative indent slides it into a
+       transparent left border, where overflow clips it; the border also
+       carries the separator dot. */
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0.flex-1 > div.ml-4 > span {
+        display: inline-block;
+        vertical-align: top;
+        overflow: hidden;
+        text-indent: -1.42em;
+        border-left: 14px solid transparent;
+        background: radial-gradient(circle at 7px 50%, currentColor 1.4px, transparent 1.9px) no-repeat;
+        background-origin: border-box;
+        background-clip: border-box;
+    }
+}
+
+/* Right side: 36px icon buttons and a pill search. */
+.bg-tg-bg.relative > div.shadow-md > div.shrink-0 { gap: 2px; }
+.bg-tg-bg.relative > div.shadow-md > div.shrink-0 > button {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 18px;
+}
+.bg-tg-bg.relative > div.shadow-md > div.shrink-0 > button svg { width: 20px; height: 20px; }
+.bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative input {
+    height: 36px;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-radius: 18px;
+    background: rgb(var(--tg-hover));
+}
+.bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative svg { top: 10px; }
+@media (min-width: 768px) {
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative { width: 220px; margin-right: 6px; }
+}
+
+/* Phone: the search collapses to an icon and opens over the header on focus,
+   so the title keeps its room. Export moves out of the phone header. */
+@media (max-width: 767px) {
+    .bg-tg-bg.relative > div.shadow-md { padding: 6px 6px 6px 8px; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0 { gap: 8px; }
+    .bg-tg-bg.relative > div.shadow-md .w-10.h-10 { width: 38px; height: 38px; min-width: 38px; }
+    .bg-tg-bg.relative > div.shadow-md > div.min-w-0 > button.md\:hidden { margin-left: 0; padding: 6px; min-width: 36px; }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative { width: 36px; }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative input {
+        background: transparent;
+        color: transparent;
+        padding-left: 36px;
+        cursor: pointer;
+    }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative input::placeholder { color: transparent; }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative svg { left: 9px; top: 9px; width: 18px; height: 18px; }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative:is(:focus-within, :has(input:not(:placeholder-shown))) {
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        top: 10px;
+        width: auto;
+        z-index: 30;
+    }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > div.relative:is(:focus-within, :has(input:not(:placeholder-shown))) input {
+        background: rgb(var(--tg-hover));
+        color: rgb(var(--tg-ink));
+    }
+    .bg-tg-bg.relative > div.shadow-md > div.shrink-0 > button[title="Export Chat to JSON"] { display: none; }
+}
+
+/* Pinned banner: one calm row. */
+.bg-tg-bg.relative > div.bg-tg-sidebar\/80.border-b {
+    padding-top: 5px;
+    padding-bottom: 5px;
+    background: rgb(var(--tg-sidebar));
+    border-color: rgb(var(--tg-n700) / 0.7);
+}
+
+/* ---------- 5. Message pane ---------------------------------------------- */
+
+/* A centred reading column on wide screens, like Telegram Web. */
+div.messages-scroll {
+    padding: 12px max(16px, calc((100% - 820px) / 2)) 12px;
+}
+@media (max-width: 767px) {
+    div.messages-scroll { padding: 8px 10px; }
+}
+
+.messages-scroll .message-row { gap: 10px; }
+.messages-scroll .message-row.message-run-continue { margin-bottom: 2px; }
+.messages-scroll .message-row.message-run-break { margin-bottom: 8px; }
+
+/* Avatar sits at the top of the run, beside the name and the tail. */
+.messages-scroll .message-row > div.w-8.self-end { align-self: flex-start; width: 34px; }
+.messages-scroll .message-row > div.w-8 > button { width: 34px; height: 34px; font-size: 13px; color: #fff; }
+
+/* ---------- 6. Bubbles --------------------------------------------------- */
+
+.messages-scroll .message-bubble {
+    --rs-tl: var(--rs-radius);
+    --rs-tr: var(--rs-radius);
+    --rs-br: var(--rs-radius);
+    --rs-bl: var(--rs-radius);
+    position: relative;
+    padding: var(--rs-pad-y) var(--rs-pad-x);
+    font-size: 15px;
+    line-height: 20px;
+    color: rgb(var(--tg-n100));
+    border-radius: var(--rs-tl) var(--rs-tr) var(--rs-br) var(--rs-bl);
+    box-shadow: var(--rs-bubble-shadow);
+}
+.messages-scroll .message-row.justify-start .message-bubble { color: rgb(var(--tg-text)); }
+@media (min-width: 768px) {
+    .messages-scroll .message-bubble { max-width: min(76%, 560px); }
+}
+
+/* Grouping. In this list the next sibling is the OLDER message, so a row is
+   the first of its run when the row after it closes another run. */
+.messages-scroll .message-row.justify-start .message-bubble { --rs-tl: var(--rs-radius-join); --rs-bl: var(--rs-radius-join); }
+.messages-scroll .message-row.justify-end .message-bubble { --rs-tr: var(--rs-radius-join); --rs-br: var(--rs-radius-join); }
+.messages-scroll .message-row.justify-start .message-bubble.bubble-in { --rs-bl: var(--rs-radius); }
+.messages-scroll .message-row.justify-end .message-bubble.bubble-out { --rs-br: var(--rs-radius); }
+
+.messages-scroll .message-row.justify-start:is(:has(+ .message-run-break), :has(+ .date-separator + .message-run-break), :not(:has(+ .message-row, + .date-separator + .message-row))) .message-bubble {
+    --rs-tl: 0px;
+}
+.messages-scroll .message-row.justify-end:is(:has(+ .message-run-break), :has(+ .date-separator + .message-run-break), :not(:has(+ .message-row, + .date-separator + .message-row))) .message-bubble {
+    --rs-tr: 0px;
+}
+/* The tail: a small curved wedge at the top corner of a run's first bubble,
+   pointing at the avatar (or at the edge, for your own messages). */
+.messages-scroll .message-row:is(:has(+ .message-run-break), :has(+ .date-separator + .message-run-break), :not(:has(+ .message-row, + .date-separator + .message-row))) .message-bubble::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    width: 9px;
+    height: 13px;
+    background-color: inherit;
+}
+.messages-scroll .message-row.justify-start:is(:has(+ .message-run-break), :has(+ .date-separator + .message-run-break), :not(:has(+ .message-row, + .date-separator + .message-row))) .message-bubble::before {
+    left: -8px;
+    clip-path: path("M 0 0 L 9 0 L 9 13 C 8 7 5 2.5 0 0 Z");
+}
+.messages-scroll .message-row.justify-end:is(:has(+ .message-run-break), :has(+ .date-separator + .message-run-break), :not(:has(+ .message-row, + .date-separator + .message-row))) .message-bubble::before {
+    right: -8px;
+    clip-path: path("M 9 0 L 0 0 L 0 13 C 1 7 4 2.5 9 0 Z");
+}
+
+/* Sender line. */
+.messages-scroll .message-bubble > div.items-baseline.mb-1 { margin-bottom: 2px; }
+.messages-scroll .message-bubble > div.items-baseline.mb-1 > span.font-bold {
+    font-size: 14px;
+    line-height: 19px;
+    font-weight: 600;
+}
+.messages-scroll .message-bubble .account-chip {
+    font-size: 11px;
+    line-height: 17px;
+    font-weight: 500;
+    color: rgb(var(--tg-accent-soft));
+    background: var(--rs-chip-in);
+}
+.messages-scroll .message-row.justify-end .message-bubble .account-chip {
+    color: rgb(var(--tg-n100) / 0.85);
+    background: var(--rs-chip-out);
+}
+
+/* Time and "edited" float at the end of the last line of text, the Telegram
+   way: an invisible spacer reserves room and the stamp sits over it. */
+.messages-scroll .message-bubble > div.text-right.justify-end:last-child {
+    margin-top: 2px;
+    font-size: 11.5px;
+    line-height: 16px;
+    opacity: 1;
+    color: rgb(var(--rs-meta-in));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.messages-scroll .message-row.justify-end .message-bubble > div.text-right.justify-end:last-child {
+    color: rgb(var(--rs-meta-out));
+}
+.messages-scroll .message-bubble > :is(.message-text:not(:empty), div.flex-wrap.gap-1\.5) + div.text-right.justify-end:last-child {
+    position: absolute;
+    right: 10px;
+    bottom: 5px;
+    margin: 0;
+}
+.messages-scroll .message-bubble > .message-text:not(:empty):has(+ div.text-right:last-child)::after {
+    content: "";
+    display: inline-block;
+    width: 42px;
+    height: 1px;
+}
+.messages-scroll .message-bubble:has(> div.text-right:last-child > .order-2) > .message-text::after { width: 94px; }
+.messages-scroll .message-bubble:has(> div.text-right:last-child > .order-1) > .message-text::after { width: 100px; }
+.messages-scroll .message-bubble:has(> div.text-right:last-child > .order-1):has(> div.text-right:last-child > .order-2) > .message-text::after { width: 150px; }
+
+/* Reactions share the row with the time. */
+.messages-scroll .message-bubble > div.flex-wrap.gap-1\.5 {
+    margin-top: 6px;
+    gap: 4px;
+    padding-right: 44px;
+}
+.messages-scroll .message-bubble:has(> div.text-right:last-child > .order-2) > div.flex-wrap.gap-1\.5 { padding-right: 96px; }
+.messages-scroll .message-bubble > div.flex-wrap.gap-1\.5 > div {
+    padding: 2px 8px 2px 6px;
+    height: 26px;
+    background: var(--rs-chip-in);
+}
+.messages-scroll .message-row.justify-end .message-bubble > div.flex-wrap.gap-1\.5 > div { background: var(--rs-chip-out); }
+.messages-scroll .message-bubble > div.flex-wrap.gap-1\.5 > div > span.text-sm { font-size: 15px; line-height: 1; }
+.messages-scroll .message-bubble > div.flex-wrap.gap-1\.5 > div > span.text-\[11px\] {
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 1;
+    color: rgb(var(--tg-accent-soft));
+}
+.messages-scroll .message-row.justify-end .message-bubble > div.flex-wrap.gap-1\.5 > div > span.text-\[11px\] { color: inherit; }
+
+/* Reply: a tinted quote in the accent, 6px corners. */
+.messages-scroll .message-bubble > div.border-l-2.border-tg-accent-soft\/50 {
+    margin: 2px 0 5px;
+    padding: 4px 8px 5px 9px;
+    border-left: 3px solid var(--rs-quote-bar);
+    border-radius: 6px;
+    background: var(--rs-quote-bg);
+    font-size: 13px;
+    line-height: 17px;
+}
+.messages-scroll .message-bubble > div.border-l-2.border-tg-accent-soft\/50:hover { background: rgb(var(--tg-accent-soft) / 0.2); }
+.messages-scroll .message-bubble > div.border-l-2.border-tg-accent-soft\/50 > div:first-child { margin-bottom: 1px; }
+.messages-scroll .message-bubble > div.border-l-2.border-tg-accent-soft\/50 > div.opacity-70 { opacity: 0.85; }
+.messages-scroll .message-row.justify-end .message-bubble > div.border-l-2.border-tg-accent-soft\/50 {
+    --rs-quote-bg: rgb(255 255 255 / 0.1);
+    --rs-quote-bar: rgb(var(--tg-accent-bright));
+}
+
+/* Forward: one header line, "Forwarded from Harbor Town Weekly", no box. */
+.messages-scroll .message-bubble > div.border-green-400\/50 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 4px;
+    margin: 0 0 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none !important;
+    font-size: 13px;
+    line-height: 18px;
+    color: rgb(var(--tg-accent-soft));
+}
+.messages-scroll .message-bubble > div.border-green-400\/50:hover { background: none; text-decoration: underline; }
+.messages-scroll .message-bubble > div.border-green-400\/50 > div.text-green-400 {
+    display: contents;
+    color: rgb(var(--tg-accent-soft));
+    font-weight: 400;
+}
+.messages-scroll .message-bubble > div.border-green-400\/50 > div.text-green-400 > i { order: 3; font-size: 10px; opacity: 0.6; }
+.messages-scroll .message-bubble > div.border-green-400\/50 > div.truncate { order: 2; font-weight: 600; opacity: 1; }
+
+/* Polls: drawn on the bubble, no inner box. */
+.messages-scroll .message-bubble > div.max-w-sm.bg-black\/20 {
+    background: none;
+    padding: 2px 0 0;
+    min-width: 260px;
+}
+.messages-scroll .message-bubble > div.max-w-sm.bg-black\/20 > div.font-bold { font-weight: 600; font-size: 15px; margin-bottom: 10px; }
+.messages-scroll .message-bubble > div.max-w-sm.bg-black\/20 .border-tg-ink\/10 {
+    border-color: transparent;
+    border-radius: 8px;
+    background: var(--rs-tint);
+}
+.messages-scroll .message-bubble > div.max-w-sm.bg-black\/20 .bg-tg-accent\/30 { background: rgb(var(--tg-accent) / 0.32); }
+.messages-scroll .message-bubble > div.max-w-sm.bg-black\/20 > div.mt-3.uppercase {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 12px;
+    font-weight: 500;
+    opacity: 1;
+    color: rgb(var(--rs-meta-in));
+    padding-right: 44px;
+}
+.messages-scroll .message-bubble > .message-text:empty { display: none; }
+/* A poll has no text: its footer row carries the time. */
+.messages-scroll .message-bubble > div.max-w-sm.bg-black\/20:has(~ .message-text:empty) { margin-bottom: 0; }
+.messages-scroll .message-bubble:has(> div.max-w-sm.bg-black\/20 ~ .message-text:empty) > div.text-right.justify-end:last-child {
+    position: absolute;
+    right: 10px;
+    bottom: 7px;
+    margin: 0;
+}
+
+/* Other inner boxes that were black overlays. */
+.messages-scroll .message-bubble .bg-black\/20:not(.absolute) { background-color: var(--rs-tint); }
+.messages-scroll .message-bubble > div.mt-2.border-l-2 {
+    border-left: 3px solid var(--rs-quote-bar);
+    border-radius: 6px;
+    background: var(--rs-quote-bg);
+    padding: 5px 8px 6px 9px;
+}
+
+/* Media: albums and photos run to the bubble edge, with matching corners. */
+.messages-scroll .message-bubble > div.space-y-1.mb-2 { margin-bottom: 6px; }
+.messages-scroll .message-bubble > div.space-y-1 > .album-grid {
+    width: calc(100% + 2 * var(--rs-pad-x));
+    max-width: calc(400px + 2 * var(--rs-pad-x));
+    margin: 0 calc(-1 * var(--rs-pad-x));
+}
+.messages-scroll .message-bubble > div.space-y-1 > .album-grid > .grid { gap: 2px; border-radius: 0; }
+.messages-scroll .message-bubble .album-item { border-radius: 0; }
+.messages-scroll .message-bubble > div.space-y-1:empty { display: none; }
+.messages-scroll .message-bubble > :is(div.space-y-1:first-child, div.space-y-1:empty:first-child + div.space-y-1) { margin-top: calc(-1 * var(--rs-pad-y)); }
+.messages-scroll .message-bubble > :is(div.space-y-1:first-child, div.space-y-1:empty:first-child + div.space-y-1) > .album-grid > .grid {
+    border-top-left-radius: var(--rs-tl);
+    border-top-right-radius: var(--rs-tr);
+}
+.messages-scroll .message-bubble > div.space-y-1 > img.rounded-lg {
+    width: calc(100% + 2 * var(--rs-pad-x));
+    max-width: none;
+    margin: 0 calc(-1 * var(--rs-pad-x));
+    border-radius: 0;
+}
+.messages-scroll .message-bubble > :is(div.space-y-1:first-child, div.space-y-1:empty:first-child + div.space-y-1) > img.rounded-lg {
+    border-top-left-radius: var(--rs-tl);
+    border-top-right-radius: var(--rs-tr);
+}
+
+/* Stickers stand on their own, with no bubble behind them; the time becomes
+   a small pill. */
+.messages-scroll .message-bubble:has(> div.space-y-1 > div.max-w-\[200px\]) {
+    background-color: transparent !important;
+    box-shadow: none;
+    padding: 0;
+}
+.messages-scroll .message-bubble:has(> div.space-y-1 > div.max-w-\[200px\])::before { display: none; }
+.messages-scroll .message-bubble:has(> div.space-y-1 > div.max-w-\[200px\]) > div.space-y-1 { margin: 0; }
+.messages-scroll .message-bubble:has(> div.space-y-1 > div.max-w-\[200px\]) > div.text-right.justify-end:last-child {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    margin: 0;
+    padding: 0 7px;
+    border-radius: 10px;
+    background: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+}
+
+/* Voice notes: the play button and meta sit on the bubble itself. */
+.messages-scroll .message-bubble div.bg-gradient-to-r.from-tg-n800 {
+    background: none;
+    padding: 2px 0 0;
+    box-shadow: none;
+    border-radius: 0;
+    min-width: 260px;
+}
+.messages-scroll .message-bubble div.bg-gradient-to-r.from-tg-n800 .text-tg-n300 > span.shrink-0:first-child { display: none; }
+.messages-scroll .message-bubble div.bg-gradient-to-r.from-tg-n800 .text-tg-n300 { font-size: 14px; color: rgb(var(--tg-text)); font-weight: 500; }
+.messages-scroll .message-bubble div.bg-gradient-to-r.from-tg-n800 .text-\[11px\] { font-size: 12px; color: rgb(var(--rs-meta-in)); }
+.messages-scroll .message-bubble div.bg-gradient-to-r.from-tg-n800 button.w-10 { width: 44px; height: 44px; background: rgb(var(--tg-accent)); }
+.messages-scroll .message-bubble .transcript-text { font-size: 15px; line-height: 20px; color: rgb(var(--tg-text)); }
+.messages-scroll .message-bubble .transcript-btn { border-radius: 8px; }
+
+/* Code and quotes inside text. */
+.messages-scroll .tg-code { background: var(--rs-tint); }
+.messages-scroll .tg-pre { background: var(--rs-tint); border-radius: 8px; }
+.messages-scroll .tg-blockquote {
+    background: var(--rs-quote-bg);
+    border-left: 3px solid var(--rs-quote-bar);
+    border-radius: 6px;
+}
+.loading-spinner { border-color: rgb(var(--tg-ink) / 0.12); border-top-color: rgb(var(--tg-accent-soft)); }
+
+/* ---------- 7. Day pills, service messages, FAB -------------------------- */
+
+.date-separator { margin: 14px 0 10px; }
+.floating-date-pill { top: 8px; }
+.floating-date-pill button,
+.date-separator button {
+    padding: 3px 11px;
+    border-radius: 12px;
+    font-size: 12.5px;
+    line-height: 18px;
+    font-weight: 500;
+    box-shadow: none;
+}
+.messages-scroll .service-message { font-size: 12.5px; padding: 3px 11px; line-height: 18px; }
+
+.scroll-to-bottom-btn {
+    width: 44px;
+    height: 44px;
+    background: rgb(var(--tg-sidebar));
+    border: 0;
+    color: rgb(var(--tg-muted));
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.28);
+}
+.scroll-to-bottom-btn svg { width: 22px; height: 22px; }
+.scroll-to-bottom-btn > span.absolute { color: #fff; }
+
+/* ---------- 8. Phones ---------------------------------------------------- */
+
+@media (max-width: 767px) {
+    .messages-scroll .message-bubble { font-size: 16px; line-height: 21px; max-width: 86%; }
+    .messages-scroll .message-text { line-height: 21px; }
+    .messages-scroll .message-row > div.w-8.self-end { width: 32px; }
+    .messages-scroll .message-row > div.w-8 > button { width: 32px; height: 32px; }
+}
+
+/* ---------- 9. Demo only: peer colours -----------------------------------
+   The app hashes the sender id into a hue, so neighbouring ids get the same
+   colour. The proposal is Telegram's rule: seven named colours, picked by
+   id mod 7. That needs a small JS change (getSenderColor, getAvatarFill).
+   To preview it, the rules below map the synthetic demo senders by name to
+   the colour their id would get. They are not part of the design. */
+.messages-scroll .message-row:has(button[aria-label$=" Orson Quill"], button[aria-label$=" Wren Oakhollow"]) { --rs-name: var(--rs-p0); --rs-av: linear-gradient(#ff885e, #ff516a); }
+.messages-scroll .message-row:has(button[aria-label$=" Kofi Brightwater"], button[aria-label$=" Dax Cinderby"]) { --rs-name: var(--rs-p1); --rs-av: linear-gradient(#ffcd6a, #ffa85c); }
+.messages-scroll .message-row:has(button[aria-label$=" Mirela Pinecrest"], button[aria-label$=" Lior Saltmarsh"]) { --rs-name: var(--rs-p2); --rs-av: linear-gradient(#82b1ff, #665fff); }
+.messages-scroll .message-row:has(button[aria-label$=" Tobias Fernwood"], button[aria-label$=" Noor Emberly"]) { --rs-name: var(--rs-p3); --rs-av: linear-gradient(#a0de7e, #54cb68); }
+.messages-scroll .message-row:has(button[aria-label$=" Priya Lanternfield"]) { --rs-name: var(--rs-p4); --rs-av: linear-gradient(#53edd6, #28c9b7); }
+.messages-scroll .message-row:has(button[aria-label$=" Esme Driftwood"]) { --rs-name: var(--rs-p5); --rs-av: linear-gradient(#72d5fd, #2a9ef1); }
+.messages-scroll .message-row:has(button[aria-label$=" Juniper Vale"], button[aria-label$=" Hugo Tallowmere"]) { --rs-name: var(--rs-p6); --rs-av: linear-gradient(#e0a2f3, #d669ed); }
+.messages-scroll .message-row:has(button[aria-label^="Show sender details for "]) .message-bubble > div.items-baseline > span.font-bold[style] { color: var(--rs-name, inherit) !important; }
+.messages-scroll .message-row > div.w-8 > button[style] { background: var(--rs-av, linear-gradient(#72d5fd, #2a9ef1)) !important; }
