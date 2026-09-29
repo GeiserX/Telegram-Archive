@@ -244,7 +244,7 @@ class TestPeerColourContrast(unittest.TestCase):
         self.assertGreaterEqual(len(self.palettes), 11)
 
     def test_initials_clear_both_gradient_stops(self):
-        # The initials sit in the centre of the circle, and a 135deg gradient
+        # The initials sit in the centre of the circle, and a top-to-bottom gradient
         # spans the whole disc, so both stops and the midpoint carry the letters.
         for name, tokens in self.palettes.items():
             fg = _triplet(tokens["--tg-avatar-fg"])
@@ -380,7 +380,11 @@ class TestPeerColourContrast(unittest.TestCase):
             selected = _over(_triplet(tokens["--tg-n700"]), 0.7, popover)
             self._check(name, "n300 on the popover", n300, popover)
             self._check(name, "n300 on a hovered row", n300, _triplet(tokens["--tg-n700"]))
-            self._check(name, "hint n300 on the selected row", n300, selected)
+            self._check(name, "n300 on the selected row", n300, selected)
+            # The "Match system" hint is n400, a step quieter than the label.
+            n400 = _triplet(tokens["--tg-n400"])
+            self._check(name, "hint n400 on the selected row", n400, selected)
+            self._check(name, "hint n400 on a hovered row", n400, _triplet(tokens["--tg-n700"]))
             # Chat header controls, the search field's icon and the archived-chats
             # folder avatar: non-text marks at 3:1.
             self._check(

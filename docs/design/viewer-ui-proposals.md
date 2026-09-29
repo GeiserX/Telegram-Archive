@@ -333,7 +333,7 @@ Dark versions: [desktop chat](mockups/modern-minimal/dark/02-chat-desktop.webp),
 
 **Modern minimal becomes two themes.** Minimal and Graphite, for people who want a quiet reader. With per-sender classes and a tail token, they set all seven peer colours to ink and hide the tail, without a second structure.
 
-**The existing themes keep their current ids.** Every saved choice and every `?theme=` link keeps working. Slate takes the refined slate palette. Telegram Night takes Desktop Night's exact values. Day takes the refined slate repair, with a light slate canvas, white incoming and `#DEF1FD` outgoing bubbles. Paper gets the token-based quotes and pills. AMOLED, Forest and Aubergine keep their colours and gain the new shapes.
+**The existing themes keep their current ids.** Every saved choice and every `?theme=` link keeps working. Slate keeps its own blue-grey panels on purpose, because the refined slate values (`#17202D`, `#294E78`) come out almost the same as Telegram Night. It takes the refined slate shapes and muted header icons. Telegram Night takes Desktop Night's exact values. Day takes the refined slate repair, with a light slate canvas, white incoming and `#DEF1FD` outgoing bubbles. Paper gets the token-based quotes and pills. AMOLED, Forest and Aubergine keep their colours and gain the new shapes.
 
 Theme ids must be 3 to 16 lowercase letters, because `_sanitize_theme_slug` in [`telegram_archive/web/main.py`](../../telegram_archive/web/main.py) drops anything else. That rules out ids such as `telegram-day`.
 
@@ -345,7 +345,7 @@ Theme ids must be 3 to 16 lowercase letters, because `_sanitize_theme_slug` in [
 | `telegram` | Telegram Day | light | Telegram Desktop proposal, plus the pattern and contrast fixes |
 | `night` | Telegram Night | dark | existing id, Desktop Night's exact values |
 | `iosnight` | iOS Night | dark | Telegram mobile proposal, dark palette |
-| `slate` | Slate | dark | existing id, refined slate palette |
+| `slate` | Slate | dark | existing id, its own blue-grey panels kept, refined slate shapes |
 | `minimal` | Minimal | light | Modern minimal proposal, light palette |
 | `graphite` | Graphite | dark | Modern minimal proposal, dark palette |
 | `amoled` | AMOLED | dark | existing, new shapes |

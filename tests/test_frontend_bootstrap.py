@@ -120,7 +120,9 @@ class TestSenderPresentation(unittest.TestCase):
         self.assertIn("const isSenderBreak = (index) =>", self.html)
         # Run positions are keyed once per list change, not per row per render.
         self.assertIn("const runKeys = computed(() => sortedMessages.value.map(getRunKey))", self.html)
-        self.assertIn("computeRunPositions(runKeys.value)", self.html)
+        # A pause of more than 15 minutes splits a run before its positions are read.
+        self.assertIn("computeRunPositions(runSegmentKeys.value)", self.html)
+        self.assertIn("runSegmentKeys.value,", self.html)
         self.assertIn("const showSenderName = (index) => runPositions.value[index]?.start ?? true", self.html)
         self.assertIn("const isRunEnd = (index) => runPositions.value[index]?.end ?? true", self.html)
         self.assertIn("return index > 0 && isRunEnd(index)", self.html)
@@ -147,6 +149,32 @@ class TestSenderPresentation(unittest.TestCase):
                 (True, True),
                 (True, True),  # the service pill
                 (True, True),  # 'b' again, but the pill ended its run
+            ],
+        )
+
+    @unittest.skipUnless(NODE, "node is required to run the run helpers")
+    def test_a_pause_of_more_than_15_minutes_starts_a_new_run(self) -> None:
+        """Index 0 is the newest row. The same sender after a pause of more than
+        15 minutes starts a new run, so its name, avatar and tail come back;
+        exactly 15 minutes keeps the run, and an unpainted row is skipped."""
+        positions = _run_setup_program(
+            self.html,
+            ("const computeRunPositions = (keys) =>", "const splitRunsAtPauses = (keys, times) =>"),
+            "",
+            "const minute = 60 * 1000;\n"
+            "const keys = ['a', 'a', null, 'a', 'a', 'b'];\n"
+            "const times = [61, 60, 45, 45, 29, 0].map((m) => m * minute);\n"
+            "console.log(JSON.stringify(computeRunPositions(splitRunsAtPauses(keys, times))))",
+        )
+        self.assertEqual(
+            [(p["start"], p["end"]) for p in positions],
+            [
+                (False, True),  # 61: one minute on, the bottom of the run
+                (False, False),  # 60: exactly 15 minutes after 45 keeps the run
+                (True, True),  # unpainted: skipped
+                (True, False),  # 45: 16 minutes after 29, a new run starts
+                (True, True),  # 29: a run of one
+                (True, True),  # another sender
             ],
         )
 
@@ -1100,7 +1128,10 @@ def test_date_picker_dialog_accessibility_and_mobile_calendar():
     assert 'aria-label="Close date picker"' in html
     assert 'aria-label="Date to jump to"' in html
     assert "disableMobile: true" in html
-    assert "appendTo: datePickerDialog.value" in html
+    # Open in the dialog under the date field, never a popup over its buttons.
+    assert "inline: true," in html
+    assert "appendTo: datePickerCalendarHost.value" in html
+    assert '<div ref="datePickerCalendarHost" class="date-picker-calendar"></div>' in html
 
     handler_start = html.index("const handleDatePickerKeydown = (event) =>")
     handler_body = html[handler_start : html.index("const openDatePicker", handler_start)]
@@ -1212,12 +1243,17 @@ def test_date_separators_are_not_individually_sticky():
     separator_css = html[separator_css_start : html.index("}", separator_css_start)]
     assert "position: sticky" not in separator_css
 
-    # ...and no other rule may reintroduce per-day stickiness. The one sticky box
-    # in the page is the phone sheet's grab bar, which has nothing to do with dates.
-    assert html.count("position: sticky") == 1
+    # ...and no other rule may reintroduce per-day stickiness in the message
+    # list. The two sticky boxes in the page are the phone sheet's grab bar and
+    # the What changed day pill, which sticks inside its own day's section of
+    # the feed, not in the message list.
+    assert html.count("position: sticky") == 2
     grab_bar = html[html.index("html .popover-sheet::before {") :]
     grab_bar = grab_bar[: grab_bar.index("}")]
     assert "position: sticky" in grab_bar
+    day_pill = html[html.index(".change-day-pill {") :]
+    day_pill = day_pill[: day_pill.index("}")]
+    assert "position: sticky" in day_pill
 
 
 def test_floating_date_pill_is_a_single_element_outside_the_scroller():
@@ -3809,7 +3845,7 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
     def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
         """Row-wide, not span-by-span: a NEW status span must not regress it."""
         row_start = self.bubble.index(
-            'class="flex items-center gap-1.5 mt-0.5 text-[13px] leading-[18px] tabular-nums text-tg-meta"'
+            'class="flex flex-wrap items-center gap-x-1.5 h-[18px] overflow-hidden mt-0.5 text-[13px] leading-[18px] tabular-nums text-tg-meta"'
         )
         row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
         spans = re.findall(r"<span\b[^>]*>", row)
@@ -3824,7 +3860,10 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_the_filename_span_keeps_its_own_protection(self) -> None:
         """``truncate`` implies nowrap; the duration span never had either."""
-        self.assertIn('<span class="truncate">{{ getDocumentDisplayName(msg) }}</span>', self.bubble)
+        self.assertIn(
+            "<div class=\"voice-title truncate\">{{ msg.media?.type === 'voice' ? 'Voice message' : getDocumentDisplayName(msg) }}</div>",
+            self.bubble,
+        )
 
 
 class TestReplyQuoteNamesItsSender(unittest.TestCase):
@@ -4644,10 +4683,10 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         exactly as it was pre-fix."""
         anchor = self._download_anchor_tag()
         self.assertIn("bubble-icon-action", anchor)
-        # The opt-out is meaningless without the actual 28px sizing utilities
+        # The opt-out is meaningless without the actual 32px sizing utilities
         # it is meant to protect (the transcript button's size, beside it).
-        self.assertIn("w-7", anchor)
-        self.assertIn("h-7", anchor)
+        self.assertIn("w-8", anchor)
+        self.assertIn("h-8", anchor)
         self.assertIn("shrink-0", anchor)
 
     def test_the_player_row_has_no_note_emoji_and_names_only_music(self) -> None:
@@ -4662,9 +4701,13 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         self.assertNotIn("🎵", bubble)
         self.assertNotIn("from-tg-n800", bubble)
         self.assertNotIn("shadow-lg", bubble)
+        # Telegram's file row: a voice note reads "Voice message", a music
+        # file its title, over the duration and the size.
         self.assertIn(
-            '<div v-if="msg.media?.type !== \'voice\'" class="flex items-center text-sm font-medium">', bubble
+            "<div class=\"voice-title truncate\">{{ msg.media?.type === 'voice' ? 'Voice message' : getDocumentDisplayName(msg) }}</div>",
+            bubble,
         )
+        self.assertIn("{{ formatFileSize(msg.media.file_size) }}", bubble)
 
 
 def test_gif_observer_watcher_is_shallow_and_ordered():
@@ -5012,9 +5055,10 @@ def test_lightbox_controls_are_drawn_for_the_scrim():
     """
     lightbox = _lightbox_block(INDEX_HTML.read_text(encoding="utf-8"))
     assert "text-tg-ink" not in lightbox
-    assert lightbox.count("lightbox-control absolute") == 2
+    assert lightbox.count("lightbox-control absolute") == 3
     assert 'aria-label="Close"' in lightbox
     assert 'aria-label="Download"' in lightbox
+    assert 'aria-label="Show in chat"' in lightbox
 
 
 def test_bubble_type_follows_the_browser_font_size():
@@ -5047,17 +5091,55 @@ def test_selected_chat_row_is_a_class_hover_cannot_override():
 
 
 def test_bubble_account_chip_shows_when_several_archived_accounts_speak():
-    """The chip follows the senders in the loaded rows, not the accounts that hold the chat.
+    """The chip shows when the open chat's holders and speakers name more than one account.
 
-    A private chat between two archived accounts belongs to one of them, yet both
-    write in it; hiding the chip there would draw both sides as the same identity.
+    A chat that belongs to one account and hears only that account shows none;
+    the header names it. A private chat between two archived accounts belongs to
+    one of them, yet both write in it; hiding the chip there would draw both
+    sides as the same identity.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "const ids = new Set(selectedChat.value?.accounts || [])" in html
     assert "chatAccountLabels(selectedChat.value).length > 1" not in html
     assert "if (row.sender_account_id != null) ids.add(row.sender_account_id)" in html
     assert "bubbleAccountIds.value.size > 1 ? senderAccountLabel(msg) : ''" in html
     assert '<span v-if="bubbleAccountLabel(msg)" class="account-chip">' in html
     assert '<span v-if="senderAccountLabel(msg)" class="account-chip">' not in html
+
+
+def _bubble_chip_labels(html: str, accounts: list[int], holders: list[int], senders: list[int]) -> list[str]:
+    """Run the real chip helpers for one chat and return the chip of each row."""
+    return _run_setup_program(
+        html,
+        (
+            "const accountLabels = computed(() =>",
+            "const multiAccount = computed(() =>",
+            "const accountLabel = (id) =>",
+            "const senderAccountLabel = (msg) =>",
+            "const bubbleAccountIds = computed(() => {",
+            "const bubbleAccountLabel = (msg) =>",
+        ),
+        "const ref = (value) => ({ value });\n"
+        "const computed = (fn) => ({ get value() { return fn() } });\n"
+        f"const accountList = ref({json.dumps([{'id': a, 'label': f'Account {a}'} for a in accounts])});\n"
+        f"const selectedChat = ref({{ accounts: {json.dumps(holders)} }});\n"
+        f"const sortedMessages = ref({json.dumps([{'sender_account_id': s} for s in senders])});",
+        "console.log(JSON.stringify(sortedMessages.value.map(bubbleAccountLabel)))",
+    )
+
+
+@unittest.skipUnless(NODE, "node is required to run the chip helpers")
+def test_bubble_account_chip_runs_for_holders_and_speakers():
+    """Executes the chip rule for the four shapes a chat can take."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    # A single-account install never draws a chip.
+    assert _bubble_chip_labels(html, [1], [1], [1, 1]) == ["", ""]
+    # One holder, and only that account writes: the header already names it.
+    assert _bubble_chip_labels(html, [1, 2], [1], [1, 1]) == ["", ""]
+    # Two holders, one of them writes: the chip says which one.
+    assert _bubble_chip_labels(html, [1, 2], [1, 2], [1, 1]) == ["Account 1", "Account 1"]
+    # One holder, two archived accounts write, as in a private chat between them.
+    assert _bubble_chip_labels(html, [1, 2], [1], [1, 2]) == ["Account 1", "Account 2"]
 
 
 def test_reply_quote_is_reachable_from_the_keyboard():
@@ -5084,7 +5166,12 @@ def test_deleted_text_stays_readable():
         "background-image: linear-gradient(var(--tg-deleted-wash), var(--tg-deleted-wash)), var(--tg-bubble-image, none);"
         in rule
     )
+    # No edge on any palette: a ring cannot follow the tail, and it read as an
+    # error or a selection. A dark palette takes a stronger wash instead.
+    assert "--tg-deleted-edge" not in html
     assert "box-shadow" not in rule
+    assert html.count("--tg-deleted-wash: rgb(248 113 113 / 0.12);") == 7
+    assert html.count("--tg-deleted-wash: rgb(185 28 28 / 0.07);") == 4
     assert "inset 0 0 0 1.5px" not in html
     assert "--tg-deleted-bar" not in html
     assert ".message-meta .meta-deleted {" in html
@@ -5159,9 +5246,9 @@ def test_search_hits_take_the_chat_rows_peer_colour():
 
 
 def test_header_popovers_are_a_bottom_sheet_on_phones():
-    """On a phone the theme, stats and account menus span the screen instead of running off its edge."""
+    """On a phone the theme, stats and account menus (and More actions) span the screen instead of running off its edge."""
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert html.count('class="popover-sheet ') == 3
+    assert html.count('class="popover-sheet ') == 4
     sheet = html[html.index("        @media (max-width: 767px) {\n            html .popover-sheet {") :]
     sheet = sheet[: sheet.index("\n        }\n")]
     for rule in ("position: fixed;", "left: 0;", "right: 0;", "bottom: 0;", "max-height: 70vh;", "var(--sab)"):
@@ -5405,10 +5492,8 @@ def test_closing_the_chat_search_returns_focus_to_its_button():
     assert "event.currentTarget.contains(event.relatedTarget)" in out[: out.index("\n                }\n")]
     assert '@focusout="onChatSearchFocusOut"' in html
     # A topic switch inside a forum closes it as a chat switch does.
-    assert (
-        "watch(() => [selectedChat.value?.ref, selectedPaneTopic.value?.id], () => { chatSearchOpen.value = false })"
-        in html
-    )
+    switch = html[html.index("watch(() => [selectedChat.value?.ref, selectedPaneTopic.value?.id], () => {") :]
+    assert "chatSearchOpen.value = false" in switch[: switch.index("\n                })")]
 
 
 def test_pictures_open_from_the_keyboard():
@@ -5427,3 +5512,54 @@ def test_one_pinned_message_is_not_plural():
     assert 'View all ${pinnedMessages.length} pinned messages`"' not in html.replace(
         "pinnedMessages.length === 1 ? 'Open pinned message' : `View all ${pinnedMessages.length} pinned messages`", ""
     )
+
+
+# ---------------------------------------------------------------------------
+# Viewer redesign, phase 4 review: the archive's own views.
+# ---------------------------------------------------------------------------
+
+
+def test_poll_vote_count_shares_the_time_line():
+    """The vote count is inline text in the message body, so the floated time joins it."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    body = html[html.index('<div class="message-body" dir="auto">') :]
+    body = body[: body.index('<span class="message-meta" dir="ltr">')]
+    assert '<span v-if="msg.raw_data?.poll?.results" class="poll-votes text-tg-meta">' in body
+    poll = html[html.index('<div v-if="msg.raw_data?.poll" class="poll') :]
+    poll = poll[: poll.index("<!-- Extended media chip")]
+    assert "poll-votes" not in poll
+
+
+def test_pinned_bar_shows_no_time():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "formatTime(pinnedMessage.date)" not in html
+
+
+def test_folder_tabs_carry_no_count_that_reads_as_unread():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert '<span class="folder-tab-count">{{ folder.chat_count }}</span>' not in html
+    assert ":title=\"`${folder.chat_count} ${folder.chat_count === 1 ? 'chat' : 'chats'}`\"" in html
+    # An empty Shared Media tab stays in place, greyed out, unless it is the open one.
+    assert ':disabled="mediaGalleryCounts[tab.id] === 0 && mediaGalleryTab !== tab.id"' in html
+    assert ".folder-tab:disabled {" in html
+
+
+def test_what_changed_has_its_own_glyph_and_an_unseen_dot():
+    """The clock with an arrow means "edited" on a message; the feed has a pulse glyph."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    button = html[html.index('<button @click="openChangesFeed"') :]
+    button = button[: button.index("</button>")]
+    assert 'd="M22 12h-4l-3 9L9 3l-3 9H2"' in button
+    assert "M3 12a9 9 0 1 0 9-9" not in button
+    assert '<span v-if="changesUnseen" class="changes-dot" aria-hidden="true"></span>' in button
+    opener = html[html.index("const openChangesFeed = () => {") :]
+    assert opener[: opener.index("\n                }")].count("markChangesSeen()") == 1
+
+
+def test_lightbox_shows_caption_deleted_tag_and_way_back():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    lightbox = _lightbox_block(html)
+    assert "{{ lightboxCaption(lightboxMedia) }}" in lightbox
+    assert '<span v-if="lightboxMedia.is_deleted" class="lightbox-deleted' in lightbox
+    assert '@click="lightboxShowInChat"' in lightbox
+    assert "-webkit-line-clamp: 3;" in html

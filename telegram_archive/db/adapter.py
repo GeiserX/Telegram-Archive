@@ -2883,6 +2883,8 @@ class DatabaseAdapter:
                     Media,
                     Message.date,
                     Message.sender_name,
+                    Message.text,
+                    Message.is_deleted,
                     User.first_name,
                     User.last_name,
                     User.username,
@@ -2921,8 +2923,12 @@ class DatabaseAdapter:
                     "duration": media.duration,
                     "message_date": msg_date.isoformat() if msg_date else None,
                     "sender_name": resolve_sender_display_name(sender_name, first_name, last_name, username),
+                    # The message's own caption and its kept-deletion flag, so a
+                    # photo opened from the gallery shows what it shows in the chat.
+                    "text": text or "",
+                    "is_deleted": bool(is_deleted),
                 }
-                for media, msg_date, sender_name, first_name, last_name, username in rows[:limit]
+                for media, msg_date, sender_name, text, is_deleted, first_name, last_name, username in rows[:limit]
             ]
 
             return {"items": items, "has_more": has_more}

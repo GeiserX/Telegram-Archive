@@ -26,11 +26,11 @@ Each browser remembers its own widths.
 
 ## Chat list
 
-The top of the sidebar shows folder tabs under the search field. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji when it has one and its chat count. The tabs only appear when the archive holds at least one folder. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram.
+The top of the sidebar shows folder tabs under the search field. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji when it has one. Hover a folder tab to see its chat count; a screen reader reads it with the tab's name. The tabs only appear when the archive holds at least one folder. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram. Inside Archived Chats the tabs hide, and the back arrow returns to the list.
 
-Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message, then its username, what kind of chat it is and its member count, for example `group · 24 members`. The chat's Telegram id is in the info panel.
+Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message. Under the name, a group or a channel shows what kind of chat it is and its member count, for example `group · 24 members`, and a private chat shows the person's username, or `private chat` when there is none. A group's username and the chat's Telegram id are in the info panel.
 
-When you can see more than one Telegram account, each row carries a chip with the account's label. See [Multiple accounts](../configuration/multiple-accounts.md).
+When you can see more than one Telegram account, each row carries a chip with the account's label, and the chat header names the account after the member count. A message bubble shows the chip only when more than one archived account holds or writes in the open chat. See [Multiple accounts](../configuration/multiple-accounts.md).
 
 The sidebar also shows **Last backup** with the time of the most recent backup. When the listener is running, the same line shows **Real-time sync** with a green dot.
 
@@ -54,6 +54,10 @@ Inside an open chat, the search button in the chat header opens a field that sea
 ![Global search for "trail" with message hits in the sidebar and the chat opened at the clicked hit](../images/screenshots/search-results.png)
 
 ## Reading messages
+
+The chat header shows the member count, for example `24 members` or `4,812 subscribers`. When the archive has no count, it shows what kind of chat it is, such as `private chat`.
+
+Messages from one sender in a row form a run. In a group, the sender's name sits on the first bubble and their photo beside the last. A run ends when someone else writes, at a new day, or when the same sender writes again more than 15 minutes later.
 
 ### Text
 
@@ -125,7 +129,7 @@ A round button with a down arrow appears in the bottom right corner. It shows wh
 
 ### Jump to a date
 
-While you scroll, a pill at the top of the pane shows the day you are looking at. Click it, or any date separator, to open **Jump to Date**. Days that have messages carry a dot. The latest date you can pick is today in `VIEWER_TIMEZONE`. Press <kbd>Esc</kbd> to close the dialog.
+While you scroll, a pill at the top of the pane shows the day you are looking at. Click it, or any date separator, to open **Jump to date**. Days that have messages carry a dot, and days without messages are grey. Both can be picked. The latest date you can pick is today in `VIEWER_TIMEZONE`. Press <kbd>Esc</kbd> to close the dialog.
 
 ### Links to a message
 
@@ -151,9 +155,13 @@ The **Shared Media Gallery** button in the chat header opens the chat's files in
 | Voice | voice messages and audio, with a filter box that matches the file name or the transcript |
 | Files | documents, each with download and go-to-message buttons |
 
+A tab with nothing in it is greyed out.
+
 Items load 50 at a time. Click **Load more** for the next page.
 
-Photos, videos and GIFs open in the lightbox. A round video tile jumps to its message. Press <kbd>Esc</kbd> to close the lightbox and <kbd>Left</kbd> or <kbd>Right</kbd> to move between items. Files have a download button and a go-to-message button. Download buttons are hidden for [no-download logins](access.md#no-download-logins).
+A photo or video whose message was deleted in Telegram carries a small trash mark on its tile.
+
+Photos, videos and GIFs open in the lightbox. It shows the sender, the date and the caption, and a **deleted** tag when Telegram deleted the message, whether you opened it from the chat or from here. **Show in chat** closes it and goes to the message in the chat around it, leaving the pinned-only view or an in-chat search if one is open. A round video tile jumps to its message. Press <kbd>Esc</kbd> to close the lightbox and <kbd>Left</kbd> or <kbd>Right</kbd> to move between items. Files have a download button and a go-to-message button. Download buttons are hidden for [no-download logins](access.md#no-download-logins).
 
 How thumbnails are made and cached is on [Media downloads](../configuration/media.md).
 
@@ -167,7 +175,7 @@ The info panel shows the open chat:
 - earlier profile photos the archive recorded
 - description or bio, username and Telegram ID
 - account chips, when more than one account is visible
-- what the archive holds for the chat: messages, media files, disk use, the oldest message, and how many deleted and edited messages it kept
+- what the archive holds for the chat: messages, media files, disk use, the oldest message, and how many messages were deleted in Telegram or edited, which the archive kept
 - shortcuts into the shared media
 
 With the panel open, click a message to select it. On a touch screen, or in a window under 768 px wide, tap a message's time or its "deleted" marker instead: the panel opens on that message. The panel then also shows:
@@ -211,13 +219,13 @@ Voice and music each keep their own speed. Playback continues when you switch ch
 
 ## What changed
 
-The clock button in the sidebar header opens **What changed**. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time. A message edited more than once is one card with every text the archive kept, oldest first, and the older ones struck through. Click a card to open its message in the chat. An edit card also opens the message's edit history. On a phone the list opens as a full-height sheet.
+The pulse button in the sidebar header opens **What changed**. A dot on the button means there are entries newer than the last time you opened it in this browser. It lists deletions, edits and new voice transcripts, newest first. Pick a window of **Last 24 hours**, **7 days**, **30 days** or **All time**. Entries load 50 at a time. Entries are grouped by day, and each one says what its time means, for example `deleted 16:43`, `edited 15:20` or `transcribed 16:02`. A message edited more than once is one entry with every text the archive kept, oldest first, and the older ones struck through. Click an entry to open its message in the chat. An edit entry also opens the message's edit history. On a phone the list opens as a full-height sheet.
 
 Deletions appear here only when the archive learns about them: the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=hard` a deleted row is removed instead of kept.
 
 ## Export a chat
 
-The export button in the chat header downloads the open chat as a JSON file. On a phone it is in the info panel. You can set a from date, a to date, both or neither. A to date on its own includes that whole day.
+**Export chat**, in the chat header's **More actions** menu, downloads the open chat as a JSON file. On a phone it is in the info panel. You can set a from date, a to date, both or neither. A to date on its own includes that whole day.
 
 The file is named `<title>_export.json`. It holds the chat, the filters you used, the messages and their earlier versions. It holds no media files.
 
@@ -279,13 +287,13 @@ After you upgrade the viewer, reload any open tabs or app windows. An open page 
 | Key | Where | Does |
 |-----|-------|------|
 | <kbd>Esc</kbd> | search field | clears the field, then leaves it |
-| <kbd>Esc</kbd> | info panel, lightbox, Versions drawer, Jump to Date, sender details, What changed, sidebar menus | closes it |
+| <kbd>Esc</kbd> | info panel, lightbox, Versions drawer, Jump to date, sender details, What changed, sidebar menus, More actions | closes it |
 | <kbd>Up</kbd> <kbd>Down</kbd> | search results | moves between chats and messages |
 | <kbd>Up</kbd> <kbd>Down</kbd> | open info panel | selects the previous or next message |
 | <kbd>Left</kbd> <kbd>Right</kbd> | lightbox | previous or next item |
 | <kbd>Left</kbd> <kbd>Right</kbd> | focused resize handle | resizes the pane by 16 px |
 | <kbd>Enter</kbd> | search results | opens the highlighted result |
 | <kbd>Enter</kbd> <kbd>Space</kbd> | spoiler, round video | reveals the spoiler, toggles the sound |
-| <kbd>Tab</kbd> | Jump to Date, sender details, Versions drawer, What changed | stays inside the dialog |
+| <kbd>Tab</kbd> | Jump to date, sender details, Versions drawer, What changed, lightbox | stays inside the dialog |
 
 There are no single-letter shortcuts such as `j` and `k`.

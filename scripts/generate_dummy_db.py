@@ -61,6 +61,9 @@ BOOKS = -4012345678
 PLATFORM = -1001900000010
 RELEASES = -1001900000011
 
+# Chats with earlier profile photos in the archive, and how many.
+EARLIER_AVATARS = {HIKERS: 2, KOFI: 1}
+
 PALETTES = [
     # sky top, sky bottom, sun, three mountain layers (far to near), water
     ((255, 183, 128), (255, 226, 190), (255, 244, 214), (190, 120, 130), (130, 80, 110), (70, 45, 80), (230, 150, 120)),
@@ -911,10 +914,10 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
 
 
 async def seed(data_dir: Path) -> None:
-    from sqlalchemy import insert
+    from sqlalchemy import insert, update
 
     from telegram_archive.db import close_adapter, create_adapter
-    from telegram_archive.db.models import MessageVersion, Reaction
+    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MessageVersion, Reaction
 
     backup = data_dir / "backups"
     media_root = backup / "media"
@@ -941,6 +944,26 @@ async def seed(data_dir: Path) -> None:
                 folder = "users" if chat["type"] == "private" else "chats"
                 draw_avatar(media_root / "avatars" / folder / f"{chat['id']}_{photo_id}.jpg", 60 + i * 7, avatar)
             await db.upsert_chat(chat, account_id=account)
+            # Earlier profile photos the archive saw, so the info panel shows
+            # its "Previous photos" row: an older file beside the current one
+            # and a sighting of it, dated before the current photo's.
+            for n in range(EARLIER_AVATARS.get(chat["id"], 0)):
+                old_id = photo_id + 1000 * (n + 1)
+                # Two palette steps from the current photo per earlier one, so an
+                # earlier photo never reads as the current one in the panel.
+                draw_avatar(
+                    media_root / "avatars" / folder / f"{chat['id']}_{old_id}.jpg", 60 + i * 7 + 2 * (n + 1), avatar
+                )
+                async with db.db_manager.async_session_factory() as session:
+                    await session.execute(
+                        insert(AvatarHistory).values(
+                            account_id=account,
+                            chat_id=chat["id"],
+                            photo_id=old_id,
+                            seen_at=now - timedelta(days=150 * (n + 1)),
+                        )
+                    )
+                    await session.commit()
 
         for s in scripts:
             account = accounts[s.account_id]
@@ -962,6 +985,15 @@ async def seed(data_dir: Path) -> None:
                         confidence=0.94,
                         duration_s=float(m["duration"]),
                     )
+                    # Finished a minute after the voice note arrived, so What
+                    # changed dates it like a real run, not at seed time.
+                    async with db.db_manager.async_session_factory() as session:
+                        await session.execute(
+                            update(MediaTranscript)
+                            .where(MediaTranscript.id == row["id"])
+                            .values(completed_at=s.by_id[m["message_id"]]["date"] + timedelta(minutes=1))
+                        )
+                        await session.commit()
             async with db.db_manager.async_session_factory() as session:
                 for mid, emoji, count, voters in s.reactions:
                     rows = [(uid, 1) for uid in voters] if voters else [(None, count)]
@@ -971,8 +1003,12 @@ async def seed(data_dir: Path) -> None:
                                 account_id=account, message_id=mid, chat_id=s.chat_id, emoji=emoji, user_id=uid, count=n
                             )
                         )
-                for mid, old_text, when in s.versions:
+                for index, (mid, old_text, when) in enumerate(s.versions):
                     digest = hashlib.sha256(f"{account}:{s.chat_id}:{mid}:{old_text}".encode()).hexdigest()
+                    # Captured when the next text appeared: the next kept
+                    # version of the same message, or its last edit.
+                    following = s.versions[index + 1] if index + 1 < len(s.versions) else None
+                    captured = following[2] if following and following[0] == mid else s.by_id[mid]["edit_date"]
                     await session.execute(
                         insert(MessageVersion).values(
                             account_id=account,
@@ -980,6 +1016,7 @@ async def seed(data_dir: Path) -> None:
                             chat_id=s.chat_id,
                             text=old_text,
                             date=when,
+                            captured_at=captured,
                             change_hash=digest,
                         )
                     )

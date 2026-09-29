@@ -8,6 +8,7 @@ import sys
 from datetime import datetime
 
 import pytest_asyncio
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -187,6 +188,25 @@ class TestGetMediaPaginated:
     async def test_sender_name_null_for_no_user(self, adapter):
         result = await adapter.get_media_paginated(-1001, media_types=["document"])
         assert result["items"][0]["sender_name"] is None
+
+    async def test_items_carry_the_caption_and_the_deleted_flag(self, adapter):
+        """The lightbox shows a gallery photo's caption and "deleted" tag, as it does in the chat."""
+        result = await adapter.get_media_paginated(-1001, media_types=["video"])
+        assert result["items"][0]["text"] == "video msg"
+        assert result["items"][0]["is_deleted"] is False
+
+        async with adapter.db_manager.async_session_factory() as session:
+            await session.execute(
+                update(Message)
+                .where(Message.chat_id == -1001, Message.id == 3)
+                .values(is_deleted=1, deleted_at=datetime(2026, 1, 5, 10))
+            )
+            await session.commit()
+
+        result = await adapter.get_media_paginated(-1001, media_types=["video"])
+        assert result["items"][0]["is_deleted"] is True
+        # A read: the kept row and its text are still there.
+        assert result["items"][0]["text"] == "video msg"
 
     async def test_limit_works(self, adapter):
         result = await adapter.get_media_paginated(-1001, limit=2)

@@ -133,6 +133,92 @@ async function newContext(browser, profile) {
     return context
 }
 
+// --- the archive's own views ----------------------------------------------
+//
+// What makes this an archive and not a Telegram client: the changes feed, the
+// statistics, an edit history, earlier profile photos, the export, a kept
+// deletion, the archived chats and the date picker. Each runs on both widths.
+
+async function openChangesFeed(page) {
+    await open(page)
+    await page.getByRole('button', { name: 'What changed' }).click()
+    await page.locator('#changes-feed-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.getByRole('combobox', { name: 'Time window' }).selectOption('')
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    await page.waitForTimeout(400)
+}
+
+async function openStatusPanel(page) {
+    await open(page)
+    await page.getByRole('button', { name: 'Backup statistics' }).click()
+    await page.getByRole('group', { name: 'Backup statistics' }).waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(300)
+}
+
+async function openEditHistory(page) {
+    await open(page)
+    await openGroup(page)
+    const edited = page.locator('.message-meta button[aria-expanded]').first()
+    await edited.waitFor({ state: 'attached', timeout: 15000 })
+    await edited.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
+    await edited.click()
+    await page.locator('#versions-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(400)
+}
+
+async function openAvatarHistory(page) {
+    await open(page)
+    await openGroup(page)
+    await page.getByRole('button', { name: 'Chat information' }).click()
+    await page.locator('[data-testid="previous-avatars"]').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(300)
+}
+
+async function openExportDialog(page, mobile) {
+    await open(page)
+    await openGroup(page)
+    if (mobile) {
+        // On a phone the export action lives in the info panel.
+        await page.getByRole('button', { name: 'Chat information' }).click()
+        await page.locator('#info-panel').waitFor({ state: 'visible', timeout: 10000 })
+        await page.locator('#info-panel .info-action').filter({ hasText: 'Export chat' }).click()
+    } else {
+        // On a wide screen it sits in the header's "More actions" menu.
+        await page.getByRole('button', { name: 'More actions' }).click()
+        await page.getByRole('button', { name: 'Export chat' }).click()
+    }
+    await page.locator('#export-modal-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(300)
+}
+
+// Both kept deletions in view: the deleted text at the top, the deleted
+// photo under it.
+async function openDeleted(page) {
+    await open(page)
+    await openGroup(page)
+    await centerOn(page, 'Parking at the north lot', 'start')
+}
+
+async function openArchivedChats(page) {
+    await open(page)
+    await page.locator('.cursor-pointer h3').filter({ hasText: 'Archived Chats' }).first().click()
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    await page.waitForTimeout(500)
+}
+
+async function openDatePicker(page) {
+    await open(page)
+    await openGroup(page)
+    const separator = page.locator('.date-separator button').first()
+    await separator.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+    await separator.click()
+    await page.locator('.flatpickr-calendar').first().waitFor({ state: 'visible', timeout: 10000 })
+    // The click that opened it would otherwise leave a hovered day under the pointer.
+    await page.mouse.move(0, 0)
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    await page.waitForTimeout(400)
+}
+
 // --- views -----------------------------------------------------------------
 
 const desktopViews = {
@@ -180,6 +266,14 @@ const desktopViews = {
         await page.getByRole('button', { name: 'Choose color theme' }).click()
         await page.waitForTimeout(300)
     },
+    '10-changes-feed': (page) => openChangesFeed(page),
+    '11-status-panel': (page) => openStatusPanel(page),
+    '12-edit-history': (page) => openEditHistory(page),
+    '13-avatar-history': (page) => openAvatarHistory(page),
+    '14-export-dialog': (page) => openExportDialog(page, false),
+    '15-deleted': (page) => openDeleted(page),
+    '16-archived-chats': (page) => openArchivedChats(page),
+    '17-date-picker': (page) => openDatePicker(page),
 }
 
 const mobileViews = {
@@ -191,6 +285,14 @@ const mobileViews = {
     '05-chat-list-mobile': async (page) => {
         await open(page)
     },
+    '10-changes-feed-mobile': (page) => openChangesFeed(page),
+    '11-status-panel-mobile': (page) => openStatusPanel(page),
+    '12-edit-history-mobile': (page) => openEditHistory(page),
+    '13-avatar-history-mobile': (page) => openAvatarHistory(page),
+    '14-export-dialog-mobile': (page) => openExportDialog(page, true),
+    '15-deleted-mobile': (page) => openDeleted(page),
+    '16-archived-chats-mobile': (page) => openArchivedChats(page),
+    '17-date-picker-mobile': (page) => openDatePicker(page),
 }
 
 async function run(browser, profile, views) {

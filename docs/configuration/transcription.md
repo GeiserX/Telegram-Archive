@@ -211,7 +211,7 @@ The callback URL must be reachable from akou. See [Exposing the viewer safely](.
 
 ### The button
 
-Each transcribable file gets a small rounded button with a waveform-and-lines glyph. It fills in while the text is open.
+Each transcribable file gets a small rounded button with a waveform-and-lines glyph, tinted in the bubble's link colour. The tint deepens while the text is open.
 
 | Media | Where the button sits |
 |---|---|
@@ -253,7 +253,7 @@ When a file has more than one finished transcript, a picker labelled "1 of N" sw
 
 With more than one speaker, the text reads as turns: "Speaker 1:", "Speaker 2:", numbered in order of first speech.
 
-The viewer remembers per message whether a transcript is open. An "Expand all transcripts" button in the chat header opens every transcript in the chat. It then reads "Collapse all transcripts" and closes them. The viewer remembers that choice per chat.
+The viewer remembers per message whether a transcript is open. **Expand all transcripts**, in the chat header's **More actions** menu (in the info panel on a phone), opens every transcript in the chat. It then reads "Collapse all transcripts" and closes them. The viewer remembers that choice per chat.
 
 ### Status, search and exports
 

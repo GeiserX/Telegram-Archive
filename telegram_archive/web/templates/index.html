@@ -127,17 +127,18 @@
         }
 
         /* On a phone each side has its own cap, as in Telegram iOS. An incoming
-           bubble stops about 52px short of the right edge, beside the avatar
-           gutter (33px and a 12px gap) in a group, so the scroll button has a
-           lane of its own beside it. An outgoing one leaves 64px on the left
-           and, as in Telegram, scrolls under the button. The row is the
-           percentage base. */
+           bubble stops 44px short of the row's right edge, and 27px short
+           beside the avatar gutter (33px and a 12px gap) in a group, so a
+           one-line message keeps its time on the same line. Both sides scroll
+           under the scroll button, as in Telegram, which only shows while the
+           chat is scrolled up. An outgoing bubble leaves 64px on the left. The
+           row is the percentage base. */
         @media (max-width: 767px) {
             .message-bubble.bubble-in {
-                --tg-bubble-max: calc(100% - 52px);
+                --tg-bubble-max: calc(100% - 44px);
             }
             .message-row:has(> .message-avatar-gutter) > .message-bubble.bubble-in {
-                --tg-bubble-max: calc(100% - 97px);
+                --tg-bubble-max: calc(100% - 72px);
             }
             .message-bubble.bubble-out {
                 --tg-bubble-max: calc(100% - 64px);
@@ -237,28 +238,30 @@
             --tg-selection-fg: 0 0 0;
 
             /* Seven peer colours and avatar fills, picked by id modulo 7
-               (getPeerIndex). */
+               (getPeerIndex). The names hold 4.5:1 on white, on the deleted
+               wash and on a reply quote's tint, so they sit a little darker
+               than Telegram's own. */
             --tg-peer-0: 192 61 51;
-            --tg-peer-1: 183 91 24;
+            --tg-peer-1: 168 84 22;
             --tg-peer-2: 133 68 214;
-            --tg-peer-3: 60 131 34;
-            --tg-peer-4: 35 127 147;
-            --tg-peer-5: 20 123 183;
+            --tg-peer-3: 56 122 32;
+            --tg-peer-4: 32 117 135;
+            --tg-peer-5: 18 113 168;
             --tg-peer-6: 182 61 120;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 141 150 158;
 
             /* Shadows, scrollbar, focus ring, the run-end corner and the
-               wallpaper layers. A shadow token is never `none`: it is composed
-               into a list (the deleted ring), where `none` is invalid and would
-               drop the whole declaration. `0 0 0 transparent` draws nothing. */
+               wallpaper layers. A shadow token is never `none`, so it can be
+               composed into a list, where `none` is invalid and would drop the
+               whole declaration. `0 0 0 transparent` draws nothing. */
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.18);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.20);
             --tg-scroll-thumb: rgb(0 0 0 / 0.18);
@@ -374,13 +377,13 @@
             --tg-peer-4: 98 212 227;
             --tg-peer-5: 101 189 243;
             --tg-peer-6: 226 116 196;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 138 156 175;
 
@@ -401,7 +404,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 254 202 202;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -495,13 +498,13 @@
             --tg-peer-4: 93 210 224;
             --tg-peer-5: 109 187 245;
             --tg-peer-6: 255 114 176;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 141 142 147;
 
@@ -522,7 +525,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 255 224 224;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -576,7 +579,7 @@
             --tg-n950: 15 23 42;
             --tg-border: 44 57 78;
             --tg-border-strong: 71 85 105;
-            --tg-bar-icon: 51 144 236;
+            --tg-bar-icon: 148 163 184;
 
             --tg-other: 36 50 68;
             --tg-own: 44 88 140;
@@ -619,13 +622,13 @@
             --tg-peer-4: 98 212 227;
             --tg-peer-5: 101 189 243;
             --tg-peer-6: 226 116 196;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 100 116 139;
 
@@ -646,7 +649,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 254 202 202;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -887,7 +890,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 254 202 202;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -980,13 +983,13 @@
             --tg-peer-4: 98 212 227;
             --tg-peer-5: 101 189 243;
             --tg-peer-6: 226 116 196;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 140 146 154;
 
@@ -1007,7 +1010,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 254 202 202;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -1100,13 +1103,13 @@
             --tg-peer-4: 98 212 227;
             --tg-peer-5: 101 189 243;
             --tg-peer-6: 226 116 196;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 143 163 152;
 
@@ -1127,7 +1130,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 254 202 202;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -1220,13 +1223,13 @@
             --tg-peer-4: 98 212 227;
             --tg-peer-5: 101 189 243;
             --tg-peer-6: 226 116 196;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 173 159 193;
 
@@ -1247,7 +1250,7 @@
             --tg-danger: 248 113 113;
             --tg-danger-fg: 254 202 202;
             --tg-danger-strong: 185 28 28;
-            --tg-deleted-wash: rgb(248 113 113 / 0.11);
+            --tg-deleted-wash: rgb(248 113 113 / 0.12);
             --tg-warning: 252 211 77;
             --tg-warning-bg: 120 53 15;
             --tg-warning-fg: 253 230 138;
@@ -1335,19 +1338,19 @@
             --tg-selection-fg: 15 23 42;
 
             --tg-peer-0: 192 61 51;
-            --tg-peer-1: 183 91 24;
+            --tg-peer-1: 168 84 22;
             --tg-peer-2: 133 68 214;
-            --tg-peer-3: 60 131 34;
-            --tg-peer-4: 35 127 147;
-            --tg-peer-5: 20 123 183;
+            --tg-peer-3: 56 122 32;
+            --tg-peer-4: 32 117 135;
+            --tg-peer-5: 18 113 168;
             --tg-peer-6: 182 61 120;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 134 146 162;
 
@@ -1454,20 +1457,20 @@
             --tg-selection-bg: rgb(173 88 21 / 0.25);
             --tg-selection-fg: 43 34 24;
 
-            --tg-peer-0: 192 61 51;
-            --tg-peer-1: 177 89 23;
+            --tg-peer-0: 184 58 49;
+            --tg-peer-1: 163 82 21;
             --tg-peer-2: 133 68 214;
-            --tg-peer-3: 58 128 33;
-            --tg-peer-4: 34 123 142;
-            --tg-peer-5: 19 119 177;
+            --tg-peer-3: 54 118 30;
+            --tg-peer-4: 31 113 131;
+            --tg-peer-5: 17 109 163;
             --tg-peer-6: 174 58 114;
-            --tg-avatar-0: linear-gradient(135deg, #CF4030, #AF3123);
-            --tg-avatar-1: linear-gradient(135deg, #AF5C1D, #8C4712);
-            --tg-avatar-2: linear-gradient(135deg, #7B5FD1, #5B3DB8);
-            --tg-avatar-3: linear-gradient(135deg, #358226, #256218);
-            --tg-avatar-4: linear-gradient(135deg, #1E7E8D, #135F6A);
-            --tg-avatar-5: linear-gradient(135deg, #2D75BE, #1F5E9E);
-            --tg-avatar-6: linear-gradient(135deg, #CB3C77, #A52A5E);
+            --tg-avatar-0: linear-gradient(180deg, #CF4030, #AF3123);
+            --tg-avatar-1: linear-gradient(180deg, #AF5C1D, #8C4712);
+            --tg-avatar-2: linear-gradient(180deg, #7B5FD1, #5B3DB8);
+            --tg-avatar-3: linear-gradient(180deg, #358226, #256218);
+            --tg-avatar-4: linear-gradient(180deg, #1E7E8D, #135F6A);
+            --tg-avatar-5: linear-gradient(180deg, #2D75BE, #1F5E9E);
+            --tg-avatar-6: linear-gradient(180deg, #CB3C77, #A52A5E);
             --tg-avatar-fg: 255 255 255;
             --tg-archive-avatar: 136 126 112;
 
@@ -1643,9 +1646,12 @@
         /* A message deleted in Telegram that the archive kept. Quiet on purpose:
            the text keeps its colour, because keeping it is the point. The bubble
            keeps its shape and shadow and takes a wash of the danger colour over
-           its fill (the tail takes it too), so a scan down the chat finds
-           deletions without reading. The meta row names the state with a trash
-           icon and "deleted" in the danger colour. */
+           its fill, and the tail takes the same wash, so body and tail stay one
+           shape. No edge: a ring round the bubble reads as an error or a
+           selection, and it cannot follow the tail. The wash is stronger on a
+           dark palette, where a faint red hardly moves a dark fill. The meta row
+           names the state with a trash icon and "deleted" in the danger
+           colour. */
         .message-bubble.is-deleted {
             background-image: linear-gradient(var(--tg-deleted-wash), var(--tg-deleted-wash)), var(--tg-bubble-image, none);
         }
@@ -1802,10 +1808,6 @@
         .forward-header[role="button"]:hover .forward-origin-link {
             text-decoration: underline;
         }
-        /* In the chat header the chip rides the subtitle line. */
-        .account-chip.header-chip {
-            line-height: 1rem;
-        }
         /* Inside a bubble a tinted fill loses contrast on the outgoing side, so
            the chip there is an outline in the side's quote colour. */
         .message-bubble .account-chip {
@@ -1930,7 +1932,8 @@
             -webkit-backdrop-filter: blur(12px);
             backdrop-filter: blur(12px);
         }
-        /* "9 of 11", top centre, level with the close button. */
+        /* "9 of 11", top centre, level with the close button; top left on a
+           phone, where the three buttons on the right leave no centre. */
         .lightbox-counter {
             position: absolute;
             left: 50%;
@@ -1951,6 +1954,10 @@
             html .lightbox-arrow {
                 display: none;
             }
+            .lightbox-counter {
+                left: 16px;
+                transform: none;
+            }
             .lightbox-tap {
                 display: block;
                 position: absolute;
@@ -1968,6 +1975,62 @@
         }
         .lightbox-caption {
             bottom: max(16px, calc(var(--sab) + 8px));
+            z-index: 60;
+        }
+        /* The caption: 15px, white at 90%, three lines until "more". */
+        .lightbox-caption-text {
+            font-size: 15px;
+            line-height: 20px;
+            color: rgb(var(--tg-on-scrim) / 0.9);
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 3;
+            overflow: hidden;
+        }
+        .lightbox-caption-text.is-open {
+            display: block;
+            max-height: 40vh;
+            overflow-y: auto;
+        }
+        /* Shared Media: dense square tiles, 2px apart, as in Telegram. About
+           140px on a wide pane (five across the reading column) and three
+           across a phone. */
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 2px;
+        }
+        @media (max-width: 639px) {
+            .media-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+        /* A kept deletion on a gallery tile: the trash on the danger disc,
+           white, in the top corner. */
+        .media-tile-deleted {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            width: 22px;
+            height: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9999px;
+            color: rgb(var(--tg-on-scrim));
+            background: rgb(var(--tg-danger-strong) / 0.9);
+            box-shadow: 0 1px 2px rgb(var(--tg-scrim) / 0.3);
+        }
+        .media-tile-deleted svg {
+            width: 13px;
+            height: 13px;
+        }
+        /* "deleted" on the scrim: a light red that reads on near-black. */
+        .lightbox-deleted {
+            padding: 1px 8px;
+            border-radius: 999px;
+            color: rgb(var(--tg-on-scrim));
+            background: rgb(var(--tg-danger-strong) / 0.85);
         }
 
         /* The sidebar header: the title on one line at any sidebar width (it
@@ -2027,6 +2090,17 @@
             width: 18px;
             height: 18px;
         }
+        /* New entries in What changed since it was last opened. */
+        .changes-dot {
+            position: absolute;
+            top: 7px;
+            right: 7px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgb(var(--tg-accent));
+            box-shadow: 0 0 0 2px rgb(var(--tg-sidebar));
+        }
         @media (max-width: 767px) {
             .sidebar-icon-btn {
                 width: 40px;
@@ -2055,6 +2129,12 @@
         /* Hover lifts the label to ink: no block of colour on the divider. */
         .folder-tab:hover {
             color: rgb(var(--tg-ink));
+        }
+        /* A gallery tab with nothing in it. */
+        .folder-tab:disabled {
+            opacity: 0.5;
+            cursor: default;
+            color: rgb(var(--tg-muted));
         }
         .folder-tab:focus-visible {
             outline: 2px solid rgb(var(--tg-focus));
@@ -2106,18 +2186,49 @@
             }
         }
 
-        /* A card of "What changed" opens its message: the pointer and a
-           hover edge say so. While another window loads, the cards on screen
-           dim, so they are not read as its answer. */
+        /* A row of "What changed" opens its message: the pointer and the
+           hover colour say so. Rows of one day are split by a hairline, the
+           divider colour of the chat list. While another window loads, the
+           rows on screen dim, so they are not read as its answer. */
         .change-card {
             cursor: pointer;
-            transition: border-color 0.15s ease;
+            border-radius: 10px;
+            transition: background-color 0.15s ease;
         }
         .change-card:hover {
-            border-color: rgb(var(--tg-n600));
+            background: rgb(var(--tg-hover));
+        }
+        .change-card + .change-card {
+            box-shadow: inset 0 1px 0 rgb(var(--tg-border));
+        }
+        .change-card:hover,
+        .change-card:hover + .change-card {
+            box-shadow: none;
         }
         .changes-body.is-reloading .change-card {
             opacity: 0.5;
+        }
+        /* The day over its rows: the chat's floating date pill, centred, and
+           pinned at the top while that day scrolls under it. */
+        .change-day-pill {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            display: flex;
+            justify-content: center;
+            padding: 8px 0;
+            pointer-events: none;
+        }
+        .change-day-pill span {
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            line-height: 16px;
+            font-weight: 600;
+            color: var(--tg-service-fg);
+            background: var(--tg-float-pill-bg);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
         }
 
         /* "What changed" on a phone: a full-height sheet under a sliver of the
@@ -2145,7 +2256,7 @@
                 font-size: 1.125rem;
             }
             html .changes-body {
-                padding: 0 12px calc(16px + var(--sab));
+                padding: 0 4px calc(16px + var(--sab));
             }
         }
 
@@ -2159,9 +2270,17 @@
             line-height: 20px;
             font-weight: 600;
         }
+        /* The status line measures itself, so the account after the member
+           count can leave when there is no room for both (a 320px phone). */
         .chat-header-status {
             font-size: 13px;
             line-height: 18px;
+            container-type: inline-size;
+        }
+        @container (max-width: 120px) {
+            .chat-header-account {
+                display: none;
+            }
         }
         /* Its tools: 36px discs (40px on a phone) with 21px icons. */
         .chat-header-btn {
@@ -2296,17 +2415,19 @@
             max-width: 90%;
             white-space: pre-wrap;
         }
-        .version-bubble.is-current {
-            box-shadow: 0 0 0 1.5px rgb(var(--tg-accent)), var(--tg-bubble-shadow);
-        }
         /* What an edit changed: inserted words on the side's quote tint in its
            quote colour, removed words struck through in its time colour. Both
-           pairs are measured on each bubble. */
+           pairs are measured on each bubble. A highlight that wraps keeps its
+           round ends on every line (box-decoration-break). The current version
+           needs no ring: its label says "Current". */
         .version-bubble .diff-ins {
             color: rgb(var(--tg-quote));
             background: var(--tg-quote-bg);
-            border-radius: 3px;
-            box-shadow: 0 0 0 1px var(--tg-quote-bg);
+            border-radius: 4px;
+            padding: 0 2px;
+            text-decoration: none;
+            -webkit-box-decoration-break: clone;
+            box-decoration-break: clone;
         }
         .version-bubble .diff-del {
             color: rgb(var(--tg-meta));
@@ -2356,16 +2477,17 @@
             flex-shrink: 0;
         }
 
-        /* One row of the archive stats: icon, label, figure. */
+        /* One row of the archive stats: icon, label, figure, in the info
+           panel's sizes (.info-row) so the two lists read the same. */
         .stats-row {
             display: flex;
             align-items: center;
-            gap: 10px;
-            min-height: 32px;
+            gap: 12px;
+            min-height: 36px;
         }
         .stats-row svg {
-            width: 18px;
-            height: 18px;
+            width: 20px;
+            height: 20px;
             flex-shrink: 0;
         }
 
@@ -2382,6 +2504,21 @@
                 max-height: calc(100vh - 7rem);
                 overflow-y: auto;
             }
+        }
+        /* The "Match system" row: the label, then the palette it shows now,
+           right-aligned before the check and a step quieter, so it reads as a
+           status and not as part of the name. A phone puts it under the label
+           (see the sheet rules). */
+        .theme-row-label {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+        }
+        .theme-row-hint {
+            margin-left: auto;
+            flex-shrink: 0;
+            font-size: 12px;
+            white-space: nowrap;
         }
         /* A theme swatch: a tiny chat. The pane, an incoming bubble at the top
            left and an outgoing one at the bottom right, so two dark palettes
@@ -2452,7 +2589,7 @@
                 z-index: 1;
                 height: 20px;
                 margin: 0 calc(-1 * var(--sheet-pad-x));
-                background: linear-gradient(rgb(var(--tg-border-strong)), rgb(var(--tg-border-strong))) center 8px / 36px 4px no-repeat, rgb(var(--tg-n800));
+                background: linear-gradient(rgb(var(--tg-border-strong)), rgb(var(--tg-border-strong))) center 8px / 36px 4px no-repeat, rgb(var(--tg-sidebar));
             }
             html .popover-sheet.sheet-roomy {
                 --sheet-pad-x: 20px;
@@ -2479,7 +2616,16 @@
                 padding-right: 8px;
             }
             html .popover-sheet .theme-grid .theme-row-system {
-                min-height: 48px;
+                min-height: 52px;
+            }
+            html .theme-row-system .theme-row-label {
+                display: block;
+            }
+            html .theme-row-system .theme-row-hint {
+                display: block;
+                margin: 1px 0 0;
+                font-size: 13px;
+                line-height: 16px;
             }
             html .popover-sheet .sheet-title {
                 display: block;
@@ -2521,7 +2667,8 @@
         }
 
         /* White initials on the bright avatar fills: the shadow keeps the
-           letters' edges clear on the lighter corner of the gradient. */
+           letters' edges clear on the lighter top of the gradient, which runs
+           light to dark from top to bottom, as Telegram's userpics do. */
         .avatar-initials {
             text-shadow: 0 1px 1px rgb(0 0 0 / 0.2);
         }
@@ -2840,17 +2987,19 @@
             line-height: var(--tg-line-height);
         }
 
-        /* The transcript button (docs/TRANSCRIPTION.md): a small rounded square
-           right after the duration, lighter than the play disc, so the row has
-           one main control. Every colour reads a theme token, so the palettes,
-           light and dark, need nothing of their own. While a transcript is
-           queued or running a stroke loops around the outline:
+        /* The transcript button (docs/TRANSCRIPTION.md): a 32px rounded square
+           in the bubble's link colour on its own light tint, as Telegram draws
+           its transcribe button, so it reads as a button and not a stray glyph.
+           Open, the tint deepens; aria-expanded carries the state for a screen
+           reader. Every colour reads a theme token, so
+           the palettes, light and dark, need nothing of their own. While a
+           transcript is queued or running a stroke loops around the outline:
            pathLength="100" on the rect makes the dash arithmetic independent of
            the button size. */
         .transcript-btn {
             position: relative;
-            width: 1.75rem;
-            height: 1.75rem;
+            width: 2rem;
+            height: 2rem;
             flex-shrink: 0;
             display: inline-flex;
             align-items: center;
@@ -2860,23 +3009,19 @@
             background: var(--tg-quote-bg);
             transition: background-color 0.15s, color 0.15s, box-shadow 0.15s;
         }
-        .transcript-btn:hover {
-            box-shadow: inset 0 0 0 1px rgb(var(--tg-quote) / 0.6);
+        .transcript-btn:hover,
+        .transcript-btn[aria-expanded="true"] {
+            background: rgb(var(--tg-quote) / 0.2);
         }
         .transcript-btn:focus-visible {
             outline: 2px solid rgb(var(--tg-focus));
             outline-offset: 2px;
         }
-        /* Open: filled in the link colour, the glyph in the bubble's fill. */
-        .transcript-btn[aria-expanded="true"] {
-            color: rgb(var(--tg-bubble-fill, var(--tg-on-accent)));
-            background: rgb(var(--tg-quote));
-        }
         /* One stroke glyph for every transcript control: a waveform turning into
            lines of text, drawn like the header icons. */
         .transcript-icon {
-            width: 1rem;
-            height: 1rem;
+            width: 1.125rem;
+            height: 1.125rem;
             flex-shrink: 0;
         }
         /* Over the circle of a round video: a black scrim, like the other
@@ -3113,15 +3258,91 @@
             background: rgb(var(--tg-border)) !important;
         }
 
+        /* The calendar inside the Jump to date dialog: open, in the flow under
+           the date field and as wide as it, drawn on the dialog itself with no
+           frame, month bar, popup shadow or arrow. flatpickr fixes the calendar
+           and its day grid at 307.875px; here they take the dialog's width, so
+           the calendar lines up with the field and the buttons and still fits
+           a 320px phone. The day cells keep their 40px circles and spread over
+           the row. */
+        .date-picker-calendar .flatpickr-calendar {
+            width: 100%;
+            top: 0;
+            margin: 12px 0 0;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
+        .date-picker-calendar .flatpickr-calendar::before,
+        .date-picker-calendar .flatpickr-calendar::after {
+            display: none;
+        }
+        .date-picker-calendar .flatpickr-innerContainer,
+        .date-picker-calendar .flatpickr-rContainer,
+        .date-picker-calendar .flatpickr-days,
+        .date-picker-calendar .dayContainer {
+            width: 100%;
+            min-width: 0;
+            max-width: none;
+        }
+        /* Seven columns whatever the width: a grid, not flatpickr's wrapping
+           row, which fits eight 40px days on a line once they stop
+           stretching. A day is a 40px circle, smaller only where seven of
+           them cannot fit; the dialog's padding shrinks on a phone so they
+           keep 40px on a 320px screen. */
+        .date-picker-calendar .dayContainer {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            justify-items: center;
+            box-shadow: none;
+        }
+        .date-picker-calendar .flatpickr-months,
+        .date-picker-calendar .flatpickr-weekdays,
+        .date-picker-calendar .flatpickr-calendar .flatpickr-monthDropdown-months {
+            background: transparent !important;
+            border: 0 !important;
+        }
+        .date-picker-calendar .flatpickr-current-month {
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .date-picker-calendar .flatpickr-current-month .flatpickr-monthDropdown-months,
+        .date-picker-calendar .flatpickr-current-month input.cur-year {
+            font-weight: 600;
+        }
+        .date-picker-calendar .flatpickr-months .flatpickr-prev-month,
+        .date-picker-calendar .flatpickr-months .flatpickr-next-month {
+            color: rgb(var(--tg-muted));
+            fill: rgb(var(--tg-muted));
+        }
+        .date-picker-calendar .flatpickr-day {
+            width: 100%;
+            max-width: 40px;
+            height: auto;
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+        }
+        /* A day with no messages, and a day of the month before or after, in
+           the muted colour (4.5:1 still, they can be picked); a day after the
+           newest one allowed faded out, as it cannot be. */
+        .date-picker-calendar .flatpickr-day.calendar-empty-date,
+        .date-picker-calendar .flatpickr-day.prevMonthDay,
+        .date-picker-calendar .flatpickr-day.nextMonthDay {
+            color: rgb(var(--tg-muted)) !important;
+        }
+        .date-picker-calendar .flatpickr-day.flatpickr-disabled {
+            color: rgb(var(--tg-text) / 0.35) !important;
+            background: transparent !important;
+            border-color: transparent !important;
+        }
+
         @media (max-height: 700px) {
             .date-picker-dialog {
                 max-height: calc(100dvh - 2rem);
                 overflow-y: auto;
-            }
-
-            .date-picker-dialog .flatpickr-calendar {
-                position: static !important;
-                margin-top: 0.5rem;
             }
         }
 
@@ -3286,9 +3507,9 @@
         }
         /* A voice note or an audio file with nothing under the player
            (isCompactAudioBubble): the time takes a column of its own beside the
-           player, level with the duration line, instead of a line under it.
-           Everything else in the bubble (a name, a reply, a forward) spans
-           both columns. */
+           player, level with the duration line under the title, instead of a
+           line under it. Everything else in the bubble (a name, a reply, a
+           forward) spans both columns. */
         .message-bubble.bubble-voice {
             display: inline-grid;
             grid-template-columns: minmax(0, 1fr) auto;
@@ -3302,18 +3523,18 @@
         }
         .message-bubble.bubble-voice > .message-body {
             grid-column: 2;
-            align-self: center;
+            align-self: end;
         }
         .message-bubble.bubble-voice .message-meta {
             margin-top: 0;
+            margin-bottom: 4px;
         }
-        /* A music file has its title over the duration: the time goes down
-           to the duration line. */
-        .message-bubble.bubble-voice-titled > .message-body {
-            align-self: end;
-        }
-        .message-bubble.bubble-voice-titled .message-meta {
-            margin-bottom: 6px;
+        /* The name over the duration and size: a voice note reads "Voice
+           message", a music file its title. */
+        .voice-title {
+            font-size: 14px;
+            line-height: 20px;
+            font-weight: 600;
         }
         /* A sticker: its own size, never stretched to a bubble. */
         .message-bubble.bubble-frameless img {
@@ -3393,10 +3614,10 @@
             border-radius: 2px;
             background: rgb(var(--tg-quote));
         }
+        /* The vote count shares the time's line: inline text the floated
+           time joins, as it joins the last line of a message. */
         .poll-votes {
-            margin-top: 8px;
             font-size: 13px;
-            line-height: 18px;
         }
 
         /* Album Grid Styles: 2px seams, no rounding inside. */
@@ -3726,9 +3947,15 @@
                                 <span v-else class="truncate">Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone, lastBackupTimeSource) }}</span>
                             </p>
                         </div>
-                        <button @click="openChangesFeed" type="button" class="sidebar-icon-btn"
-                            title="What changed (deletions and edits)" aria-label="What changed">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+                        <!-- What changed: the archive's own feed of deletions, edits and
+                             transcripts. A pulse glyph of its own (the clock with an
+                             arrow means "edited" on a message), and a dot while the
+                             feed has entries newer than the last time it was opened. -->
+                        <button @click="openChangesFeed" type="button" class="sidebar-icon-btn relative"
+                            title="What changed" aria-label="What changed"
+                            :aria-description="changesUnseen ? 'New changes since your last visit' : null">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                            <span v-if="changesUnseen" class="changes-dot" aria-hidden="true"></span>
                         </button>
                         <!-- Theme picker. The palette rides data-theme on <html>;
                              the dropdown mirrors the Stats popup pattern. -->
@@ -3741,13 +3968,15 @@
                             </button>
                             <div v-if="themePopupOpen" @click="themePopupOpen = false" class="popover-scrim fixed inset-0 z-40"></div>
                             <div v-if="themePopupOpen" role="group" aria-label="Color theme"
-                                class="popover-sheet absolute right-0 top-full mt-1 z-50 bg-tg-n800 border border-tg-n600 rounded-lg shadow-popup p-2 min-w-[260px]">
+                                class="popover-sheet absolute right-0 top-full mt-1 z-50 bg-tg-sidebar border border-tg-border rounded-xl shadow-popup p-2 min-w-[260px]">
                                 <div class="sheet-title">Color theme</div>
                                 <!-- "Match system" first, then the palettes. The check
                                      marks the choice, so with "Match system" picked only
                                      that row is checked. The hint says which palette
-                                     "Match system" shows now, in the row's own dim text
-                                     (muted fails 4.5:1 on the selected row). -->
+                                     "Match system" shows now, a step quieter than the
+                                     label (n400: muted fails 4.5:1 on the selected row):
+                                     right-aligned before the check on a wide screen, on a
+                                     line of its own under the label on a phone. -->
                                 <div class="theme-grid">
                                 <template v-for="row in themePickerRows" :key="row.key">
                                     <div v-if="row.heading" class="theme-group-title" role="presentation">{{ row.heading }}</div>
@@ -3757,7 +3986,10 @@
                                         :class="[currentTheme === row.theme.id ? 'bg-tg-n700/70 text-tg-ink' : 'text-tg-n300', row.theme.id === 'system' ? 'theme-row-system' : '']">
                                         <span class="theme-swatch" aria-hidden="true"
                                             :style="{ '--sw-pane': row.theme.swatch.pane, '--sw-in': row.theme.swatch.in, '--sw-out': row.theme.swatch.out }"></span>
-                                        <span class="flex-1 min-w-0 truncate">{{ row.theme.label }}<span v-if="row.theme.id === 'system'" class="ml-1.5 text-xs text-tg-n300">{{ systemIsDark ? 'Telegram Night now' : 'Telegram Day now' }}</span></span>
+                                        <span class="theme-row-label flex-1 min-w-0">
+                                            <span class="block truncate">{{ row.theme.label }}</span>
+                                            <span v-if="row.theme.id === 'system'" class="theme-row-hint text-tg-n400"><span class="md:hidden">Now </span>{{ systemIsDark ? 'Telegram Night' : 'Telegram Day' }}</span>
+                                        </span>
                                         <svg v-if="currentTheme === row.theme.id" class="w-4 h-4 shrink-0 text-tg-accent-soft" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
                                     </button>
                                 </template>
@@ -3774,23 +4006,24 @@
                             <!-- Stats Popup + Click-outside overlay -->
                             <div v-if="statsPopupOpen" @click="statsPopupOpen = false" class="popover-scrim fixed inset-0 z-40"></div>
                             <div v-if="statsPopupOpen" tabindex="-1" role="group" aria-label="Backup statistics"
-                                class="popover-sheet sheet-roomy absolute right-0 top-full mt-1 z-50 bg-tg-n800 border border-tg-n600 rounded-lg shadow-popup p-4 min-w-[240px] focus:outline-none">
-                                <!-- What the archive holds: one icon set (stroke SVG in the
-                                     text colour), labels left, figures right in tabular numbers. -->
+                                class="popover-sheet sheet-roomy absolute right-0 top-full mt-1 z-50 bg-tg-sidebar border border-tg-border rounded-xl shadow-popup p-4 min-w-[240px] focus:outline-none">
+                                <!-- What the archive holds, drawn like the info panel's archive
+                                     rows and Telegram's settings lists: a grey icon, the label in
+                                     ink, the figure right in grey tabular numbers. -->
                                 <div class="text-sm text-tg-muted">
                                     <div class="font-semibold text-tg-ink mb-2 pb-2 border-b border-tg-n700">Backup statistics</div>
-                                    <div class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="flex-1">Chats</span><span class="text-tg-ink tabular-nums">{{ formatNumber(statsData.chats) }}</span></div>
-                                    <div class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg><span class="flex-1">Messages</span><span class="text-tg-ink tabular-nums">{{ formatNumber(statsData.messages) }}</span></div>
-                                    <div v-if="statsData.media_files != null" class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg><span class="flex-1">Media files</span><span class="text-tg-ink tabular-nums">{{ formatNumber(statsData.media_files) }}</span></div>
-                                    <div v-if="statsData.total_size_mb != null" class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="flex-1">Disk use</span><span class="text-tg-ink tabular-nums">{{ formatSize(statsData.total_size_mb) }}</span></div>
+                                    <div class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="flex-1 text-tg-ink">Chats</span><span class="tabular-nums">{{ formatNumber(statsData.chats) }}</span></div>
+                                    <div class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg><span class="flex-1 text-tg-ink">Messages</span><span class="tabular-nums">{{ formatNumber(statsData.messages) }}</span></div>
+                                    <div v-if="statsData.media_files != null" class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg><span class="flex-1 text-tg-ink">Media files</span><span class="tabular-nums">{{ formatNumber(statsData.media_files) }}</span></div>
+                                    <div v-if="statsData.total_size_mb != null" class="stats-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="flex-1 text-tg-ink">Disk use</span><span class="tabular-nums">{{ formatSize(statsData.total_size_mb) }}</span></div>
                                     <div class="pt-2 mt-2 border-t border-tg-n700 text-xs flex items-center justify-between gap-2">
                                         <span>{{ formatStatsTime(statsData.stats_calculated_at) }}</span>
                                         <span v-if="statsData && statsData.backup_in_progress" class="text-tg-accent-soft shrink-0">● Backup in progress…</span>
                                     </div>
                                     <!-- Footer -->
                                     <div class="pt-3 mt-3 border-t border-tg-n700 text-center">
-                                        <div class="text-[10px] opacity-70">
-                                            Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-tg-accent-soft hover:text-tg-accent-bright">Sergio Fernández</a>
+                                        <div class="text-[12px] leading-4 text-tg-muted">
+                                            Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-tg-accent-soft hover:text-tg-accent-bright hover:underline">Sergio Fernández</a>
                                         </div>
                                         <a href="https://github.com/sponsors/GeiserX" target="_blank"
                                             class="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 text-[11px] bg-tg-peer-6/15 hover:bg-tg-peer-6/25 text-tg-text-dim rounded transition">
@@ -3813,7 +4046,7 @@
                             </button>
                             <div v-if="accountMenuOpen" @click="accountMenuOpen = false" class="popover-scrim fixed inset-0 z-40"></div>
                             <div v-if="accountMenuOpen" role="group" aria-label="Account"
-                                class="popover-sheet absolute right-0 top-full mt-1 z-50 bg-tg-n800 border border-tg-n600 rounded-lg shadow-popup p-2 min-w-[220px]">
+                                class="popover-sheet absolute right-0 top-full mt-1 z-50 bg-tg-sidebar border border-tg-border rounded-xl shadow-popup p-2 min-w-[220px]">
                                 <div class="sheet-title">Account</div>
                                 <div class="px-2.5 pt-1 pb-2 mb-1 border-b border-tg-n700 text-xs text-tg-muted">
                                     Signed in as <span class="block text-sm font-medium text-tg-ink truncate">{{ currentUsername }}</span>
@@ -3857,19 +4090,24 @@
 
                     <!-- v6.2.0: Folder Tabs. Text tabs, the chosen one in the link colour
                          with a bar on the divider, as in Telegram Desktop. The folder's
-                         own emoji is Telegram data and stays; none is invented. -->
-                    <div v-if="folders.length > 0" class="folder-tabs flex overflow-x-auto scrollbar-thin">
+                         own emoji is Telegram data and stays; none is invented. Hidden
+                         inside Archived Chats, as in Telegram Desktop: the list has its
+                         own header with a way back, and no tab would be the chosen one. -->
+                    <div v-if="folders.length > 0 && currentNav?.filter !== 'archived'" class="folder-tabs flex overflow-x-auto scrollbar-thin">
                         <button type="button" @click="showAllChats()"
                             :aria-pressed="activeTab === 'all' ? 'true' : 'false'"
                             class="folder-tab" :class="{ 'is-active': activeTab === 'all' }">
                             All Chats
                         </button>
+                        <!-- No number beside the name: that is where Telegram puts the
+                             unread count, and an archive has none. The chat count is in
+                             the tooltip, and in the button's name for a screen reader. -->
                         <button v-for="folder in folders" :key="folder.id" type="button"
                             @click="selectFolder(folder.id)"
                             :aria-pressed="activeTab === 'folder_' + folder.id ? 'true' : 'false'"
+                            :title="`${folder.chat_count} ${folder.chat_count === 1 ? 'chat' : 'chats'}`"
                             class="folder-tab" :class="{ 'is-active': activeTab === 'folder_' + folder.id }">
-                            <span v-if="folder.emoticon" class="mr-1" aria-hidden="true">{{ folder.emoticon }}</span>{{ folder.title }}
-                            <span class="folder-tab-count">{{ folder.chat_count }}</span>
+                            <span v-if="folder.emoticon" class="mr-1" aria-hidden="true">{{ folder.emoticon }}</span>{{ folder.title }}<span class="sr-only">, {{ folder.chat_count }} {{ folder.chat_count === 1 ? 'chat' : 'chats' }}</span>
                         </button>
                     </div>
                 </div>
@@ -4008,8 +4246,9 @@
                         <!-- v6.2.0: Back button for archived/folder views -->
                         <div v-if="canGoBack && currentNav.type === 'chatList'"
                             class="p-3 border-b border-tg-n700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
-                            <button @click="navigateBack()" class="p-1.5 hover:bg-tg-n700 rounded-full transition">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <button type="button" @click="navigateBack()" aria-label="Back"
+                                class="hit-40 p-1.5 hover:bg-tg-n700 rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
                             </button>
@@ -4111,9 +4350,7 @@
                                          rows apart; a chat several accounts share carries one
                                          chip each. -->
                                     <div class="chat-row-line flex items-center gap-2 min-w-0">
-                                        <p class="chat-row-sub text-tg-muted truncate flex-1 min-w-0">
-                                            <span v-if="chat.username">@{{ chat.username }} · </span><template v-if="chat.is_forum">forum</template><template v-else>{{ chatKindLabel(chat) }}</template><span v-if="chatMemberCount(chat)"> · {{ chatMemberCount(chat) }}</span>
-                                        </p>
+                                        <p class="chat-row-sub text-tg-muted truncate flex-1 min-w-0">{{ chatListLine(chat) }}</p>
                                         <!-- At most 40% of the line, each chip yielding with an
                                              ellipsis, so the subtitle keeps its room on a phone. -->
                                         <span v-if="multiAccount && chatAccountLabels(chat).length" class="chat-row-chips">
@@ -4269,8 +4506,9 @@
                             </div>
                             <!-- The title and the status line: the member count, or what the
                                  chat is, and the topic inside a forum. On an archive of more
-                                 than one account the account follows: chips on a wide screen,
-                                 muted text on a phone. The chat's archive figures are in the
+                                 than one account the account follows as muted text, on every
+                                 width, like the apps' status line; the chat list keeps the
+                                 chips. The chat's archive figures are in the
                                  info panel. In a private chat the block opens the same
                                  "Sender details" dialog as the phone's header avatar, which a
                                  wide screen does not show. -->
@@ -4283,15 +4521,19 @@
                                 @keydown.enter.prevent="selectedChat?.type === 'private' && openSenderInfoFromChat(selectedChat, $event)"
                                 @keydown.space.prevent="selectedChat?.type === 'private' && openSenderInfoFromChat(selectedChat, $event)">
                                 <h2 class="chat-header-title truncate" dir="auto">{{ getChatName(selectedChat) }}</h2>
-                                <p class="chat-header-status flex items-center gap-1.5 min-w-0 text-tg-muted">
-                                    <span class="truncate">
+                                <!-- The status, then the account after a dot with 4px on each
+                                     side. On a narrow header the account gives way first (it
+                                     shrinks a hundred times faster), so the member count stays
+                                     readable, and on a line under 120px it leaves (a container
+                                     query); the info panel names the account in full. -->
+                                <p class="chat-header-status flex items-center min-w-0 text-tg-muted">
+                                    <span class="min-w-0 truncate">
                                         <template v-if="selectedPaneTopic?.title"># {{ selectedPaneTopic.title }}</template>
                                         <template v-else>{{ chatStatusLine(selectedChat) }}</template>
                                     </span>
-                                    <template v-if="multiAccount">
-                                        <span v-for="chip in chatAccountLabels(selectedChat)" :key="chip.id"
-                                            class="account-chip header-chip hidden sm:inline-block shrink-0">{{ chip.label }}</span>
-                                        <span v-if="chatAccountLabels(selectedChat).length" class="sm:hidden max-w-[45%] truncate shrink-0">· {{ chatAccountLabels(selectedChat).map((chip) => chip.label).join(', ') }}</span>
+                                    <template v-if="multiAccount && chatAccountLabels(selectedChat).length">
+                                        <span aria-hidden="true" class="chat-header-account mx-1 shrink-0">·</span>
+                                        <span class="chat-header-account min-w-0 truncate shrink-[100]">{{ chatAccountLabels(selectedChat).map((chip) => chip.label).join(', ') }}</span>
                                     </template>
                                 </p>
                             </div>
@@ -4349,27 +4591,41 @@
                                 </svg>
                             </button>
 
-                            <!-- Export. On a phone it lives in the info panel instead. -->
-                            <button type="button" @click="exportChat"
-                                class="chat-header-btn phone-hide"
-                                aria-label="Export chat" title="Export Chat to JSON">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                                </svg>
-                            </button>
-
-                            <!-- Expand all transcripts in this chat (docs/TRANSCRIPTION.md),
-                                 remembered per chat. A message the reader opened or closed
-                                 by hand keeps its own state until this is pressed again. -->
-                            <button v-if="transcriptionState.enabled" type="button" @click="toggleExpandAllTranscripts"
-                                :aria-pressed="transcriptsExpandedForChat() ? 'true' : 'false'"
-                                :aria-label="transcriptsExpandedForChat() ? 'Collapse all transcripts' : 'Expand all transcripts'"
-                                :title="transcriptsExpandedForChat() ? 'Collapse all transcripts' : 'Expand all transcripts'"
-                                class="chat-header-btn phone-hide"
-                                :class="{ 'is-on': transcriptsExpandedForChat() }">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>
-                            </button>
+                            <!-- The occasional actions (export, expand every transcript) sit
+                                 behind one "More" button, as Telegram Desktop keeps its bar to
+                                 search, media and info. On a phone they live in the info panel
+                                 instead. Escape closes the menu and focus goes back to the
+                                 button (handlePopoverKeydown). -->
+                            <div class="relative phone-hide">
+                                <button type="button" @click="chatMenuOpen = !chatMenuOpen"
+                                    class="chat-header-btn"
+                                    :class="{ 'is-on': chatMenuOpen }"
+                                    aria-label="More actions" title="More actions"
+                                    :aria-expanded="chatMenuOpen ? 'true' : 'false'">
+                                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>
+                                </button>
+                                <div v-if="chatMenuOpen" @click="chatMenuOpen = false" class="popover-scrim fixed inset-0 z-40"></div>
+                                <div v-if="chatMenuOpen" role="group" aria-label="More actions"
+                                    class="popover-sheet absolute right-0 top-full mt-1 z-50 bg-tg-sidebar border border-tg-border rounded-xl shadow-popup p-1.5 min-w-[260px]">
+                                    <div class="sheet-title">More actions</div>
+                                    <button type="button" @click="chatMenuOpen = false; exportChat()"
+                                        class="info-action">
+                                        <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1"/><path d="m8 12 4 4 4-4"/><path d="M12 4v12"/></svg>
+                                        <span class="flex-1 text-left">Export chat</span>
+                                    </button>
+                                    <!-- Expand all transcripts in this chat (docs/TRANSCRIPTION.md),
+                                         remembered per chat. A message the reader opened or closed
+                                         by hand keeps its own state until this is pressed again.
+                                         The menu stays open, so the new state shows. -->
+                                    <button v-if="transcriptionState.enabled" type="button" @click="toggleExpandAllTranscripts"
+                                        :aria-pressed="transcriptsExpandedForChat() ? 'true' : 'false'"
+                                        :aria-label="transcriptsExpandedForChat() ? 'Collapse all transcripts' : 'Expand all transcripts'"
+                                        class="info-action">
+                                        <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>
+                                        <span class="flex-1 text-left">{{ transcriptsExpandedForChat() ? 'Collapse all transcripts' : 'Expand all transcripts' }}</span>
+                                    </button>
+                                </div>
+                            </div>
 
                             <!-- Info panel toggle (#433): the apps' right-hand "Chat Info" column -->
                             <button ref="infoPanelToggleBtn" type="button" @click="toggleInfoPanel"
@@ -4422,8 +4678,9 @@
                     <!-- Click on pin icon (right side) → open pinned messages view -->
                     <!-- One surface with the header, split by a hairline; the accent bar
                          on the left marks it, as in the Telegram apps. Hidden on a phone
-                         while the in-chat search is open, so the results get the room. -->
-                    <div v-if="pinnedMessage && !showPinnedOnly"
+                         while the in-chat search is open, so the results get the room, and
+                         while Shared Media is open, which has its own header. -->
+                    <div v-if="pinnedMessage && !showPinnedOnly && !showMediaGallery"
                         class="pinned-bar px-4 py-1.5 min-h-[52px] md:min-h-[48px] bg-tg-header border-b border-tg-border flex items-center gap-3"
                         :class="{ 'max-md:hidden': chatSearchOpen }">
                         <span class="w-0.5 h-8 shrink-0 rounded-full bg-tg-accent" aria-hidden="true"></span>
@@ -4443,21 +4700,17 @@
                                 {{ pinnedMessage.text || (pinnedMessage.media?.type ? `[${pinnedMessage.media?.type}]` : 'Message') }}
                             </span>
                         </button>
-                        <!-- Time + view all pinned button on right -->
-                        <div class="flex items-center gap-2">
-                            <div class="text-xs text-tg-muted">
-                                {{ formatTime(pinnedMessage.date) }}
-                            </div>
-                            <!-- Open pinned messages view button -->
-                            <button type="button" @click.stop="openPinnedView"
-                                class="w-10 h-10 md:w-8 md:h-8 flex items-center justify-center rounded-full hover:bg-tg-ink/10 text-tg-accent-soft transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
-                                :title="pinnedMessages.length === 1 ? 'Open pinned message' : `View all ${pinnedMessages.length} pinned messages`"
-                                :aria-label="pinnedMessages.length === 1 ? 'Open pinned message' : `View all ${pinnedMessages.length} pinned messages`">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                                </svg>
-                            </button>
-                        </div>
+                        <!-- View all pinned, on the right. No time here, as in the
+                             Telegram apps: the pinned text gets the room, and the date
+                             is on the message itself. -->
+                        <button type="button" @click.stop="openPinnedView"
+                            class="w-10 h-10 md:w-8 md:h-8 shrink-0 flex items-center justify-center rounded-full hover:bg-tg-ink/10 text-tg-accent-soft transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
+                            :title="pinnedMessages.length === 1 ? 'Open pinned message' : `View all ${pinnedMessages.length} pinned messages`"
+                            :aria-label="pinnedMessages.length === 1 ? 'Open pinned message' : `View all ${pinnedMessages.length} pinned messages`">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                            </svg>
+                        </button>
                     </div>
 
                     <!-- Pinned Messages View Header (shown when in pinned-only mode) -->
@@ -4491,9 +4744,13 @@
                         <!-- Tab bar: text tabs with the bar under the chosen one, the
                              folder tabs' shape. -->
                         <div class="flex px-2 border-b border-tg-border overflow-x-auto">
+                            <!-- A tab with nothing in it stays in place, so the row never
+                                 shifts, but greys out and cannot be chosen, unless it is
+                                 the open one (the info panel can open any tab). -->
                             <button v-for="tab in mediaTabs" :key="tab.id" type="button"
                                 @click="switchMediaTab(tab.id)"
                                 :aria-pressed="mediaGalleryTab === tab.id ? 'true' : 'false'"
+                                :disabled="mediaGalleryCounts[tab.id] === 0 && mediaGalleryTab !== tab.id"
                                 class="folder-tab" :class="{ 'is-active': mediaGalleryTab === tab.id }">
                                 {{ tab.label }}
                                 <!-- Every tab shows its count once the counts are in, 0 included,
@@ -4502,19 +4759,21 @@
                             </button>
                         </div>
 
-                        <!-- Content area -->
+                        <!-- Content area: the reading column's width, centred, so a wide
+                             pane shows dense rows of small tiles as Telegram does. -->
                         <div class="flex-1 overflow-y-auto p-2">
+                        <div class="max-w-[760px] mx-auto">
                             <!-- Loading state -->
-                            <div v-if="mediaGalleryLoading && mediaGalleryItems.length === 0" class="grid grid-cols-3 md:grid-cols-4 gap-1">
+                            <div v-if="mediaGalleryLoading && mediaGalleryItems.length === 0" class="media-grid">
                                 <div v-for="i in 12" :key="i" class="aspect-square bg-tg-n700 rounded animate-pulse"></div>
                             </div>
 
                             <!-- Photos/Videos Grid -->
                             <template v-if="mediaGalleryTab === 'photos'">
-                                <div class="grid grid-cols-3 md:grid-cols-4 gap-0.5">
+                                <div class="media-grid">
                                     <button v-for="item in mediaGalleryItems" :key="item.id" type="button"
                                         @click="openMediaItem(item)"
-                                        :aria-label="(item.type === 'photo' ? 'Open photo' : 'Play video') + (item.message_date ? ', ' + formatMediaDate(item.message_date) : '')"
+                                        :aria-label="(item.type === 'photo' ? 'Open photo' : 'Play video') + (item.message_date ? ', ' + formatMediaDate(item.message_date) : '') + (item.is_deleted ? ', deleted in Telegram' : '')"
                                         class="media-open aspect-square relative cursor-pointer group overflow-hidden">
                                         <!-- No loading="lazy" here: a deferred image never fires
                                              load, so it would hold its admission slot until the
@@ -4533,6 +4792,11 @@
                                             <i class="fas fa-play text-[10px] mr-0.5"></i>
                                             {{ formatDuration(item.duration) }}
                                         </div>
+                                        <!-- A kept deletion: the trash on a red disc in the corner,
+                                             the lightbox's "deleted" tag in small. -->
+                                        <span v-if="item.is_deleted" class="media-tile-deleted" title="Deleted in Telegram" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                        </span>
                                         <!-- Hover overlay -->
                                         <div class="absolute inset-0 bg-tg-scrim/0 group-hover:bg-tg-scrim/20 transition"></div>
                                     </button>
@@ -4602,6 +4866,7 @@
                                     {{ mediaGalleryLoading ? 'Loading...' : 'Load more' }}
                                 </button>
                             </div>
+                        </div>
                         </div>
                     </div>
                     </template>
@@ -4781,9 +5046,6 @@
                                                 </span>
                                             </li>
                                         </ul>
-                                        <div v-if="msg.raw_data.poll.results" class="poll-votes text-tg-meta">
-                                            {{ msg.raw_data.poll.results.total_voters }} {{ msg.raw_data.poll.results.total_voters === 1 ? 'vote' : 'votes' }}
-                                        </div>
                                     </div>
 
                                     <!-- Extended media chip (dice, venue, invoice, story, giveaway, live location, game, ...) -->
@@ -4872,6 +5134,9 @@
                                              glyph), so it reads on both sides of every palette. -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="voice-row w-full min-w-0 max-w-md">
+                                            <!-- Telegram's file row while there is no waveform: the play
+                                                 disc, a name over the duration and size, then the two
+                                                 small actions as matching ghost buttons. -->
                                             <div class="flex items-center gap-3">
                                                 <button type="button" @click.stop="playAudioMessage(msg)"
                                                     :disabled="noDownload"
@@ -4886,11 +5151,10 @@
                                                 </button>
                                                 <div class="min-w-0 flex-1">
                                                     <!-- A voice note has no name worth showing (Telegram calls
-                                                         every one voice.ogg); the info panel keeps the file name.
-                                                         A music file keeps its title here. -->
-                                                    <div v-if="msg.media?.type !== 'voice'" class="flex items-center text-sm font-medium">
-                                                        <span class="truncate">{{ getDocumentDisplayName(msg) }}</span>
-                                                    </div>
+                                                         every one voice.ogg), so it reads "Voice message"; the
+                                                         info panel keeps the file name. A music file keeps its
+                                                         title. -->
+                                                    <div class="voice-title truncate">{{ msg.media?.type === 'voice' ? 'Voice message' : getDocumentDisplayName(msg) }}</div>
                                                     <!-- #267: every span in this row needs whitespace-nowrap.
                                                          .message-bubble sets `overflow-wrap: anywhere`, which is
                                                          inherited here and drops the MIN-CONTENT width of a text
@@ -4901,53 +5165,59 @@
                                                          stacked. nowrap is the whole fix: it restores min-content to
                                                          the full string, which flex `min-width: auto` then refuses
                                                          to shrink below. shrink-0 is NOT needed and is not added —
-                                                         it guards the flex-basis, not the wrapping. -->
-                                                    <div class="flex items-center gap-1.5 mt-0.5 text-[13px] leading-[18px] tabular-nums text-tg-meta">
+                                                         it guards the flex-basis, not the wrapping.
+                                                         On a narrow phone the line has no room for all of it: it
+                                                         wraps, one line tall with the overflow hidden, so what does
+                                                         not fit (the size with its dot, then a status) drops out
+                                                         whole instead of running under the buttons. -->
+                                                    <div class="flex flex-wrap items-center gap-x-1.5 h-[18px] overflow-hidden mt-0.5 text-[13px] leading-[18px] tabular-nums text-tg-meta">
                                                         <span v-if="msg.media?.duration" class="whitespace-nowrap">{{ formatAudioTime(msg.media.duration) }}</span>
-                                                        <!-- Transcript button (docs/TRANSCRIPTION.md): right after
-                                                             the duration, as Telegram places its transcribe button,
-                                                             and quieter than the play disc. The text it opens sits
-                                                             under this row at full bubble width. -->
-                                                        <button v-if="hasTranscriptButton(msg)" type="button"
-                                                            class="transcript-btn hit-40"
-                                                            @click.stop="pressTranscript(msg)"
-                                                            :aria-expanded="isTranscriptExpanded(msg) ? 'true' : 'false'"
-                                                            :aria-controls="transcriptRegionId(msg)"
-                                                            :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
-                                                            :aria-label="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'"
-                                                            :title="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'">
-                                                            <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
-                                                                viewBox="0 0 32 32" preserveAspectRatio="none">
-                                                                <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
-                                                            </svg>
-                                                            <svg class="transcript-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>
-                                                        </button>
-                                                        <!-- #261: per-message download. Deliberately here on the
-                                                             bubble and NOT inside the playbar's sm-only speed
-                                                             group, which is hidden below the sm breakpoint —
-                                                             i.e. on mobile, where it matters most. ?download=1
-                                                             makes the server send Content-Disposition with the
-                                                             clean original filename. A 28px ghost button in the
-                                                             controls group, the transcript button's shape; 12px
-                                                             from it so their 40px hit areas do not overlap. -->
-                                                        <a v-if="!noDownload && getMediaUrl(msg)"
-                                                            :href="getMediaUrl(msg) + '?download=1'"
-                                                            :download="getDocumentDisplayName(msg)"
-                                                            @click.stop
-                                                            :aria-label="'Download ' + getDocumentDisplayName(msg)"
-                                                            :title="'Download ' + getDocumentDisplayName(msg)"
-                                                            class="bubble-icon-action hit-40 w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-tg-meta hover:text-tg-quote hover:bg-tg-quote-bg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
-                                                            :class="hasTranscriptButton(msg) ? 'ml-1.5' : ''">
-                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                                    d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"></path>
-                                                            </svg>
-                                                        </a>
+                                                        <span v-if="msg.media?.file_size" class="whitespace-nowrap"><span v-if="msg.media?.duration" class="whitespace-nowrap mr-1.5" aria-hidden="true">&middot;</span>{{ formatFileSize(msg.media.file_size) }}</span>
                                                         <span v-if="isCurrentAudioMessage(msg)" class="text-tg-quote whitespace-nowrap">
                                                             {{ audioIsPlaying ? 'Now playing' : 'Paused' }}
                                                         </span>
                                                         <span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>
                                                     </div>
+                                                </div>
+                                                <div class="flex items-center gap-2 shrink-0">
+                                                    <!-- Transcript button (docs/TRANSCRIPTION.md): a tinted
+                                                         32px square beside the download one, in its shape, the
+                                                         tint deeper while the transcript is open. The text it
+                                                         opens sits under this row at full bubble width. -->
+                                                    <button v-if="hasTranscriptButton(msg)" type="button"
+                                                        class="transcript-btn hit-40"
+                                                        @click.stop="pressTranscript(msg)"
+                                                        :aria-expanded="isTranscriptExpanded(msg) ? 'true' : 'false'"
+                                                        :aria-controls="transcriptRegionId(msg)"
+                                                        :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
+                                                        :aria-label="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'"
+                                                        :title="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'">
+                                                        <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
+                                                            viewBox="0 0 32 32" preserveAspectRatio="none">
+                                                            <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
+                                                        </svg>
+                                                        <svg class="transcript-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>
+                                                    </button>
+                                                    <!-- #261: per-message download. Deliberately here on the
+                                                         bubble and NOT inside the playbar's sm-only speed
+                                                         group, which is hidden below the sm breakpoint —
+                                                         i.e. on mobile, where it matters most. ?download=1
+                                                         makes the server send Content-Disposition with the
+                                                         clean original filename. A 32px tinted button beside the
+                                                         transcript button, in its shape; 8px from it so
+                                                         their 40px hit areas meet and do not overlap. -->
+                                                    <a v-if="!noDownload && getMediaUrl(msg)"
+                                                        :href="getMediaUrl(msg) + '?download=1'"
+                                                        :download="getDocumentDisplayName(msg)"
+                                                        @click.stop
+                                                        :aria-label="'Download ' + getDocumentDisplayName(msg)"
+                                                        :title="'Download ' + getDocumentDisplayName(msg)"
+                                                        class="bubble-icon-action hit-40 w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-tg-quote bg-tg-quote-bg hover:bg-tg-quote/20 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
+                                                        <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"></path>
+                                                        </svg>
+                                                    </a>
                                                 </div>
                                             </div>
                                             <!-- The transcript under the row: full bubble width, no line
@@ -5267,6 +5537,10 @@
                                     <span class="whitespace-pre-wrap break-words message-text"
                                         v-html="renderMessageHtml(getAlbumCaptionMessage(msg) || msg)"></span>
 
+                                    <!-- A poll's vote count, on the time's line as in Telegram:
+                                         the count on the left, the floated time on the right. -->
+                                    <span v-if="msg.raw_data?.poll?.results" class="poll-votes text-tg-meta">{{ msg.raw_data.poll.results.total_voters }} {{ msg.raw_data.poll.results.total_voters === 1 ? 'vote' : 'votes' }}</span>
+
                                     <!-- Capture-time link preview (mf7): Telegram's own webpage card
                                          as it existed when the message was archived -->
                                     <div v-if="msg.raw_data?.webpage" class="link-preview border-s-[3px] border-tg-quote ps-2 pe-2 py-1 bg-tg-preview-bg max-w-full">
@@ -5336,10 +5610,10 @@
                                  data-date-* feed the floating day pill (#249): the pill observes these
                                  markers and reads the day of whichever one is topmost in the viewport. -->
                             <div v-if="showDateSeparator(index)" class="date-separator"
-                                :data-date-label="formatDateFull(msg.date)" :data-date-iso="msg.date">
+                                :data-date-label="formatDatePill(msg.date)" :data-date-iso="msg.date">
                                 <button type="button" @click="openDatePicker(msg.date)"
                                     :aria-label="`Open date picker for ${formatDateFull(msg.date)}`">
-                                    {{ formatDateFull(msg.date) }}
+                                    {{ formatDatePill(msg.date) }}
                                 </button>
                             </div>
                         </template>
@@ -5497,11 +5771,18 @@
                             <div class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg><span class="flex-1 text-tg-ink">Messages</span><span class="tabular-nums">{{ formatNumber(chatStats.messages) }}</span></div>
                             <div class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg><span class="flex-1 text-tg-ink" title="Stickers and link previews included, so this can be more than the shared media tabs add up to">Media files</span><span class="tabular-nums">{{ formatNumber(chatStats.media_files) }}</span></div>
                             <div class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="flex-1 text-tg-ink">Disk use</span><span class="tabular-nums" :title="formatBytesTitle(chatStats.total_size_bytes)">{{ formatSize(chatStats.total_size_mb, chatStats.total_size_bytes) }}</span></div>
-                            <!-- What Telegram no longer shows and the archive kept. -->
-                            <div v-if="chatStats.deleted_messages > 0" class="info-row"><svg class="text-tg-danger-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="flex-1 text-tg-ink">Deleted messages kept</span><span class="tabular-nums">{{ formatNumber(chatStats.deleted_messages) }}</span></div>
-                            <div v-if="chatStats.edited_messages > 0" class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="flex-1 text-tg-ink">Edited messages</span><span class="tabular-nums">{{ formatNumber(chatStats.edited_messages) }}</span></div>
+                            <!-- What Telegram no longer shows and the archive kept. Counts,
+                                 so the icons stay grey like their neighbours. -->
+                            <div v-if="chatStats.deleted_messages > 0" class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="flex-1 text-tg-ink">Deleted in Telegram</span><span class="tabular-nums">{{ formatNumber(chatStats.deleted_messages) }}</span></div>
+                            <div v-if="chatStats.edited_messages > 0" class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="flex-1 text-tg-ink">Edited</span><span class="tabular-nums">{{ formatNumber(chatStats.edited_messages) }}</span></div>
                             <div v-if="chatStats.first_message_date" class="info-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg><span class="flex-1 text-tg-ink">Oldest message</span><span class="tabular-nums" :title="formatDateTitle(chatStats.first_message_date)">{{ formatShortDate(chatStats.first_message_date) }}</span></div>
                         </div>
+                        <!-- Only what was captured: a version replaced twice between two
+                             syncs was never seen, and with DELETION_MODE=hard nothing
+                             deleted is kept, so the deletion clause needs a count. -->
+                        <p v-if="chatStats.deleted_messages > 0 && chatStats.edited_messages > 0" class="mt-1 text-[13px] leading-[18px] text-tg-muted">The archive keeps deleted messages and the earlier versions of edited ones it saw.</p>
+                        <p v-else-if="chatStats.deleted_messages > 0" class="mt-1 text-[13px] leading-[18px] text-tg-muted">The archive keeps deleted messages.</p>
+                        <p v-else-if="chatStats.edited_messages > 0" class="mt-1 text-[13px] leading-[18px] text-tg-muted">The archive keeps the earlier versions of edited messages it saw.</p>
                     </section>
 
                     <!-- On a phone the header keeps only search, gallery and info; export and
@@ -5686,12 +5967,12 @@
 
         <!-- Date Picker Modal -->
         <div v-if="showDatePickerModal"
-            class="fixed inset-0 bg-tg-scrim/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
+            class="fixed inset-0 bg-tg-scrim/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4"
             @click.self="closeDatePicker">
             <section ref="datePickerDialog" role="dialog" aria-modal="true" aria-labelledby="date-picker-title"
-                class="date-picker-dialog my-auto bg-tg-sidebar rounded-2xl shadow-popup p-6 w-full max-w-md border border-tg-n700">
+                class="date-picker-dialog my-auto bg-tg-sidebar rounded-2xl shadow-popup p-3 sm:p-6 w-full max-w-md border border-tg-n700">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 id="date-picker-title" class="text-xl font-bold text-tg-ink">Jump to Date</h3>
+                    <h3 id="date-picker-title" class="text-xl font-bold text-tg-ink">Jump to date</h3>
                     <button type="button" @click="closeDatePicker"
                         aria-label="Close date picker"
                         class="text-tg-n400 hover:text-tg-ink transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
@@ -5713,6 +5994,7 @@
                         class="mt-2 text-xs text-tg-warning">
                         {{ calendarAvailabilityError }}
                     </p>
+                    <div ref="datePickerCalendarHost" class="date-picker-calendar"></div>
                 </div>
                 <div class="flex gap-2 justify-end">
                     <button @click="closeDatePicker"
@@ -5798,7 +6080,7 @@
             <section role="dialog" aria-modal="true" aria-labelledby="export-modal-title"
                 class="my-auto bg-tg-sidebar rounded-2xl shadow-popup p-6 w-full max-w-md border border-tg-n700">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 id="export-modal-title" class="text-xl font-bold text-tg-ink">Export Chat to JSON</h3>
+                    <h3 id="export-modal-title" class="text-xl font-bold text-tg-ink">Export chat to JSON</h3>
                     <button type="button" @click="showExportModal = false" aria-label="Close export dialog"
                         class="text-tg-n400 hover:text-tg-ink transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -5859,7 +6141,7 @@
                     </div>
                     <p class="mt-1 text-[13px] text-tg-muted">Deleted and edited messages and voice transcripts the archive kept.</p>
                 </header>
-                <div class="changes-body flex-1 overflow-y-auto px-6 pb-6 space-y-2"
+                <div class="changes-body flex-1 overflow-y-auto px-2 pb-4"
                     :class="{ 'is-reloading': changesLoading && !changesLoadingOlder && changesFeed.length }"
                     :aria-busy="changesLoading ? 'true' : 'false'">
                     <div v-if="changesLoading && !changesFeed.length" role="status" class="text-sm text-tg-muted py-6 text-center">Loading…</div>
@@ -5878,44 +6160,51 @@
                         <!-- For the operator only: the setting that decides whether deletions are kept. -->
                         <p v-if="userRole === 'master'" class="mt-2 text-[13px]">Deleted messages show here while the backup keeps them (DELETION_MODE=soft, the default).</p>
                     </div>
-                    <article v-for="card in changeCards" :key="card.key"
-                        class="change-card rounded-xl border border-tg-n700 bg-tg-n950 px-3.5 py-3"
-                        @click="openChangeCard(card)">
-                        <!-- Line 1: the kind, in the same icon and wording the bubble's meta
-                             row uses, then who wrote it, then the way to the message (the
-                             whole card also opens it with a click). Line 2: where and when.
-                             Each line truncates once, never twice. Only a deletion takes
-                             the danger colour; an edit is neutral, as on the bubble. -->
-                        <header class="flex items-center gap-2 min-w-0">
-                            <span :class="card.kind === 'deleted' ? 'bg-tg-danger/15 text-tg-danger-fg' : card.kind === 'transcript' ? 'bg-tg-accent-dim text-tg-accent-faint' : 'bg-tg-n700 text-tg-ink'"
-                                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold shrink-0">
-                                <template v-if="card.kind === 'deleted'"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>Deleted</template>
-                                <template v-else-if="card.kind === 'transcript'"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>Transcript</template>
-                                <template v-else><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>Edited<template v-if="card.edits > 1"> · {{ card.edits }}</template></template>
-                            </span>
-                            <span class="min-w-0 flex-1 truncate text-sm font-semibold text-tg-ink"><bdi>{{ card.who }}</bdi></span>
-                            <button type="button" @click.stop="openChangeCard(card)"
-                                class="change-open hit-40 shrink-0 -my-1 -me-1 w-7 h-7 flex items-center justify-center rounded-lg text-tg-muted hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
-                                :aria-label="card.kind === 'edited' ? 'Show in chat, with its edit history' : 'Show in chat'"
-                                :title="card.kind === 'edited' ? 'Show in chat, with its edit history' : 'Show in chat'">
-                                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
-                            </button>
-                        </header>
-                        <div class="mt-0.5 flex items-baseline gap-1 min-w-0 text-[13px] text-tg-muted">
-                            <template v-if="card.where"><span class="min-w-0 truncate"><bdi>{{ card.where }}</bdi></span><span aria-hidden="true">·</span></template>
-                            <span class="shrink-0 tabular-nums" :title="formatDateTitle(card.date)">{{ formatChangeDate(card.date) }}</span>
-                        </div>
-                        <div v-if="card.kind === 'deleted'" dir="auto" class="mt-2 text-sm text-tg-n200 whitespace-pre-wrap break-words">{{ card.text || '(no text: media or a service message)' }}</div>
-                        <div v-else-if="card.kind === 'transcript'" dir="auto" class="mt-2 text-sm text-tg-n200 whitespace-pre-wrap break-words">{{ card.text || '(empty transcript)' }}</div>
-                        <ol v-else class="mt-2 text-sm space-y-1">
-                            <li v-for="(text, i) in card.versions" :key="i" dir="auto"
-                                :class="i < card.versions.length - 1 ? 'text-tg-muted line-through' : 'text-tg-n200'"
-                                class="whitespace-pre-wrap break-words">{{ text || '(empty)' }}</li>
-                        </ol>
-                    </article>
+                    <!-- One day at a time, newest first, under a date pill like the
+                         chat's own ("Today", "Yesterday", "September 14"); it sticks
+                         at the top while its day scrolls. Under it, one flat row per
+                         message, split by hairlines: the kind, in the icon and wording
+                         the bubble's meta row uses, then who wrote it, then the way to
+                         the message (the whole row also opens it with a click). Line 2:
+                         where, and what the time means ("deleted 16:43"). Each line
+                         truncates once, never twice. Only a deletion takes the danger
+                         colour; an edit is neutral, as on the bubble. -->
+                    <section v-for="day in changeDays" :key="day.key" class="change-day" :aria-label="day.label">
+                        <div class="change-day-pill" aria-hidden="true"><span>{{ day.label }}</span></div>
+                        <article v-for="card in day.cards" :key="card.key"
+                            class="change-card px-4 py-2.5"
+                            @click="openChangeCard(card)">
+                            <header class="flex items-center gap-2 min-w-0">
+                                <span :class="card.kind === 'deleted' ? 'bg-tg-danger/15 text-tg-danger-fg' : card.kind === 'transcript' ? 'bg-tg-accent-dim text-tg-accent-faint' : 'bg-tg-n700 text-tg-ink'"
+                                    class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold shrink-0">
+                                    <template v-if="card.kind === 'deleted'"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>Deleted</template>
+                                    <template v-else-if="card.kind === 'transcript'"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>Transcript</template>
+                                    <template v-else><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>Edited<template v-if="card.edits > 1"> · {{ card.edits }}</template></template>
+                                </span>
+                                <span class="min-w-0 flex-1 truncate text-[15px] font-semibold text-tg-ink"><bdi>{{ card.who }}</bdi></span>
+                                <button type="button" @click.stop="openChangeCard(card)"
+                                    class="change-open hit-40 shrink-0 -my-1 -me-1 w-7 h-7 flex items-center justify-center rounded-lg text-tg-muted hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
+                                    :aria-label="card.kind === 'edited' ? 'Show in chat, with its edit history' : 'Show in chat'"
+                                    :title="card.kind === 'edited' ? 'Show in chat, with its edit history' : 'Show in chat'">
+                                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+                                </button>
+                            </header>
+                            <div class="mt-0.5 flex items-baseline gap-1 min-w-0 text-[13px] text-tg-muted">
+                                <template v-if="card.where"><span class="min-w-0 truncate"><bdi>{{ card.where }}</bdi></span><span aria-hidden="true">·</span></template>
+                                <span class="shrink-0 tabular-nums" :title="formatDateTitle(card.date)">{{ changeTimeLabel(card) }}</span>
+                            </div>
+                            <div v-if="card.kind === 'deleted'" dir="auto" class="mt-1.5 text-sm text-tg-n200 whitespace-pre-wrap break-words">{{ card.text || '(no text: media or a service message)' }}</div>
+                            <div v-else-if="card.kind === 'transcript'" dir="auto" class="mt-1.5 text-sm text-tg-n200 whitespace-pre-wrap break-words">{{ card.text || '(empty transcript)' }}</div>
+                            <ol v-else class="mt-1.5 text-sm space-y-1">
+                                <li v-for="(text, i) in card.versions" :key="i" dir="auto"
+                                    :class="i < card.versions.length - 1 ? 'text-tg-muted line-through' : 'text-tg-n200'"
+                                    class="whitespace-pre-wrap break-words">{{ text || '(empty)' }}</li>
+                            </ol>
+                        </article>
+                    </section>
                     <p v-if="changesError && changesFeed.length" role="status" class="pt-1 text-center text-sm text-tg-ink">{{ changesError }}</p>
                     <button v-if="changesNextBefore" @click="loadMoreChanges" :disabled="changesLoading"
-                        class="w-full min-h-[40px] py-2 text-sm bg-tg-n700 hover:bg-tg-n600 disabled:opacity-50 text-tg-ink rounded-lg transition">
+                        class="mt-2 w-full min-h-[40px] py-2 text-sm bg-tg-n700 hover:bg-tg-n600 disabled:opacity-50 text-tg-ink rounded-lg transition">
                         {{ changesLoading ? 'Loading…' : 'Load older' }}
                     </button>
                 </div>
@@ -5985,7 +6274,7 @@
                         <div class="min-w-0">
                             <h3 id="versions-title" class="text-base font-semibold text-tg-ink">Edit history</h3>
                             <div class="mt-1 text-xs text-tg-muted truncate">
-                                Sent {{ formatDateFull(versionsMessage.date) }} at {{ formatTime(versionsMessage.date) }}
+                                Sent {{ formatDatePill(versionsMessage.date) }} at {{ formatTime(versionsMessage.date) }}
                             </div>
                         </div>
                         <button ref="versionsCloseBtn" @click="closeVersionsPanel" type="button"
@@ -6020,7 +6309,7 @@
                     <!-- The history as the chat showed it, oldest first: each version is
                          a bubble on the chat wallpaper under a small label, and every
                          later one marks what its edit inserted and removed. The current
-                         text carries an accent ring. -->
+                         text's label says so; the bubble needs no ring. -->
                     <div v-else>
                         <p class="text-xs text-tg-muted mb-3">
                             {{ getMessageVersions(versionsMessage).length }} earlier {{ getMessageVersions(versionsMessage).length === 1 ? 'version' : 'versions' }} kept<template v-if="getMessageVersions(versionsMessage).length >= 100">, showing the latest 100</template>
@@ -6044,15 +6333,17 @@
         </div>
 
         <!-- Lightbox Modal for Images -->
-        <div v-if="lightboxOpen"
+        <!-- A modal dialog: focus moves to Close on open, Tab stays inside, and
+             closing puts focus back on the picture that opened it. -->
+        <div v-if="lightboxOpen" ref="lightboxDialog" role="dialog" aria-modal="true" :aria-label="lightboxLabel(lightboxMedia)"
             class="lightbox fixed inset-0 z-50 bg-tg-scrim/[0.94] flex items-center justify-center"
-            @click.self="closeLightbox"
+            @click.self="closeLightbox()"
             @touchstart.passive="lightboxTouchStart" @touchend="lightboxTouchEnd">
 
             <!-- Close Button -->
             <!-- Drawn on the scrim, so white in every palette (not ink, which is
                  near-black on the light ones). 44px targets, clear of the notch. -->
-            <button @click="closeLightbox" type="button" aria-label="Close"
+            <button ref="lightboxCloseBtn" @click="closeLightbox()" type="button" aria-label="Close"
                 class="lightbox-control absolute right-3 z-60 w-11 h-11 flex items-center justify-center rounded-full text-tg-on-scrim bg-tg-on-scrim/[0.12] hover:bg-tg-on-scrim/20 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-on-scrim">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -6067,6 +6358,15 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
             </a>
+
+            <!-- Show in chat: back to the message the picture belongs to, which in
+                 an archive may be deleted or edited. Not for a profile photo. -->
+            <button v-if="lightboxMedia && !lightboxMedia.isAvatar && lightboxMedia.id != null" @click="lightboxShowInChat" type="button"
+                aria-label="Show in chat" title="Show in chat"
+                class="lightbox-control absolute z-60 w-11 h-11 flex items-center justify-center rounded-full text-tg-on-scrim bg-tg-on-scrim/[0.12] hover:bg-tg-on-scrim/20 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-on-scrim"
+                :class="noDownload ? 'right-16' : 'right-[7.25rem]'">
+                <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </button>
 
             <!-- Where this picture sits in the chat's media, top centre, level
                  with the controls. -->
@@ -6094,13 +6394,13 @@
             <!-- Image -->
             <img v-if="lightboxMedia && isLightboxImage(lightboxMedia)"
                 :src="getMediaUrl(lightboxMedia)"
-                class="max-h-[90vh] max-w-[90vw] object-contain"
+                class="max-h-[90vh] max-w-[100vw] sm:max-w-[90vw] object-contain"
                 @click.stop>
 
             <!-- Video -->
             <video v-else-if="lightboxMedia && isLightboxVideo(lightboxMedia)"
                 :src="getMediaUrl(lightboxMedia)"
-                class="max-h-[90vh] max-w-[90vw] object-contain"
+                class="max-h-[90vh] max-w-[100vw] sm:max-w-[90vw] object-contain"
                 controls autoplay
                 @click.stop>
             </video>
@@ -6114,9 +6414,28 @@
             </template>
 
             <!-- Media Info -->
-            <!-- One line: who sent it and when. -->
-            <div v-if="lightboxMedia && (lightboxSender(lightboxMedia) || lightboxMedia.date)" class="lightbox-caption absolute left-1/2 -translate-x-1/2 max-w-[calc(100vw-24px)] truncate whitespace-nowrap text-tg-on-scrim text-sm tabular-nums bg-tg-on-scrim/[0.12] px-4 py-2 rounded-full">
-                <span v-if="lightboxSender(lightboxMedia)" class="font-semibold">{{ lightboxSender(lightboxMedia) }}</span><template v-if="lightboxSender(lightboxMedia) && lightboxMedia.date"> · </template><template v-if="lightboxMedia.date">{{ formatLightboxDate(lightboxMedia.date) }}</template>
+            <!-- Who sent it and when, a "deleted" tag when Telegram no longer has
+                 the message, and the caption under them, three lines at most
+                 until "more" opens the rest. A dark blurred backing, not a light
+                 tint: the box sits over the picture, and white text keeps about
+                 7:1 on it over a white photo. -->
+            <div v-if="lightboxMedia && (lightboxSender(lightboxMedia) || lightboxMedia.date || lightboxCaption(lightboxMedia))"
+                class="lightbox-caption absolute left-1/2 -translate-x-1/2 w-max max-w-[min(600px,calc(100vw-24px))] text-tg-on-scrim bg-tg-scrim/[0.72] backdrop-blur-md px-4 py-2"
+                :class="lightboxCaption(lightboxMedia) ? 'rounded-2xl' : 'rounded-full'"
+                @click.stop>
+                <div class="flex items-center gap-2 min-w-0 text-sm tabular-nums">
+                    <span class="min-w-0 truncate"><span v-if="lightboxSender(lightboxMedia)" class="font-semibold">{{ lightboxSender(lightboxMedia) }}</span><template v-if="lightboxSender(lightboxMedia) && lightboxMedia.date"> · </template><template v-if="lightboxMedia.date">{{ formatLightboxDate(lightboxMedia.date) }}</template></span>
+                    <span v-if="lightboxMedia.is_deleted" class="lightbox-deleted shrink-0 inline-flex items-center gap-1 text-xs font-semibold">
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>deleted</span>
+                </div>
+                <template v-if="lightboxCaption(lightboxMedia)">
+                    <p ref="lightboxCaptionEl" dir="auto" class="lightbox-caption-text mt-1 whitespace-pre-wrap break-words"
+                        :class="lightboxCaptionOpen ? 'is-open' : ''">{{ lightboxCaption(lightboxMedia) }}</p>
+                    <!-- One toggle that stays in place, so focus never drops to the page. -->
+                    <button v-if="lightboxCaptionClamped || lightboxCaptionOpen" type="button" @click="lightboxCaptionOpen = !lightboxCaptionOpen"
+                        :aria-expanded="lightboxCaptionOpen ? 'true' : 'false'"
+                        class="hit-40 mt-0.5 text-sm font-semibold text-tg-on-scrim hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-on-scrim">{{ lightboxCaptionOpen ? 'less' : 'more' }}</button>
+                </template>
             </div>
         </div>
 
@@ -6594,12 +6913,12 @@
                 const getChatTypeLabel = (chat) => {
                     if (!chat) return ''
                     const isPublic = !!chat.username
-                    if (chat.type === 'private') return isDeletedChat(chat) ? 'Deleted account' : 'Private chat'
+                    if (chat.type === 'private') return isDeletedChat(chat) ? 'deleted account' : 'private chat'
                     if (isGroupChatType(chat.type)) {
                         const kind = chat.is_forum ? 'group with topics' : 'group'
-                        return `${isPublic ? 'Public' : 'Private'} ${kind}`
+                        return `${isPublic ? 'public' : 'private'} ${kind}`
                     }
-                    if (chat.type === 'channel') return `${isPublic ? 'Public' : 'Private'} channel`
+                    if (chat.type === 'channel') return `${isPublic ? 'public' : 'private'} channel`
                     return ''
                 }
                 // The line under the name: the member count when the archive knows it
@@ -6611,15 +6930,30 @@
                     const noun = chat.type === 'channel' ? 'subscriber' : 'member'
                     return `${count.toLocaleString()} ${count === 1 ? noun : noun + 's'}`
                 }
+                // Lower case, like the status line of the apps: "24 members",
+                // "private chat", "public channel".
                 const chatStatusLine = (chat) => {
                     return chatMemberCount(chat) || getChatTypeLabel(chat)
                 }
-                // The chat list's second line names the kind of chat in lower case,
-                // after the username: "group · 24 members", "private chat".
+                // The chat list's second line, most useful fact first, so a narrow
+                // list cuts the least of it: a group or a channel is its kind and
+                // size ("channel · 4,210 subscribers", "forum · 138 members"), a
+                // private chat the person's username ("@juniper_vale"), or
+                // "private chat" when there is none. A group's username is in the
+                // info panel.
                 const chatKindLabel = (chat) => {
                     if (chat?.type === 'private') return 'private chat'
                     if (chat?.type === 'channel') return 'channel'
                     return 'group'
+                }
+                const chatListLine = (chat) => {
+                    if (chat?.type === 'private') {
+                        if (chat.username) return `@${chat.username}`
+                        return isDeletedChat(chat) ? 'deleted account' : 'private chat'
+                    }
+                    const kind = chat?.is_forum ? 'forum' : chatKindLabel(chat)
+                    const size = chatMemberCount(chat)
+                    return size ? `${kind} · ${size}` : kind
                 }
                 // The row the panel describes. The list is re-fetched every few seconds and a
                 // jump replaces it wholesale, so the panel reads the live row carrying the
@@ -6793,8 +7127,7 @@
                     lightboxList.value = list
                     lightboxIndex.value = index
                     lightboxMedia.value = list[index]
-                    lightboxOpen.value = true
-                    document.addEventListener('keydown', handleLightboxKeydown)
+                    showLightbox()
                 }
                 const copyText = async (text, doneMessage) => {
                     if (!text) return
@@ -6899,6 +7232,9 @@
                 const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
                 const showDatePickerModal = ref(false)
                 const datePickerDialog = ref(null)
+                // The calendar sits in the dialog under the date field, always open,
+                // so it never hangs over the dialog's buttons.
+                const datePickerCalendarHost = ref(null)
                 const datePickerInput = ref(null)
                 const selectedDate = ref(null)
                 let flatpickrInstance = null
@@ -8074,6 +8410,7 @@
                         if (before) changesFeed.value.push(...data.changes)
                         else changesFeed.value = data.changes
                         changesNextBefore.value = data.next_before
+                        if (!before && showChangesFeed.value) markChangesSeen()
                     } catch (e) {
                         if (seq !== changesRequestSeq) return
                         // A load-more failure keeps the cursor, so "Load older" stays
@@ -8095,12 +8432,14 @@
                 }
 
                 // Tab and Shift+Tab cycle inside a modal dialog, and focus that has
-                // left it comes back to its first or last control.
+                // left it comes back to its first or last control. Only controls on
+                // screen count: a phone hides some (the lightbox's side arrows), and
+                // a hidden last control would let Tab slip out past it.
                 const cycleTabWithin = (dialog, event) => {
                     if (event.key !== 'Tab' || !dialog) return
                     const focusable = Array.from(dialog.querySelectorAll(
                         'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                    ))
+                    )).filter(el => el.getClientRects().length > 0)
                     if (focusable.length === 0) {
                         event.preventDefault()
                         return
@@ -8134,7 +8473,47 @@
                     }
                     cycleTabWithin(changesDialog.value, event)
                 }
+                // The dot on the What changed button: the newest entry's date,
+                // read once after sign-in, against the newest one the feed showed
+                // (kept in this browser only, one entry per signed-in user, so one
+                // login reading the feed never clears another's dot).
+                const changesSeenKey = () => `changesSeenAt:${currentUsername.value || ''}`
+                const changesLatestDate = ref(null)
+                const changesUnseen = ref(false)
+                const laterIso = (a, b) => {
+                    if (!a) return b || null
+                    if (!b) return a
+                    return moment.utc(b).isAfter(moment.utc(a)) ? b : a
+                }
+                const checkNewChanges = async () => {
+                    try {
+                        const resp = await fetch('/api/changes?limit=1', { credentials: 'same-origin' })
+                        if (!resp.ok) return
+                        const data = await resp.json()
+                        const latest = data.changes?.[0]?.date || null
+                        changesLatestDate.value = latest
+                        if (!latest) return
+                        let seen = null
+                        try { seen = localStorage.getItem(changesSeenKey()) } catch (e) { /* private mode */ }
+                        changesUnseen.value = !seen || moment.utc(latest).isAfter(moment.utc(seen))
+                    } catch (e) {
+                        changesUnseen.value = false
+                    }
+                }
+                // Seen up to the newest entry the feed has shown: its first page, or
+                // the date read at sign-in, whichever is later. A change that arrived
+                // while the page was open and was read in the feed stays read.
+                const markChangesSeen = () => {
+                    changesUnseen.value = false
+                    const newest = laterIso(changesLatestDate.value, changesFeed.value[0]?.date)
+                    if (!newest) return
+                    changesLatestDate.value = newest
+                    let seen = null
+                    try { seen = localStorage.getItem(changesSeenKey()) } catch (e) { /* private mode */ }
+                    try { localStorage.setItem(changesSeenKey(), laterIso(seen, newest)) } catch (e) { /* private mode */ }
+                }
                 const openChangesFeed = () => {
+                    markChangesSeen()
                     changesTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
                     showChangesFeed.value = true
                     document.addEventListener('keydown', handleChangesKeydown)
@@ -8164,26 +8543,14 @@
                 const loadMoreChanges = () => {
                     if (changesNextBefore.value) fetchChanges(changesNextBefore.value)
                 }
-                // The feed's times, in the viewer's timezone: the time today,
-                // "Yesterday 11:28", then the date and time, with the year only when
-                // it is not this one.
-                const formatChangeDate = (iso) => {
-                    if (!iso) return ''
-                    const when = moment.utc(iso).tz(viewerTimezone.value)
-                    const now = moment().tz(viewerTimezone.value)
-                    const daysAgo = now.clone().startOf('day').diff(when.clone().startOf('day'), 'days')
-                    if (daysAgo === 0) return when.format('HH:mm')
-                    if (daysAgo === 1) return `Yesterday ${when.format('HH:mm')}`
-                    if (when.isSame(now, 'year')) return when.format('MMM D, HH:mm')
-                    return when.format('MMM D, YYYY, HH:mm')
-                }
-
                 // The feed as cards, one per message: the API sends one row per kept
                 // version, so a message edited twice is two rows with the same current
                 // text. Its card holds every text the archive kept, oldest first, and
                 // sits where its newest change falls in the feed. A group row names
                 // the sender and then the chat; a private chat is named after the
-                // person, so it is said once.
+                // person, so it is said once, and its second line says "Private
+                // chat" instead, never a bare time. A channel post says "Channel".
+                const CHANGE_CHAT_KINDS = { private: 'Private chat', channel: 'Channel' }
                 const changeCards = computed(() => {
                     const cards = []
                     const edits = new Map()
@@ -8191,7 +8558,7 @@
                         const title = change.chat?.title || 'Unnamed chat'
                         const groupLike = !!change.sender_name && change.sender_name !== change.chat?.title
                         const who = groupLike ? change.sender_name : title
-                        const where = groupLike ? title : ''
+                        const where = groupLike ? title : (CHANGE_CHAT_KINDS[change.chat?.type] || '')
                         if (change.kind !== 'edited') {
                             cards.push({
                                 key: `${change.kind}:${change.chat?.ref}:${change.message_id}:${change.date}`,
@@ -8219,6 +8586,37 @@
                     }
                     return cards
                 })
+
+                // The feed's days, in the viewer's timezone, newest first, each with
+                // its rows in feed order.
+                const changeDayLabel = (when, now) => {
+                    const daysAgo = now.clone().startOf('day').diff(when.clone().startOf('day'), 'days')
+                    if (daysAgo === 0) return 'Today'
+                    if (daysAgo === 1) return 'Yesterday'
+                    return when.isSame(now, 'year') ? when.format('MMMM D') : when.format('MMMM D, YYYY')
+                }
+                const changeDays = computed(() => {
+                    const now = moment().tz(viewerTimezone.value)
+                    const days = []
+                    for (const card of changeCards.value) {
+                        const when = moment.utc(card.date).tz(viewerTimezone.value)
+                        const key = when.format('YYYY-MM-DD')
+                        let day = days[days.length - 1]
+                        if (!day || day.key !== key) {
+                            day = { key, label: changeDayLabel(when, now), cards: [] }
+                            days.push(day)
+                        }
+                        day.cards.push(card)
+                    }
+                    return days
+                })
+                // The time on a row, named, so it never reads as the time the
+                // message was sent: "deleted 16:43", "edited 15:20", "transcribed 16:02".
+                const CHANGE_VERBS = { deleted: 'deleted', edited: 'edited', transcript: 'transcribed' }
+                const changeTimeLabel = (card) => {
+                    const time = moment.utc(card.date).tz(viewerTimezone.value).format('HH:mm')
+                    return `${CHANGE_VERBS[card.kind] || ''} ${time}`.trim()
+                }
 
                 const showStatusPanel = ref(false)
                 const statusData = ref(null)
@@ -8513,6 +8911,7 @@
                     ...viewerThemes.filter((theme) => theme.dark).map((theme) => ({ key: theme.id, theme })),
                 ]
                 const themePopupOpen = ref(false)
+                const chatMenuOpen = ref(false)  // the chat header's "More actions" menu
                 const currentTheme = ref('system')
                 const systemDarkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
                 // What "Match system" shows right now, for the picker's hint.
@@ -8566,7 +8965,8 @@
                     themePopupOpen.value = false
                 }
 
-                // The sidebar popovers (theme, statistics, account). Focus moves into
+                // The sidebar popovers (theme, statistics, account) and the chat
+                // header's "More actions" menu. Focus moves into
                 // one when it opens: its checked or first row, or the sheet itself when
                 // it holds only figures. Escape closes it and focus goes back to its
                 // icon, and so does a close that took the focused row away with it.
@@ -8580,9 +8980,10 @@
                     themePopupOpen.value = false
                     statsPopupOpen.value = false
                     accountMenuOpen.value = false
+                    chatMenuOpen.value = false
                     nextTick(() => { if (trigger?.isConnected) trigger.focus() })
                 }
-                watch(() => themePopupOpen.value || statsPopupOpen.value || accountMenuOpen.value, (open) => {
+                watch(() => themePopupOpen.value || statsPopupOpen.value || accountMenuOpen.value || chatMenuOpen.value, (open) => {
                     if (open) {
                         document.addEventListener('keydown', handlePopoverKeydown, true)
                         nextTick(() => {
@@ -9039,6 +9440,7 @@
                                 await loadStats()
                                 await loadFolders()
                                 await loadArchivedCount()
+                                checkNewChanges()
                                 setupInfiniteScroll()
 
                                 // Handle deep link from push notification. /?chat= carries the
@@ -9894,6 +10296,7 @@
                             await loadStats()
                             await loadFolders()
                             await loadArchivedCount()
+                            checkNewChanges()
                             setupInfiniteScroll()
                             await initNotifications()
                         } else {
@@ -10046,15 +10449,17 @@
                                 mime_type: m.mime_type,
                             },
                             id: m.message_id,
-                            date: m.date,
+                            date: m.message_date,
                             sender_name: m.sender_name,
+                            // The caption and the "deleted" tag, as the chat shows them.
+                            text: m.text || '',
+                            is_deleted: !!m.is_deleted,
                         }))
                         lightboxList.value = mapped
                         const startIdx = idx >= 0 ? idx : 0
                         lightboxIndex.value = startIdx
                         lightboxMedia.value = mapped[startIdx]
-                        lightboxOpen.value = true
-                        document.addEventListener('keydown', handleLightboxKeydown)
+                        showLightbox()
                     }
                 }
 
@@ -10302,8 +10707,35 @@
                     }))
                 }
 
+                // A run also ends where the same sender waited more than 15 minutes,
+                // so the name, the avatar and the tail follow the turns of the
+                // conversation, not just the order of the senders. Walked oldest row
+                // first; a pause gives the rest of the run a new segment in its key,
+                // which the run positions then read as a different sender.
+                const splitRunsAtPauses = (keys, times) => {
+                    const pauseMs = 15 * 60 * 1000
+                    const split = new Array(keys.length).fill(null)
+                    let previousKey = null
+                    let previousTime = NaN
+                    let segment = 0
+                    for (let i = keys.length - 1; i >= 0; i--) {
+                        if (keys[i] === null) continue
+                        if (keys[i] === previousKey && times[i] - previousTime > pauseMs) segment += 1
+                        split[i] = `${keys[i]}#${segment}`
+                        previousKey = keys[i]
+                        previousTime = times[i]
+                    }
+                    return split
+                }
+
                 const runKeys = computed(() => sortedMessages.value.map(getRunKey))
-                const runPositions = computed(() => computeRunPositions(runKeys.value))
+                // messageSortTime reads 0 for a row with no usable date; NaN keeps
+                // such a row from ever splitting a run.
+                const runSegmentKeys = computed(() => splitRunsAtPauses(
+                    runKeys.value,
+                    sortedMessages.value.map((msg) => messageSortTime(msg) || NaN),
+                ))
+                const runPositions = computed(() => computeRunPositions(runSegmentKeys.value))
 
                 // The row of each run that shows the sender's name: its first
                 // bubble, or, when the run opens with a sticker or a round video
@@ -10323,19 +10755,20 @@
                     return names
                 }
                 const nameRows = computed(() => computeNameRows(
-                    runKeys.value,
+                    runSegmentKeys.value,
                     runPositions.value,
                     (i) => isFramelessMedia(sortedMessages.value[i], i),
                 ))
 
-                // The archived accounts that speak in the loaded rows. The chip on a
-                // bubble names which of them wrote it, so it shows whenever there is
-                // more than one to tell apart. That is a fact about the senders, not
-                // about which accounts hold a copy of the chat: in a private chat
-                // between two archived accounts, or a group only one of them archives,
-                // the chat carries one account while both speak in it.
+                // The archived accounts a bubble's chip could name: the ones that hold
+                // the open chat, plus any that speak in the loaded rows. The chip says
+                // which of them wrote a message, so it shows only when there is more
+                // than one to tell apart. A chat that belongs to one account shows none
+                // (the header names it), unless a second archived account writes in
+                // it, as in a private chat between two archived accounts, where both
+                // sides would otherwise read as the same identity.
                 const bubbleAccountIds = computed(() => {
-                    const ids = new Set()
+                    const ids = new Set(selectedChat.value?.accounts || [])
                     for (const row of sortedMessages.value) {
                         if (row.sender_account_id != null) ids.add(row.sender_account_id)
                     }
@@ -10472,8 +10905,7 @@
                 }
 
                 const getBubbleShapeClass = (msg, index) => {
-                    // A music file shows its title over the duration line; a voice note does not.
-                    if (isCompactAudioBubble(msg)) return msg.media.type === 'voice' ? 'bubble-voice' : 'bubble-voice bubble-voice-titled'
+                    if (isCompactAudioBubble(msg)) return 'bubble-voice'
                     if (!isMediaOnlyMessage(msg, index)) return ''
                     if (FRAMELESS_MEDIA_TYPES.includes(msg.media.type)) return 'bubble-media-only bubble-frameless'
                     return 'bubble-media-only'
@@ -10482,10 +10914,13 @@
                 // A voice note or an audio file with nothing under the player (no
                 // caption, link card, reactions or open transcript): the time sits on
                 // the player's row, level with the duration, as in Telegram, instead of
-                // on a line of its own under it.
+                // on a line of its own under it. Only a bare time fits there: a
+                // "deleted" or "edited" marker would take the player's width on a
+                // phone, so it keeps the line under the player.
                 const isCompactAudioBubble = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (msg.text || msg.raw_data?.webpage || msg.reactions?.length) return false
+                    if (msg.is_deleted || msg.edit_date || Number(msg.version_count) > 0) return false
                     if (hasTranscriptButton(msg) && (showTranscriptText(msg) || transcriptStatus(msg) === 'error')) return false
                     return true
                 }
@@ -11068,7 +11503,10 @@
                 }
                 // Another chat or another topic opens with its header, not the last
                 // one's search: both reset the query.
-                watch(() => [selectedChat.value?.ref, selectedPaneTopic.value?.id], () => { chatSearchOpen.value = false })
+                watch(() => [selectedChat.value?.ref, selectedPaneTopic.value?.id], () => {
+                    chatSearchOpen.value = false
+                    chatMenuOpen.value = false
+                })
 
                 const onMessageSearchInput = () => {
                     if (messageSearchDebounceTimer) {
@@ -11826,6 +12264,14 @@
                     return moment.utc(dateStr).tz(viewerTimezone.value).format('MMMM D, YYYY')
                 }
 
+                // A day pill, as Telegram writes it: no year for a day of this year
+                // ("September 29"), the year for any other ("September 29, 2025").
+                const formatDatePill = (dateStr) => {
+                    const when = moment.utc(dateStr).tz(viewerTimezone.value)
+                    const now = moment().tz(viewerTimezone.value)
+                    return when.isSame(now, 'year') ? when.format('MMMM D') : when.format('MMMM D, YYYY')
+                }
+
                 const formatTime = (dateStr) => {
                     // Parse as UTC (DB stores UTC) then convert to viewer timezone
                     return moment.utc(dateStr).tz(viewerTimezone.value).format('HH:mm')
@@ -12234,18 +12680,40 @@
                         lightboxList.value = []
                         lightboxMedia.value = msg
                         lightboxIndex.value = mediaMessages.value.findIndex(m => m.id === msg.id && m.chat_id === msg.chat_id)
-                        lightboxOpen.value = true
-                        document.addEventListener('keydown', handleLightboxKeydown)
+                        showLightbox()
                     } else {
                         window.open(getMediaUrl(msg), '_blank')
                     }
                 }
 
-                const closeLightbox = () => {
+                // The lightbox is a modal dialog: focus goes to Close, stays inside,
+                // and returns to the control that opened it.
+                const lightboxDialog = ref(null)
+                const lightboxCloseBtn = ref(null)
+                let lightboxTrigger = null
+                const showLightbox = () => {
+                    if (!lightboxOpen.value) {
+                        lightboxTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+                        document.addEventListener('keydown', handleLightboxKeydown)
+                    }
+                    lightboxOpen.value = true
+                    nextTick(() => lightboxCloseBtn.value?.focus())
+                }
+                const closeLightbox = (restoreFocus = true) => {
                     lightboxOpen.value = false
                     lightboxMedia.value = null
                     lightboxList.value = []
                     document.removeEventListener('keydown', handleLightboxKeydown)
+                    const trigger = lightboxTrigger
+                    lightboxTrigger = null
+                    if (restoreFocus) nextTick(() => { if (trigger?.isConnected) trigger.focus() })
+                }
+                const lightboxLabel = (media) => {
+                    if (!media) return 'Media viewer'
+                    if (media.isAvatar) return 'Profile photo'
+                    const kind = isLightboxVideo(media) ? 'Video' : 'Photo'
+                    const sender = lightboxSender(media)
+                    return sender ? `${kind} from ${sender}` : kind
                 }
 
                 const lightboxPrev = () => {
@@ -12265,6 +12733,56 @@
                 }
 
                 const lightboxCount = computed(() => (lightboxList.value.length || mediaMessages.value.length))
+
+                // The caption of the picture's message, or of its album. A gallery
+                // item carries its own message's text; a profile photo has none.
+                const lightboxCaption = (media) => {
+                    if (!media || media.isAvatar) return ''
+                    const captionMsg = getAlbumCaptionMessage(media) || media
+                    return (captionMsg.text || '').trim()
+                }
+                // "more" shows only when the three-line clamp actually cut the text.
+                const lightboxCaptionEl = ref(null)
+                const lightboxCaptionOpen = ref(false)
+                const lightboxCaptionClamped = ref(false)
+                watch(lightboxMedia, async () => {
+                    lightboxCaptionOpen.value = false
+                    lightboxCaptionClamped.value = false
+                    await nextTick()
+                    const el = lightboxCaptionEl.value
+                    if (el) lightboxCaptionClamped.value = el.scrollHeight > el.clientHeight + 1
+                })
+                // Back to the message, in the chat around it: from the gallery through
+                // its own jump, and out of the pinned-only view or an in-chat search
+                // first, where the row would only flash inside the filtered list.
+                // Focus lands on the message's picture, so a keyboard user keeps
+                // their place.
+                const lightboxShowInChat = async () => {
+                    const media = lightboxMedia.value
+                    if (!media || media.isAvatar || media.id == null) return
+                    const messageId = media.id
+                    closeLightbox(false)
+                    if (showMediaGallery.value) {
+                        await jumpToMessage({ message_id: messageId })
+                    } else if (showPinnedOnly.value || messageSearchQuery.value) {
+                        closePinnedView()
+                        if (messageSearchDebounceTimer) {
+                            clearTimeout(messageSearchDebounceTimer)
+                            messageSearchDebounceTimer = null
+                        }
+                        messageSearchQuery.value = ''
+                        chatSearchOpen.value = false
+                        await loadMessagesAroundId(messageId)
+                    } else {
+                        await jumpToReply(messageId)
+                    }
+                    await nextTick()
+                    const row = findMessageElement(messageId)
+                    const target = row?.querySelector('.media-open') || row
+                    if (!target) return
+                    if (target === row && !row.hasAttribute('tabindex')) row.setAttribute('tabindex', '-1')
+                    target.focus({ preventScroll: true })
+                }
 
                 // Who sent the picture: the channel signature, the name the archive
                 // recorded, or the sender's current name. A profile photo has none.
@@ -12301,6 +12819,7 @@
                     if (e.key === 'Escape') closeLightbox()
                     else if (e.key === 'ArrowLeft') lightboxPrev()
                     else if (e.key === 'ArrowRight') lightboxNext()
+                    else if (e.key === 'Tab') cycleTabWithin(lightboxDialog.value, e)
                 }
 
                 const escapeHtml = (text) => {
@@ -13602,9 +14121,15 @@
                                 maxDate: viewerToday,
                                 theme: 'dark',
                                 disableMobile: true,
-                                appendTo: datePickerDialog.value,
+                                inline: true,
+                                appendTo: datePickerCalendarHost.value,
                                 onChange: (selectedDates, dateStr) => {
                                     selectedDate.value = dateStr
+                                },
+                                // An inline calendar never "opens": the first month's
+                                // availability loads when it is drawn.
+                                onReady: (selectedDates, dateStr, instance) => {
+                                    loadCalendarAvailability(instance.currentYear, instance.currentMonth)
                                 },
                                 onOpen: (selectedDates, dateStr, instance) => {
                                     loadCalendarAvailability(instance.currentYear, instance.currentMonth)
@@ -13617,6 +14142,11 @@
                                 },
                                 onDayCreate: (selectedDates, dateStr, instance, dayElem) => {
                                     const dateKey = instance.formatDate(dayElem.dateObj, 'Y-m-d')
+                                    // Known to hold no messages: drawn muted, still selectable.
+                                    if (calendarAvailableDates.value && !calendarAvailableDates.value.has(dateKey)) {
+                                        dayElem.classList.add('calendar-empty-date')
+                                        return
+                                    }
                                     if (!calendarAvailableDates.value?.has(dateKey) ||
                                         dayElem.classList.contains('calendar-available-date')) return
                                     dayElem.classList.add('calendar-available-date')
@@ -14008,6 +14538,7 @@
                     chatStatusLine,
                     chatMemberCount,
                     chatKindLabel,
+                    chatListLine,
                     getChatTypeLabel,
                     mediaSummaryLine,
                     previewSrc,
@@ -14123,6 +14654,7 @@
                     getInitials,
                     formatDate,
                     formatDateFull,
+                    formatDatePill,
                     formatTime,
                     formatShortDate,
                     formatMetadataTimestampTitle,
@@ -14154,10 +14686,18 @@
                     lightboxList,
                     mediaMessages,
                     closeLightbox,
+                    lightboxDialog,
+                    lightboxCloseBtn,
+                    lightboxLabel,
                     lightboxPrev,
                     lightboxNext,
                     lightboxCount,
                     lightboxSender,
+                    lightboxCaption,
+                    lightboxCaptionEl,
+                    lightboxCaptionOpen,
+                    lightboxCaptionClamped,
+                    lightboxShowInChat,
                     lightboxTouchStart,
                     lightboxTouchEnd,
                     isLightboxImage,
@@ -14302,6 +14842,7 @@
                     // Date picker
                     showDatePickerModal,
                     datePickerDialog,
+                    datePickerCalendarHost,
                     datePickerInput,
                     calendarAvailabilityLoading,
                     calendarAvailabilityError,
@@ -14357,10 +14898,13 @@
                     openForwardOrigin,
                     showChangesFeed,
                     changesFeed,
+                    changeDays,
+                    changeTimeLabel,
                     changesNextBefore,
                     changesLoading,
                     changesSince,
                     openChangesFeed,
+                    changesUnseen,
                     closeChangesFeed,
                     openChangeCard,
                     changesError,
@@ -14370,12 +14914,12 @@
                     viewerThemes,
                     systemIsDark,
                     themePopupOpen,
+                    chatMenuOpen,
                     themePickerRows,
                     currentTheme,
                     setTheme,
                     reloadChangesFeed,
                     loadMoreChanges,
-                    formatChangeDate,
                     changeCards,
 
                     showStatusPanel,

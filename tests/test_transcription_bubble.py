@@ -82,7 +82,7 @@ class TestBubbleMarkup(unittest.TestCase):
         bubble = _audio_bubble(_html())
         button = _between(bubble, '<button v-if="hasTranscriptButton(msg)"', "</button>")
         self.assertIn('type="button"', button)
-        # hit-40: a 40px touch target around the 28px square.
+        # hit-40: a 40px touch target around the 32px square.
         self.assertIn('class="transcript-btn hit-40"', button)
         self.assertIn(":aria-expanded=\"isTranscriptExpanded(msg) ? 'true' : 'false'\"", button)
         self.assertIn(':aria-controls="transcriptRegionId(msg)"', button)

@@ -377,7 +377,8 @@ def _avatar_script(body: str) -> str:
     # The lightbox lives outside the panel block; openPreviousAvatar reaches it by name.
     lightbox = (
         "const lightboxList = ref([]); const lightboxIndex = ref(0); const lightboxMedia = ref(null);\n"
-        "const handleLightboxKeydown = () => {};"
+        "const handleLightboxKeydown = () => {};\n"
+        "const showLightbox = () => { lightboxOpen.value = true; };"
     )
     run = "(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });"
     return "\n".join([prelude, _panel_block(html, {"file": False, "path": False}), lightbox, run])

@@ -81,19 +81,19 @@ def _script(body: str, capabilities: dict | None = None) -> str:
 def test_labels_read_like_the_apps() -> None:
     _run_node(
         _script("""
-assert.equal(getChatTypeLabel({ type: 'private' }), 'Private chat');
-assert.equal(getChatTypeLabel({ type: 'private', deleted: true }), 'Deleted account');
-assert.equal(getChatTypeLabel({ type: 'group' }), 'Private group');
-assert.equal(getChatTypeLabel({ type: 'group', username: 'g', is_forum: 1 }), 'Public group with topics');
-assert.equal(getChatTypeLabel({ type: 'channel', username: 'c' }), 'Public channel');
-assert.equal(getChatTypeLabel({ type: 'channel' }), 'Private channel');
-assert.equal(getChatTypeLabel({ type: 'supergroup', username: 's' }), 'Public group', 'an imported supergroup is a group');
+assert.equal(getChatTypeLabel({ type: 'private' }), 'private chat');
+assert.equal(getChatTypeLabel({ type: 'private', deleted: true }), 'deleted account');
+assert.equal(getChatTypeLabel({ type: 'group' }), 'private group');
+assert.equal(getChatTypeLabel({ type: 'group', username: 'g', is_forum: 1 }), 'public group with topics');
+assert.equal(getChatTypeLabel({ type: 'channel', username: 'c' }), 'public channel');
+assert.equal(getChatTypeLabel({ type: 'channel' }), 'private channel');
+assert.equal(getChatTypeLabel({ type: 'supergroup', username: 's' }), 'public group', 'an imported supergroup is a group');
 assert.equal(getChatTypeLabel(null), '');
 assert.equal(chatStatusLine({ type: 'group', participants_count: 1234 }), '1,234 members');
 assert.equal(chatStatusLine({ type: 'group', participants_count: 1 }), '1 member');
 assert.equal(chatStatusLine({ type: 'channel', participants_count: 20000 }), '20,000 subscribers');
-assert.equal(chatStatusLine({ type: 'channel', participants_count: null }), 'Private channel');
-assert.equal(chatStatusLine({ type: 'private', username: 'x' }), 'Private chat');
+assert.equal(chatStatusLine({ type: 'channel', participants_count: null }), 'private channel');
+assert.equal(chatStatusLine({ type: 'private', username: 'x' }), 'private chat');
 selectedChat.value = { type: 'private' }; assert.equal(infoPanelTitle.value, 'User Info');
 selectedChat.value = { type: 'group' }; assert.equal(infoPanelTitle.value, 'Group Info');
 selectedChat.value = { type: 'supergroup' }; assert.equal(infoPanelTitle.value, 'Group Info');
