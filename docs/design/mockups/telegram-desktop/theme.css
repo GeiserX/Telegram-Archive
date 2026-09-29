@@ -1,0 +1,1279 @@
+/* Telegram Desktop look for the Telegram-Archive viewer (design mockup).
+   Loads after the page's own styles. Default: Telegram Desktop "Day classic".
+   Dark: Telegram Desktop "Night" (data-theme="night"). */
+
+/* ---------------------------------------------------------------------------
+   1. Palettes
+   ------------------------------------------------------------------------ */
+
+/* Default (no data-theme): Telegram Desktop Day classic. */
+:root {
+    --tg-bg: 255 255 255;
+    --tg-sidebar: 255 255 255;
+    --tg-hover: 241 241 241;
+    --tg-active: 65 159 217;
+    --tg-text: 0 0 0;
+    --tg-text-dim: 34 34 34;
+    --tg-muted: 153 153 153;
+    --tg-own: 239 253 222;
+    --tg-other: 255 255 255;
+    --tg-border: 224 224 224;
+    --tg-border-strong: 204 204 204;
+    --tg-accent: 64 167 227;
+    --tg-accent-strong: 64 167 227;
+    --tg-accent-hover: 57 160 219;
+    --tg-accent-soft: 22 138 205;
+    --tg-accent-bright: 17 115 172;
+    --tg-accent-faint: 14 94 140;
+    --tg-accent-dim: 228 242 251;
+    --tg-on-accent: 255 255 255;
+    --tg-ink: 0 0 0;
+    --tg-n100: 0 0 0;
+    --tg-n200: 34 34 34;
+    --tg-n300: 68 68 68;
+    --tg-n400: 153 153 153;
+    --tg-n500: 170 170 170;
+    --tg-n600: 224 224 224;
+    --tg-n700: 236 236 236;
+    --tg-n800: 255 255 255;
+    --tg-n900: 241 241 241;
+    --tg-n950: 247 247 247;
+    --tg-name-l: 40%;
+    --tg-bubble-alpha-own: 1;
+    --tg-bubble-alpha-other: 1;
+    --tg-service-bg: rgb(81 124 65 / 0.5);
+    --tg-service-fg: #ffffff;
+
+    /* Tokens this mockup adds. */
+    --mock-font: "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mock-wall-base: #c2d6a4;
+    --mock-wallpaper:
+        radial-gradient(ellipse 80% 70% at 88% 8%, #dbddbb 0%, rgb(219 221 187 / 0) 75%),
+        radial-gradient(ellipse 75% 75% at 22% 35%, rgb(107 165 135 / 0.7) 0%, rgb(107 165 135 / 0) 75%),
+        radial-gradient(ellipse 80% 70% at 10% 95%, #a3c88f 0%, rgb(163 200 143 / 0) 75%),
+        radial-gradient(ellipse 80% 80% at 78% 82%, #d5d88d 0%, rgb(213 216 141 / 0) 75%);
+    --mock-divider: rgb(0 0 0 / 0.094);
+    --mock-in-accent: 22 138 205;
+    --mock-out-accent: 58 142 38;
+    --mock-in-meta: #a0acb6;
+    --mock-out-meta: #6db566;
+    --mock-out-text: #000000;
+    --mock-shadow-in: rgb(116 142 162 / 0.3);
+    --mock-shadow-out: rgb(58 195 70 / 0.3);
+    --mock-play-in: #40a7e3;
+    --mock-play-out: #78c67f;
+    --mock-archive-pic: #b8c2cc;
+    --mock-peer-0: #c03d33;
+    --mock-peer-1: #ce671b;
+    --mock-peer-2: #8544d6;
+    --mock-peer-3: #4fad2d;
+    --mock-peer-4: #2996ad;
+    --mock-peer-5: #168acd;
+    --mock-peer-6: #cd4073;
+}
+
+/* Telegram Desktop Night, exact values from night.tdesktop-theme. */
+:root[data-theme="night"] {
+    --tg-bg: 14 22 33;
+    --tg-sidebar: 23 33 43;
+    --tg-hover: 32 43 54;
+    --tg-active: 43 82 120;
+    --tg-text: 245 245 245;
+    --tg-text-dim: 228 236 242;
+    --tg-muted: 112 132 153;
+    --tg-own: 43 82 120;
+    --tg-other: 24 37 51;
+    --tg-border: 49 60 73;
+    --tg-border-strong: 74 92 110;
+    --tg-accent: 82 136 193;
+    --tg-accent-strong: 64 130 188;
+    --tg-accent-hover: 82 136 193;
+    --tg-accent-soft: 106 179 243;
+    --tg-accent-bright: 131 202 255;
+    --tg-accent-faint: 190 222 250;
+    --tg-accent-dim: 30 52 76;
+    --tg-ink: 255 255 255;
+    --tg-n100: 245 245 245;
+    --tg-n200: 228 236 242;
+    --tg-n300: 200 212 224;
+    --tg-n400: 112 132 153;
+    --tg-n500: 94 112 132;
+    --tg-n600: 49 60 73;
+    --tg-n700: 36 47 60;
+    --tg-n800: 23 33 43;
+    --tg-n900: 36 47 61;
+    --tg-n950: 14 22 33;
+    --tg-name-l: 70%;
+    --tg-service-bg: rgb(33 48 64 / 0.84);
+    --tg-service-fg: #f5f5f5;
+    --mock-wall-base: #0e1621;
+    --mock-wallpaper: none;
+    --mock-divider: rgb(4 8 14 / 0.6);
+    --mock-in-accent: 113 186 250;
+    --mock-out-accent: 131 202 255;
+    --mock-in-meta: #6d7f8f;
+    --mock-out-meta: #7da8d3;
+    --mock-out-text: #e4ecf2;
+    --mock-shadow-in: transparent;
+    --mock-shadow-out: transparent;
+    --mock-play-in: #5288c1;
+    --mock-play-out: #6fa8dc;
+    --mock-archive-pic: #4e5c6b;
+    --mock-peer-0: #fb6169;
+    --mock-peer-1: #faa357;
+    --mock-peer-2: #b48bf2;
+    --mock-peer-3: #85de85;
+    --mock-peer-4: #62d4e3;
+    --mock-peer-5: #65bdf3;
+    --mock-peer-6: #ff5694;
+}
+
+/* The other dark palettes keep their own colours. They inherited the old
+   Slate neutral scale, which the default above now replaces, so restate it. */
+:root[data-theme="amoled"],
+:root[data-theme="forest"],
+:root[data-theme="aubergine"] {
+    --tg-ink: 255 255 255;
+    --tg-n100: 243 244 246;
+    --tg-n200: 229 231 235;
+    --tg-n300: 209 213 219;
+    --tg-n400: 156 163 175;
+    --tg-n500: 107 114 128;
+    --tg-n600: 75 85 99;
+    --tg-n700: 55 65 81;
+    --tg-n800: 31 41 55;
+    --tg-n900: 17 24 39;
+    --tg-n950: 3 7 18;
+    --tg-name-l: 65%;
+    --tg-service-bg: rgb(0 0 0 / 0.35);
+    --tg-service-fg: rgb(255 255 255 / 0.9);
+    --mock-wall-base: rgb(var(--tg-bg));
+    --mock-wallpaper: none;
+    --mock-divider: rgb(0 0 0 / 0.5);
+    --mock-in-accent: var(--tg-accent-soft);
+    --mock-out-accent: var(--tg-accent-bright);
+    --mock-in-meta: rgb(var(--tg-muted));
+    --mock-out-meta: rgb(var(--tg-accent-faint) / 0.7);
+    --mock-out-text: rgb(var(--tg-text));
+    --mock-shadow-in: transparent;
+    --mock-shadow-out: transparent;
+    --mock-play-in: rgb(var(--tg-accent-strong));
+    --mock-play-out: rgb(var(--tg-accent-soft));
+    --mock-archive-pic: rgb(var(--tg-n600));
+    --mock-peer-0: #fb6169;
+    --mock-peer-1: #faa357;
+    --mock-peer-2: #b48bf2;
+    --mock-peer-3: #85de85;
+    --mock-peer-4: #62d4e3;
+    --mock-peer-5: #65bdf3;
+    --mock-peer-6: #ff5694;
+}
+
+/* The existing light palettes keep their colours and a flat canvas. */
+:root[data-theme="day"],
+:root[data-theme="paper"] {
+    --mock-wall-base: rgb(var(--tg-n950));
+    --mock-wallpaper: none;
+    --mock-out-accent: var(--tg-accent-soft);
+    --mock-in-meta: rgb(var(--tg-muted));
+    --mock-out-meta: rgb(var(--tg-muted));
+    --mock-play-in: rgb(var(--tg-accent-strong));
+    --mock-play-out: rgb(var(--tg-accent-strong));
+    --tg-service-bg: rgb(var(--tg-ink) / 0.35);
+}
+
+/* ---------------------------------------------------------------------------
+   2. Base: font, scrollbar
+   ------------------------------------------------------------------------ */
+
+body {
+    font-family: var(--mock-font);
+    -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgb(var(--tg-ink) / 0.18);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--tg-ink) / 0.3);
+}
+
+/* Chat and header avatar placeholders: Telegram's blue userpic, white initials. */
+#app .bg-gradient-to-br.from-blue-500.to-purple-600 {
+    background-image: linear-gradient(180deg, #72d5fd, #2a9ef1);
+    color: #ffffff;
+}
+
+/* ---------------------------------------------------------------------------
+   3. Chat list column
+   ------------------------------------------------------------------------ */
+
+#app .chat-list-pane {
+    border-right: 1px solid var(--mock-divider);
+}
+
+/* User bar: one quiet row. */
+#app .chat-list-pane > div.border-b.py-1 {
+    border-bottom: 0;
+    padding: 6px 10px 0 14px;
+}
+
+/* Header block: title row, search, then folder tabs flush with the divider. */
+#app .chat-list-pane > div.p-4 {
+    display: flex;
+    flex-direction: column;
+    padding: 2px 10px 0;
+    border-bottom: 1px solid var(--mock-divider);
+}
+
+#app .chat-list-pane > div.p-4 > div:first-child {
+    margin-bottom: 6px;
+    padding-left: 4px;
+}
+
+#app .chat-list-pane > div.p-4 > div:first-child > div.gap-3 {
+    gap: 6px;
+}
+
+#app .chat-list-pane h1 {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    margin-right: 4px;
+}
+
+/* Stats button: drop the emoji, keep the word. */
+#app .chat-list-pane h1 ~ .relative > button.gap-1\.5 > span:first-child {
+    display: none;
+}
+
+/* Search: Desktop's grey rounded field. */
+#app .chat-list-pane > div.p-4 > div.relative.mb-3 {
+    margin-bottom: 6px;
+}
+
+#app .chat-list-pane input[aria-label="Search chats and messages"] {
+    height: 36px;
+    border-radius: 18px;
+    padding: 0 36px 0 40px;
+    font-size: 14px;
+    background: rgb(var(--tg-n900));
+}
+
+#app .chat-list-pane input[aria-label="Search chats and messages"]::placeholder {
+    color: rgb(var(--tg-muted));
+}
+
+#app .chat-list-pane > div.p-4 > div.relative.mb-3 > svg {
+    top: 8px;
+    left: 12px;
+    width: 20px;
+    height: 20px;
+}
+
+/* Last backup line: small and above the tabs. */
+#app .chat-list-pane > div.p-4 > div.text-xs.text-tg-muted {
+    order: 1;
+    font-size: 12px;
+    padding: 0 4px 6px;
+}
+
+/* Folder tabs: Desktop's top tabs, text with a rounded underline. */
+#app .chat-list-pane > div.p-4 > div.overflow-x-auto {
+    order: 2;
+    gap: 0;
+    margin: 0 -10px;
+    padding: 0 6px;
+}
+
+#app .chat-list-pane > div.p-4 > div.overflow-x-auto > button {
+    position: relative;
+    background: transparent;
+    border-radius: 0;
+    padding: 9px 10px 11px;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgb(var(--tg-muted));
+}
+
+#app .chat-list-pane > div.p-4 > div.overflow-x-auto > button:hover {
+    background: transparent;
+    color: rgb(var(--tg-text-dim));
+}
+
+#app .chat-list-pane > div.p-4 > div.overflow-x-auto > button.bg-tg-accent-strong {
+    color: rgb(var(--tg-accent-soft));
+}
+
+#app .chat-list-pane > div.p-4 > div.overflow-x-auto > button.bg-tg-accent-strong::after {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 0;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+    background: rgb(var(--tg-accent-soft));
+}
+
+#app .chat-list-pane > div.p-4 > div.overflow-x-auto > button > span {
+    font-weight: 400;
+}
+
+/* Rows: 62px, 46px avatars, name and time on line one, preview on line two. */
+#app .chat-list-pane .cursor-pointer.p-3 {
+    position: relative;
+    min-height: 62px;
+    padding: 8px 10px;
+    gap: 12px;
+    border-bottom: 0;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 > div.w-12.h-12 {
+    width: 46px;
+    height: 46px;
+    font-size: 17px;
+    font-weight: 600;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 > div.w-12.h-12 > svg {
+    width: 26px;
+    height: 26px;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 h3 {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 .justify-between > span.text-xs {
+    font-size: 12px;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 p.truncate,
+#app .chat-list-pane .cursor-pointer.p-3 p.line-clamp-2,
+#app .chat-list-pane .cursor-pointer.p-3 h3 + p {
+    font-size: 13.5px;
+    line-height: 19px;
+    margin-top: 1px;
+}
+
+/* Hide the numeric id; the username reads as plain text. */
+#app .chat-list-pane .cursor-pointer.p-3 p.truncate > span.font-mono.text-xs {
+    display: none;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 p.truncate > span.font-mono {
+    font-family: inherit;
+    color: inherit;
+}
+
+/* Account chips move to the right end of line two, where Desktop puts the
+   unread badge, so the row stays two lines tall. */
+#app .chat-list-pane .cursor-pointer.p-3 p.mt-1.flex {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    margin: 0;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 div.min-w-0:has(> p.mt-1.flex) > p.truncate {
+    padding-right: 72px;
+}
+
+#app .chat-list-pane .account-chip {
+    line-height: 18px;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgb(var(--tg-muted));
+    background: rgb(var(--tg-ink) / 0.06);
+}
+
+/* Archived row: grey userpic, plain title. */
+#app .chat-list-pane .cursor-pointer.p-3 > div.bg-tg-accent-strong\/30 {
+    background: var(--mock-archive-pic);
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 > div.bg-tg-accent-strong\/30 > svg {
+    color: #ffffff;
+}
+
+#app .chat-list-pane .cursor-pointer.p-3 h3.text-tg-accent-soft {
+    color: rgb(var(--tg-text));
+}
+
+/* Selected row: solid accent with white text, like Desktop. It stays solid
+   under the pointer too. */
+#app .chat-list-pane .cursor-pointer.bg-tg-active,
+#app .chat-list-pane .cursor-pointer.bg-tg-active:hover {
+    background-color: rgb(var(--tg-active));
+}
+
+#app .chat-list-pane .bg-tg-active h3,
+#app .chat-list-pane .bg-tg-active p,
+#app .chat-list-pane .bg-tg-active span {
+    color: #ffffff;
+}
+
+#app .chat-list-pane .bg-tg-active .account-chip {
+    background: rgb(255 255 255 / 0.22);
+}
+
+/* ---------------------------------------------------------------------------
+   4. Chat pane: wallpaper, empty state, header, pinned bar
+   ------------------------------------------------------------------------ */
+
+#app div.flex-1.flex-col.bg-tg-bg.relative {
+    background-color: var(--mock-wall-base);
+    background-image: var(--mock-wallpaper);
+    background-size: 100% 100%;
+}
+
+#app div.flex-1.items-center.justify-center.text-tg-muted.flex-col > div.bg-tg-sidebar.rounded-full {
+    display: none;
+}
+
+#app div.flex-1.items-center.justify-center.text-tg-muted.flex-col > p {
+    background: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 3px 12px 4px;
+    border-radius: 14px;
+}
+
+/* Header: one 54px bar, title and a status line, icons on the right. */
+#app div.shadow-md.z-10.bg-tg-sidebar {
+    min-height: 54px;
+    padding: 0 8px 0 16px;
+    box-shadow: none;
+    border-bottom: 1px solid var(--mock-divider);
+}
+
+#app div.shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] {
+    max-width: none;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 6px;
+    align-items: center;
+}
+
+#app div.shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] > h2 {
+    grid-column: 1 / -1;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 20px;
+}
+
+#app div.shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] > p.text-xs {
+    font-size: 13px;
+    line-height: 18px;
+}
+
+#app div.shadow-md.z-10 .min-w-0.flex-1.max-w-\[180px\] > p.mt-0\.5 {
+    margin-top: 0;
+}
+
+#app div.shadow-md.z-10 .account-chip {
+    line-height: 16px;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgb(var(--tg-muted));
+    background: rgb(var(--tg-ink) / 0.06);
+}
+
+/* The emoji stats strip goes; Desktop's bar holds only title and status. */
+#app div.shadow-md.z-10 div.hidden.ml-4 {
+    display: none;
+}
+
+/* Search collapses to an icon and opens on focus. */
+#app div.shadow-md.z-10 div.relative.w-28 {
+    width: 36px;
+    transition: width 0.15s ease;
+}
+
+#app div.shadow-md.z-10 div.relative.w-28:focus-within {
+    width: min(240px, 60vw);
+}
+
+#app div.shadow-md.z-10 div.relative.w-28 > input {
+    height: 36px;
+    padding: 0 12px 0 36px;
+    border-radius: 18px;
+    font-size: 14px;
+    background: transparent;
+    cursor: pointer;
+}
+
+#app div.shadow-md.z-10 div.relative.w-28 > input::placeholder {
+    color: transparent;
+}
+
+#app div.shadow-md.z-10 div.relative.w-28:focus-within > input {
+    background: rgb(var(--tg-n900));
+    cursor: text;
+}
+
+#app div.shadow-md.z-10 div.relative.w-28:focus-within > input::placeholder {
+    color: rgb(var(--tg-muted));
+}
+
+#app div.shadow-md.z-10 div.relative.w-28 > svg {
+    left: 8px;
+    top: 8px;
+    width: 20px;
+    height: 20px;
+    pointer-events: none;
+}
+
+#app div.shadow-md.z-10 button.tap-target {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border-radius: 18px;
+}
+
+#app div.shadow-md.z-10 button.tap-target:not(.md\:hidden) {
+    display: inline-flex;
+}
+
+@media (max-width: 767px) {
+    #app div.shadow-md.z-10 button.tap-target.md\:hidden {
+        display: inline-flex;
+    }
+}
+
+#app div.shadow-md.z-10 button.tap-target > svg {
+    width: 21px;
+    height: 21px;
+}
+
+#app div.shadow-md.z-10 button.tap-target.md\:hidden {
+    margin-left: -8px;
+}
+
+/* Desktop's top bar has no avatar; phones keep a small one. */
+@media (min-width: 768px) {
+    #app div.shadow-md.z-10 .w-10.h-10.rounded-full {
+        display: none;
+    }
+}
+
+@media (max-width: 767px) {
+    #app div.shadow-md.z-10.bg-tg-sidebar {
+        padding: 0 4px 0 8px;
+    }
+
+    #app div.shadow-md.z-10 .w-10.h-10.rounded-full {
+        width: 38px;
+        height: 38px;
+        min-width: 38px;
+    }
+
+    #app div.shadow-md.z-10 > div:last-child {
+        gap: 0;
+    }
+}
+
+/* Pinned bar: a thin accent line instead of the pin glyph. */
+#app div.backdrop-blur-sm.border-b.bg-tg-sidebar\/80 {
+    background: rgb(var(--tg-sidebar));
+    border-bottom: 1px solid var(--mock-divider);
+    padding: 6px 12px 6px 16px;
+    gap: 10px;
+}
+
+#app div.backdrop-blur-sm.border-b.bg-tg-sidebar\/80 > div.text-tg-accent-soft:first-child {
+    width: 2px;
+    height: 34px;
+    border-radius: 1px;
+    background: rgb(var(--tg-accent-soft));
+}
+
+#app div.backdrop-blur-sm.border-b.bg-tg-sidebar\/80 > div.text-tg-accent-soft:first-child > svg {
+    display: none;
+}
+
+#app div.backdrop-blur-sm.border-b.bg-tg-sidebar\/80 .text-xs.font-semibold {
+    font-size: 13px;
+    margin-bottom: 0;
+}
+
+#app div.backdrop-blur-sm.border-b.bg-tg-sidebar\/80 .text-sm.text-tg-n300 {
+    font-size: 13.5px;
+    color: rgb(var(--tg-text));
+}
+
+/* ---------------------------------------------------------------------------
+   5. Messages
+   ------------------------------------------------------------------------ */
+
+#app .messages-scroll {
+    padding: 8px 14px 12px;
+}
+
+.message-row {
+    gap: 10px;
+}
+
+.message-row.justify-start {
+    --mock-q: var(--mock-in-accent);
+    --mock-meta: var(--mock-in-meta);
+    --mock-play: var(--mock-play-in);
+    --mock-tail: rgb(var(--tg-other));
+}
+
+.message-row.justify-end {
+    --mock-q: var(--mock-out-accent);
+    --mock-meta: var(--mock-out-meta);
+    --mock-play: var(--mock-play-out);
+    --mock-tail: rgb(var(--tg-own));
+}
+
+.message-row.message-run-continue {
+    margin-bottom: 2px;
+}
+
+.message-row.message-run-break {
+    margin-bottom: 8px;
+}
+
+/* Bubble: 16px corners, 6px where it joins a neighbour, a tail on the last
+   bubble of a run. Radii ride four custom properties so media can follow. */
+.message-row > .message-bubble {
+    --r-tl: 16px;
+    --r-tr: 16px;
+    --r-br: 16px;
+    --r-bl: 16px;
+    --meta-w: 40px;
+    position: relative;
+    padding: 6px 11px 7px 11px;
+    font-size: 14px;
+    line-height: 19px;
+    border-radius: var(--r-tl) var(--r-tr) var(--r-br) var(--r-bl);
+    box-shadow: 0 1px 1px var(--mock-shadow-in);
+    color: rgb(var(--tg-n100));
+}
+
+.message-row.justify-end > .message-bubble {
+    box-shadow: 0 1px 1px var(--mock-shadow-out);
+    color: var(--mock-out-text);
+}
+
+@media (min-width: 768px) {
+    .message-row > .message-bubble {
+        max-width: min(72%, 480px);
+    }
+}
+
+/* Joined below: not the last bubble of its run. */
+.message-row.justify-start:not(.date-separator + *) > .message-bubble:not(.bubble-in) {
+    --r-bl: 6px;
+}
+
+.message-row.justify-end:not(.date-separator + *) > .message-bubble:not(.bubble-out) {
+    --r-br: 6px;
+}
+
+/* Joined above: the older neighbour belongs to the same run. */
+.message-row.justify-start:has(+ .message-row.message-run-continue) > .message-bubble {
+    --r-tl: 6px;
+}
+
+.message-row.justify-end:has(+ .message-row.message-run-continue) > .message-bubble {
+    --r-tr: 6px;
+}
+
+/* Last bubble of a run: square corner plus a drawn tail. */
+.message-row > .message-bubble.bubble-in,
+.date-separator + .message-row.justify-start > .message-bubble {
+    --r-bl: 0px;
+}
+
+.message-row > .message-bubble.bubble-out,
+.date-separator + .message-row.justify-end > .message-bubble {
+    --r-br: 0px;
+}
+
+.message-row > .message-bubble.bubble-in::after,
+.date-separator + .message-row.justify-start > .message-bubble::after,
+.message-row > .message-bubble.bubble-out::after,
+.date-separator + .message-row.justify-end > .message-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    width: 9px;
+    height: 17px;
+    background: var(--mock-tail);
+    pointer-events: none;
+}
+
+.message-row > .message-bubble.bubble-in::after,
+.date-separator + .message-row.justify-start > .message-bubble::after {
+    left: -8.5px;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 17'%3E%3Cpath d='M9 0v17H1.6C.4 17-.3 15.6.5 14.7 3.7 11 8.3 6.6 9 0z'/%3E%3C/svg%3E") no-repeat 0 0 / 100% 100%;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 17'%3E%3Cpath d='M9 0v17H1.6C.4 17-.3 15.6.5 14.7 3.7 11 8.3 6.6 9 0z'/%3E%3C/svg%3E") no-repeat 0 0 / 100% 100%;
+}
+
+.message-row > .message-bubble.bubble-out::after,
+.date-separator + .message-row.justify-end > .message-bubble::after {
+    right: -8.5px;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 17'%3E%3Cpath d='M0 0v17h7.4c1.2 0 1.9-1.4 1.1-2.3C5.3 11 .7 6.6 0 0z'/%3E%3C/svg%3E") no-repeat 0 0 / 100% 100%;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 17'%3E%3Cpath d='M0 0v17h7.4c1.2 0 1.9-1.4 1.1-2.3C5.3 11 .7 6.6 0 0z'/%3E%3C/svg%3E") no-repeat 0 0 / 100% 100%;
+}
+
+/* Group avatar: 33px, white initials. The markup puts it on the first bubble
+   of a run, so here it aligns with the name when the run has more bubbles.
+   Desktop pins it to the last bubble, next to the tail; that needs a markup
+   change (see README). */
+.message-row > div.w-8 {
+    width: 33px;
+}
+
+.message-row > div.w-8 > button {
+    width: 33px;
+    height: 33px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.message-row:not(.date-separator + *):has(> div.w-8 > button):has(> .message-bubble:not(.bubble-in)) > div.w-8 {
+    align-self: flex-start;
+}
+
+/* Sender name line. */
+.message-row .message-bubble > div.flex.items-baseline.mb-1 {
+    margin-bottom: 1px;
+}
+
+.message-row .message-bubble > div.flex.items-baseline.mb-1 > span.font-bold {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 19px;
+}
+
+.message-row .message-bubble .account-chip {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    padding: 0 6px;
+    color: rgb(var(--mock-q));
+    background: rgb(var(--mock-q) / 0.12);
+}
+
+/* Reply quote: tinted block with a bar, in the side's accent. */
+.message-row .message-bubble > div.border-l-2.cursor-pointer.bg-black\/20:not(.border-green-400\/50) {
+    border-left: 3px solid rgb(var(--mock-q));
+    background: rgb(var(--mock-q) / 0.1);
+    border-radius: 4px 6px 6px 4px;
+    padding: 3px 8px 4px 8px;
+    margin: 2px 0 5px;
+    font-size: 13.5px;
+    line-height: 18px;
+}
+
+.message-row .message-bubble > div.border-l-2.cursor-pointer.bg-black\/20:not(.border-green-400\/50):hover {
+    background: rgb(var(--mock-q) / 0.16);
+}
+
+.message-row .message-bubble > div.border-l-2.cursor-pointer.bg-black\/20:not(.border-green-400\/50) > div:first-child {
+    color: rgb(var(--mock-q));
+    margin-bottom: 0;
+}
+
+.message-row .message-bubble > div.border-l-2.cursor-pointer.bg-black\/20:not(.border-green-400\/50) > div:last-child {
+    opacity: 1;
+}
+
+/* Forward header: two plain lines, no box. */
+.message-row .message-bubble > div.border-green-400\/50 {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    margin: 0 0 4px;
+    border-radius: 0;
+    font-size: 13.5px;
+    line-height: 18px;
+    color: rgb(var(--mock-q));
+}
+
+.message-row .message-bubble > div.border-green-400\/50:hover {
+    background: transparent;
+    text-decoration: underline;
+}
+
+.message-row .message-bubble > div.border-green-400\/50 > div:first-child {
+    color: inherit;
+    font-weight: 400;
+    margin-bottom: 0;
+}
+
+.message-row .message-bubble > div.border-green-400\/50 > div:last-child {
+    font-weight: 600;
+    opacity: 1;
+}
+
+/* Poll: drawn on the bubble itself. */
+.message-row .message-bubble > div.bg-black\/20.rounded-lg.max-w-sm {
+    background: transparent;
+    padding: 2px 0 0;
+    min-width: min(260px, 100%);
+}
+
+.message-row .message-bubble > div.bg-black\/20.rounded-lg.max-w-sm .border-tg-ink\/10 {
+    border-color: rgb(var(--mock-q) / 0.25);
+    background: transparent;
+}
+
+.message-row .message-bubble > div.bg-black\/20.rounded-lg.max-w-sm .bg-tg-accent\/30 {
+    background: rgb(var(--mock-q) / 0.18);
+}
+
+.message-row .message-bubble > div.bg-black\/20.rounded-lg.max-w-sm > div:last-child {
+    color: var(--mock-meta);
+    opacity: 1;
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+}
+
+/* Extended media chip and link preview: tinted like the reply quote. */
+.message-row .message-bubble > div.inline-flex.bg-black\/20 {
+    background: rgb(var(--mock-q) / 0.1);
+    border-radius: 6px;
+}
+
+.message-row .message-bubble > div.bg-black\/10.border-l-2 {
+    border-left: 3px solid rgb(var(--mock-q));
+    background: rgb(var(--mock-q) / 0.1);
+    border-radius: 4px 6px 6px 4px;
+}
+
+.message-row .message-bubble > div.bg-black\/10.border-l-2 .text-tg-accent-soft {
+    color: rgb(var(--mock-q));
+}
+
+/* Media runs edge to edge, like Desktop. The markup renders an empty media
+   placeholder wrapper before the real one; it only adds a gap. */
+.message-row .message-bubble > div.mb-2.space-y-1:empty {
+    display: none;
+}
+
+.message-row .message-bubble > div.mb-2.space-y-1:has(> .album-grid, > img) {
+    margin: 0 -11px 6px;
+}
+
+.message-row .message-bubble > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1):has(> .album-grid, > img) {
+    margin-top: -6px;
+}
+
+.message-row .message-bubble .album-grid {
+    max-width: 440px;
+}
+
+.message-row .message-bubble .album-grid .grid {
+    gap: 2px;
+    border-radius: 0;
+}
+
+.message-row .message-bubble .album-item {
+    border-radius: 0;
+}
+
+.message-row .message-bubble > div.mb-2.space-y-1 > img.rounded-lg {
+    border-radius: 0;
+    max-height: 320px;
+}
+
+.message-row .message-bubble > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1) .album-grid .grid,
+.message-row .message-bubble > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1) > img.rounded-lg {
+    border-radius: var(--r-tl) var(--r-tr) 0 0;
+}
+
+/* Media with no caption: it fills the bubble and the time sits on it. */
+.message-row .message-bubble:has(> :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1) > .album-grid, > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1) > img):has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) {
+    padding-bottom: 0;
+}
+
+.message-row .message-bubble:has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) > div.mb-2.space-y-1:has(> .album-grid, > img) {
+    margin-bottom: 0;
+}
+
+.message-row .message-bubble:has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1):has(> .album-grid, > img) .album-grid .grid,
+.message-row .message-bubble:has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1) > img.rounded-lg {
+    border-radius: var(--r-tl) var(--r-tr) var(--r-br) var(--r-bl);
+}
+
+.message-row .message-bubble:has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) > :is(div.mb-2.space-y-1:first-child, div.mb-2.space-y-1:empty:first-child + div.mb-2.space-y-1):has(> .album-grid, > img) {
+    margin-top: -6px;
+}
+
+.message-row .message-bubble:has(> div.mb-2.space-y-1 > .album-grid, > div.mb-2.space-y-1 > img):has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) > .message-text {
+    display: none;
+}
+
+.message-row .message-bubble:has(> div.mb-2.space-y-1 > .album-grid, > div.mb-2.space-y-1 > img):has(> .message-text:empty):not(:has(> div.flex-wrap.mt-2)) > div.text-right.justify-end:last-child {
+    right: 8px;
+    bottom: 8px;
+    padding: 0 6px;
+    border-radius: 10px;
+    background: rgb(0 0 0 / 0.4);
+    color: #ffffff;
+}
+
+/* Time and "edited" float at the end of the last line, like Desktop: the
+   text reserves room for them with an invisible inline spacer. */
+.message-row .message-bubble > div.text-right.justify-end:last-child {
+    position: absolute;
+    right: 10px;
+    bottom: 5px;
+    margin: 0;
+    font-size: 12px;
+    line-height: 16px;
+    opacity: 1;
+    color: var(--mock-meta);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    gap: 4px;
+}
+
+.message-row .message-bubble > .message-text::after {
+    content: '';
+    display: inline-block;
+    width: var(--meta-w);
+    height: 1px;
+}
+
+.message-row .message-bubble:has(> div:last-child > .order-2) {
+    --meta-w: 96px;
+}
+
+.message-row .message-bubble:has(> div:last-child > .order-1) {
+    --meta-w: 100px;
+}
+
+.message-row .message-bubble:has(> div:last-child > .order-1):has(> div:last-child > .order-2) {
+    --meta-w: 150px;
+}
+
+/* With reactions, the time moves onto the reactions row. */
+.message-row .message-bubble:has(> div.flex-wrap.mt-2) > .message-text::after {
+    display: none;
+}
+
+.message-row .message-bubble > div.flex-wrap.mt-2 {
+    margin-top: 5px;
+    gap: 4px;
+    padding-right: var(--meta-w);
+}
+
+.message-row .message-bubble > div.flex-wrap.mt-2 > div {
+    height: 26px;
+    padding: 0 8px 0 6px;
+    gap: 3px;
+    background: rgb(var(--mock-q) / 0.12);
+    color: rgb(var(--mock-q));
+}
+
+.message-row .message-bubble > div.flex-wrap.mt-2 > div:hover {
+    background: rgb(var(--mock-q) / 0.2);
+}
+
+.message-row .message-bubble > div.flex-wrap.mt-2 > div > span:last-child:not(:first-child) {
+    font-size: 13px;
+    font-weight: 600;
+    opacity: 1;
+}
+
+.message-row .message-bubble:has(> div.flex-wrap.mt-2) > div.text-right.justify-end:last-child {
+    bottom: 11px;
+}
+
+/* Voice note: controls straight on the bubble, no inner card. */
+.message-row .message-bubble div.bg-gradient-to-r.from-tg-n800 {
+    background: transparent;
+    box-shadow: none;
+    padding: 2px 0 0;
+    border-radius: 0;
+}
+
+.message-row .message-bubble div.bg-gradient-to-r.from-tg-n800 button.w-10.h-10 {
+    width: 44px;
+    height: 44px;
+    background: var(--mock-play);
+    color: #ffffff;
+}
+
+.message-row .message-bubble div.bg-gradient-to-r.from-tg-n800 .text-xs.text-tg-n300 {
+    font-size: 14px;
+    font-weight: 600;
+    color: inherit;
+}
+
+.message-row .message-bubble div.bg-gradient-to-r.from-tg-n800 .text-xs.text-tg-n300 > span.shrink-0:first-child {
+    display: none;
+}
+
+.message-row .message-bubble div.bg-gradient-to-r.from-tg-n800 .text-\[11px\].text-tg-n400 {
+    font-size: 12px;
+    color: var(--mock-meta);
+}
+
+.message-row .message-bubble .transcript-btn {
+    color: rgb(var(--mock-q));
+    background: rgb(var(--mock-q) / 0.12);
+}
+
+.message-row .message-bubble .transcript-btn:hover {
+    background: rgb(var(--mock-q) / 0.2);
+}
+
+.message-row .message-bubble .bubble-icon-action {
+    color: var(--mock-meta);
+}
+
+/* Links, mentions, code, quotes inside text. */
+.message-row .message-text a,
+.message-row .tg-mention {
+    color: rgb(var(--mock-q));
+}
+
+.tg-code {
+    background: rgb(var(--tg-ink) / 0.06);
+}
+
+.tg-pre {
+    background: rgb(var(--tg-ink) / 0.05);
+}
+
+.tg-blockquote {
+    border-left: 3px solid rgb(var(--mock-q, var(--mock-in-accent)));
+    background: rgb(var(--mock-q, var(--mock-in-accent)) / 0.1);
+}
+
+.loading-spinner {
+    border-color: rgb(var(--tg-ink) / 0.1);
+    border-top-color: rgb(var(--tg-accent-soft));
+}
+
+/* ---------------------------------------------------------------------------
+   6. Date and service pills, scroll button
+   ------------------------------------------------------------------------ */
+
+.date-separator {
+    margin: 10px 0 8px;
+}
+
+.floating-date-pill {
+    top: 8px;
+}
+
+.floating-date-pill button,
+.date-separator button {
+    background: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 2px 10px 3px;
+    border-radius: 12px;
+    box-shadow: none;
+}
+
+.date-separator button:hover {
+    background: var(--tg-service-bg);
+    color: var(--tg-service-fg);
+    filter: brightness(1.1);
+}
+
+.service-message {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 2px 10px 3px;
+}
+
+.scroll-to-bottom-btn {
+    width: 46px;
+    height: 46px;
+    background: rgb(var(--tg-sidebar));
+    border: 0;
+    color: rgb(var(--tg-n400));
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.2);
+}
+
+.scroll-to-bottom-btn:hover {
+    background: rgb(var(--tg-sidebar));
+    color: rgb(var(--tg-text));
+    transform: none;
+}
+
+.scroll-to-bottom-btn > span {
+    color: #ffffff;
+}
+
+/* Shared media view: a plain panel, not the wallpaper, with underline tabs. */
+#app div.flex.flex-col.h-full.flex-1.min-h-0 {
+    background: rgb(var(--tg-sidebar));
+}
+
+#app div.flex.flex-col.h-full.flex-1.min-h-0 > div.border-b {
+    border-bottom-color: var(--mock-divider);
+}
+
+#app div.flex.flex-col.h-full.flex-1.min-h-0 > div.flex.gap-1.border-b > button {
+    position: relative;
+    background: transparent;
+    border-radius: 0;
+    color: rgb(var(--tg-muted));
+    padding: 6px 12px 10px;
+    font-weight: 600;
+}
+
+#app div.flex.flex-col.h-full.flex-1.min-h-0 > div.flex.gap-1.border-b > button.bg-tg-accent-strong {
+    color: rgb(var(--tg-accent-soft));
+}
+
+#app div.flex.flex-col.h-full.flex-1.min-h-0 > div.flex.gap-1.border-b > button.bg-tg-accent-strong::after {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: -8px;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+    background: rgb(var(--tg-accent-soft));
+}
+
+#app div.flex.flex-col.h-full.flex-1.min-h-0 .grid .rounded {
+    border-radius: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   7. Side panels and popups
+   ------------------------------------------------------------------------ */
+
+#app .info-panel {
+    border-left-color: var(--mock-divider);
+}
+
+#app .chat-list-pane h1 ~ .relative > div.absolute.shadow-xl {
+    border-color: var(--mock-divider);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+}
+
+/* ---------------------------------------------------------------------------
+   8. Peer colours
+   Telegram picks one of 7 named colours by user id mod 7. The markup only
+   exposes a hue (a string hash mod 360) in an inline style, so this block
+   maps hue mod 7 to the same 7 colours. Neighbouring ids get neighbouring
+   hues, so they now land on different colours. The real fix is in JS.
+   ------------------------------------------------------------------------ */
+
+.message-bubble span.font-bold:is([style*="hsl(0,"],[style*="hsl(7,"],[style*="hsl(14,"],[style*="hsl(21,"],[style*="hsl(28,"],[style*="hsl(35,"],[style*="hsl(42,"],[style*="hsl(49,"],[style*="hsl(56,"],[style*="hsl(63,"],[style*="hsl(70,"],[style*="hsl(77,"],[style*="hsl(84,"],[style*="hsl(91,"],[style*="hsl(98,"],[style*="hsl(105,"],[style*="hsl(112,"],[style*="hsl(119,"],[style*="hsl(126,"],[style*="hsl(133,"],[style*="hsl(140,"],[style*="hsl(147,"],[style*="hsl(154,"],[style*="hsl(161,"],[style*="hsl(168,"],[style*="hsl(175,"],[style*="hsl(182,"],[style*="hsl(189,"],[style*="hsl(196,"],[style*="hsl(203,"],[style*="hsl(210,"],[style*="hsl(217,"],[style*="hsl(224,"],[style*="hsl(231,"],[style*="hsl(238,"],[style*="hsl(245,"],[style*="hsl(252,"],[style*="hsl(259,"],[style*="hsl(266,"],[style*="hsl(273,"],[style*="hsl(280,"],[style*="hsl(287,"],[style*="hsl(294,"],[style*="hsl(301,"],[style*="hsl(308,"],[style*="hsl(315,"],[style*="hsl(322,"],[style*="hsl(329,"],[style*="hsl(336,"],[style*="hsl(343,"],[style*="hsl(350,"],[style*="hsl(357,"]) {
+    color: var(--mock-peer-0) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(0,"],[style*="hsl(7,"],[style*="hsl(14,"],[style*="hsl(21,"],[style*="hsl(28,"],[style*="hsl(35,"],[style*="hsl(42,"],[style*="hsl(49,"],[style*="hsl(56,"],[style*="hsl(63,"],[style*="hsl(70,"],[style*="hsl(77,"],[style*="hsl(84,"],[style*="hsl(91,"],[style*="hsl(98,"],[style*="hsl(105,"],[style*="hsl(112,"],[style*="hsl(119,"],[style*="hsl(126,"],[style*="hsl(133,"],[style*="hsl(140,"],[style*="hsl(147,"],[style*="hsl(154,"],[style*="hsl(161,"],[style*="hsl(168,"],[style*="hsl(175,"],[style*="hsl(182,"],[style*="hsl(189,"],[style*="hsl(196,"],[style*="hsl(203,"],[style*="hsl(210,"],[style*="hsl(217,"],[style*="hsl(224,"],[style*="hsl(231,"],[style*="hsl(238,"],[style*="hsl(245,"],[style*="hsl(252,"],[style*="hsl(259,"],[style*="hsl(266,"],[style*="hsl(273,"],[style*="hsl(280,"],[style*="hsl(287,"],[style*="hsl(294,"],[style*="hsl(301,"],[style*="hsl(308,"],[style*="hsl(315,"],[style*="hsl(322,"],[style*="hsl(329,"],[style*="hsl(336,"],[style*="hsl(343,"],[style*="hsl(350,"],[style*="hsl(357,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #ff885e, #ff516a) !important;
+}
+
+.message-bubble span.font-bold:is([style*="hsl(1,"],[style*="hsl(8,"],[style*="hsl(15,"],[style*="hsl(22,"],[style*="hsl(29,"],[style*="hsl(36,"],[style*="hsl(43,"],[style*="hsl(50,"],[style*="hsl(57,"],[style*="hsl(64,"],[style*="hsl(71,"],[style*="hsl(78,"],[style*="hsl(85,"],[style*="hsl(92,"],[style*="hsl(99,"],[style*="hsl(106,"],[style*="hsl(113,"],[style*="hsl(120,"],[style*="hsl(127,"],[style*="hsl(134,"],[style*="hsl(141,"],[style*="hsl(148,"],[style*="hsl(155,"],[style*="hsl(162,"],[style*="hsl(169,"],[style*="hsl(176,"],[style*="hsl(183,"],[style*="hsl(190,"],[style*="hsl(197,"],[style*="hsl(204,"],[style*="hsl(211,"],[style*="hsl(218,"],[style*="hsl(225,"],[style*="hsl(232,"],[style*="hsl(239,"],[style*="hsl(246,"],[style*="hsl(253,"],[style*="hsl(260,"],[style*="hsl(267,"],[style*="hsl(274,"],[style*="hsl(281,"],[style*="hsl(288,"],[style*="hsl(295,"],[style*="hsl(302,"],[style*="hsl(309,"],[style*="hsl(316,"],[style*="hsl(323,"],[style*="hsl(330,"],[style*="hsl(337,"],[style*="hsl(344,"],[style*="hsl(351,"],[style*="hsl(358,"]) {
+    color: var(--mock-peer-1) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(1,"],[style*="hsl(8,"],[style*="hsl(15,"],[style*="hsl(22,"],[style*="hsl(29,"],[style*="hsl(36,"],[style*="hsl(43,"],[style*="hsl(50,"],[style*="hsl(57,"],[style*="hsl(64,"],[style*="hsl(71,"],[style*="hsl(78,"],[style*="hsl(85,"],[style*="hsl(92,"],[style*="hsl(99,"],[style*="hsl(106,"],[style*="hsl(113,"],[style*="hsl(120,"],[style*="hsl(127,"],[style*="hsl(134,"],[style*="hsl(141,"],[style*="hsl(148,"],[style*="hsl(155,"],[style*="hsl(162,"],[style*="hsl(169,"],[style*="hsl(176,"],[style*="hsl(183,"],[style*="hsl(190,"],[style*="hsl(197,"],[style*="hsl(204,"],[style*="hsl(211,"],[style*="hsl(218,"],[style*="hsl(225,"],[style*="hsl(232,"],[style*="hsl(239,"],[style*="hsl(246,"],[style*="hsl(253,"],[style*="hsl(260,"],[style*="hsl(267,"],[style*="hsl(274,"],[style*="hsl(281,"],[style*="hsl(288,"],[style*="hsl(295,"],[style*="hsl(302,"],[style*="hsl(309,"],[style*="hsl(316,"],[style*="hsl(323,"],[style*="hsl(330,"],[style*="hsl(337,"],[style*="hsl(344,"],[style*="hsl(351,"],[style*="hsl(358,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #ffcd6a, #ffa85c) !important;
+}
+
+.message-bubble span.font-bold:is([style*="hsl(2,"],[style*="hsl(9,"],[style*="hsl(16,"],[style*="hsl(23,"],[style*="hsl(30,"],[style*="hsl(37,"],[style*="hsl(44,"],[style*="hsl(51,"],[style*="hsl(58,"],[style*="hsl(65,"],[style*="hsl(72,"],[style*="hsl(79,"],[style*="hsl(86,"],[style*="hsl(93,"],[style*="hsl(100,"],[style*="hsl(107,"],[style*="hsl(114,"],[style*="hsl(121,"],[style*="hsl(128,"],[style*="hsl(135,"],[style*="hsl(142,"],[style*="hsl(149,"],[style*="hsl(156,"],[style*="hsl(163,"],[style*="hsl(170,"],[style*="hsl(177,"],[style*="hsl(184,"],[style*="hsl(191,"],[style*="hsl(198,"],[style*="hsl(205,"],[style*="hsl(212,"],[style*="hsl(219,"],[style*="hsl(226,"],[style*="hsl(233,"],[style*="hsl(240,"],[style*="hsl(247,"],[style*="hsl(254,"],[style*="hsl(261,"],[style*="hsl(268,"],[style*="hsl(275,"],[style*="hsl(282,"],[style*="hsl(289,"],[style*="hsl(296,"],[style*="hsl(303,"],[style*="hsl(310,"],[style*="hsl(317,"],[style*="hsl(324,"],[style*="hsl(331,"],[style*="hsl(338,"],[style*="hsl(345,"],[style*="hsl(352,"],[style*="hsl(359,"]) {
+    color: var(--mock-peer-2) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(2,"],[style*="hsl(9,"],[style*="hsl(16,"],[style*="hsl(23,"],[style*="hsl(30,"],[style*="hsl(37,"],[style*="hsl(44,"],[style*="hsl(51,"],[style*="hsl(58,"],[style*="hsl(65,"],[style*="hsl(72,"],[style*="hsl(79,"],[style*="hsl(86,"],[style*="hsl(93,"],[style*="hsl(100,"],[style*="hsl(107,"],[style*="hsl(114,"],[style*="hsl(121,"],[style*="hsl(128,"],[style*="hsl(135,"],[style*="hsl(142,"],[style*="hsl(149,"],[style*="hsl(156,"],[style*="hsl(163,"],[style*="hsl(170,"],[style*="hsl(177,"],[style*="hsl(184,"],[style*="hsl(191,"],[style*="hsl(198,"],[style*="hsl(205,"],[style*="hsl(212,"],[style*="hsl(219,"],[style*="hsl(226,"],[style*="hsl(233,"],[style*="hsl(240,"],[style*="hsl(247,"],[style*="hsl(254,"],[style*="hsl(261,"],[style*="hsl(268,"],[style*="hsl(275,"],[style*="hsl(282,"],[style*="hsl(289,"],[style*="hsl(296,"],[style*="hsl(303,"],[style*="hsl(310,"],[style*="hsl(317,"],[style*="hsl(324,"],[style*="hsl(331,"],[style*="hsl(338,"],[style*="hsl(345,"],[style*="hsl(352,"],[style*="hsl(359,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #82b1ff, #665fff) !important;
+}
+
+.message-bubble span.font-bold:is([style*="hsl(3,"],[style*="hsl(10,"],[style*="hsl(17,"],[style*="hsl(24,"],[style*="hsl(31,"],[style*="hsl(38,"],[style*="hsl(45,"],[style*="hsl(52,"],[style*="hsl(59,"],[style*="hsl(66,"],[style*="hsl(73,"],[style*="hsl(80,"],[style*="hsl(87,"],[style*="hsl(94,"],[style*="hsl(101,"],[style*="hsl(108,"],[style*="hsl(115,"],[style*="hsl(122,"],[style*="hsl(129,"],[style*="hsl(136,"],[style*="hsl(143,"],[style*="hsl(150,"],[style*="hsl(157,"],[style*="hsl(164,"],[style*="hsl(171,"],[style*="hsl(178,"],[style*="hsl(185,"],[style*="hsl(192,"],[style*="hsl(199,"],[style*="hsl(206,"],[style*="hsl(213,"],[style*="hsl(220,"],[style*="hsl(227,"],[style*="hsl(234,"],[style*="hsl(241,"],[style*="hsl(248,"],[style*="hsl(255,"],[style*="hsl(262,"],[style*="hsl(269,"],[style*="hsl(276,"],[style*="hsl(283,"],[style*="hsl(290,"],[style*="hsl(297,"],[style*="hsl(304,"],[style*="hsl(311,"],[style*="hsl(318,"],[style*="hsl(325,"],[style*="hsl(332,"],[style*="hsl(339,"],[style*="hsl(346,"],[style*="hsl(353,"]) {
+    color: var(--mock-peer-3) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(3,"],[style*="hsl(10,"],[style*="hsl(17,"],[style*="hsl(24,"],[style*="hsl(31,"],[style*="hsl(38,"],[style*="hsl(45,"],[style*="hsl(52,"],[style*="hsl(59,"],[style*="hsl(66,"],[style*="hsl(73,"],[style*="hsl(80,"],[style*="hsl(87,"],[style*="hsl(94,"],[style*="hsl(101,"],[style*="hsl(108,"],[style*="hsl(115,"],[style*="hsl(122,"],[style*="hsl(129,"],[style*="hsl(136,"],[style*="hsl(143,"],[style*="hsl(150,"],[style*="hsl(157,"],[style*="hsl(164,"],[style*="hsl(171,"],[style*="hsl(178,"],[style*="hsl(185,"],[style*="hsl(192,"],[style*="hsl(199,"],[style*="hsl(206,"],[style*="hsl(213,"],[style*="hsl(220,"],[style*="hsl(227,"],[style*="hsl(234,"],[style*="hsl(241,"],[style*="hsl(248,"],[style*="hsl(255,"],[style*="hsl(262,"],[style*="hsl(269,"],[style*="hsl(276,"],[style*="hsl(283,"],[style*="hsl(290,"],[style*="hsl(297,"],[style*="hsl(304,"],[style*="hsl(311,"],[style*="hsl(318,"],[style*="hsl(325,"],[style*="hsl(332,"],[style*="hsl(339,"],[style*="hsl(346,"],[style*="hsl(353,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #a0de7e, #54cb68) !important;
+}
+
+.message-bubble span.font-bold:is([style*="hsl(4,"],[style*="hsl(11,"],[style*="hsl(18,"],[style*="hsl(25,"],[style*="hsl(32,"],[style*="hsl(39,"],[style*="hsl(46,"],[style*="hsl(53,"],[style*="hsl(60,"],[style*="hsl(67,"],[style*="hsl(74,"],[style*="hsl(81,"],[style*="hsl(88,"],[style*="hsl(95,"],[style*="hsl(102,"],[style*="hsl(109,"],[style*="hsl(116,"],[style*="hsl(123,"],[style*="hsl(130,"],[style*="hsl(137,"],[style*="hsl(144,"],[style*="hsl(151,"],[style*="hsl(158,"],[style*="hsl(165,"],[style*="hsl(172,"],[style*="hsl(179,"],[style*="hsl(186,"],[style*="hsl(193,"],[style*="hsl(200,"],[style*="hsl(207,"],[style*="hsl(214,"],[style*="hsl(221,"],[style*="hsl(228,"],[style*="hsl(235,"],[style*="hsl(242,"],[style*="hsl(249,"],[style*="hsl(256,"],[style*="hsl(263,"],[style*="hsl(270,"],[style*="hsl(277,"],[style*="hsl(284,"],[style*="hsl(291,"],[style*="hsl(298,"],[style*="hsl(305,"],[style*="hsl(312,"],[style*="hsl(319,"],[style*="hsl(326,"],[style*="hsl(333,"],[style*="hsl(340,"],[style*="hsl(347,"],[style*="hsl(354,"]) {
+    color: var(--mock-peer-4) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(4,"],[style*="hsl(11,"],[style*="hsl(18,"],[style*="hsl(25,"],[style*="hsl(32,"],[style*="hsl(39,"],[style*="hsl(46,"],[style*="hsl(53,"],[style*="hsl(60,"],[style*="hsl(67,"],[style*="hsl(74,"],[style*="hsl(81,"],[style*="hsl(88,"],[style*="hsl(95,"],[style*="hsl(102,"],[style*="hsl(109,"],[style*="hsl(116,"],[style*="hsl(123,"],[style*="hsl(130,"],[style*="hsl(137,"],[style*="hsl(144,"],[style*="hsl(151,"],[style*="hsl(158,"],[style*="hsl(165,"],[style*="hsl(172,"],[style*="hsl(179,"],[style*="hsl(186,"],[style*="hsl(193,"],[style*="hsl(200,"],[style*="hsl(207,"],[style*="hsl(214,"],[style*="hsl(221,"],[style*="hsl(228,"],[style*="hsl(235,"],[style*="hsl(242,"],[style*="hsl(249,"],[style*="hsl(256,"],[style*="hsl(263,"],[style*="hsl(270,"],[style*="hsl(277,"],[style*="hsl(284,"],[style*="hsl(291,"],[style*="hsl(298,"],[style*="hsl(305,"],[style*="hsl(312,"],[style*="hsl(319,"],[style*="hsl(326,"],[style*="hsl(333,"],[style*="hsl(340,"],[style*="hsl(347,"],[style*="hsl(354,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #53edd6, #28c9b7) !important;
+}
+
+.message-bubble span.font-bold:is([style*="hsl(5,"],[style*="hsl(12,"],[style*="hsl(19,"],[style*="hsl(26,"],[style*="hsl(33,"],[style*="hsl(40,"],[style*="hsl(47,"],[style*="hsl(54,"],[style*="hsl(61,"],[style*="hsl(68,"],[style*="hsl(75,"],[style*="hsl(82,"],[style*="hsl(89,"],[style*="hsl(96,"],[style*="hsl(103,"],[style*="hsl(110,"],[style*="hsl(117,"],[style*="hsl(124,"],[style*="hsl(131,"],[style*="hsl(138,"],[style*="hsl(145,"],[style*="hsl(152,"],[style*="hsl(159,"],[style*="hsl(166,"],[style*="hsl(173,"],[style*="hsl(180,"],[style*="hsl(187,"],[style*="hsl(194,"],[style*="hsl(201,"],[style*="hsl(208,"],[style*="hsl(215,"],[style*="hsl(222,"],[style*="hsl(229,"],[style*="hsl(236,"],[style*="hsl(243,"],[style*="hsl(250,"],[style*="hsl(257,"],[style*="hsl(264,"],[style*="hsl(271,"],[style*="hsl(278,"],[style*="hsl(285,"],[style*="hsl(292,"],[style*="hsl(299,"],[style*="hsl(306,"],[style*="hsl(313,"],[style*="hsl(320,"],[style*="hsl(327,"],[style*="hsl(334,"],[style*="hsl(341,"],[style*="hsl(348,"],[style*="hsl(355,"]) {
+    color: var(--mock-peer-5) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(5,"],[style*="hsl(12,"],[style*="hsl(19,"],[style*="hsl(26,"],[style*="hsl(33,"],[style*="hsl(40,"],[style*="hsl(47,"],[style*="hsl(54,"],[style*="hsl(61,"],[style*="hsl(68,"],[style*="hsl(75,"],[style*="hsl(82,"],[style*="hsl(89,"],[style*="hsl(96,"],[style*="hsl(103,"],[style*="hsl(110,"],[style*="hsl(117,"],[style*="hsl(124,"],[style*="hsl(131,"],[style*="hsl(138,"],[style*="hsl(145,"],[style*="hsl(152,"],[style*="hsl(159,"],[style*="hsl(166,"],[style*="hsl(173,"],[style*="hsl(180,"],[style*="hsl(187,"],[style*="hsl(194,"],[style*="hsl(201,"],[style*="hsl(208,"],[style*="hsl(215,"],[style*="hsl(222,"],[style*="hsl(229,"],[style*="hsl(236,"],[style*="hsl(243,"],[style*="hsl(250,"],[style*="hsl(257,"],[style*="hsl(264,"],[style*="hsl(271,"],[style*="hsl(278,"],[style*="hsl(285,"],[style*="hsl(292,"],[style*="hsl(299,"],[style*="hsl(306,"],[style*="hsl(313,"],[style*="hsl(320,"],[style*="hsl(327,"],[style*="hsl(334,"],[style*="hsl(341,"],[style*="hsl(348,"],[style*="hsl(355,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #72d5fd, #2a9ef1) !important;
+}
+
+.message-bubble span.font-bold:is([style*="hsl(6,"],[style*="hsl(13,"],[style*="hsl(20,"],[style*="hsl(27,"],[style*="hsl(34,"],[style*="hsl(41,"],[style*="hsl(48,"],[style*="hsl(55,"],[style*="hsl(62,"],[style*="hsl(69,"],[style*="hsl(76,"],[style*="hsl(83,"],[style*="hsl(90,"],[style*="hsl(97,"],[style*="hsl(104,"],[style*="hsl(111,"],[style*="hsl(118,"],[style*="hsl(125,"],[style*="hsl(132,"],[style*="hsl(139,"],[style*="hsl(146,"],[style*="hsl(153,"],[style*="hsl(160,"],[style*="hsl(167,"],[style*="hsl(174,"],[style*="hsl(181,"],[style*="hsl(188,"],[style*="hsl(195,"],[style*="hsl(202,"],[style*="hsl(209,"],[style*="hsl(216,"],[style*="hsl(223,"],[style*="hsl(230,"],[style*="hsl(237,"],[style*="hsl(244,"],[style*="hsl(251,"],[style*="hsl(258,"],[style*="hsl(265,"],[style*="hsl(272,"],[style*="hsl(279,"],[style*="hsl(286,"],[style*="hsl(293,"],[style*="hsl(300,"],[style*="hsl(307,"],[style*="hsl(314,"],[style*="hsl(321,"],[style*="hsl(328,"],[style*="hsl(335,"],[style*="hsl(342,"],[style*="hsl(349,"],[style*="hsl(356,"]) {
+    color: var(--mock-peer-6) !important;
+}
+
+.message-row:has(> .message-bubble span.font-bold:is([style*="hsl(6,"],[style*="hsl(13,"],[style*="hsl(20,"],[style*="hsl(27,"],[style*="hsl(34,"],[style*="hsl(41,"],[style*="hsl(48,"],[style*="hsl(55,"],[style*="hsl(62,"],[style*="hsl(69,"],[style*="hsl(76,"],[style*="hsl(83,"],[style*="hsl(90,"],[style*="hsl(97,"],[style*="hsl(104,"],[style*="hsl(111,"],[style*="hsl(118,"],[style*="hsl(125,"],[style*="hsl(132,"],[style*="hsl(139,"],[style*="hsl(146,"],[style*="hsl(153,"],[style*="hsl(160,"],[style*="hsl(167,"],[style*="hsl(174,"],[style*="hsl(181,"],[style*="hsl(188,"],[style*="hsl(195,"],[style*="hsl(202,"],[style*="hsl(209,"],[style*="hsl(216,"],[style*="hsl(223,"],[style*="hsl(230,"],[style*="hsl(237,"],[style*="hsl(244,"],[style*="hsl(251,"],[style*="hsl(258,"],[style*="hsl(265,"],[style*="hsl(272,"],[style*="hsl(279,"],[style*="hsl(286,"],[style*="hsl(293,"],[style*="hsl(300,"],[style*="hsl(307,"],[style*="hsl(314,"],[style*="hsl(321,"],[style*="hsl(328,"],[style*="hsl(335,"],[style*="hsl(342,"],[style*="hsl(349,"],[style*="hsl(356,"])) > div.w-8 > button {
+    background: linear-gradient(180deg, #e0a2f3, #d669ed) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   9. Theme picker, as proposed: the default entry becomes "Telegram Day" and
+   a "Match system" entry sits on top. The picker entries come from JS
+   (viewerThemes), so this relabel only shows the intended result.
+   ------------------------------------------------------------------------ */
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\]::before {
+    content: 'Match system';
+    display: block;
+    padding: 8px 10px 9px;
+    margin-bottom: 4px;
+    font-size: 14px;
+    color: rgb(var(--tg-n300));
+    border-bottom: 1px solid var(--mock-divider);
+}
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\] > button:nth-of-type(1) > span.flex-1 {
+    font-size: 0;
+}
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\] > button:nth-of-type(1) > span.flex-1::after {
+    content: 'Telegram Day';
+    font-size: 14px;
+}
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\] > button:nth-of-type(1) > span:first-child > span:nth-child(1) {
+    background: #ffffff !important;
+}
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\] > button:nth-of-type(1) > span:first-child > span:nth-child(2) {
+    background: #effdde !important;
+}
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\] > button:nth-of-type(1) > span:first-child > span:nth-child(3) {
+    background: #40a7e3 !important;
+}
+
+#app .chat-list-pane h1 ~ .relative > div.min-w-\[200px\] > button > span:first-child > span {
+    border-color: rgb(0 0 0 / 0.15);
+}

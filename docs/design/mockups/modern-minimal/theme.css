@@ -1,0 +1,532 @@
+/* Modern minimal: a calm archive reader.
+   Loads after the page's own styles. Tokens first, then structure.
+   Light replaces the built-in default (no data-theme). Dark takes the
+   "night" slot of the picker in these renders. */
+
+/* ---------------------------------------------------------------- tokens */
+
+/* Helper tokens this design adds. Defaults suit the light palettes (the
+   existing Day and Paper keep working); the dark palettes get the dark set. */
+:root {
+    --mm-bubble-edge: 0 0 0 1px rgb(27 31 36 / 0.07);
+    --mm-own-edge: 0 0 0 1px rgb(47 106 214 / 0.10);
+    --mm-name: var(--tg-n200);
+    --mm-inset: 27 31 36;
+    --mm-field: var(--tg-n950);
+}
+:root[data-theme="amoled"],
+:root[data-theme="forest"],
+:root[data-theme="aubergine"] {
+    --mm-bubble-edge: none;
+    --mm-own-edge: none;
+    --mm-name: var(--tg-text-dim);
+    --mm-inset: 255 255 255;
+    --mm-field: var(--tg-hover);
+}
+
+:root:not([data-theme]) {
+    --tg-bg: 243 244 246;          /* chat canvas   #F3F4F6 */
+    --tg-sidebar: 255 255 255;     /* panels        #FFFFFF */
+    --tg-hover: 243 244 246;       /* row hover     #F3F4F6 */
+    --tg-active: 231 238 252;      /* selected row  #E7EEFC */
+    --tg-text: 27 31 36;           /* text          #1B1F24 */
+    --tg-text-dim: 75 83 94;       /* date pill     #4B535E */
+    --tg-muted: 104 112 124;       /* secondary     #68707C */
+    --tg-own: 225 235 252;         /* outgoing      #E1EBFC */
+    --tg-other: 255 255 255;       /* incoming      #FFFFFF */
+    --tg-border: 228 231 235;      /* hairline      #E4E7EB */
+    --tg-border-strong: 205 210 216;
+    --tg-accent: 47 106 214;       /* accent        #2F6AD6 */
+    --tg-accent-strong: 42 96 196;
+    --tg-accent-hover: 35 83 172;
+    --tg-accent-soft: 42 96 196;
+    --tg-accent-bright: 30 74 158;
+    --tg-accent-faint: 29 63 122;
+    --tg-accent-dim: 231 238 252;
+    --tg-on-accent: 255 255 255;
+    --tg-ink: 17 20 24;
+    --tg-n100: 27 31 36;
+    --tg-n200: 44 50 58;
+    --tg-n300: 75 83 94;
+    --tg-n400: 104 112 124;
+    --tg-n500: 134 141 151;
+    --tg-n600: 205 210 216;
+    --tg-n700: 234 236 239;
+    --tg-n800: 246 247 248;
+    --tg-n900: 255 255 255;
+    --tg-n950: 243 244 246;
+    --tg-bubble-alpha-own: 1;
+    --tg-bubble-alpha-other: 1;
+    --tg-chip-bg: rgb(255 255 255 / 0.92);
+    --tg-service-bg: rgb(27 31 36 / 0.06);
+    --tg-service-fg: rgb(75 83 94);
+    --tg-pane-note-opacity: 0.8;
+    --mm-bubble-edge: 0 0 0 1px rgb(27 31 36 / 0.07);
+    --mm-own-edge: 0 0 0 1px rgb(47 106 214 / 0.10);
+    --mm-name: 44 50 58;
+    --mm-inset: 27 31 36;          /* base for tinted inner blocks */
+    --mm-field: 241 242 244;       /* search fields #F1F2F4 */
+    color-scheme: light;
+}
+
+/* The dark variant: neutral greys, no navy, one blue. */
+:root[data-theme="night"] {
+    --tg-bg: 17 19 21;             /* chat canvas   #111315 */
+    --tg-sidebar: 24 26 29;        /* panels        #181A1D */
+    --tg-hover: 32 35 39;          /* row hover     #202327 */
+    --tg-active: 31 44 66;         /* selected row  #1F2C42 */
+    --tg-text: 230 232 235;        /* text          #E6E8EB */
+    --tg-text-dim: 196 200 206;
+    --tg-muted: 142 149 159;       /* secondary     #8E959F */
+    --tg-own: 33 52 82;            /* outgoing      #213452 */
+    --tg-other: 32 35 39;          /* incoming      #202327 */
+    --tg-border: 42 46 51;         /* hairline      #2A2E33 */
+    --tg-border-strong: 62 68 76;
+    --tg-accent: 99 155 238;       /* accent        #639BEE */
+    --tg-accent-strong: 56 112 196;
+    --tg-accent-hover: 48 98 174;
+    --tg-accent-soft: 128 176 245;
+    --tg-accent-bright: 168 203 248;
+    --tg-accent-faint: 207 225 251;
+    --tg-accent-dim: 27 42 64;
+    --tg-on-accent: 255 255 255;
+    --tg-ink: 245 246 248;
+    --tg-n100: 232 234 237;
+    --tg-n200: 214 217 222;
+    --tg-n300: 190 195 202;
+    --tg-n400: 142 149 159;
+    --tg-n500: 110 117 127;
+    --tg-n600: 62 68 76;
+    --tg-n700: 42 46 51;
+    --tg-n800: 32 35 39;
+    --tg-n900: 17 19 21;
+    --tg-n950: 10 11 12;
+    --tg-bubble-alpha-own: 1;
+    --tg-bubble-alpha-other: 1;
+    --tg-chip-bg: rgb(32 35 39 / 0.92);
+    --tg-service-bg: rgb(255 255 255 / 0.06);
+    --tg-service-fg: rgb(190 195 202);
+    --tg-pane-note-opacity: 0.8;
+    --mm-bubble-edge: none;
+    --mm-own-edge: none;
+    --mm-name: 214 217 222;
+    --mm-inset: 255 255 255;
+    --mm-field: 32 35 39;
+    color-scheme: dark;
+}
+
+/* ------------------------------------------------------------- typography */
+
+body {
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--tg-border-strong) / 0.6); }
+
+/* ---------------------------------------------------------------- sidebar */
+
+.chat-list-pane {
+    border-right-color: rgb(var(--tg-border)) !important;
+}
+
+/* User bar: quieter, same height as a hairline row. */
+.chat-list-pane > div.border-b.px-3.py-1 {
+    border-bottom: 0;
+    padding-top: 6px;
+    padding-bottom: 0;
+}
+
+/* Header block: one line for the title and its tools. */
+.chat-list-pane > div.p-4.border-b {
+    padding: 8px 12px 10px;
+    border-bottom: 1px solid rgb(var(--tg-border));
+}
+.chat-list-pane h1 {
+    font-size: 17px;
+    line-height: 1.3;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+}
+.chat-list-pane > div.p-4 > div.mb-3:first-child { margin-bottom: 10px; }
+.chat-list-pane > div.p-4 > div.mb-3:first-child > div.gap-3 { gap: 6px; }
+/* Stats button: drop the emoji, keep the word. */
+.chat-list-pane h1 ~ .relative > button.gap-1\.5 > span:first-child { display: none; }
+
+/* Search field: flat, filled, no ring until focus. */
+.chat-list-pane input[aria-label="Search chats and messages"] {
+    background: rgb(var(--mm-field));
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    font-size: 14px;
+}
+.chat-list-pane input[aria-label="Search chats and messages"]:focus {
+    --tw-ring-shadow: 0 0 0 0 transparent;
+    border-color: rgb(var(--tg-accent) / 0.6);
+    background: rgb(var(--tg-sidebar));
+}
+.chat-list-pane input[aria-label="Search chats and messages"] + svg { top: 9px; width: 18px; height: 18px; }
+.chat-list-pane > div.p-4 > div.relative.mb-3 { margin-bottom: 10px; }
+
+/* Folder tabs: text tabs with a quiet fill for the active one. */
+.chat-list-pane > div.p-4 > div.flex.gap-1.mb-3 { margin-bottom: 6px; gap: 4px; }
+.chat-list-pane > div.p-4 > div.flex.gap-1.mb-3 > button {
+    background: transparent;
+    color: rgb(var(--tg-muted));
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 8px;
+}
+.chat-list-pane > div.p-4 > div.flex.gap-1.mb-3 > button:hover { background: rgb(var(--tg-hover)); }
+.chat-list-pane > div.p-4 > div.flex.gap-1.mb-3 > button.bg-tg-accent-strong {
+    background: rgb(var(--tg-accent) / 0.10);
+    color: rgb(var(--tg-accent-soft));
+}
+
+/* Last backup line: small print. */
+.chat-list-pane > div.p-4 > div.text-xs.text-tg-muted { font-size: 11.5px; opacity: 0.85; }
+
+/* Rows: 62px, no id line, account chip beside the preview. */
+.chat-list-pane .cursor-pointer.p-3 {
+    padding: 8px 12px;
+    gap: 12px;
+    border-bottom: 0 !important;
+    margin: 0 6px;
+    border-radius: 10px;
+}
+.chat-list-pane .cursor-pointer.p-3.bg-tg-active { background: rgb(var(--tg-active)); }
+.chat-list-pane .cursor-pointer.p-3 > .w-12.h-12 {
+    width: 46px;
+    height: 46px;
+    font-size: 16px;
+    font-weight: 600;
+}
+.chat-list-pane .cursor-pointer.p-3 h3 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+}
+.chat-list-pane .cursor-pointer.p-3 p.text-sm {
+    font-size: 13.5px;
+    line-height: 1.45;
+    margin-top: 1px;
+}
+.chat-list-pane .cursor-pointer.p-3 span.text-xs.text-tg-muted { font-size: 12px; font-variant-numeric: tabular-nums; }
+.chat-list-pane .cursor-pointer.p-3 p.text-sm > span.font-mono.text-xs { display: none; }
+.chat-list-pane .cursor-pointer.p-3 span.font-mono {
+    font-family: inherit;
+    color: rgb(var(--tg-muted));
+}
+.chat-list-pane .cursor-pointer.p-3 > .flex-1.min-w-0:has(> p.mt-1) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    align-items: center;
+}
+.chat-list-pane .cursor-pointer.p-3 > .flex-1.min-w-0:has(> p.mt-1) > div:first-child { grid-column: 1 / -1; }
+.chat-list-pane .cursor-pointer.p-3 > .flex-1.min-w-0 > p.mt-1 { margin-top: 1px; flex-wrap: nowrap; }
+
+/* Archived row: same rhythm, no accent shout. */
+.chat-list-pane .cursor-pointer.p-3 h3.text-tg-accent-soft { color: rgb(var(--tg-text)); }
+.chat-list-pane .cursor-pointer.p-3 > .bg-tg-accent-strong\/30 {
+    background: rgb(var(--mm-field));
+}
+.chat-list-pane .cursor-pointer.p-3 > .bg-tg-accent-strong\/30 svg { color: rgb(var(--tg-muted)); }
+
+/* Search section labels. */
+.chat-list-pane [role="presentation"].uppercase {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    padding-left: 18px;
+    padding-right: 18px;
+    border-top-color: rgb(var(--tg-border)) !important;
+}
+.chat-list-pane mark {
+    background: rgb(var(--tg-accent) / 0.14);
+    color: rgb(var(--tg-accent-faint));
+    border-radius: 3px;
+}
+
+/* Account chips: neutral, never blue on blue. */
+.account-chip {
+    color: rgb(var(--tg-muted));
+    background: rgb(var(--mm-inset) / 0.06);
+    font-weight: 500;
+    font-size: 11px;
+    line-height: 18px;
+    padding: 0 7px;
+}
+
+/* Placeholder avatars (no photo): one quiet fill instead of blue-to-purple. */
+.bg-gradient-to-br.from-blue-500.to-purple-600 {
+    background-image: none;
+    background-color: rgb(var(--tg-accent-dim));
+    color: rgb(var(--tg-accent-soft));
+}
+
+/* ------------------------------------------------------------ chat header */
+
+.flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar.border-b.shadow-md {
+    box-shadow: none;
+    border-bottom-color: rgb(var(--tg-border));
+    padding-top: 8px;
+    padding-bottom: 8px;
+    min-height: 56px;
+}
+/* Title, then type and account chips on one line. */
+.flex-1.flex.flex-col.bg-tg-bg h2 {
+    font-size: 16px;
+    font-weight: 650;
+    line-height: 1.3;
+}
+.flex-1.flex.flex-col.bg-tg-bg h2 + p { font-size: 12.5px; line-height: 1.35; }
+.flex-1.flex.flex-col.bg-tg-bg div:has(> h2 + p + p.mt-0\.5) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 8px;
+    align-items: center;
+}
+.flex-1.flex.flex-col.bg-tg-bg div:has(> h2 + p + p.mt-0\.5) > h2 { grid-column: 1 / -1; }
+.flex-1.flex.flex-col.bg-tg-bg h2 + p + p.mt-0\.5 { margin-top: 0; }
+/* Per-chat stats: small grey print, emoji desaturated. */
+.flex-1.flex.flex-col.bg-tg-bg div.bg-tg-n800\/50.ml-4 {
+    background: transparent;
+    filter: grayscale(1);
+    opacity: 0.6;
+    gap: 14px;
+}
+/* The chat search field: flat. */
+.flex-1.flex.flex-col.bg-tg-bg input[placeholder="Search..."] {
+    background: rgb(var(--mm-field));
+    border-radius: 10px;
+    border: 1px solid transparent;
+}
+.flex-1.flex.flex-col.bg-tg-bg input[placeholder="Search..."]:focus {
+    --tw-ring-shadow: 0 0 0 0 transparent;
+    border-color: rgb(var(--tg-accent) / 0.6);
+    background: rgb(var(--tg-sidebar));
+}
+
+/* Pinned banner: one quiet line with an accent rule. */
+.flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar\/80 {
+    background: rgb(var(--tg-sidebar));
+    border-bottom-color: rgb(var(--tg-border));
+    padding-top: 6px;
+    padding-bottom: 6px;
+    backdrop-filter: none;
+}
+.flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar\/80 > div.text-tg-accent-soft {
+    width: 2px;
+    align-self: stretch;
+    background: rgb(var(--tg-accent));
+    border-radius: 2px;
+    overflow: hidden;
+}
+.flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar\/80 > div.text-tg-accent-soft svg { display: none; }
+.flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar\/80 .text-sm.text-tg-n300 { color: rgb(var(--tg-text)); font-size: 13.5px; }
+
+/* ---------------------------------------------------------- message pane */
+
+/* A centred reading column on wide screens. */
+.messages-scroll {
+    padding-left: max(16px, calc((100% - 760px) / 2)) !important;
+    padding-right: max(16px, calc((100% - 760px) / 2)) !important;
+}
+
+.message-run-continue { margin-bottom: 2px; }
+.message-run-break { margin-bottom: 14px; }
+
+/* Avatar sits at the top of its run, beside the name. */
+.message-row > div.w-8.shrink-0 { align-self: flex-start; }
+.message-row > div.w-8.shrink-0 > button {
+    background: rgb(var(--tg-n700)) !important;
+    color: rgb(var(--tg-n300));
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+/* Bubbles: flat fills, compact padding, 16px corners, 6px where joined. */
+.message-bubble {
+    padding: 7px 12px 7px 12px !important;
+    font-size: 15px;
+    line-height: 1.5;
+    border-radius: 16px;
+    box-shadow: var(--mm-bubble-edge) !important;
+    color: rgb(var(--tg-text));
+}
+.message-row.justify-end .message-bubble { box-shadow: var(--mm-own-edge) !important; }
+@media (min-width: 768px) {
+    .message-bubble { max-width: min(78%, 560px); }
+}
+
+/* Incoming: the avatar side. Joined corners are small; the first bubble of
+   a run points at the avatar with a small top corner. */
+.message-row.justify-start .message-bubble:not(.bubble-in) { border-bottom-left-radius: 6px; }
+.message-row.justify-start .message-bubble.bubble-in { border-bottom-left-radius: 16px; }
+.message-row.justify-start:has(+ .message-row.message-run-continue) .message-bubble { border-top-left-radius: 6px; }
+.message-row.justify-start:has(> div.w-8 > button) .message-bubble { border-top-left-radius: 4px; }
+
+/* Outgoing: mirror, without the pointer. */
+.message-row.justify-end .message-bubble:not(.bubble-out) { border-bottom-right-radius: 6px; }
+.message-row.justify-end .message-bubble.bubble-out { border-bottom-right-radius: 16px; }
+.message-row.justify-end:has(+ .message-row.message-run-continue) .message-bubble { border-top-right-radius: 6px; }
+
+/* Sender line: one ink colour, weight does the work. */
+.message-bubble > div.mb-1.items-baseline { margin-bottom: 2px; }
+.message-bubble > div.mb-1.items-baseline > span.font-bold {
+    color: rgb(var(--mm-name)) !important;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+}
+
+/* Time sits at the end of the last line when it fits. */
+.message-bubble > .message-text:has(+ div.justify-end.text-right) { display: inline; }
+.message-bubble > div.justify-end.text-right {
+    float: right;
+    margin: 5px -3px -3px 12px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    opacity: 1;
+    color: rgb(var(--tg-muted));
+    font-variant-numeric: tabular-nums;
+    gap: 5px;
+}
+.message-row.justify-end .message-bubble > div.justify-end.text-right { color: rgb(var(--tg-accent-soft) / 0.85); }
+/* Reactions share their row with the time. */
+.message-bubble > div.mt-2.flex-wrap {
+    display: inline-flex;
+    margin-top: 6px;
+    gap: 4px;
+    vertical-align: middle;
+}
+.message-bubble > div.mt-2.flex-wrap > div {
+    background: rgb(var(--mm-inset) / 0.06) !important;
+    padding: 2px 8px;
+}
+.message-row.justify-end .message-bubble > div.mt-2.flex-wrap > div { background: rgb(var(--tg-accent) / 0.12) !important; }
+
+/* Reply and forward headers: a tint and a thin rule, no dark box. */
+.message-bubble > div.border-l-2 {
+    background: rgb(var(--tg-accent) / 0.07) !important;
+    border-left-width: 2px;
+    border-left-color: rgb(var(--tg-accent)) !important;
+    border-radius: 4px 8px 8px 4px;
+    padding: 5px 10px;
+    margin-bottom: 6px;
+    margin-top: 2px;
+    font-size: 13px;
+    line-height: 1.4;
+}
+.message-bubble > div.border-l-2 > div.font-semibold { color: rgb(var(--tg-accent-soft)) !important; margin-bottom: 1px; }
+.message-bubble > div.border-l-2 > div.opacity-70 { opacity: 1; color: rgb(var(--tg-text-dim)); }
+.message-bubble > div.border-l-2.border-green-400\/50 {
+    background: transparent !important;
+    border-left-color: rgb(var(--tg-border-strong)) !important;
+    padding-top: 1px;
+    padding-bottom: 1px;
+}
+.message-bubble > div.border-l-2.border-green-400\/50 > div.font-semibold {
+    color: rgb(var(--tg-muted)) !important;
+    font-weight: 500;
+    font-size: 12px;
+}
+.message-bubble > div.border-l-2.border-green-400\/50 > div.opacity-90 { font-weight: 600; color: rgb(var(--tg-text)); }
+.message-row.justify-end .message-bubble > div.border-l-2 { background: rgb(var(--tg-accent) / 0.10) !important; }
+
+/* Other inner blocks: theme tints instead of black overlays. */
+.message-bubble .bg-black\/20,
+.message-bubble .bg-black\/10 { background-color: rgb(var(--mm-inset) / 0.05); }
+.message-bubble .album-item .bg-black\/20 { background-color: rgb(0 0 0 / 0.25); }
+.message-bubble > div.max-w-sm.rounded-lg {
+    background: transparent;
+    padding: 4px 0 2px;
+    min-width: 260px;
+}
+.message-bubble .border-tg-ink\/10 {
+    border-color: transparent;
+    background: rgb(var(--mm-inset) / 0.05);
+    border-radius: 8px;
+}
+.message-bubble .bg-tg-accent\/30 { background: rgb(var(--tg-accent) / 0.16); }
+.message-row.justify-end .message-bubble .bg-tg-accent\/30 { background: rgb(var(--tg-accent) / 0.22); }
+
+/* Media: flush with the bubble's radius. */
+.message-bubble .album-grid .grid,
+.message-bubble img.rounded-lg { border-radius: 10px; }
+.message-bubble > div.mb-2.space-y-1 { margin-top: 3px; margin-bottom: 6px; }
+
+/* Voice notes: drawn on the bubble, not a card inside it. */
+.message-bubble .bg-gradient-to-r.from-tg-n800 {
+    background: transparent;
+    box-shadow: none;
+    padding: 2px 0;
+    border-radius: 0;
+}
+
+.tg-code { background: rgb(var(--mm-inset) / 0.07); }
+.tg-pre { background: rgb(var(--mm-inset) / 0.05); border: 1px solid rgb(var(--tg-border)); }
+.tg-blockquote { background: rgb(var(--tg-accent) / 0.06); border-left-color: rgb(var(--tg-accent)); }
+.loading-spinner { border-color: rgb(var(--mm-inset) / 0.1); border-top-color: rgb(var(--tg-accent)); }
+
+/* Day pills: small, flat, no shadow. */
+.floating-date-pill { top: 8px; }
+.floating-date-pill button,
+.date-separator button {
+    padding: 3px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 999px;
+    box-shadow: 0 0 0 1px rgb(var(--tg-border));
+    color: rgb(var(--tg-text-dim));
+}
+.date-separator { margin: 18px 0 12px; }
+
+.service-message { font-size: 12.5px; }
+
+.scroll-to-bottom-btn {
+    background: rgb(var(--tg-sidebar));
+    border-color: rgb(var(--tg-border));
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.08);
+    color: rgb(var(--tg-muted));
+}
+
+/* Media gallery tabs: same quiet tabs as the folders. */
+.flex-1.flex.flex-col.bg-tg-bg div.border-b > button.rounded-lg.px-3 {
+    background: transparent;
+    color: rgb(var(--tg-muted));
+    border-radius: 8px;
+}
+.flex-1.flex.flex-col.bg-tg-bg div.border-b > button.rounded-lg.px-3.bg-tg-accent-strong {
+    background: rgb(var(--tg-accent) / 0.10);
+    color: rgb(var(--tg-accent-soft));
+}
+.flex-1.flex.flex-col.bg-tg-bg div.border-b.border-tg-n700 { border-bottom-color: rgb(var(--tg-border)); }
+.album-item { border-radius: 0; }
+
+/* ------------------------------------------------------------------ phone */
+
+@media (max-width: 767px) {
+    .message-bubble { font-size: 16px; }
+    .message-text { line-height: 1.45; }
+    /* The chat search collapses to an icon and opens on focus. */
+    .flex-1.flex.flex-col.bg-tg-bg .relative.w-28 { width: 40px; transition: width 0.15s; }
+    .flex-1.flex.flex-col.bg-tg-bg .relative.w-28:focus-within { width: 55vw; }
+    .flex-1.flex.flex-col.bg-tg-bg .relative.w-28 input { padding-left: 30px; color: transparent; background: transparent; }
+    .flex-1.flex.flex-col.bg-tg-bg .relative.w-28 input::placeholder { color: transparent; }
+    .flex-1.flex.flex-col.bg-tg-bg .relative.w-28:focus-within input { color: rgb(var(--tg-ink)); background: rgb(var(--mm-field)); }
+    .flex-1.flex.flex-col.bg-tg-bg .relative.w-28 svg { left: 12px; top: 9px; width: 18px; height: 18px; }
+    /* Export belongs in the info panel on a phone. */
+    .flex-1.flex.flex-col.bg-tg-bg button[title="Export Chat to JSON"] { display: none; }
+    .flex-1.flex.flex-col.bg-tg-bg .tap-target { min-width: 38px; padding-left: 4px; padding-right: 4px; }
+    .flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar.border-b > div.flex.items-center { gap: 8px; }
+    .flex-1.flex.flex-col.bg-tg-bg > div.bg-tg-sidebar.border-b > div.flex.items-center.shrink-0 { gap: 0; }
+    .flex-1.flex.flex-col.bg-tg-bg h2 { font-size: 17px; }
+    .flex-1.flex.flex-col.bg-tg-bg div:has(> h2 + p) { max-width: none; }
+}
