@@ -7,6 +7,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ## [Unreleased]
 
 ### Added
+- **The archive shows under its own name in Telegram's device list.** Every Telegram client the app builds now reports the device `Telegram Archive`, the operating system and the app version, so the entry under Settings, Devices is easy to recognise. `TELEGRAM_DEVICE_MODEL` sets another name per install. Existing logins keep working. ([#500](https://github.com/GeiserX/Telegram-Archive/pull/500))
 - **`telegram-archive status`** says whether the archive is healthy without a browser: last run, listener state per Telegram account, media counts and database size. `--json` prints the same payload as the Archive Status panel plus `healthy` and `problems`, and the exit code is 1 when a run never happened, did not finish or was missed, so cron and monitoring can use it. ([#499](https://github.com/GeiserX/Telegram-Archive/pull/499))
 
 ## [8.17.0] - 2026-09-29

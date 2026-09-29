@@ -8,6 +8,7 @@ import logging
 import math
 import mimetypes
 import os
+import platform
 import re
 import sys
 import urllib.parse
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
+from . import __version__
 from .transcription_contract import TRANSCRIBABLE_TYPES
 
 # Load environment variables from .env file if it exists
@@ -176,6 +178,44 @@ def build_telegram_proxy_from_env() -> dict | None:
     return proxy
 
 
+# The name this app shows under Telegram's Settings, Devices. Without it
+# Telethon reports a generic "PC 64bit", which is hard to tell apart from any
+# other client. TELEGRAM_DEVICE_MODEL overrides it per install.
+DEFAULT_TELEGRAM_DEVICE_MODEL = "Telegram Archive"
+
+
+def telegram_device_model_from_env() -> str:
+    """TELEGRAM_DEVICE_MODEL, or the default when it is unset or blank."""
+    device_model = os.getenv("TELEGRAM_DEVICE_MODEL", "").strip()
+    if not device_model:
+        return DEFAULT_TELEGRAM_DEVICE_MODEL
+    return device_model
+
+
+def telegram_system_version() -> str:
+    """The running OS as "<system> <release>", with the release cut at its first "-".
+
+    Telethon trims its own default the same way, so "6.8.0-45-generic" is sent
+    as "6.8.0".
+    """
+    release = re.sub(r"-.+", "", platform.release())
+    system_version = f"{platform.system()} {release}".strip()
+    if not system_version:
+        return "Unknown"
+    return system_version
+
+
+def telegram_device_kwargs(device_model: str) -> dict:
+    """Device identity Telethon sends in initConnection on every connect."""
+    return {
+        "device_model": device_model,
+        "system_version": telegram_system_version(),
+        "app_version": __version__,
+        "lang_code": "en",
+        "system_lang_code": "en",
+    }
+
+
 def build_telegram_client_kwargs() -> dict:
     """Build common Telethon client keyword arguments from environment configuration.
 
@@ -185,7 +225,7 @@ def build_telegram_client_kwargs() -> dict:
     DIALOG_FLOOD_SLEEP_THRESHOLD); everything else keeps 0 so floods stay
     visible in app logs (#124).
     """
-    kwargs: dict = {"flood_sleep_threshold": 0}
+    kwargs: dict = {"flood_sleep_threshold": 0, **telegram_device_kwargs(telegram_device_model_from_env())}
     proxy = build_telegram_proxy_from_env()
     if proxy is not None:
         kwargs["proxy"] = dict(proxy)
@@ -840,6 +880,7 @@ class Config:
         # Session configuration
         self.session_name = os.getenv("SESSION_NAME", "telegram_backup")
         self.telegram_proxy = build_telegram_proxy_from_env()
+        self.telegram_device_model = telegram_device_model_from_env()
 
         # Logging
         log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -2038,7 +2079,7 @@ class Config:
         #295 for dialogs / DIALOG_FLOOD_SLEEP_THRESHOLD); everything else
         keeps 0 so floods stay visible in app logs (#124).
         """
-        kwargs: dict = {"flood_sleep_threshold": 0}
+        kwargs: dict = {"flood_sleep_threshold": 0, **telegram_device_kwargs(self.telegram_device_model)}
         if self.telegram_proxy is not None:
             kwargs["proxy"] = dict(self.telegram_proxy)
         return kwargs
