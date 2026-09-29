@@ -365,12 +365,12 @@ services:
   # The image runs as uid 1000, so give it the two folders first:
   # mkdir -p akou/data akou/models && chown -R 1000:1000 akou. Pull the models
   # once before the first start (docker run --rm -v ./akou/models:/models
-  # drumsergio/akou:0.2.1 models pull fast). In a container akou must listen
+  # drumsergio/akou:0.5.1 models pull fast). In a container akou must listen
   # beyond loopback, and it refuses to unless its settings say a proxy fronts
   # it: set server.behind_proxy to true (see akou's docs/install.md).
   #
   # akou:
-  #   image: drumsergio/akou:0.2.1
+  #   image: drumsergio/akou:0.5.1
   #   container_name: akou
   #   restart: unless-stopped
   #   volumes:
