@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Added
+- **The archive shows under its own name in Telegram's device list.** Every Telegram client the app builds now reports the device `Telegram Archive`, the operating system and the app version, so the entry under Settings, Devices is easy to recognise. `TELEGRAM_DEVICE_MODEL` sets another name per install. Existing logins keep working. ([#500](https://github.com/GeiserX/Telegram-Archive/pull/500))
+
 ## [8.17.0] - 2026-09-29
 
 Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.
