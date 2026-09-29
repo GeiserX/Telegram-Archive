@@ -50,7 +50,7 @@ hide:
 
 ## The viewer
 
-The viewer looks and works like the Telegram app, with the archive behind it. See [Using the viewer](viewer/using-the-viewer.md).
+The viewer looks and works like the Telegram app, with the archive behind it. See [Using the viewer](viewer/using-the-viewer.md). [Logins, viewer accounts and share links](viewer/access.md) covers who can open which chats, [Themes and wallpaper](viewer/themes.md) the colour themes and wallpaper, and [Exposing the viewer safely](viewer/exposing.md) putting it behind a reverse proxy.
 
 ![A group chat open in the viewer, with a pinned message, a photo and reactions](images/screenshots/chat-desktop.png)
 
@@ -101,6 +101,8 @@ flowchart TB
 - The backup image is `drumsergio/telegram-archive` and the viewer image is `drumsergio/telegram-archive-viewer`. Both share one version number, run on linux/amd64 and linux/arm64, and run as user id 1000.
 - A backup runs when the container starts, then on a cron schedule. The default is 00:00, 06:00, 12:00 and 18:00 in the container's time zone, which is UTC in the image. See [Schedule and backup tuning](configuration/schedule.md).
 - When the listener is on, it captures changes between runs.
+- The archive is a SQLite database by default, or PostgreSQL. See [SQLite and PostgreSQL](configuration/database.md).
+- An upgrade is usually a pin change and a restart; [Upgrading](operations/upgrading.md) lists the releases that need more. To keep a copy of the archive, see [Backing up the archive](operations/backup-and-restore.md).
 - At the end of each run, the backup retries failed media downloads, verifies media if `VERIFY_MEDIA` is on, and processes pending transcriptions. With `FILL_GAPS` on, the scheduler then looks for missing messages.
 
 ## What it does not do
@@ -134,7 +136,7 @@ flowchart TB
 - The [Glossary](reference/glossary.md) explains the terms these pages use.
 - To script against the viewer, use the [HTTP API](reference/api.md).
 - The [Roadmap](roadmap/index.md) lists what is planned next.
-- To send a fix or a feature, read [Contributing](contributing.md).
+- To send a fix or a feature, read [Development](development.md).
 
 ## License
 

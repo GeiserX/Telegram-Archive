@@ -4,12 +4,13 @@ site_description: Self-hosted Telegram backup with a web viewer. Messages, media
 repo_url: https://github.com/GeiserX/Telegram-Archive
 repo_name: GeiserX/Telegram-Archive
 edit_uri: edit/main/docs/
+strict: true
 
 theme:
   name: material
   language: en
-  logo: logo.svg
-  favicon: icon.svg
+  logo: images/logo.svg
+  favicon: images/icon.svg
   palette:
     - scheme: slate
       primary: custom
@@ -46,6 +47,10 @@ validation:
 
 plugins:
   - search
+  # Old page URLs keep working after a rename.
+  - redirects:
+      redirect_maps:
+        contributing.md: development.md
 
 markdown_extensions:
   - admonition
@@ -157,4 +162,4 @@ nav:
       - Environment variables: reference/environment-variables.md
       - Command line and Python API: reference/cli.md
       - HTTP API: reference/api.md
-  - Contributing: contributing.md
+  - Development: development.md
