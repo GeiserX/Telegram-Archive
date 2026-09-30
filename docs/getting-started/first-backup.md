@@ -39,6 +39,10 @@ Open the viewer while the backup runs. You will see the following:
 - **Statistics**, in the main menu (the three lines at the top of the sidebar), shows cached totals and a **Backup running** marker from the last page load. While a run is active, the sidebar's status line reads "Backing up…". On a new archive the totals show what the viewer saw when it started. The run recalculates them when it finishes. Reload the page to see the new totals or a change in the marker.
 - Only the master login sees [Archive status](../viewer/using-the-viewer.md#archive-status), in the viewer's main menu.
 
+When the run has finished, Archive status says so. This is what a healthy archive looks like:
+
+![Archive status in the main menu after a finished run, with the last run, the listener state per account, media counts and the database size](../images/screenshots/archive-status.png){ width="480" }
+
 For a full tour of the viewer, see [Using the viewer](../viewer/using-the-viewer.md).
 
 ## Check the container health
