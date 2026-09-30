@@ -283,10 +283,10 @@ Reply with letters, for example "A + C + E + F", "G + E", or "A + D + E + F". A 
 Seed the demo archive with `scripts/generate_dummy_db.py`, run the viewer on it, then run the rig once per option and theme, for example:
 
 ```bash
-node docs/design/rig/shoot.mjs --only 26 --port 8112 --out /tmp/c-day \
+node docs/design/rig/shoot.mjs --only 28 --port 8112 --out /tmp/c-day \
     --theme telegram --scheme light \
     --css docs/design/edited-messages/C-peek/override.css \
     --js docs/design/edited-messages/shared.js,docs/design/edited-messages/C-peek/open.js,docs/design/edited-messages/C-peek/override.js
 ```
 
-View 26 is the edited message in its chat, cropped on a wide screen to the message column around it; E uses view 12, the edit history. Night is `--theme night --scheme dark`. The state scripts (`A-count/hover.js`, `B-switcher/original.js`, `C-peek/open.js`, `D-diff/on.js`, `F-finder/menu.js`, `F-finder/search.js`) load before the option's `override.js` and put it in the state the picture shows. `--base http://host:port`, `VIEWER_BASE_URL` or `VIEWER_PORT` can stand in for `--port`. The viewer allows 15 logins in 5 minutes and every rig run logs in twice, so a long session needs a restart of the viewer now and then.
+View 28 is the edited message in its chat, cropped on a wide screen to the message column around it; E uses view 12, the edit history. Night is `--theme night --scheme dark`. The state scripts (`A-count/hover.js`, `B-switcher/original.js`, `C-peek/open.js`, `D-diff/on.js`, `F-finder/menu.js`, `F-finder/search.js`) load before the option's `override.js` and put it in the state the picture shows. `--base http://host:port`, `VIEWER_BASE_URL` or `VIEWER_PORT` can stand in for `--port`. The viewer allows 15 logins in 5 minutes and every rig run logs in twice, so a long session needs a restart of the viewer now and then.

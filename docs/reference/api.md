@@ -190,7 +190,7 @@ All of these need a login that can see the chat.
 
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
-| `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
+| `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message |
 | `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
@@ -209,6 +209,13 @@ curl -s -b jar.txt \
 ```
 
 A lone `before_id=N` returns messages with ids below N. `after_id=N` returns messages with ids above N.
+
+`deleted_only=true` keeps only the messages deleted in Telegram that the archive kept, the rows with `is_deleted` set to 1, newest first. It works with or without `search`: without it you get every kept deletion of the chat, with it the deletions that match. It combines with `topic_id` and the cursors like the other filters. It is a read and stays inside the chat the ref names, so a viewer restricted to some chats or accounts, or a share link, gets the same 404 for another chat as without it.
+
+```bash
+curl -s -b jar.txt \
+  'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&deleted_only=true'
+```
 
 Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 

@@ -1,0 +1,46 @@
+/* D. Edge bar: a 3px bar in the side's deleted colour along the bubble's
+   leading inner edge, in the shape of a reply quote's bar, from the top of the
+   bubble to its bottom. The content moves 6px inward to make room. The wash
+   goes: the bar alone marks the bubble. The meta label stays.
+
+   The bar is on the start side for both directions, as a quote bar is, and
+   runs past a picture at the top of the bubble: the picture gives up the
+   bar's strip instead of covering it. */
+.message-bubble.is-deleted {
+    background-image: var(--tg-bubble-image, none);
+    padding-inline-start: calc(var(--tg-bubble-pad-x) + 6px);
+}
+.message-row.run-end > .message-bubble.is-deleted::after {
+    background: rgb(var(--tg-bubble-tail));
+}
+.message-bubble.is-deleted::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: 6px;
+    top: 7px;
+    bottom: 7px;
+    width: 3px;
+    border-radius: 1.5px;
+    background: rgb(var(--tg-deleted-fg));
+    pointer-events: none;
+}
+/* A picture at the edge keeps its right and top edges and starts after the
+   bar, with 4px of air. Its top left corner takes the bar's small radius. */
+.message-bubble.is-deleted .media-block.is-edge {
+    margin-inline-start: calc(-1 * var(--tg-bubble-pad-x) + 7px);
+}
+.message-bubble.is-deleted .media-block.is-edge:first-child {
+    border-start-start-radius: 6px;
+}
+/* Nothing but a picture: no padding to take, so the bar sits on the picture
+   in a thin dark sleeve that keeps it visible on any photo. */
+.message-bubble.is-deleted.bubble-media-only {
+    padding-inline-start: 0;
+}
+.message-bubble.is-deleted.bubble-media-only::before {
+    z-index: 2;
+    box-shadow: 0 0 0 1.5px rgb(0 0 0 / 0.35);
+}
+.message-bubble.is-deleted.bubble-media-only .media-block.is-edge {
+    margin-inline-start: 0;
+}

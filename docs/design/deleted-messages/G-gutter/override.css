@@ -1,0 +1,49 @@
+/* G. Gutter: the bubble stays as it is today, and a small trash mark sits in
+   the avatar column beside it, level with the bubble's first line. Scrolling
+   a long chat, the deletions line up as a column of marks at the left edge,
+   where the eye already runs down the avatars.
+
+   The mark is a 24px disc in the bubble's own fill, tinted with the deleted
+   colour, with the trash in the side's deleted colour: a small bubble of its
+   own, so it reads on any wallpaper. It is the bubble's ::before, placed in the gutter (the avatar
+   column, 12px left of the bubble), so it needs no new element. An outgoing
+   bubble has no gutter: its mark sits in the same place on the right. */
+.message-bubble.is-deleted::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background:
+        no-repeat center / 14px 14px var(--dv-trash),
+        linear-gradient(var(--dv-disc-tint), var(--dv-disc-tint)),
+        rgb(var(--tg-bubble-fill));
+    box-shadow: var(--tg-bubble-shadow);
+    pointer-events: none;
+}
+.message-bubble.is-deleted.bubble-in::before {
+    left: calc(-12px - var(--tg-avatar-size) / 2 - 12px);
+}
+.message-bubble.is-deleted.bubble-out::before {
+    right: calc(-12px - var(--tg-avatar-size) / 2 - 12px);
+}
+/* The trash, drawn with the side's deleted colour: a mask would need a
+   second element, so the colour is baked into the icon per theme and side. */
+:root,
+:root[data-theme="telegram"] {
+    --dv-trash-in: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgb(163,58,47)' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/%3E%3Cpath d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E");
+    --dv-trash-out: var(--dv-trash-in);
+    --dv-disc-tint: rgb(163 58 47 / 0.12);
+}
+:root[data-theme="night"] {
+    --dv-trash-in: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgb(255,154,143)' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/%3E%3Cpath d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E");
+    --dv-trash-out: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgb(255,197,190)' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/%3E%3Cpath d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E");
+    --dv-disc-tint: rgb(255 154 143 / 0.10);
+}
+.message-bubble.bubble-in {
+    --dv-trash: var(--dv-trash-in);
+}
+.message-bubble.bubble-out {
+    --dv-trash: var(--dv-trash-out);
+}
