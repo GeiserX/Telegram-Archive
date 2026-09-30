@@ -133,7 +133,17 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 ### Reactions, edits and deletions
 
-Reactions show as chips with the emoji and, when above one, the count.
+Reactions show as chips with the emoji and its count.
+
+A reaction taken back stays in the archive. After the live chips, a quieter chip with no fill and a dashed edge holds an undo arrow and how many reactions were taken back. Click or tap it, or reach it with <kbd>Tab</kbd> and press <kbd>Enter</kbd>, to show them: each emoji with the count it had and when the archive noticed it gone, for example "1 · 17:33", or "1 · Sep 2, 20:55" when that was on a later day. Click it again to hide them. The time is when the backup or the listener saw the reaction missing, not when it was taken back, and the archive does not know who took it back: it stores counts per emoji. "Taken back" covers every way a reaction leaves Telegram's count: the person removed it, their account was deleted, or an admin turned that reaction off for the chat. Two gaps remain, and they are known limits, not the design: a count that drops without reaching zero shows only the new count, and only the latest removal of an emoji is kept, because a reaction that comes back clears its earlier removal.
+
+=== "Desktop"
+
+    ![A photo with two live reactions, then the chip for one reaction taken back, open: a faded surprised face with "1 · 17:33"](../images/screenshots/reactions-taken-back.png)
+
+=== "Phone"
+
+    ![The same chips on a phone, and an outgoing message whose only reactions were taken back](../images/screenshots/reactions-taken-back-mobile.png){ width="300" }
 
 An edited message shows a small pencil before its time, with the number of earlier texts the archive kept: a pencil and "2" before 08:52 means two earlier versions. The time is still the time it was sent. A message Telegram marks as edited but whose earlier text the archive never saw shows the pencil alone. The pencil's name, read by a screen reader and shown when you peek, gives the time of the last edit by Telegram's clock, for example "Edited at 08:57, 2 earlier versions kept", or "Edited on Oct 1 at 09:05" when the edit came on a later day.
 
