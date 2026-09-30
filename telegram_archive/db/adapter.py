@@ -6716,6 +6716,24 @@ class DatabaseAdapter:
             await session.refresh(row)
             return self._transcript_to_dict(row)
 
+    async def count_waiting_transcript_asks(self) -> int:
+        """How many viewer ask-now rows wait for the backup, across every account.
+
+        An ask-now row is ``queued`` with no ``job_id`` and no ``preset``: the
+        drain fills the preset when it picks the row up, so a row stops
+        counting once the backup has taken it. The viewer refuses a new ask
+        past TRANSCRIPTION_ASK_MAX_OPEN of these.
+        """
+        stmt = select(func.count(MediaTranscript.id)).where(
+            and_(
+                MediaTranscript.status == "queued",
+                MediaTranscript.job_id.is_(None),
+                MediaTranscript.preset.is_(None),
+            )
+        )
+        async with self.db_manager.async_session_factory() as session:
+            return int((await session.execute(stmt)).scalar() or 0)
+
     @retry_on_locked()
     async def fill_media_transcript(
         self, transcript_id: int, *, status: str, account_id: int | None = None, **columns: Any

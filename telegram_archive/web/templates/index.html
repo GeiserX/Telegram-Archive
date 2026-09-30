@@ -13181,8 +13181,9 @@
                     try {
                         const res = await fetch(transcriptsUrl(msg), { method: 'POST', credentials: 'include' })
                         if (res.ok) row = await res.json()
-                        // 409: the server names why it will not ask (not downloaded yet, say).
-                        else if (res.status === 409) refusal = String((await res.json().catch(() => null))?.detail || '')
+                        // 409 and 429: the server names why it will not ask (not downloaded
+                        // yet, or too many presses for now) and the toast says it.
+                        else if (res.status === 409 || res.status === 429) refusal = String((await res.json().catch(() => null))?.detail || '')
                     } catch (e) {
                         row = null
                     }

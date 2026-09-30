@@ -230,6 +230,8 @@ The button has five states:
 | None | A server is configured, but this file has no transcript yet. Pressing queues it. |
 | Unconfigured | No server is set. Pressing opens the banner instead. |
 
+Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets anyone press. One client may press `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, 30 by default. A client is a login session, or the client IP in an open viewer. Separately, once `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50 by default) wait for the backup, presses from anyone but the master are refused until the next backup run picks some up. A refused press leaves the button as it was and a short message says when to try again.
+
 ### Error texts
 
 | Reason | Text shown |
@@ -292,7 +294,7 @@ The SQLite to PostgreSQL mover copies transcripts with everything else.
 
 ## Settings
 
-All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL` and `TRANSCRIPTION_WEBHOOK_SECRET` matter on the backup container only. "Stops startup" means a bad value aborts the process with an error. "Warns" means one warning is logged and the setting falls back as described. The number settings are checked only while transcription is enabled.
+All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL`, `TRANSCRIPTION_WEBHOOK_SECRET` and the two `TRANSCRIPTION_ASK_*` limits matter on the backup container only. "Stops startup" means a bad value aborts the process with an error. "Warns" means one warning is logged and the setting falls back as described. The number settings are checked only while transcription is enabled.
 
 | Variable | Default | Read by | Bad value |
 |---|---|---|---|
@@ -312,6 +314,8 @@ All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL` and `TRANSCRIPT
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | viewer | Warns and ignores a value without the `whsec_` prefix |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | backup | Stops startup. Values below 1 become 1 |
 | `TRANSCRIPTION_PRIORITY_CHAT_IDS` | empty | backup | Stops startup on a non-integer id |
+| `TRANSCRIPTION_ASK_RATE_LIMIT` | `30` | viewer | Stops startup. `0` or less means no limit |
+| `TRANSCRIPTION_ASK_MAX_OPEN` | `50` | viewer | Stops startup. `0` or less means no limit |
 
 The full list of variables is in [Environment variables](../reference/environment-variables.md).
 

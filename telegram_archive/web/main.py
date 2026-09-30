@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -525,6 +526,11 @@ async def session_cleanup_task():
             stale_ips = [ip for ip, ts in _login_attempts.items() if all(now - t > _LOGIN_RATE_WINDOW for t in ts)]
             for ip in stale_ips:
                 _login_attempts.pop(ip, None)
+            stale_askers = [
+                key for key, ts in _transcript_asks.items() if all(now - t >= _TRANSCRIPT_ASK_WINDOW for t in ts)
+            ]
+            for key in stale_askers:
+                _transcript_asks.pop(key, None)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -853,6 +859,16 @@ class SessionData:
 
 _sessions: dict[str, SessionData] = {}
 _login_attempts: dict[str, list[float]] = {}  # ip -> list of timestamps
+# Transcript button presses: client key -> timestamps inside the window.
+# TRANSCRIPTION_ASK_RATE_LIMIT is presses per client per this many seconds.
+_transcript_asks: dict[str, list[float]] = {}
+_TRANSCRIPT_ASK_WINDOW = 600
+# What a press refused for TRANSCRIPTION_ASK_MAX_OPEN says to wait: the
+# waiting rows leave the count only when the backup picks them up.
+_TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 300
+# Holds the count and the insert of a capped press together, so presses
+# arriving at once cannot all pass the same count.
+_transcript_ask_lock = asyncio.Lock()
 
 
 def _grants_from_row(row: dict) -> tuple[set[int] | None, set[str] | None]:
@@ -3528,7 +3544,47 @@ async def get_transcription_status(user: UserContext = Depends(require_auth)):
     }
 
 
-async def _ask_transcript(media: dict | None, account_id: int) -> dict:
+def _transcript_ask_client(request: Request, user: UserContext, auth_cookie: str | None) -> str:
+    """The key a transcript press counts against: the session, else the proxy user, else the address.
+
+    With ALLOW_ANONYMOUS_VIEWER every caller is the same "anonymous", so the
+    client address is the key, found the way the login rate limit finds it
+    (proxy headers only with TRUST_PROXY_HEADERS). A cookie that is not this
+    principal's session (proxy auth won over a stale cookie) is ignored.
+    """
+    if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
+        return f"ip:{_get_client_ip(request)}"
+    session = _sessions.get(auth_cookie) if auth_cookie else None
+    if session is not None and session.username == user.username:
+        return f"session:{auth_cookie}"
+    return f"user:{user.username}"
+
+
+def _transcript_ask_wait(client: str) -> int:
+    """Seconds before ``client`` may press again, or 0 and the press is recorded.
+
+    TRANSCRIPTION_ASK_RATE_LIMIT presses per ``_TRANSCRIPT_ASK_WINDOW``
+    seconds; 0 is no limit. The check and the record run with no await
+    between them, so presses sent at once cannot all pass the same count.
+    """
+    limit = getattr(config, "transcription_ask_rate_limit", 0)
+    if not isinstance(limit, int) or limit <= 0:
+        return 0
+    now = time.time()
+    presses = [t for t in _transcript_asks.get(client, []) if now - t < _TRANSCRIPT_ASK_WINDOW]
+    if len(presses) >= limit:
+        _transcript_asks[client] = presses
+        return max(1, math.ceil(_TRANSCRIPT_ASK_WINDOW - (now - presses[0])))
+    presses.append(now)
+    _transcript_asks[client] = presses
+    return 0
+
+
+def _too_many_asks(detail: str, retry_after: int) -> HTTPException:
+    return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
+
+
+async def _ask_transcript(media: dict | None, account_id: int, user: UserContext, client: str) -> dict:
     """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
 
     ``force`` because a user click may add a row after a done one, which the
@@ -3538,12 +3594,33 @@ async def _ask_transcript(media: dict | None, account_id: int) -> dict:
     sound (``is_transcribable``, whatever TRANSCRIPTION_TYPES says, since the
     drain query lets an ask-now row through the type filter), or a file not
     downloaded yet, whose queued row would never move.
+
+    Two limits answer 429 with Retry-After, since ``force`` lets anyone who
+    can open the viewer (ALLOW_ANONYMOUS_VIEWER) queue the same file again
+    and again: TRANSCRIPTION_ASK_RATE_LIMIT presses per client, and, for
+    everyone but the master, TRANSCRIPTION_ASK_MAX_OPEN ask-now rows waiting
+    for the backup across the archive.
     """
     if not media or not is_transcribable(media.get("type"), media.get("mime_type")):
         raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
     if not media.get("downloaded"):
         raise HTTPException(status_code=409, detail="Not downloaded yet")
-    row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
+    wait = _transcript_ask_wait(client)
+    if wait:
+        minutes = math.ceil(wait / 60)
+        unit = "minute" if minutes == 1 else "minutes"
+        raise _too_many_asks(f"Too many transcript requests. Try again in {minutes} {unit}.", wait)
+    cap = getattr(config, "transcription_ask_max_open", 0)
+    if user.role == "master" or not isinstance(cap, int) or cap <= 0:
+        row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
+    else:
+        async with _transcript_ask_lock:
+            if await db.count_waiting_transcript_asks() >= cap:
+                raise _too_many_asks(
+                    "Many transcripts are already waiting. Try again in a few minutes.",
+                    _TRANSCRIPT_ASK_FULL_RETRY_SECONDS,
+                )
+            row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
     if row is None:
         # Only when a racing insert won and its row vanished before the re-read.
         raise HTTPException(status_code=503, detail="Try again")
@@ -3558,13 +3635,19 @@ def _raise_for_transcript_error(e: Exception, action: str) -> None:
 
 
 @app.post("/api/media/{media_id}/transcripts")
-async def ask_media_transcript(media_id: str, user: UserContext = Depends(require_auth)):
+async def ask_media_transcript(
+    media_id: str,
+    request: Request,
+    user: UserContext = Depends(require_auth),
+    auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
+):
     """Ask for a transcript now: insert-only, same scoping as the GET beside it.
 
     Inserts a ``queued`` row with ``job_id`` NULL unless the newest row is
     already open, in which case that row comes back and nothing is written.
     The next drain in the backup sends it first. The viewer makes no request
-    to the transcription server. An id the caller may not see is a 404.
+    to the transcription server. An id the caller may not see is a 404, and
+    a press past the ask limits is a 429 (``_ask_transcript``).
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3581,7 +3664,8 @@ async def ask_media_transcript(media_id: str, user: UserContext = Depends(requir
                 break
         if account_id is None:
             raise HTTPException(status_code=404, detail="Media not found")
-        row = await _ask_transcript(await db.get_media_by_id(media_id, account_id=account_id), account_id)
+        media = await db.get_media_by_id(media_id, account_id=account_id)
+        row = await _ask_transcript(media, account_id, user, _transcript_ask_client(request, user, auth_cookie))
     except HTTPException:
         raise
     except Exception as e:
@@ -3610,7 +3694,11 @@ async def get_chat_media_transcripts(
 
 @app.post("/api/chats/{chat_ref}/media/{media_key}/transcripts")
 async def ask_chat_media_transcript(
-    media_key: str, chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)
+    media_key: str,
+    request: Request,
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+    auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
 ):
     """The bubble's ask-now, the same insert-only rule as ``POST /api/media/{media_id}/transcripts``."""
     if user.no_download:
@@ -3619,7 +3707,7 @@ async def ask_chat_media_transcript(
         raise HTTPException(status_code=409, detail="Transcription is off")
     media = await _entitled_media_row(chat, media_key)
     try:
-        row = await _ask_transcript(media, chat.account_id)
+        row = await _ask_transcript(media, chat.account_id, user, _transcript_ask_client(request, user, auth_cookie))
     except HTTPException:
         raise
     except Exception as e:

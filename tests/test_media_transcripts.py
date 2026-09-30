@@ -61,6 +61,23 @@ async def _age(adapter, transcript_id: int, minutes: int) -> None:
         await session.commit()
 
 
+class TestWaitingAsks:
+    async def test_counts_only_asks_the_backup_has_not_picked_up_in_every_account(self, real_adapter):
+        for n in range(1, 6):
+            await _media(real_adapter, f"m_{n}_voice")
+        await _media(real_adapter, "m_6_voice", account_id=2)
+        # Viewer asks carry no preset: two wait, in two accounts.
+        await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        await real_adapter.enqueue_media_transcript("m_6_voice", account_id=2, force=True)
+        # A drain row carries its preset; a submitted ask its job; a failed ask is closed.
+        await real_adapter.enqueue_media_transcript("m_2_voice", account_id=1, preset="auto")
+        submitted = await real_adapter.enqueue_media_transcript("m_3_voice", account_id=1, force=True)
+        await real_adapter.fill_media_transcript(submitted["id"], status="running", job_id="job-test-1")
+        failed = await real_adapter.enqueue_media_transcript("m_4_voice", account_id=1, force=True)
+        await real_adapter.fill_media_transcript(failed["id"], status="failed", error="submit_failed")
+        assert await real_adapter.count_waiting_transcript_asks() == 2
+
+
 class TestEnqueue:
     async def test_first_enqueue_inserts_a_queued_row(self, real_adapter):
         await _media(real_adapter, "m_1_voice")

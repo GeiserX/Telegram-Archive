@@ -28,7 +28,7 @@ The viewer builds the same settings object as the backup. A shared check that fa
 
 | Outcome | Settings |
 |---|---|
-| Startup stops, and the error names the variable | Most booleans, integers and decimals<br>`SKIP_TOPIC_IDS`, the proxy settings, the `TG_ACCOUNT_<N>` credentials and `TG_ACCOUNT_<N>_CHAT_TYPES`<br>`DELETION_MODE` and `MASS_OPERATION_*`, in the viewer too and even with the listener off<br>`TRANSCRIPTION_MAX_SECONDS`, `TRANSCRIPTION_MAX_UPLOAD_MB` and `TRANSCRIPTION_BACKFILL_PER_RUN`, while transcription is on |
+| Startup stops, and the error names the variable | Most booleans, integers and decimals<br>`SKIP_TOPIC_IDS`, the proxy settings, the `TG_ACCOUNT_<N>` credentials and `TG_ACCOUNT_<N>_CHAT_TYPES`<br>`DELETION_MODE` and `MASS_OPERATION_*`, in the viewer too and even with the listener off<br>`TRANSCRIPTION_MAX_SECONDS`, `TRANSCRIPTION_MAX_UPLOAD_MB`, `TRANSCRIPTION_BACKFILL_PER_RUN`, `TRANSCRIPTION_ASK_RATE_LIMIT` and `TRANSCRIPTION_ASK_MAX_OPEN`, while transcription is on |
 | Startup stops, and the error shows the bad value but not the variable | `CHAT_TYPES`, `DOWNLOAD_MEDIA_TYPES`, `DOWNLOAD_DOCUMENT_MIME_TYPES`. |
 | Startup stops with a generic error | A non-integer entry in any chat or folder id list, including the `TG_ACCOUNT_<N>_*` id overrides and `TRANSCRIPTION_PRIORITY_CHAT_IDS`. |
 | The viewer crashes as it starts | `AUTH_SESSION_DAYS`, `MAX_WS_CONNECTIONS`, `MAX_WS_SUBSCRIPTIONS_PER_CONNECTION`. |
@@ -249,6 +249,8 @@ The backup checks the transcription settings only while transcription is on. [Wh
 | <span id="transcription_webhook_secret"></span>`TRANSCRIPTION_WEBHOOK_SECRET` | empty | viewer | The `whsec_` secret the viewer uses to check akou's callbacks. The callback route exists only when this is valid and transcription is on in the viewer. A value without the `whsec_` prefix is ignored with a warning. The stock compose has it commented out for the viewer. |
 | <span id="transcription_backfill_per_run"></span>`TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | backup | Most files sent per backup run per account, button presses included. Floored at 1. When akou runs transcriptions as queued jobs, jobs still open count against it. |
 | <span id="transcription_priority_chat_ids"></span>`TRANSCRIPTION_PRIORITY_CHAT_IDS` | empty | backup | Chat ids whose media is sent first, in list order, in every account. Repeats are dropped. |
+| <span id="transcription_ask_rate_limit"></span>`TRANSCRIPTION_ASK_RATE_LIMIT` | `30` | viewer | Transcript button presses one client may make in 10 minutes. After that the viewer answers 429 with `Retry-After` and the page says when to try again. A client is its login session, the proxy user name, or, with `ALLOW_ANONYMOUS_VIEWER=true`, the client IP, read as for the login rate limit (`TRUST_PROXY_HEADERS`). `0` or less means no limit. A non-integer stops startup while transcription is on. |
+| <span id="transcription_ask_max_open"></span>`TRANSCRIPTION_ASK_MAX_OPEN` | `50` | viewer | Pressed files that may wait for the backup at once, across the archive. Past it, a press from anyone but the master gets 429 with `Retry-After` until the next backup run picks some up. The master is never refused by it. `0` or less means no limit. A non-integer stops startup while transcription is on. |
 
 ## Database {#database}
 

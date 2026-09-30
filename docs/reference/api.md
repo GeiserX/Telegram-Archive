@@ -116,7 +116,7 @@ The master can end other people's sessions through the admin routes. See [End se
 
 ### Rate limit
 
-`/api/login` and `/auth/token` share one limit: 15 attempts per client IP in 5 minutes, then 429. The client IP is the socket peer unless `TRUST_PROXY_HEADERS=true`, in which case the viewer reads `X-Forwarded-For` or `X-Real-IP`. No other route is rate limited. [Exposing the viewer safely](../viewer/exposing.md) explains the proxy setup.
+`/api/login` and `/auth/token` share one limit: 15 attempts per client IP in 5 minutes, then 429. The client IP is the socket peer unless `TRUST_PROXY_HEADERS=true`, in which case the viewer reads `X-Forwarded-For` or `X-Real-IP`. The only other rate limit is on asking for a transcript. See [Transcripts](#transcripts). [Exposing the viewer safely](../viewer/exposing.md) explains the proxy setup.
 
 ## Who can call what
 
@@ -322,7 +322,7 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 
 Each transcript has `id`, `status`, `error`, `text`, `language`, `source`, `engine_name`, `engine_version`, `preset`, `models`, `confidence`, `duration_s`, `requested_at`, `completed_at` and `turns`.
 
-The POST routes queue a request, or return the one already open, and make no outbound call themselves. They answer 409 when transcription is off, when the media has no sound, or when the file is not downloaded yet. All transcript routes except status answer 403 for no-download logins. Setup is in [Voice transcription](../configuration/transcription.md).
+The POST routes queue a request, or return the one already open, and make no outbound call themselves. They answer 409 when transcription is off, when the media has no sound, or when the file is not downloaded yet. They answer 429 with a `Retry-After` header when the client has pressed more than `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, or, for anyone but the master, when `TRANSCRIPTION_ASK_MAX_OPEN` pressed files already wait for the backup. The `detail` says when to try again. All transcript routes except status answer 403 for no-download logins. Setup is in [Voice transcription](../configuration/transcription.md).
 
 ## Live updates over WebSocket
 
@@ -499,7 +499,7 @@ Errors come back as `{"detail": "..."}`.
 | 409 | A name clash, or a transcript that cannot be made |
 | 413 | A transcription callback body over 256 KiB |
 | 415 | `/media/open` on a type the viewer does not show inline |
-| 429 | Login rate limit |
+| 429 | Login rate limit, or a transcript ask limit. Comes with `Retry-After` on transcript asks |
 | 500 | Any other failure. The detail is always `Internal server error` |
 | 503 | Database unreachable, or no login mode configured. `POST /auth/token` answers 500 with `Database not available` instead |
 
