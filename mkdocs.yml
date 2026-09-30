@@ -1,5 +1,5 @@
 site_name: Telegram Archive
-site_url: https://geiserx.github.io/Telegram-Archive
+site_url: https://geiserx.github.io/Telegram-Archive/
 site_description: Self-hosted Telegram backup with a web viewer. Messages, media and edits stay on your own disk.
 repo_url: https://github.com/GeiserX/Telegram-Archive
 repo_name: GeiserX/Telegram-Archive
@@ -37,13 +37,28 @@ theme:
   icon:
     repo: fontawesome/brands/github
 
-# A cross-link to a heading that no longer exists is only an info line in
-# MkDocs 1.6, even with --strict. Promoting it to a warning makes the strict
-# build fail on it.
+# MkDocs reports most link problems as `info`, which --strict ignores. Every
+# line here promotes one of them to a warning so the build fails on it:
+#   nav.omitted_files   a Markdown file under docs/ that is in no nav entry and
+#                       not in exclude_docs (a page nobody can reach, published
+#                       at a public URL anyway);
+#   nav.not_found       a nav entry whose file does not exist;
+#   links.not_found     a relative link to a page or file that does not exist;
+#   links.anchors       a link to a heading that does not exist;
+#   links.absolute_links  a link written as /path/ (breaks under the
+#                       /Telegram-Archive/ prefix of the site);
+#   links.unrecognized_links  a relative link that leaves docs/ (../README.md).
+#                       Repo files are linked by absolute GitHub URL instead.
 validation:
-  anchors: warn
-  links:
+  nav:
+    omitted_files: warn
+    not_found: warn
     absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
 
 plugins:
   - search
@@ -107,6 +122,12 @@ extra_css:
 # out of nav (files listed below are exempt). This list is what keeps these
 # files off the site.
 exclude_docs: |
+  # Any name with a capital letter is a repo-facing note, never a page. The
+  # named lines below say why each known note is one; this pattern catches the
+  # next one. design/, research/ and notes/ hold material read on GitHub.
+  [A-Z]*.md
+  research/
+  notes/
   # The changelog stays beside the code. People compare the version they run
   # with the one they are about to pull on GitHub, and its links are written
   # relative to the repository, so --strict would fail on them as a page.
