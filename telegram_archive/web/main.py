@@ -1802,6 +1802,10 @@ def _is_not_modified(request_headers: Headers, response_headers: Headers) -> boo
     return parsedate_to_datetime(response_headers["last-modified"]) <= since
 
 
+class _NotModified(Exception):
+    """Raised inside the send wrapper once the 304 is out, so the file is never read."""
+
+
 class GatedFileResponse(FileResponse):
     """A FileResponse for access-controlled archive files that answers 304.
 
@@ -1811,30 +1815,38 @@ class GatedFileResponse(FileResponse):
     a 304 each one would move the whole file again. The routes build this
     response only after their permission checks passed, so a 304 is only ever
     sent to a request that passed them.
+
+    The file is stat'ed and read by Starlette alone: this class only watches
+    the response start it sends. When the request's validators still match the
+    ETag and Last-Modified in that start, a 304 goes out in its place and the
+    file read is cut short. Touching the path here would put a second
+    filesystem call on a value the routes derive from the request, which the
+    containment checks in the routes already bound.
     """
 
     def __init__(self, path: str | os.PathLike[str], media_type: str | None = None) -> None:
         super().__init__(path, media_type=media_type, headers={"Cache-Control": GATED_MEDIA_CACHE_CONTROL})
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if self.stat_result is None:
-            try:
-                self.stat_result = await asyncio.to_thread(os.stat, self.path)
-            except OSError:
-                # Gone since the route checked it: Starlette's own path raises
-                # the error it always raised.
-                await super().__call__(scope, receive, send)
-                return
-            self.set_stat_headers(self.stat_result)
-        method = scope.get("method", "")
-        if method in ("GET", "HEAD") and _is_not_modified(Headers(scope=scope), self.headers):
-            not_modified = Response(
-                status_code=304,
-                headers={"Cache-Control": self.headers["cache-control"], "ETag": self.headers["etag"]},
-            )
-            await not_modified(scope, receive, send)
+        conditional = scope.get("method", "") in ("GET", "HEAD")
+        request_headers = Headers(scope=scope)
+
+        async def gate(message: Message) -> None:
+            if conditional and message["type"] == "http.response.start" and message["status"] == 200:
+                response_headers = Headers(raw=message["headers"])
+                if _is_not_modified(request_headers, response_headers):
+                    not_modified = Response(
+                        status_code=304,
+                        headers={"Cache-Control": response_headers["cache-control"], "ETag": response_headers["etag"]},
+                    )
+                    await not_modified(scope, receive, send)
+                    raise _NotModified
+            await send(message)
+
+        try:
+            await super().__call__(scope, receive, gate)
+        except _NotModified:
             return
-        await super().__call__(scope, receive, send)
 
 
 def _avatar_file_response(avatar_path: str):
