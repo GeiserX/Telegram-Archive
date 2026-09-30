@@ -252,7 +252,7 @@ curl -s -b jar.txt 'http://localhost:8000/api/tags/%23holiday?scope=all&limit=50
 | `edited` | `old_text`, `new_text` |
 | `transcript` | `text`, `language` |
 
-`chat_ref` narrows the feed to one chat, the account's copy that ref names. A chat the caller cannot see answers 404, the same as an unknown ref. Paging works the same way.
+`chat_ref` narrows the feed to one chat. For a channel or group that several accounts hold, that is every copy the caller may see, and each change is listed once under the copy the feed for every chat lists it under, so a row's `chat.ref` can name another account's copy of the same chat. A private chat narrows to the copy that ref names, since each account's private chat with one person is a different conversation. A chat the caller cannot see answers 404, the same as an unknown ref. Paging works the same way.
 
 Hard deletions never appear, and no-download logins get no transcript rows. The response is sent with `Cache-Control: private, no-store`. To walk the feed, pass `next_before` from each answer as `before` on the next request until it comes back empty. To poll for new changes, pass the time of your last poll as `since`:
 

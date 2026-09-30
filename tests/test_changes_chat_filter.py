@@ -6,11 +6,13 @@ and never widens what a viewer may see: the ref resolves through the same
 resolver as every {chat_ref} route, so a chat outside the viewer's scope
 answers exactly like an unknown one.
 
-A ref names one account's copy of a chat, the copy whose messages, figures and
-deleted and edited lists the viewer shows. The feed narrowed to it lists that
-copy's events. The cross-account deduplication does not run there: it defers
-an event to the lowest account's copy, which is outside the filter, so it
-would hide every event a lower account also captured.
+A ref names one account's copy of a chat. For a channel or a group the feed
+narrows to the chat, every copy the viewer may see: an event exists only in
+the copy whose listener was up, so narrowing to the ref's own copy would drop
+what only another account captured, which the feed of every chat lists. The
+cross-account deduplication still lists each event once. A private chat
+narrows to the ref's own account, because its id is the other party's user id
+and names a different conversation in each account.
 
 The adapter and route halves run on ``real_adapter``, so the SQL is compiled
 and executed by SQLite and PostgreSQL. The viewer half runs the real setup
@@ -32,6 +34,7 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_changes_ch
 from httpx import ASGITransport, AsyncClient
 from test_account_fold_followups import (
     BASE,
+    COLLIDING_PRIVATE,
     OUTSIDER,
     SHARED_CHANNEL,
     add_version,
@@ -115,11 +118,10 @@ class TestAdapterChatFilter:
         ]
 
     async def test_a_higher_account_s_copy_lists_events_a_lower_account_also_captured(self, real_adapter):
-        """The regression: the deduplication would defer to a copy outside the filter.
+        """Both accounts hold the channel and both captured the deletion and the edit.
 
-        Both accounts hold the channel and both captured the deletion and the
-        edit. Opened through account 2's copy, the feed must list them, not
-        hide them behind account 1's rows.
+        Through either account's ref the feed lists each event exactly once:
+        neither hidden behind a row outside the filter nor listed per copy.
         """
         await seed_shared_chats(real_adapter)
         for account_id in (1, 2):
@@ -140,6 +142,56 @@ class TestAdapterChatFilter:
         assert sorted((c["kind"], c["message_id"]) for c in copy_1) == [("deleted", 11), ("edited", 11)]
         # The feed of every chat still lists each event once.
         assert len(await real_adapter.get_recent_changes(scope=UNRESTRICTED, limit=50)) == 2
+
+    async def test_a_shared_chat_lists_what_only_another_account_captured(self, real_adapter):
+        """The regression: the chat list shows account 1's copy of a channel both hold.
+
+        Only account 2's listener saw the deletion and the transcript. The feed
+        for every chat lists them under the channel, so the feed narrowed
+        through account 1's ref must list them too, each once.
+        """
+        await _voice(real_adapter, 12, "fixture words", chat_id=SHARED_CHANNEL, account_id=2, chat_type="channel")
+        await seed_shared_chats(real_adapter)
+        await mark_deleted(real_adapter, account_id=2, chat_id=SHARED_CHANNEL, message_id=11, at=BASE)
+        ref_2 = await chat_ref(real_adapter, SHARED_CHANNEL, account_id=2)
+
+        everything = await real_adapter.get_recent_changes(scope=UNRESTRICTED, limit=50)
+        for account_id in (1, 2):
+            narrowed = await real_adapter.get_recent_changes(
+                scope=UNRESTRICTED, limit=50, chat_id=SHARED_CHANNEL, account_id=account_id
+            )
+            assert sorted(events(narrowed)) == [("deleted", "shared channel", 11), ("transcript", "shared channel", 12)]
+            # Each row leads to the copy that holds it, as in the feed of every chat.
+            assert {c["chat"]["ref"] for c in narrowed} == {ref_2}
+        assert sorted(events(everything)) == [("deleted", "shared channel", 11), ("transcript", "shared channel", 12)]
+
+    async def test_a_private_chat_narrows_to_the_ref_s_own_conversation(self, real_adapter):
+        """Two accounts' private chats share the other party's id and are two conversations.
+
+        Account 1's deletion, edit and transcript must not leak into account
+        2's conversation, and account 2's deletion not into account 1's.
+        """
+        await _voice(real_adapter, 30, "fixture words", chat_id=COLLIDING_PRIVATE, account_id=1, chat_type="private")
+        await seed_shared_chats(real_adapter)
+        await mark_deleted(real_adapter, account_id=1, chat_id=COLLIDING_PRIVATE, message_id=22, at=BASE)
+        await add_version(real_adapter, account_id=1, chat_id=COLLIDING_PRIVATE, message_id=22, old_text="was", at=BASE)
+        await mark_deleted(
+            real_adapter, account_id=2, chat_id=COLLIDING_PRIVATE, message_id=22, at=BASE + timedelta(seconds=1)
+        )
+
+        copy_1 = await real_adapter.get_recent_changes(
+            scope=UNRESTRICTED, limit=50, chat_id=COLLIDING_PRIVATE, account_id=1
+        )
+        copy_2 = await real_adapter.get_recent_changes(
+            scope=UNRESTRICTED, limit=50, chat_id=COLLIDING_PRIVATE, account_id=2
+        )
+
+        assert sorted((c["kind"], c["message_id"]) for c in copy_1) == [
+            ("deleted", 22),
+            ("edited", 22),
+            ("transcript", 30),
+        ]
+        assert [(c["kind"], c["message_id"]) for c in copy_2] == [("deleted", 22)]
 
     async def test_the_filter_never_widens_the_scope(self, real_adapter):
         await seed_shared_chats(real_adapter)
@@ -262,6 +314,61 @@ class TestRouteChatFilter:
             assert (resp.status_code, resp.json()) == (unknown.status_code, unknown.json())
         assert allowed.status_code == 200, allowed.text
         assert [(c["kind"], c["message_id"]) for c in allowed.json()["changes"]] == [("deleted", 11)]
+
+    async def test_a_shared_chat_s_feed_is_the_same_through_either_account_s_ref(self, app_on):
+        """The chat list shows one copy of a channel both accounts hold.
+
+        Account 1 alone captured a deletion and account 2 alone an edit. Through
+        either ref the feed lists both, each under the copy that holds it.
+        """
+        await seed_shared_chats(app_on)
+        await mark_deleted(app_on, account_id=1, chat_id=SHARED_CHANNEL, message_id=11, at=BASE)
+        await add_version(
+            app_on, account_id=2, chat_id=SHARED_CHANNEL, message_id=11, old_text="was", at=BASE + timedelta(1)
+        )
+        ref_1 = await chat_ref(app_on, SHARED_CHANNEL, account_id=1)
+        ref_2 = await chat_ref(app_on, SHARED_CHANNEL, account_id=2)
+        as_principal(role="master")
+
+        async with client() as http:
+            by_ref_1 = await http.get("/api/changes", params={"chat_ref": ref_1})
+            by_ref_2 = await http.get("/api/changes", params={"chat_ref": ref_2})
+
+        for resp in (by_ref_1, by_ref_2):
+            assert resp.status_code == 200, resp.text
+            assert [(c["kind"], c["chat"]["ref"]) for c in resp.json()["changes"]] == [
+                ("edited", ref_2),
+                ("deleted", ref_1),
+            ]
+
+    async def test_a_private_chat_s_ref_passes_its_account_through(self, app_on):
+        """Both accounts deleted message 22 in their own conversation with one person.
+
+        Each ref must list its own account's deletion and not the other's,
+        which only the ref's account tells apart.
+        """
+        await seed_shared_chats(app_on)
+        for account_id in (1, 2):
+            await mark_deleted(
+                app_on,
+                account_id=account_id,
+                chat_id=COLLIDING_PRIVATE,
+                message_id=22,
+                at=BASE + timedelta(seconds=account_id),
+            )
+        refs = {account_id: await chat_ref(app_on, COLLIDING_PRIVATE, account_id=account_id) for account_id in (1, 2)}
+        as_principal(role="master")
+
+        async with client() as http:
+            answers = {
+                account_id: await http.get("/api/changes", params={"chat_ref": ref}) for account_id, ref in refs.items()
+            }
+
+        for account_id, resp in answers.items():
+            assert resp.status_code == 200, resp.text
+            assert [(c["kind"], c["message_id"], c["chat"]["ref"]) for c in resp.json()["changes"]] == [
+                ("deleted", 22, refs[account_id])
+            ]
 
     async def test_a_no_download_login_still_gets_no_transcripts(self, app_on):
         await _voice(app_on, 1, "fixture words")
@@ -389,6 +496,9 @@ class TestViewerTemplate(unittest.TestCase):
         self.assertLess(menu.index("openChangesFeedForChat('menu')"), menu.index("exportChat()"))
 
     def test_the_info_panel_row_opens_the_feed_and_the_counts_keep_their_modes(self) -> None:
+        # A deliberate choice, written down in the viewer docs: the counts open
+        # the chat's own Deleted only and Edited only modes, which show each
+        # message in the chat around it; the feed has its own row.
         start = HTML.index('<h4 id="info-archive-title"')
         section = HTML[start : HTML.index("</section>", start)]
         self.assertIn("@click=\"openChangesFeedForChat('info')\"", section)
