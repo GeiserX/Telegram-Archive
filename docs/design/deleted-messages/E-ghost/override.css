@@ -1,0 +1,63 @@
+/* E. Ghost: the bubble loses its body. A dashed outline in the side's deleted
+   colour, a fill that lets the wallpaper through, no shadow and no tail, and
+   text a step quieter than a live message. The meta label stays.
+
+   A dashed line cannot follow the tail's curve (a border draws a box, and the
+   tail is a masked shape), so the ghost has no tail: its tail corner rounds
+   like the others.
+
+   How see-through it can be is set by the time, the faintest text in the
+   bubble: on Telegram Day the fill keeps 86%, the most wallpaper that lets
+   through with the time still at 4.5:1 over the darkest wallpaper pixel.
+   Night has no wallpaper, only the pane, so its fill can drop to 45%. */
+.message-bubble.is-deleted {
+    /* !important: the template sets the fill inline (getSenderStyle). */
+    background-color: rgb(var(--tg-bubble-fill) / var(--dv-ghost-fill)) !important;
+    background-image: none;
+    box-shadow: none;
+    border: 2px dashed rgb(var(--tg-deleted-fg));
+    /* The border takes 2px of the padding, so the text does not move. */
+    padding: calc(var(--tg-bubble-pad-y) - 2px) calc(var(--tg-bubble-pad-x) - 2px) calc(var(--tg-bubble-pad-y) - 3px);
+}
+/* (0,4,0): above the run rule that squares the tail corner. */
+.message-row > .message-bubble.is-deleted:is(.bubble-in, .bubble-out) {
+    --r-bl: var(--tg-radius);
+    --r-br: var(--tg-radius);
+}
+.message-row.run-end > .message-bubble.is-deleted::after {
+    display: none;
+}
+/* The text a step quieter: a dark grey on Day, a light grey on Night. Any
+   quieter and it stops being the easiest thing to read in the bubble. */
+.message-bubble.is-deleted .message-text {
+    color: rgb(var(--dv-ghost-text));
+}
+.message-bubble.is-deleted .media-block.is-edge {
+    margin-inline: calc(-1 * var(--tg-bubble-pad-x) + 2px);
+    opacity: 0.8;
+}
+.message-bubble.is-deleted .media-block.is-edge:first-child {
+    margin-top: calc(-1 * var(--tg-bubble-pad-y) + 2px);
+}
+:root,
+:root[data-theme="telegram"] {
+    --dv-ghost-fill: 0.86;
+}
+:root[data-theme="night"] {
+    --dv-ghost-fill: 0.45;
+}
+.message-bubble.bubble-in {
+    --dv-ghost-text: var(--dv-ghost-text-in);
+}
+.message-bubble.bubble-out {
+    --dv-ghost-text: var(--dv-ghost-text-out);
+}
+:root,
+:root[data-theme="telegram"] {
+    --dv-ghost-text-in: 70 70 70;
+    --dv-ghost-text-out: 70 76 64;
+}
+:root[data-theme="night"] {
+    --dv-ghost-text-in: 196 200 205;
+    --dv-ghost-text-out: 196 206 216;
+}
