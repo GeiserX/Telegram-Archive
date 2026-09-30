@@ -145,8 +145,11 @@ async def test_a_writing_route_refuses_an_earlier_media(main_mod, real_adapter, 
     chat = main_mod.ChatContext(account_id=1, chat_id=CHAT_ID, ref=CHAT_REF, type="group")
     user = main_mod.UserContext(username="viewer", role="master")
 
+    # The route refuses the earlier media before it reads the request, so a bare one is enough.
+    request = main_mod.Request({"type": "http", "method": "POST", "headers": [], "client": ("127.0.0.1", 1)})
+
     with pytest.raises(main_mod.HTTPException) as exc:
-        await main_mod.ask_chat_media_transcript(f"{MESSAGE_ID}_v1", chat=chat, user=user)
+        await main_mod.ask_chat_media_transcript(f"{MESSAGE_ID}_v1", request, chat=chat, user=user)
     assert exc.value.status_code == 404
     async with real_adapter.db_manager.async_session_factory() as session:
         assert (await session.execute(select(MediaTranscript))).scalars().all() == []
