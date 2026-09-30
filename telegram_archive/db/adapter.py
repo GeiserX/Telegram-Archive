@@ -5098,6 +5098,9 @@ class DatabaseAdapter:
             List of message dictionaries with user and media info. A row that is a
             reply also carries ``reply_to_sender_name`` and ``reply_to_media_type``
             (both nullable) so the viewer can render "Reply to <name>" (#268).
+            Every row carries ``reactions`` (live, per emoji) and
+            ``removed_reactions``: the emojis taken back, each with the count it
+            had and ``removed_at``, when the archive noticed, newest first.
         """
         async with self.db_manager.async_session_factory() as session:
             # Build query with joins - v6.0.0: join on composite key
@@ -5305,7 +5308,11 @@ class DatabaseAdapter:
             # Batch reactions: one query for the whole page instead of one
             # get_reactions() call per message. Ties within the same emoji are
             # broken by Reaction.id to match get_reactions' de-facto row order.
+            # The same read returns the reactions taken back (removed_at set,
+            # #219): they stay out of the live count and come back beside it as
+            # removed_reactions, so the viewer can show what the archive kept.
             reactions_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+            removed_by_message: dict[int, dict[str, dict[str, Any]]] = {mid: {} for mid in page_message_ids}
             if page_message_ids:
                 reactions_stmt = (
                     select(Reaction)
@@ -5313,9 +5320,6 @@ class DatabaseAdapter:
                         and_(
                             Reaction.chat_id == chat_id,
                             Reaction.message_id.in_(page_message_ids),
-                            # Tombstoned (retain-on-removal) reactions are archived
-                            # history, not part of the live displayed count (#219).
-                            Reaction.removed_at.is_(None),
                         )
                     )
                     .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
@@ -5324,6 +5328,20 @@ class DatabaseAdapter:
                     reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
                 reactions_result = await session.execute(reactions_stmt)
                 for r in reactions_result.scalars():
+                    if isinstance(r.removed_at, datetime):
+                        # One entry per emoji: the count it had when it went, and
+                        # the latest time the archive noticed it gone.
+                        removed = removed_by_message[r.message_id].get(r.emoji)
+                        if removed is None:
+                            removed_by_message[r.message_id][r.emoji] = {
+                                "emoji": r.emoji,
+                                "count": r.count or 1,
+                                "removed_at": r.removed_at,
+                            }
+                        else:
+                            removed["count"] += r.count or 1
+                            removed["removed_at"] = max(removed["removed_at"], r.removed_at)
+                        continue
                     reactions_by_message[r.message_id].append(
                         {"emoji": r.emoji, "user_id": r.user_id, "count": r.count}
                     )
@@ -5340,6 +5358,17 @@ class DatabaseAdapter:
                     if reaction.get("user_id"):
                         reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
                 msg["reactions"] = list(reactions_by_emoji.values())
+                # Newest removal first. An emoji that is live again is not listed:
+                # it has one row, and reconcile_reactions revived it.
+                msg["removed_reactions"] = sorted(
+                    (
+                        removed
+                        for emoji, removed in removed_by_message.get(msg["id"], {}).items()
+                        if emoji not in reactions_by_emoji
+                    ),
+                    key=lambda removed: (removed["removed_at"], removed["emoji"]),
+                    reverse=True,
+                )
 
             await self.attach_sender_accounts(messages)
             return messages

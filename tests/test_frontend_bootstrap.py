@@ -906,11 +906,14 @@ def test_reaction_ws_case_patches_message_reactions():
     reaction_start = ws_body.index("case 'reaction':")
     reaction_body = ws_body[reaction_start : ws_body.index("case 'delete':", reaction_start)]
     # Same chat-scope guard as the 'edit' case (ref-addressed frames since v8.0),
-    # wholesale-replace the reactions array.
+    # then the frame's live set replaces the reactions array; an emoji that left
+    # it moves to the reactions taken back (tests/test_removed_reactions_frontend.py).
     assert "selectedChat.value?.ref !== data.chat_ref" in reaction_body
-    assert "reactionMsg.reactions = data.reactions" in reaction_body
+    assert "applyLiveReactions(reactionMsg, data.reactions)" in reaction_body
+    apply_start = html.index("const applyLiveReactions = (msg, reactions) =>")
+    assert "msg.reactions = live" in html[apply_start : html.index("const formatReactionEmoji", apply_start)]
     # The reactions block renders the aggregate shape the server sends.
-    assert 'v-for="reaction in msg.reactions"' in html
+    assert 'v-for="reaction in (msg.reactions || [])"' in html
 
 
 def test_detached_window_loads_newer_pages_with_independent_state():

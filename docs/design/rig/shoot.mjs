@@ -562,6 +562,22 @@ async function openEdited(page) {
         .evaluate((el) => { el.dataset.mockupAnchor = '1' })
 }
 
+// The demo's photo with live reactions and one taken back, its list opened
+// with the chip after the live ones. The row is anchored for editedFrame.
+const REMOVED_TEXT = 'Found this view on the way back'
+
+async function openRemovedReactions(page) {
+    await open(page)
+    await openGroup(page)
+    await centerOn(page, REMOVED_TEXT)
+    await frameTopEdge(page)
+    const row = page.locator('.message-row').filter({ hasText: REMOVED_TEXT }).last()
+    await row.evaluate((el) => { el.dataset.mockupAnchor = '1' })
+    await row.locator('.reaction-removed-toggle').click()
+    await row.locator('.reaction-removed-list').waitFor({ state: 'visible', timeout: 10000 })
+    await page.evaluate(() => document.activeElement?.blur())
+}
+
 // The message column around the anchored row: from 16px left of the avatars
 // to the pane's right edge, where outgoing bubbles end, and at least 180px
 // above and below the row. It grows to take in anything a mockup marks with
@@ -696,6 +712,10 @@ const desktopViews = {
         return peekFrame
     },
     '33-edited-menu': (page) => openEditedMenu(page),
+    '34-removed-reactions': async (page) => {
+        await openRemovedReactions(page)
+        return editedFrame
+    },
 }
 
 const mobileViews = {
@@ -721,6 +741,7 @@ const mobileViews = {
     '20-media-missing-mobile': (page) => openMediaMissing(page),
     '25-avatar-lightbox-mobile': (page) => openAvatarLightbox(page),
     '31-edited-mobile': (page) => openEdited(page),
+    '34-removed-reactions-mobile': (page) => openRemovedReactions(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the
