@@ -418,8 +418,19 @@ async function openDeleted(page) {
     await openGroup(page)
     const pill = page.locator('.deleted-pill').filter({ hasText: 'Deleted photo' }).first()
     await pill.waitFor({ state: 'attached', timeout: 15000 })
-    await pill.evaluate((el) => el.scrollIntoView({ block: 'center' }))
-    await pill.click()
+    if (CSS || JS) {
+        // A design mockup styles the open bubble, so every native fold is
+        // opened first; a mockup that folds (F) does it again in its hook.
+        for (let guard = 0; guard < 20; guard++) {
+            const next = page.locator('.deleted-pill').first()
+            if (!(await next.count())) break
+            await next.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+            await next.click()
+        }
+    } else {
+        await pill.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        await pill.click()
+    }
     await page.evaluate(() => document.activeElement?.blur())
     await page.locator('.messages-scroll').first().evaluate((el) => { el.scrollTop = 0 })
     await page.waitForTimeout(1400)
