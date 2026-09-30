@@ -96,6 +96,11 @@ logger = logging.getLogger(__name__)
 # ids sit above it — the same constant migration 022 types placeholders with.
 SUPERGROUP_ID_CEILING = -(10**12)
 
+# The order the viewer's export lists messages in, unique per message within
+# a chat. Its messages query and its versions query both sort by it, so the
+# versions can be walked beside the messages; written once so they cannot drift.
+EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
+
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again. The drain query retries a media
 # whose newest row failed only while it has fewer than this many failed rows.
@@ -2216,9 +2221,10 @@ class DatabaseAdapter:
 
         The conditions apply to the message (its chat, account and date), not
         to the version, so a message in a date window keeps all its versions.
-        Rows come in the order the viewer's export lists messages (date,
-        account, id), each message's versions oldest first, so a reader can
-        walk them beside the messages.
+        Rows come in ``EXPORT_MESSAGE_ORDER``, the order the viewer's export
+        lists messages, each message's versions oldest first (the order they
+        were captured in when two share a date), so a reader can walk them
+        beside the messages.
         """
         return (
             select(
@@ -2238,13 +2244,7 @@ class DatabaseAdapter:
                 ),
             )
             .where(*message_conditions)
-            .order_by(
-                Message.date.asc(),
-                Message.account_id.asc(),
-                Message.id.asc(),
-                MessageVersion.date.asc(),
-                MessageVersion.id.asc(),
-            )
+            .order_by(*EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc())
         )
 
     async def _read_one_snapshot(self, session) -> None:
@@ -2256,7 +2256,12 @@ class DatabaseAdapter:
         the old text beside a version holding that same text. REPEATABLE READ
         gives the whole transaction one snapshot. SQLite's driver begins a
         transaction only before a write, so an explicit deferred BEGIN does
-        the same there. Call it before the session runs anything.
+        the same there. The command's export needs it on SQLite: it reads
+        each statement to the end before the next. The viewer's export keeps
+        its messages statement open while it reads the versions, which
+        already holds SQLite's read snapshot, so there the BEGIN only guards
+        a later change that closes it first. Call it before the session runs
+        anything.
         """
         if self._is_sqlite:
             await session.execute(text("BEGIN"))
@@ -5869,9 +5874,6 @@ class DatabaseAdapter:
             conditions.append(Message.date >= from_date)
         if to_date is not None:
             conditions.append(Message.date < to_date)
-        # Unique per message within the chat, so the versions query below
-        # returns its rows in exactly this order.
-        order = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
         async with self.db_manager.async_session_factory() as session:
             if include_media:
                 stmt = (
@@ -5902,7 +5904,7 @@ class DatabaseAdapter:
                         ),
                     )
                     .where(*conditions)
-                    .order_by(*order)
+                    .order_by(*EXPORT_MESSAGE_ORDER)
                 )
             else:
                 stmt = (
@@ -5923,7 +5925,7 @@ class DatabaseAdapter:
                     )
                     .outerjoin(User, Message.sender_id == User.id)
                     .where(*conditions)
-                    .order_by(*order)
+                    .order_by(*EXPORT_MESSAGE_ORDER)
                 )
 
             await self._read_one_snapshot(session)
@@ -5971,6 +5973,11 @@ class DatabaseAdapter:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 msg["versions"] = list(last_versions)
                 yield msg
+            if pending is not None:
+                # A version left over means the two queries stopped sorting
+                # alike and some messages went out without their versions.
+                # Fail the export rather than write a file that drops them.
+                raise RuntimeError("Export versions fell out of step with the messages")
 
     # ========== Forum Topic Operations (v6.2.0) ==========
 

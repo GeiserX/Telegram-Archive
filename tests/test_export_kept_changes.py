@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,11 +46,14 @@ async def _seed(adapter) -> None:
     await adapter.update_message_text(CHAT, 1, "other account final", FIRST_EDIT, account_id=2)
 
 
-async def _store_backfilled_version(adapter, message_id: int, text: str, when: datetime) -> None:
+async def _store_backfilled_version(
+    adapter, message_id: int, text: str, when: datetime, *, row_id: int | None = None
+) -> None:
     """A version stored after the others whose Telegram date is older, as a late backfill stores it."""
     async with adapter.db_manager.async_session_factory() as session:
         session.add(
             MessageVersion(
+                id=row_id,
                 account_id=1,
                 chat_id=CHAT,
                 message_id=message_id,
@@ -59,6 +63,14 @@ async def _store_backfilled_version(adapter, message_id: int, text: str, when: d
             )
         )
         await session.commit()
+
+
+async def _seed_date_order_against_id_order(adapter) -> None:
+    """Messages 4 and 5, both edited, where 5 was sent before 4: date order and id order disagree."""
+    await _message(adapter, 4, "four, first text", when=SENT + timedelta(hours=2))
+    await adapter.update_message_text(CHAT, 4, "four, final text", SENT + timedelta(hours=3), account_id=1)
+    await _message(adapter, 5, "five, first text", when=SENT + timedelta(hours=1))
+    await adapter.update_message_text(CHAT, 5, "five, final text", SENT + timedelta(hours=3), account_id=1)
 
 
 def _edit_after_first_read(adapter, method: str):
@@ -122,6 +134,38 @@ class TestViewerExport:
             "other account final": ["other account draft"],
         }
 
+    async def test_an_account_whose_message_sorts_after_another_accounts_keeps_its_versions(self, real_adapter):
+        """Account 1's message 5 and account 2's message 1 share a date; the account decides their order."""
+        await _seed(real_adapter)
+        await _message(real_adapter, 5, "account one draft")
+        await real_adapter.update_message_text(CHAT, 5, "account one final", FIRST_EDIT, account_id=1)
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT)]
+        by_text = {m["text"]: [v["text"] for v in m["versions"]] for m in exported}
+        assert by_text["account one final"] == ["account one draft"]
+        assert by_text["other account final"] == ["other account draft"]
+        assert by_text["final text"] == ["first draft", "second draft"]
+
+    async def test_versions_stay_on_their_message_when_date_order_and_id_order_disagree(self, real_adapter):
+        """Imported history has old dates on high ids: message 5 is listed before message 4."""
+        await _seed_date_order_against_id_order(real_adapter)
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)]
+        assert [(m["id"], [v["text"] for v in m["versions"]]) for m in exported] == [
+            (5, ["five, first text"]),
+            (4, ["four, first text"]),
+        ]
+
+    async def test_versions_out_of_step_with_the_messages_fail_the_export(self, real_adapter):
+        """Should the two queries ever sort apart, the export fails instead of dropping versions."""
+        await _seed_date_order_against_id_order(real_adapter)
+        original = real_adapter._versions_of_messages_query
+
+        def by_version_id(conditions):
+            return original(conditions).order_by(None).order_by(MessageVersion.id.asc())
+
+        desynced = patch.object(real_adapter, "_versions_of_messages_query", by_version_id)
+        with desynced, pytest.raises(RuntimeError, match="out of step"):
+            _ = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)]
+
     async def test_a_windowed_export_keeps_versions_dated_after_the_window(self, real_adapter):
         """The window picks messages by their date; a message in it keeps all its versions."""
         await _seed(real_adapter)
@@ -161,6 +205,20 @@ class TestViewerExport:
         exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)}
         assert [v["text"] for v in exported[1]["versions"]] == ["backfilled", "first draft", "second draft"]
 
+    async def test_versions_with_one_date_come_in_the_order_the_archive_stored_them(self, real_adapter):
+        """The row id breaks a tie on the Telegram date, whatever order the database returns the rows in."""
+        await _seed(real_adapter)
+        earlier = SENT - timedelta(minutes=1)
+        await _store_backfilled_version(real_adapter, 1, "stored second", earlier, row_id=900002)
+        await _store_backfilled_version(real_adapter, 1, "stored first", earlier, row_id=900001)
+        exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)}
+        assert [v["text"] for v in exported[1]["versions"]] == [
+            "stored first",
+            "stored second",
+            "first draft",
+            "second draft",
+        ]
+
     async def test_a_message_with_two_media_repeats_with_the_same_versions(self, real_adapter):
         await _seed(real_adapter)
         for media_id in ("fixture-a", "fixture-b"):
@@ -176,7 +234,14 @@ class TestViewerExport:
         ]
 
     async def test_an_edit_during_the_export_cannot_make_a_message_disagree_with_its_versions(self, real_adapter):
-        """The messages and their versions come from one snapshot, whatever a backup writes meanwhile."""
+        """The messages and their versions come from one snapshot, whatever a backup writes meanwhile.
+
+        Only the [postgresql] case proves ``_read_one_snapshot`` here. On
+        SQLite the messages statement stays open while the versions are read,
+        and that open statement already holds one read snapshot, so the
+        [sqlite] case passes without it. The command's test below proves the
+        snapshot on SQLite.
+        """
         await _seed(real_adapter)
         with _edit_after_first_read(real_adapter, "stream"):
             exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)}
