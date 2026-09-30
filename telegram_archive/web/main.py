@@ -21,6 +21,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
@@ -31,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import Config
@@ -1751,8 +1753,76 @@ async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
     return row
 
 
+# Every archive file the viewer serves (originals, thumbnails, avatars) sits
+# behind a permission check, but its URL names the chat and the media, not the
+# session. A browser allowed to reuse its copy for a while could show it again
+# after a logout, or after the viewer lost access to the chat, without asking.
+# "no-cache" lets the browser keep the copy but makes it ask the server before
+# every reuse. That conditional request runs the same checks as the first one:
+# a live, entitled session gets a 304 and shows its copy, anyone else gets the
+# 401, 403 or 404 the route answers. "private" keeps shared caches out.
+GATED_MEDIA_CACHE_CONTROL = "private, no-cache"
+
+
+def _is_not_modified(request_headers: Headers, response_headers: Headers) -> bool:
+    """Whether the request's validators still match the file (RFC 9110, 13.2.2).
+
+    If-None-Match wins when present (weak comparison, ``*`` matches any file);
+    If-Modified-Since is read only without it. An unparseable date is "modified".
+    """
+    if_none_match = request_headers.get("if-none-match")
+    if if_none_match is not None:
+        tags = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+        return "*" in tags or response_headers["etag"] in tags
+    if_modified_since = request_headers.get("if-modified-since")
+    if if_modified_since is None:
+        return False
+    try:
+        since = parsedate_to_datetime(if_modified_since)
+    except TypeError, ValueError:
+        return False
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    return parsedate_to_datetime(response_headers["last-modified"]) <= since
+
+
+class GatedFileResponse(FileResponse):
+    """A FileResponse for access-controlled archive files that answers 304.
+
+    Starlette's FileResponse sends ETag and Last-Modified but always answers
+    200 with the whole file; only StaticFiles evaluates the conditional
+    headers. With ``no-cache`` every reuse is a conditional request, so without
+    a 304 each one would move the whole file again. The routes build this
+    response only after their permission checks passed, so a 304 is only ever
+    sent to a request that passed them.
+    """
+
+    def __init__(self, path: str | os.PathLike[str], media_type: str | None = None) -> None:
+        super().__init__(path, media_type=media_type, headers={"Cache-Control": GATED_MEDIA_CACHE_CONTROL})
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.stat_result is None:
+            try:
+                self.stat_result = await asyncio.to_thread(os.stat, self.path)
+            except OSError:
+                # Gone since the route checked it: Starlette's own path raises
+                # the error it always raised.
+                await super().__call__(scope, receive, send)
+                return
+            self.set_stat_headers(self.stat_result)
+        method = scope.get("method", "")
+        if method in ("GET", "HEAD") and _is_not_modified(Headers(scope=scope), self.headers):
+            not_modified = Response(
+                status_code=304,
+                headers={"Cache-Control": self.headers["cache-control"], "ETag": self.headers["etag"]},
+            )
+            await not_modified(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 def _avatar_file_response(avatar_path: str):
-    """Serve an avatars/ file with the containment and caching avatars always had."""
+    """Serve an avatars/ file with the containment avatars always had."""
     checked = _checked_media_path(avatar_path)
     try:
         resolved = (_media_root / checked).resolve(strict=True)
@@ -1760,9 +1830,7 @@ def _avatar_file_response(avatar_path: str):
         raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root) or not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely; keep
-    # the long private TTL so avatar URLs are not refetched on every page.
-    return FileResponse(resolved, headers={"Cache-Control": "private, max-age=86400"})
+    return GatedFileResponse(resolved)
 
 
 # Sender resolution for /media/avatar/{chat_ref}/{message_id}: one indexed
@@ -1821,9 +1889,7 @@ async def serve_thumbnail(
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
     thumb_path, _resolved_folder = result
-    # Access-controlled bytes: private, so a shared proxy cache can never hand
-    # one viewer's thumbnail to another.
-    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+    return GatedFileResponse(thumb_path, media_type="image/webp")
 
 
 @app.get("/media/avatar/{chat_ref}/{message_id}")
@@ -1959,15 +2025,15 @@ async def serve_media(
     # string — every header-dangerous byte (CR, LF, ", ;, space) is escaped by that
     # quote(), so only unreserved characters survive verbatim. This mirrors
     # Starlette's own FileResponse header construction; it is written out here
-    # rather than passed as filename= so the FileResponse call keeps the plain
-    # FileResponse(resolved) shape. Passing a user-derived filename= makes CodeQL
+    # rather than passed as filename= so the response call keeps the plain
+    # GatedFileResponse(resolved) shape. Passing a user-derived filename= makes CodeQL
     # model the call as a filesystem sink and raise py/path-injection on
     # `resolved`, which is a false positive: containment is already enforced above
     # (reject ../absolute, resolve(strict=True), is_relative_to(_media_root)).
     # Default (no download param) stays inline for the types the viewer renders
     # inline; everything else is handed over as a download (see _inline_media_type).
     inline_type = _inline_media_type(resolved.name)
-    response = FileResponse(resolved, media_type=inline_type or "application/octet-stream")
+    response = GatedFileResponse(resolved, media_type=inline_type or "application/octet-stream")
     if download or inline_type is None:
         download_name = media_display_filename(row.get("file_name") or resolved.name)
         quoted = quote(download_name)
@@ -1976,9 +2042,6 @@ async def serve_media(
             if quoted != download_name
             else f'attachment; filename="{download_name}"'
         )
-    # Every byte this route serves is access-controlled, so no shared cache may
-    # store it — never a proxy that skips the entitlement.
-    response.headers["Cache-Control"] = "private"
     return response
 
 
@@ -2498,6 +2561,16 @@ async def login(request: Request):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
+# Sent when this browser's session ends, so the copies of archive files it
+# kept are dropped at once rather than waiting to be refused on their next
+# revalidation. "cache" empties the HTTP cache only: the service worker, its
+# push registration, cookies and localStorage stay (those are "storage" and
+# "cookies"), and the service worker keeps nothing in Cache Storage. The only
+# cost is that the static assets download again on the next visit. Browsers
+# apply it over HTTPS only; GATED_MEDIA_CACHE_CONTROL is what holds everywhere.
+LOGOUT_CLEAR_SITE_DATA = '"cache"'
+
+
 @app.post("/api/logout")
 async def logout(
     request: Request,
@@ -2535,6 +2608,7 @@ async def logout(
 
     response = JSONResponse({"success": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
+    response.headers["Clear-Site-Data"] = LOGOUT_CLEAR_SITE_DATA
     return response
 
 
@@ -4944,6 +5018,7 @@ async def end_all_sessions(
     response = JSONResponse({"success": True, "ended": len(ended), "current_session_ended": current_session_ended})
     if current_session_ended:
         response.delete_cookie(AUTH_COOKIE_NAME)
+        response.headers["Clear-Site-Data"] = LOGOUT_CLEAR_SITE_DATA
     return response
 
 

@@ -193,6 +193,8 @@ class TestEndAllSessionsRoute:
         assert response.status_code == 200
         assert response.json() == {"success": True, "ended": 3, "current_session_ended": True}
         assert _clears_cookie(response)
+        # This browser's session ended like a logout, so its cached media goes too.
+        assert response.headers["clear-site-data"] == '"cache"'
         assert await _stored_tokens(adapter) == set()
         assert web_main._sessions == {}
         assert _closed_keys(close_for) == {master, viewer, token}
@@ -224,6 +226,7 @@ class TestEndAllSessionsRoute:
         assert response.status_code == 200
         assert response.json() == {"success": True, "ended": 3, "current_session_ended": False}
         assert not _clears_cookie(response)
+        assert "clear-site-data" not in response.headers
         assert await _stored_tokens(adapter) == {master}
         assert set(web_main._sessions) == {master}
         assert _closed_keys(close_for) == {viewer, token, other_master}

@@ -728,7 +728,20 @@ async def test_media_via_forbidden_ref_is_indistinguishable(viewer_app):
         resp = await control.get(f"/media/{archive.ref_a}/2_photo")
         assert resp.status_code == 200
         assert resp.content == b"ref-jpg"
-        assert resp.headers["cache-control"] == "private"
+        # The browser may keep the bytes but must ask before each reuse; the
+        # entitled session is told its copy is still good.
+        assert resp.headers["cache-control"] == "private, no-cache"
+        etag = resp.headers["etag"]
+        again = await control.get(f"/media/{archive.ref_a}/2_photo", headers={"If-None-Match": etag})
+        assert again.status_code == 304
+        assert again.content == b""
+
+    async with _client() as client:
+        # The same validator from a session without the grant is the uniform 404.
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_b]))
+        resp = await client.get(f"/media/{archive.ref_a}/2_photo", headers={"If-None-Match": etag})
+        assert resp.status_code == 404
+        assert json.loads(resp.text) == UNIFORM_404
 
 
 async def test_media_ids_and_cursors_are_chat_free(viewer_app):

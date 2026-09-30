@@ -12,6 +12,10 @@ Each class pins one defect found by the security audit of telegram_archive/web/m
 - broadcast_to_chat iterated the live connection dict across awaits.
 - Archived .html/.svg documents were served inline as same-origin documents.
 - Access-controlled media carried Cache-Control: public.
+- Originals, thumbnails and avatars could be reused from the browser cache
+  without asking the server, so a logged-out browser, or a viewer that lost
+  the chat, still showed them. Every reuse now revalidates and the server
+  answers 304 only to a request that passes the permission checks again.
 - The global exception handlers logged the request path (a chat id and the
   sender's file name), and exc_info on the 500 branch printed the exception's
   own text — a subprocess error's ffmpeg argv carries that same media path.
@@ -458,7 +462,7 @@ class TestMediaServingHeaders(unittest.IsolatedAsyncioTestCase):
             resp = await client.get(f"/media/avatar/{self.REF}")
             legacy = await client.get("/media/avatars/chats/-1001_7.jpg")
         self.assertEqual(200, resp.status_code)
-        self.assertEqual("private, max-age=86400", resp.headers["cache-control"])
+        self.assertEqual("private, no-cache", resp.headers["cache-control"])
         self.assertEqual(404, legacy.status_code)
 
     async def test_thumbnail_cache_control_is_private(self):
@@ -478,6 +482,175 @@ class TestMediaServingHeaders(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, resp.status_code)
         self.assertIn("private", resp.headers["cache-control"])
         self.assertNotIn("public", resp.headers["cache-control"])
+
+
+@_skip_unless_web
+class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
+    """The browser may keep gated media, but must ask before every reuse.
+
+    The URL names the chat and the media, not the session. With a max-age the
+    browser showed its copy after a logout, or after the viewer lost the chat,
+    without a request. ``no-cache`` makes each reuse a conditional request;
+    it runs the same checks, and only a request that passes them gets the 304.
+    """
+
+    REF = "revalidRefrevalidRef01"
+    OTHER_REF = "otherRefotherRefother1"
+    COOKIE = "fake-session-cookie-revalidate"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        (self.root / "-1001").mkdir()
+        (self.root / "-1001" / "77_photo.jpg").write_bytes(b"\xff\xd8\xff fake photo")
+        (self.root / "avatars" / "chats").mkdir(parents=True)
+        (self.root / "avatars" / "chats" / "-1001_7.jpg").write_bytes(b"\xff\xd8\xff fake avatar")
+        self.thumb = self.root / "thumb.webp"
+        self.thumb.write_bytes(b"RIFF fake thumbnail")
+        self._saved = {
+            name: getattr(web_main, name)
+            for name in ("_media_root", "AUTH_ENABLED", "ALLOW_ANONYMOUS_VIEWER", "db", "_thumb_cache_dir")
+        }
+        self._saved_media_path = web_main.config.media_path
+        web_main._media_root = self.root
+        web_main.config.media_path = str(self.root)
+        web_main._thumb_cache_dir = self.root / "thumbs"
+        web_main.AUTH_ENABLED = True
+        web_main.ALLOW_ANONYMOUS_VIEWER = False
+        web_main.db = _mock_db()
+        web_main.db.get_chat_by_ref = AsyncMock(
+            side_effect=lambda ref, **kwargs: _chat_row(-1001, ref) if ref in (self.REF, self.OTHER_REF) else None
+        )
+        web_main.db.get_media_for_message = AsyncMock(
+            return_value={"id": "-1001_77_photo", "file_path": "-1001/77_photo.jpg", "file_name": "77_photo.jpg"}
+        )
+        web_main.db.get_avatar_photo_id = AsyncMock(return_value=7)
+        self.session = web_main.SessionData(username="fake-viewer", role="viewer", allowed_chat_refs={self.REF})
+        web_main._sessions[self.COOKIE] = self.session
+        web_main._avatar_cache.clear()
+        web_main._avatar_cache_time = None
+        web_main._avatar_dir_index.clear()
+        thumbnail = patch(
+            "telegram_archive.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(self.thumb, "-1001"))
+        )
+        thumbnail.start()
+        self.addCleanup(thumbnail.stop)
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            setattr(web_main, name, value)
+        web_main.config.media_path = self._saved_media_path
+        web_main._sessions.pop(self.COOKIE, None)
+        web_main._avatar_cache.clear()
+        web_main._avatar_cache_time = None
+        web_main._avatar_dir_index.clear()
+        self.tmp.cleanup()
+
+    def _urls(self) -> dict[str, str]:
+        return {
+            "original": f"/media/{self.REF}/77_photo",
+            "thumbnail": f"/media/thumb/200/{self.REF}/77_photo",
+            "avatar": f"/media/avatar/{self.REF}",
+        }
+
+    async def _get(self, url: str, headers: dict | None = None, cookie: bool = True):
+        cookies = {web_main.AUTH_COOKIE_NAME: self.COOKIE} if cookie else None
+        async with AsyncClient(
+            transport=ASGITransport(app=web_main.app), base_url="http://test", cookies=cookies
+        ) as client:
+            return await client.get(url, headers=headers)
+
+    async def test_every_gated_route_asks_before_reuse_and_carries_validators(self):
+        for kind, url in self._urls().items():
+            resp = await self._get(url)
+            self.assertEqual(200, resp.status_code, kind)
+            self.assertEqual("private, no-cache", resp.headers["cache-control"], kind)
+            self.assertNotIn("max-age", resp.headers["cache-control"], kind)
+            self.assertTrue(resp.headers["etag"].startswith('"'), kind)
+            self.assertIn("last-modified", resp.headers, kind)
+
+    async def test_matching_etag_is_answered_304_without_the_bytes(self):
+        for kind, url in self._urls().items():
+            first = await self._get(url)
+            again = await self._get(url, headers={"If-None-Match": first.headers["etag"]})
+            self.assertEqual(304, again.status_code, kind)
+            self.assertEqual(b"", again.content, kind)
+            self.assertEqual(first.headers["etag"], again.headers["etag"], kind)
+            self.assertEqual("private, no-cache", again.headers["cache-control"], kind)
+
+    async def test_weak_star_and_listed_etags_match_too(self):
+        url = self._urls()["original"]
+        etag = (await self._get(url)).headers["etag"]
+        for value in (f"W/{etag}", "*", f'"fake-other-tag", {etag}'):
+            resp = await self._get(url, headers={"If-None-Match": value})
+            self.assertEqual(304, resp.status_code, value)
+
+    async def test_changed_file_or_other_etag_sends_the_bytes(self):
+        url = self._urls()["original"]
+        resp = await self._get(url, headers={"If-None-Match": '"fake-stale-tag"'})
+        self.assertEqual(200, resp.status_code)
+        self.assertEqual(b"\xff\xd8\xff fake photo", resp.content)
+
+    async def test_if_modified_since_is_honoured_when_no_etag_is_sent(self):
+        url = self._urls()["avatar"]
+        last_modified = (await self._get(url)).headers["last-modified"]
+        same = await self._get(url, headers={"If-Modified-Since": last_modified})
+        older = await self._get(url, headers={"If-Modified-Since": "Mon, 01 Jan 2001 00:00:00 GMT"})
+        garbage = await self._get(url, headers={"If-Modified-Since": "not a date"})
+        self.assertEqual(304, same.status_code)
+        self.assertEqual(200, older.status_code)
+        self.assertEqual(200, garbage.status_code)
+
+    async def test_etag_wins_over_if_modified_since(self):
+        url = self._urls()["original"]
+        last_modified = (await self._get(url)).headers["last-modified"]
+        resp = await self._get(url, headers={"If-None-Match": '"fake-stale-tag"', "If-Modified-Since": last_modified})
+        self.assertEqual(200, resp.status_code)
+
+    async def test_logged_out_browser_is_refused_not_given_a_304(self):
+        etags = {kind: (await self._get(url)).headers["etag"] for kind, url in self._urls().items()}
+        async with AsyncClient(
+            transport=ASGITransport(app=web_main.app),
+            base_url="http://test",
+            cookies={web_main.AUTH_COOKIE_NAME: self.COOKIE},
+        ) as client:
+            self.assertEqual(200, (await client.post("/api/logout")).status_code)
+        for kind, url in self._urls().items():
+            resp = await self._get(url, headers={"If-None-Match": etags[kind]})
+            self.assertEqual(401, resp.status_code, kind)
+
+    async def test_viewer_that_lost_the_chat_is_refused_not_given_a_304(self):
+        etags = {kind: (await self._get(url)).headers["etag"] for kind, url in self._urls().items()}
+        self.session.allowed_chat_refs = {self.OTHER_REF}
+        for kind, url in self._urls().items():
+            resp = await self._get(url, headers={"If-None-Match": etags[kind]})
+            self.assertEqual(404, resp.status_code, kind)
+
+    async def test_viewer_whose_downloads_were_turned_off_is_refused_not_given_a_304(self):
+        urls = self._urls()
+        etags = {kind: (await self._get(urls[kind])).headers["etag"] for kind in ("original", "thumbnail")}
+        self.session.no_download = True
+        for kind, etag in etags.items():
+            resp = await self._get(urls[kind], headers={"If-None-Match": etag})
+            self.assertEqual(403, resp.status_code, kind)
+
+    async def test_static_app_assets_keep_their_own_caching(self):
+        """Control: the app's static files are not gated and do not get no-cache."""
+        resp = await self._get("/static/manifest.json", cookie=False)
+        self.assertEqual(200, resp.status_code)
+        self.assertNotIn("no-cache", resp.headers.get("cache-control", ""))
+        again = await self._get("/static/manifest.json", headers={"If-None-Match": resp.headers["etag"]}, cookie=False)
+        self.assertEqual(304, again.status_code)
+
+    async def test_logout_asks_the_browser_to_drop_its_cache(self):
+        async with AsyncClient(
+            transport=ASGITransport(app=web_main.app),
+            base_url="http://test",
+            cookies={web_main.AUTH_COOKIE_NAME: self.COOKIE},
+        ) as client:
+            resp = await client.post("/api/logout")
+        self.assertEqual(200, resp.status_code)
+        self.assertEqual('"cache"', resp.headers["clear-site-data"])
 
 
 # ============================================================================

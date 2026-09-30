@@ -106,7 +106,7 @@ Proxy users also get `"proxy_auth": true`. When no login mode is configured, the
 
 ### Log out
 
-`POST /api/logout` ends the session named by the cookie, closes that session's WebSocket connections, deletes every push subscription of that user and clears the cookie. It always answers `{"success": true}`.
+`POST /api/logout` ends the session named by the cookie, closes that session's WebSocket connections, deletes every push subscription of that user and clears the cookie. It always answers `{"success": true}`, with `Clear-Site-Data: "cache"` so the browser drops the media it kept. That header empties the browser's HTTP cache for the viewer only. The service worker, cookies and local settings stay, and the viewer's static files download again on the next visit. Browsers apply it over HTTPS only.
 
 ```bash
 curl -s -b jar.txt -X POST http://localhost:8000/api/logout
@@ -273,7 +273,9 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 | `POST /media/open/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_CMD` on the file, on the viewer's host |
 | `POST /media/open-path/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_PATH_CMD` on the file, on the viewer's host |
 
-The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment. Media responses carry `Cache-Control: private`. Thumbnails and avatars add `max-age=86400`.
+The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment.
+
+Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`, an `ETag` and a `Last-Modified`. The browser may keep a copy, but it asks the server before each reuse, and the viewer runs the same login and chat checks on that request. A session that still has access gets `304 Not Modified` and no body, so the file is not sent again. A logged-out browser gets 401, a login that lost the chat gets 404, and a login whose downloads were turned off gets 403, never the kept copy. The files under `/static` are not behind a login and keep their own caching.
 
 The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`, and the message's `text`, `is_deleted` and `deleted_at`.
 
@@ -440,7 +442,7 @@ There is no route that lists or ends sessions by id. These calls end sessions:
 | `DELETE /api/admin/viewers/{id}` | The same, and removes the account |
 | `PUT /api/admin/tokens/{id}` changing `is_revoked`, `allowed_chat_refs` or `no_download` | Every session opened with that token, with its sockets and push subscriptions |
 | `DELETE /api/admin/tokens/{id}` | The same, and removes the token |
-| `POST /api/admin/sessions/end-all` | Every session: the master login's, every viewer account's and every share token's, with their sockets and push subscriptions. `keep_current=true`, in the query string or as the JSON body `{"keep_current": true}`, keeps the caller's own session. Answers `{success, ended, current_session_ended}` and clears the cookie when the caller's session ended. |
+| `POST /api/admin/sessions/end-all` | Every session: the master login's, every viewer account's and every share token's, with their sockets and push subscriptions. `keep_current=true`, in the query string or as the JSON body `{"keep_current": true}`, keeps the caller's own session. Answers `{success, ended, current_session_ended}` and clears the cookie and sends `Clear-Site-Data: "cache"` when the caller's session ended. |
 
 Lock a viewer out without deleting the account:
 

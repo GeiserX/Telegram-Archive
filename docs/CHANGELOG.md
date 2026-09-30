@@ -32,6 +32,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
     - **Notifications** have a switch in the main menu instead of banners, and a one-time row at the top of the chat list asks first.
 - **A second viewer drops ended sessions within 60 seconds.** A viewer checks each session it holds in memory against the database again once a minute. A session ended on one viewer, by the end-all action, by editing an account or by revoking a token, stops working on a second viewer on the same database within that minute. It used to keep working there until a restart or until `AUTH_SESSION_DAYS` ran out. A browser there that only holds a live connection is closed by the sweep every 900 seconds. ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
 
+### Security
+- **The browser asks the viewer again before it shows media from its cache.** Originals were sent with `Cache-Control: private`, and thumbnails and avatars with `private, max-age=86400`. Their URLs name the chat and the file, not the session, so after a logout, or after a login lost a chat, the same browser could still show them from its cache for up to a day without asking. Every original, thumbnail and avatar is now sent with `private, no-cache` and a validator, and the viewer answers `304 Not Modified` to a session that still passes the checks, so a reuse costs no bandwidth. Any other request gets 401, 403 or 404. Logout, and ending every session including your own, also send `Clear-Site-Data: "cache"`. See [Media](reference/api.md#media).
+
 ## [8.17.0] - 2026-09-29
 
 Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.
