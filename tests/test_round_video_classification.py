@@ -215,9 +215,17 @@ class TestViewerRendersRoundVideos:
         """Without a failure arm a 404 renders a blank circle, which reads as
         data loss rather than a broken link. The rescan can cause exactly that
         for a tab left open across it."""
-        block = html[html.index("msg.media?.type === 'video_note'") :][:1400]
-        assert 'v-if="msg.mediaLoadFailed"' in block
-        assert "Media not found" in block
+        # The shared placeholder takes a flagged row's place, in the circle's
+        # shape, and says the file is missing from the disk.
+        body = html[html.index("const mediaPlaceholder = (msg) => {") :]
+        body = body[: body.index("\n                }\n")]
+        assert "const missing = !!media.file_path && !!msg.mediaLoadFailed" in body
+        which = html[html.index("const mediaMissingReason = (msg) => {") :]
+        assert "if (media.file_path && msg.mediaLoadFailed) return 'missing'" in which
+        assert "missing: 'missing from the archive disk'" in html
+        assert "if (media.type === 'video_note') {" in body
+        assert "shape: 'round'" in body
+        assert '@error="handleMediaError($event, msg)"' in html[html.index("msg.media?.type === 'video_note'") :][:3000]
 
     def test_the_reply_quote_has_a_human_label(self, html):
         """Without an entry the raw column value 'video_note' is shown to users."""

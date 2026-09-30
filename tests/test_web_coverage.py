@@ -712,14 +712,13 @@ class TestRootEndpoint(_WebTestBase):
                     resp = await client.get("/")
             self.assertEqual(resp.status_code, 200)
             self.assertIn("--viewer-chat-background: url('/static/wall.jpg');", resp.text)
-            # The bubbles go opaque with it, and the tint rides the theme's own background.
-            self.assertIn("--tg-bubble-alpha-own: 1;", resp.text)
-            self.assertIn("--tg-bubble-alpha-other: 1;", resp.text)
-            self.assertIn("--viewer-chat-tint: linear-gradient(rgb(var(--tg-bg) / 0.55)", resp.text)
-            # Bubbles are not the only translucent surface over the pane.
-            self.assertIn("--tg-chip-bg: rgb(var(--tg-sidebar));", resp.text)
-            self.assertIn("--tg-service-bg: rgb(var(--tg-other));", resp.text)
-            self.assertIn("--tg-pane-note-opacity: 1;", resp.text)
+            # The picture replaces the palette's own pattern and gradient, and the
+            # tint rides the palette's neutral canvas.
+            self.assertIn("--tg-wall-pattern: none; --tg-wall-gradient: none;", resp.text)
+            self.assertIn("--viewer-chat-tint: linear-gradient(rgb(var(--tg-n950) / 0.55)", resp.text)
+            # The pills over the pane turn opaque: a translucent pill over a photo is not readable.
+            self.assertIn("--tg-service-bg: rgb(var(--tg-sidebar)); --tg-service-fg: rgb(var(--tg-text));", resp.text)
+            self.assertIn("--tg-float-pill-bg: rgb(var(--tg-sidebar));", resp.text)
             self.assertNotIn("__VIEWER_CHAT_BACKGROUND__", resp.text)
 
     async def test_root_without_a_chat_background_declares_nothing(self):

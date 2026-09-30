@@ -21,7 +21,7 @@ With none of them set, the container is up and healthy, the login page shows, an
 | token | A session opened with a share link | Only the chats of that token |
 | viewer, user name `anonymous` | Every visitor when `ALLOW_ANONYMOUS_VIEWER=true` | Read-only access to every chat in `DISPLAY_CHAT_IDS`. See [Anonymous mode](#anonymous-mode). |
 
-The master login also gets **Admin Settings**, viewer accounts, share tokens, the audit log, the **Archive Status** panel and file paths in the info panel. When `MEDIA_OPEN_CMD` or `MEDIA_OPEN_PATH_CMD` is set, the master login also gets the media **Open** buttons.
+The master login also gets **Admin settings**, with viewer accounts, share tokens, the activity log and sessions, the **Archive status** page of the main menu, and file paths in the info panel. The main menu names each login's role: Owner, Viewer or Shared link. When `MEDIA_OPEN_CMD` or `MEDIA_OPEN_PATH_CMD` is set, the master login also gets the media **Open** buttons.
 
 ## The master login
 
@@ -70,7 +70,7 @@ Sessions opened with the old password stay valid. See the warning under [Session
 
 ### A viewer account
 
-Open **Admin Settings**, **Viewer Accounts**, edit the viewer account and type a new password of at least 8 characters. Saving ends that account's sessions. See [Viewer accounts](#viewer-accounts).
+Open **Admin settings**, **Viewers**, click the pencil beside the viewer account and type a new password of at least 8 characters. Saving ends that account's sessions. See [Viewer accounts](#viewer-accounts).
 
 ### A share token
 
@@ -84,7 +84,7 @@ The password belongs to the reverse proxy or the identity provider in front of i
 
 The master can log out every browser at once, for example after a master password change. This ends the master's sessions, every viewer account's sessions and every share-token session. Accounts and share tokens stay as they are, so people log in again with their current password or link.
 
-Open the gear icon, **Admin Settings**, then the **Sessions** tab. It has two buttons, and each asks you to confirm:
+Open the main menu (the three lines at the top of the sidebar), **Admin settings**, then the **Sessions** tab. It has two rows, and each asks you to confirm:
 
 - **End every session** logs out everyone, you included. The page returns to the login.
 - **End all but this one** keeps the browser you click it in and logs out everything else, your other browsers included.
@@ -108,34 +108,36 @@ When `current_session_ended` is `true`, the answer also clears the cookie. A cal
 
 ## Viewer accounts
 
-The master login manages accounts in the viewer itself. Open the gear icon, **Admin Settings**, then the **Viewer Accounts** tab. The **Create Viewer** form has these fields:
+The master login manages accounts in the viewer itself. Open the main menu, **Admin settings**, then the **Viewers** tab. Each account is a row with its name and a line such as `3 chats · Personal · downloads off · inactive`, a pencil to edit it and a trash to delete it. Deleting asks first. **Add viewer** opens the form in place:
 
 | Field | Meaning |
 |-------|---------|
 | Username | At least 3 characters. It cannot match the master username, in any letter case. |
 | Password | At least 8 characters. When editing, leave it empty to keep the current one. |
-| Allowed Chats | The chats this user may open. |
-| Allowed Accounts | **All accounts**, or only the Telegram accounts you tick. Ticking none means the user sees no chats. |
-| Active | Untick to block the account without deleting it. |
-| No Downloads | Makes this a [no-download login](#no-download-logins). |
+| Allowed chats | The chats this user may open, as a list with a filter field on top and a count of the chats you ticked. |
+| Allowed accounts | **All accounts**, or only the Telegram accounts you tick. Ticking none means the user sees no chats. |
+| Active | Switch it off to block the account without deleting it. |
+| Allow downloads | Switch it off to make this a [no-download login](#no-download-logins). |
+
+![Admin settings with the viewer accounts](../images/screenshots/admin-settings.png)
 
 Saving a change to a viewer account, or deleting it, ends all of its sessions, closes its live connections and deletes its push subscriptions. The user has to log in again. A second viewer on the same database drops those sessions within 60 seconds. See [A second viewer](#a-second-viewer).
 
 !!! warning "No chats ticked means all chats"
-    The form sends an empty **Allowed Chats** box as "all chats". Viewer accounts created through proxy identity start with no chats at all. If you edit one of them and tick nothing, you widen it to every chat. Always tick the chats you mean to grant.
+    The form sends an empty **Allowed chats** list as "all chats", and says so under the list. Viewer accounts created through proxy identity start with no chats at all. If you edit one of them and tick nothing, you widen it to every chat. Always tick the chats you mean to grant.
 
 ## Share links
 
-A share link gives someone access to a fixed set of chats without an account. In **Admin Settings**, open **Share Tokens** and fill in **Create Share Token**:
+A share link gives someone access to a fixed set of chats without an account. In **Admin settings**, open **Share tokens** and click **Add share token**:
 
 | Field | Meaning |
 |-------|---------|
 | Label | Optional. It names the session and the audit entries. |
 | Expiry date and time | Optional. You enter it in your browser's local time and it is stored in UTC. |
-| Allowed Chats | Required. A token must name at least one chat. |
-| No Downloads | Optional. Makes this a [no-download login](#no-download-logins). |
+| Allowed chats | Required. A token must name at least one chat. |
+| Allow downloads | On by default. Switch it off to make this a [no-download login](#no-download-logins). |
 
-Press **Create Token**. The viewer shows a 64-character hex token and a ready link, each with a copy button. They are shown only once. The database keeps only a salted hash. The link has this form:
+Press **Create**. The viewer shows a 64-character hex token and a ready link, each with a copy button. They are shown only once. The database keeps only a salted hash. The link has this form:
 
 ```text
 https://archive.example.com/#token=<token>
@@ -147,7 +149,9 @@ You can also paste the token into the **Share Token** mode of the login page. A 
 
 The session is named `token:<label>`, and it sees only the chats of the token. A token with no label is named `token:token:<id>`, where `<id>` is its number in the token list. Tokens have no account grant; the chat list is the whole scope.
 
-![A viewer session opened through a share link, listing only the one shared chat](../images/screenshots/share-view.png)
+Each token in the list shows a line such as `2 chats · used 5 times · last used yesterday · expires Oct 12`, and "Revoked" or "Expired" when it no longer opens. A revoked token stays in the list, dimmed.
+
+![A share-link session: one chat, placeholders where downloads are off, and the menu naming the session "Shared link"](../images/screenshots/share-view.png)
 
 To end access:
 
@@ -161,11 +165,13 @@ Each token login checks the presented token against every live token in turn, at
 
 ## No-download logins
 
-A viewer account or share token with **No Downloads** ticked can read messages but cannot take files away:
+A viewer account or share token with downloads off can read messages but cannot take files away:
 
 - Media files, thumbnails, chat exports and voice transcripts answer HTTP 403.
-- Files in messages show `Not available for this login`, and audio play buttons are disabled.
+- A photo or a video keeps its place and proportions as a placeholder that says `hidden for this login`, or `hidden for this link` in a session opened through a share link. A voice message keeps its row, with its play button dimmed and "playback off for this login" (or "this link") beside its duration.
+- **Export chat** is not offered, and What changed shows no transcripts.
 - The lightbox has no download button, and search skips hits that match only inside a transcript.
+- The main menu says "downloads off" under the login's name.
 - Profile photos still show.
 
 ## A second viewer
@@ -220,9 +226,9 @@ Three rules apply to every request, in this order:
 
 If you write a chat id in `DISPLAY_CHAT_IDS` without its `-100` prefix and only the prefixed form exists in the archive, the viewer corrects it at start. The viewer drops live updates for chats outside the list.
 
-A grant that is not set means no restriction. A grant set to an empty list denies everything. See [No chats ticked means all chats](#viewer-accounts) for how the **Admin Settings** form saves an empty **Allowed Chats** box. A chat you may not see answers the same 404 `Chat not found` as a chat that does not exist, so a restricted user cannot probe for chats.
+A grant that is not set means no restriction. A grant set to an empty list denies everything. See [No chats ticked means all chats](#viewer-accounts) for how the **Admin settings** form saves an empty **Allowed chats** list. A chat you may not see answers the same 404 `Chat not found` as a chat that does not exist, so a restricted user cannot probe for chats.
 
-A restricted user never learns about accounts outside its grant. The account list and the message sender chips hide them, and the statistics are recomputed from that user's own chats.
+A restricted user never learns about accounts outside its grant. The account list and the account tags on messages hide them, and the statistics are recomputed from that user's own chats.
 
 Numeric chat and sender ids stay visible to every login. See [What logged-in users can see](exposing.md#what-logged-in-users-can-see).
 
@@ -259,6 +265,6 @@ The viewer records these events in the database:
 
 Password login entries carry the username, role, client IP and browser user agent. Share-token entries carry the client IP but no user agent. The viewer does not log ordinary reads of chats and messages.
 
-The master login reads the log in **Admin Settings**, tab **Audit Log**. It shows the 50 newest entries and filters by action. The API route `GET /api/admin/audit` returns up to 500 entries per request and filters by `username` and `action`.
+The master login reads the log in **Admin settings**, tab **Activity**. It shows the 200 newest entries in words, for example "Signed in" or "Sign-in failed", each with the user, the role, the address and the time, and chips pick all of them, sign-ins, failed sign-ins or changes. The API route `GET /api/admin/audit` returns up to 500 entries per request and filters by `username` and `action`.
 
 Behind a reverse proxy, every entry shows the proxy's IP by default. Login and share-token entries can record the real client IP if the viewer trusts forwarded headers. See [Exposing the viewer safely](exposing.md). Logout and admin-change entries always show the proxy's IP.

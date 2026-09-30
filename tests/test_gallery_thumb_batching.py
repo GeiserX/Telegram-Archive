@@ -185,7 +185,7 @@ def test_the_grid_is_wired_to_the_queue() -> None:
     )
     assert '@load="settleThumb(item.id)"' in grid and '@error="failThumb(item.id)"' in grid
     # The v-else branch is the fallback: a play icon for video, a picture icon otherwise.
-    assert "fa-play-circle" in grid and "fa-image" in grid
+    assert 'data-glyph="play"' in grid and 'data-glyph="image"' in grid
     # A deferred image never fires load, so it would hold its slot until the timeout.
     img = grid[grid.index("<img") : grid.index(">", grid.index("<img"))]
     assert 'loading="lazy"' not in img, "the queue is the throttle; native lazy loading would stall it"

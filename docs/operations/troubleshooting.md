@@ -17,7 +17,7 @@ The backup container is healthy while its heartbeat file is younger than `HEARTB
 Only the `schedule` command writes the heartbeat. It writes it every 30 seconds and starts before it connects to Telegram. A long first backup therefore stays healthy. Docker runs the check every 60 seconds, with a 300-second start period and 3 retries.
 
 !!! warning "A healthy container can still fail every backup"
-    The heartbeat proves that the scheduler's event loop runs. It does not prove that Telegram is reachable, that the database works or that a backup succeeded. A container can be healthy while every run fails. To see whether backups succeed, read the logs and the [Archive Status panel](#archive-status-panel).
+    The heartbeat proves that the scheduler's event loop runs. It does not prove that Telegram is reachable, that the database works or that a backup succeeded. A container can be healthy while every run fails. To see whether backups succeed, read the logs and [Archive status](#archive-status).
 
 Two setups read as unhealthy even when nothing is wrong:
 
@@ -36,7 +36,7 @@ curl http://127.0.0.1:8000/api/health
 
 ### Check from a script
 
-`/api/health` only says whether the database answers. For backup state, call `/api/status`, the endpoint behind the Archive Status panel. It needs the master login's session cookie:
+`/api/health` only says whether the database answers. For backup state, call `/api/status`, the endpoint behind the viewer's Archive status page. It needs the master login's session cookie:
 
 ```bash
 curl -fsS -c cookies.txt -H 'Content-Type: application/json' \
@@ -122,9 +122,9 @@ Other pages document the lines their features write:
 
 ## Other signals to watch
 
-### Archive Status panel
+### Archive status
 
-The master login's **Archive Status** panel shows the state of the backup and its parts. Its rows are listed under [Archive status](../viewer/using-the-viewer.md#archive-status).
+The master login's **Archive status**, in the viewer's main menu, shows the state of the backup and its parts, under one line that says whether everything runs. Its sections are listed under [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 A growing `gave up` count means files failed `MEDIA_MAX_DOWNLOAD_ATTEMPTS` times, 5 by default. The backup also logs this warning at the end of each run:
 
@@ -169,7 +169,7 @@ This prints cached figures. They are all zero until the first backup has complet
 | Video thumbnails are missing on a native install | Video thumbnails need `ffmpeg`. Without it, thumbnails are skipped and no error appears. See [Install from PyPI](../getting-started/pip.md#system-tools). | Install `ffmpeg` so it is on the `PATH`. |
 | Times are shown in the wrong zone | The viewer uses `VIEWER_TIMEZONE`, default `Europe/Madrid`. An unknown name falls back to UTC with a warning. See [Using the viewer](../viewer/using-the-viewer.md). | Set `VIEWER_TIMEZONE` to a tz database name, such as `America/New_York`. |
 | Backups run at an unexpected hour | `SCHEDULE` runs in the container's time zone, which is UTC unless you set `TZ`. `VIEWER_TIMEZONE` does not affect it. See [Schedule and backup tuning](../configuration/schedule.md). | Write the cron expression in UTC, or set `TZ` on the backup service, for example `TZ=Europe/Berlin`. |
-| The container is healthy but nothing is backed up | The heartbeat only proves the process is alive. See [Backup container](#backup-container). | Read `docker compose logs telegram-backup` and the [Archive Status panel](#archive-status-panel). |
+| The container is healthy but nothing is backed up | The heartbeat only proves the process is alive. See [Backup container](#backup-container). | Read `docker compose logs telegram-backup` and [Archive status](#archive-status). |
 | Long `FloodWait` pauses, and some chats are only finished on the next run | Telegram rate limits. A wait longer than `MAX_FLOOD_WAIT_SECONDS` (3600) is not waited out, and that chat or file is retried next run. See [Your first backup](../getting-started/first-backup.md#rate-limits-are-normal). | Nothing to fix. Let the runs catch up. |
 | New messages only appear after a backup run | The [real-time listener](../configuration/listener.md) is off. | Set `ENABLE_LISTENER=true`. |
 | Live updates never arrive on SQLite | The backup cannot reach the viewer, or the two containers do not share the push secret. Outside compose, `VIEWER_PORT` defaults to 8080. See [Live updates and notifications](../viewer/live-updates.md#sqlite). | Outside compose, set `VIEWER_HOST` and `VIEWER_PORT=8000`. Mount the same database directory in both containers, or set `INTERNAL_PUSH_SECRET` on both. |
@@ -180,7 +180,7 @@ This prints cached figures. They are all zero until the first backup has complet
 | The login rate limit locks out everyone behind a reverse proxy | Without `TRUST_PROXY_HEADERS=true`, every client shares the proxy's address and one rate limit. See [Sessions](../viewer/access.md#sessions) and [Exposing the viewer safely](../viewer/exposing.md). | Set `TRUST_PROXY_HEADERS=true`, but only if the proxy overwrites `X-Forwarded-For`. |
 | The sidebar message search finds nothing and says it needs the full-text index | The backup has not started once on 8.5 or later, so migration 028 has not built the full-text index. See [SQLite and PostgreSQL](../configuration/database.md). | Start the backup container once and wait for it to migrate. |
 | Search stays without the full-text index after the backup has migrated | The SQLite build has no FTS5. Without the index, the sidebar search answers nothing, and the search inside a chat matches message text only, without transcripts. See [SQLite and PostgreSQL](../configuration/database.md). | Use a SQLite build with FTS5, or PostgreSQL. |
-| `Media not found` in an open tab after `reclassify-round-videos` | The tab holds old media addresses. See [Import and maintenance tasks](maintenance.md#reclassify-round-videos). | Reload the page. |
+| `missing from the archive disk` in an open tab after `reclassify-round-videos` | The tab holds old media addresses. See [Import and maintenance tasks](maintenance.md#reclassify-round-videos). | Reload the page. |
 | An excluded chat still shows in the viewer | Excluded chats keep their archived data by default. See [Choosing chats](../configuration/choosing-chats.md#changing-filters-later). | Set `EXCLUDE_DELETE_EXISTING=true` to delete it on the next run. This cannot be undone. |
 | Telegram logged the account out after a one-off command | A second process used the same session file while `schedule` ran. See [Log in to Telegram](../getting-started/telegram-login.md#one-client-per-session). | Log in again. From then on, stop the backup service before running commands that connect to Telegram. |
 | `duplicate key value violates unique constraint "reactions_pkey"` on PostgreSQL | The reactions id sequence is out of step with the table, often after a restore. See [Duplicate key errors on reactions](../configuration/database.md#duplicate-key-errors-on-reactions). | The backup resets the sequence and retries on its own. If the error persists, run the statement on that page. |

@@ -15,20 +15,24 @@ This page lists what Telegram Archive does not do yet, written as what you will 
 - **More languages.** The interface is available in languages other than English. Today it is English only.
 - **Offline reading.** Chats you already opened stay readable in the installed app without a connection. Today the app needs the viewer to be reachable.
 - **Swipe gestures on phones.** For example, a swipe takes you back to the chat list. Today the [phone layout](../viewer/using-the-viewer.md#on-a-phone) uses a back button.
+- **Withdrawn reactions.** A reaction someone took back stays under the message as a faint dashed chip marked "Removed". Today the archive keeps the removal, and the viewer shows only the reactions that remain.
+- **Archive counts in Statistics.** Statistics also counts the messages deleted in Telegram, edited and transcribed, and each count opens What changed for that kind. Today those counts are per chat, in the chat's info panel.
+- **What changed for one chat.** The deleted and edited counts in a chat's info panel open What changed for that chat only. Today What changed covers every chat you can see, filtered by kind and period.
 
 ## Notifications
 
 - **Mute chosen chats.** You pick chats that send no push notifications. Today a subscription gets pushes for every chat its owner can see.
-- **Clean up blocked browsers.** A browser that has blocked notifications stops getting pushes and its subscription is removed. Today the viewer shows a "Notifications blocked by browser" banner, and removes a subscription only when the push service rejects it or the user logs out. See [Subscription lifecycle](../viewer/live-updates.md#subscription-lifecycle).
+- **Clean up blocked browsers.** A browser that has blocked notifications stops getting pushes and its subscription is removed. Today the Notifications switch in the main menu says the browser blocked them and stays on while a push subscription exists, so you can turn it off. Otherwise a subscription is removed only when the push service rejects it or the user logs out. See [Subscription lifecycle](../viewer/live-updates.md#subscription-lifecycle).
 
 ## Search
 
 - **Search filters.** Narrow message results by date range, sender, media type, or whether a message has a link. Today search takes words only. [Jump to a date](../viewer/using-the-viewer.md#jump-to-a-date), the [shared media](../viewer/using-the-viewer.md#shared-media) tabs and tapping a hashtag cover part of this.
 - **Search by meaning.** Find messages that say the same thing in other words. Today search matches the start of words in message text and voice transcripts.
+- **Transcript excerpts in results.** A hit found in a voice transcript shows the words it matched. Today the result reads "Recording · matched in its transcript", and opening it marks the words in the transcript.
 
 ## Archive health
 
-- **Prometheus metrics.** A metrics endpoint reports backup health, message counts and media size for Prometheus and Grafana. Today the same figures come as JSON from the statistics routes, behind any viewer login, and from the [Archive Status panel](../operations/troubleshooting.md#archive-status-panel), behind the master login.
+- **Prometheus metrics.** A metrics endpoint reports backup health, message counts and media size for Prometheus and Grafana. Today the same figures come as JSON from the statistics routes, behind any viewer login, and from [Archive status](../operations/troubleshooting.md#archive-status), behind the master login.
 - **Scheduled database upkeep.** SQLite `VACUUM` and PostgreSQL `ANALYZE` run on a schedule. Today nothing runs them.
 - **Checksum verification of media.** Media verification compares file checksums. Today [`VERIFY_MEDIA`](../configuration/media.md#verify-files-on-disk) checks that each file exists, is not empty and is within 1% of its recorded size.
 - **An alert when mass-operation protection trips.** You get notified when [mass-operation protection](../configuration/listener.md#mass-operation-protection) blocks a burst of edits or deletions. Today it writes a log warning only.

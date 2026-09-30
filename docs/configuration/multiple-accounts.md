@@ -146,13 +146,13 @@ Everything that is not a chat filter applies to all accounts. That includes `DOW
 
 ## In the viewer
 
-A small label with the account name, called an account chip, appears on chat rows, in the chat header and in the info panel. Chips only appear when the viewer login can see more than one account. On a phone the header hides its chips; the chat list and the info panel keep them.
+A small label with the account name, called an account tag, appears on chat rows and in the info panel, and the chat header names the account after the member count. Each account keeps its own tag colour. Tags only appear when the viewer login can see more than one account. On a narrow header the account's name gives way first; the chat list and the info panel keep it.
 
-![Chat list with Personal and Work account chips](../images/screenshots/chat-list-desktop.png)
+![Chat list with Personal and Work account tags](../images/screenshots/chat-list-desktop.png)
 
 - A group or channel that several archived Telegram accounts belong to is listed once. The viewer shows the copy from the lowest account id the user may see.
 - Private chats are never merged.
-- A message sent by any archived Telegram account shows as your own message, with that account's chip.
+- A message sent by any archived Telegram account shows as your own message. When more than one archived account holds or writes in the chat, the message names its account before its time, like a channel signature, and an incoming message from another archived account names it at the right end of the sender's name.
 - An admin can limit a viewer account to some Telegram accounts. See [Logins, viewer accounts and share links](../viewer/access.md).
 
 ## Caveats

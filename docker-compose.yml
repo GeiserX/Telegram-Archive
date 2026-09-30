@@ -248,8 +248,9 @@ services:
 
       # Display
       VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
-      # Default color theme for browsers with no saved choice
-      # (slate | night | amoled | forest | aubergine | day | paper); the in-app picker wins.
+      # Default color theme for browsers with no saved choice; empty = system
+      # (system | telegram | night | iosnight | slate | minimal | graphite |
+      # amoled | forest | aubergine | day | paper); the in-app picker wins.
       VIEWER_DEFAULT_THEME: ${VIEWER_DEFAULT_THEME:-}
       # Wallpaper behind the messages: a file name served from /static, so the
       # image must be mounted into the container (see the volumes block below).

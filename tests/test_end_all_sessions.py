@@ -579,7 +579,8 @@ const showAdminPanel = ref(true);
 let auditLoads = 0;
 const loadAdminAudit = async () => { auditLoads += 1; };
 let confirmAnswer = true;
-const confirm = () => confirmAnswer;
+// The question is the dialog-shaped askConfirm now, never the browser's box.
+const askConfirm = async () => confirmAnswer;
 const calls = [];
 let nextResponse = null;
 const fetch = async (url, options) => { calls.push({ url, options }); return nextResponse; };

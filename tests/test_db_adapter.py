@@ -1928,6 +1928,36 @@ class TestGetChatStats:
         assert result["total_size_mb"] == 1.0
         assert result["first_message_date"] is not None
         assert result["last_message_date"] is not None
+        # The kept-change counts are a fourth query, run only on request.
+        assert "deleted_messages" not in result
+        assert "edited_messages" not in result
+        assert mock_session.execute.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_the_date_query_holds_only_min_and_max(self):
+        """PostgreSQL answers MIN and MAX from the index only when nothing else is aggregated beside them."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+        msg_result = MagicMock()
+        msg_result.scalar.return_value = 5
+        media_result = MagicMock()
+        media_result.one.return_value = (0, 0)
+        date_result = MagicMock()
+        date_result.one.return_value = (datetime(2024, 1, 1), datetime(2025, 6, 1))
+        kept_result = MagicMock()
+        kept_result.one.return_value = (3, 7)
+        mock_session.execute.side_effect = [msg_result, media_result, date_result, kept_result]
+
+        result = await adapter.get_chat_stats(100, with_kept_changes=True)
+
+        assert result["deleted_messages"] == 3
+        assert result["edited_messages"] == 7
+        date_sql = str(mock_session.execute.call_args_list[2].args[0]).lower()
+        assert "min(" in date_sql and "max(" in date_sql
+        assert "sum(" not in date_sql and "case" not in date_sql
+        kept_sql = str(mock_session.execute.call_args_list[3].args[0]).lower()
+        assert "min(" not in kept_sql and "max(" not in kept_sql
+        assert "sum(" in kept_sql
 
     @pytest.mark.asyncio
     async def test_get_chat_stats_empty_chat(self):
@@ -1944,15 +1974,79 @@ class TestGetChatStats:
         date_result = MagicMock()
         date_result.one.return_value = (None, None)
 
-        mock_session.execute.side_effect = [msg_result, media_result, date_result]
+        kept_result = MagicMock()
+        kept_result.one.return_value = (None, None)
 
-        result = await adapter.get_chat_stats(999)
+        mock_session.execute.side_effect = [msg_result, media_result, date_result, kept_result]
+
+        result = await adapter.get_chat_stats(999, with_kept_changes=True)
         assert result["messages"] == 0
         assert result["media_files"] == 0
         assert result["total_size_bytes"] == 0
         assert result["total_size_mb"] == 0
         assert result["first_message_date"] is None
         assert result["last_message_date"] is None
+        assert result["deleted_messages"] == 0
+        assert result["edited_messages"] == 0
+
+
+class TestGetChatStatsKeptChanges:
+    """The info panel's Deleted and Edited rows, counted on a real SQLite archive."""
+
+    async def test_counts_deletions_and_edits_of_this_chat_and_account_only(self):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from telegram_archive.db.base import DatabaseManager
+        from telegram_archive.db.models import Base
+
+        engine = create_async_engine(
+            "sqlite+aiosqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        db_manager = DatabaseManager.__new__(DatabaseManager)
+        db_manager.engine = engine
+        db_manager.database_url = "sqlite+aiosqlite://"
+        db_manager._is_sqlite = True
+        db_manager.async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        when = datetime(2026, 1, 1, 12, 0, 0)
+        try:
+            async with db_manager.async_session_factory() as session:
+                rows = [
+                    # chat -500, account 1: two deleted (one also edited), one edited, one plain
+                    (1, -500, 1, 1, None),
+                    (1, -500, 2, 1, when),
+                    (1, -500, 3, 0, when),
+                    (1, -500, 4, 0, None),
+                    (1, -500, 5, 0, None),
+                    # the same chat in account 2, and another chat: never counted here
+                    (2, -500, 1, 1, when),
+                    (1, -600, 1, 1, when),
+                ]
+                for account, chat, mid, deleted, edited in rows:
+                    session.add(
+                        Message(
+                            account_id=account,
+                            chat_id=chat,
+                            id=mid,
+                            date=when,
+                            text="x",
+                            is_deleted=deleted,
+                            edit_date=edited,
+                        )
+                    )
+                await session.commit()
+            adapter = DatabaseAdapter(db_manager)
+            stats = await adapter.get_chat_stats(-500, account_id=1, with_kept_changes=True)
+            assert stats["messages"] == 5
+            assert stats["deleted_messages"] == 2
+            assert stats["edited_messages"] == 2
+            empty = await adapter.get_chat_stats(-999, account_id=1, with_kept_changes=True)
+            assert empty["deleted_messages"] == 0
+            assert empty["edited_messages"] == 0
+        finally:
+            await engine.dispose()
 
 
 # ============================================================

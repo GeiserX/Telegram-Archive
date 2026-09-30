@@ -310,11 +310,26 @@ class TestViewerSurfaces:
 
     def test_placeholder_names_the_reason(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        assert "msg.media?.skip_reason === 'oversize'" in html
-        assert "Not downloaded: larger than the size limit" in html
-        assert "msg.media?.skip_reason === 'filtered'" in html
-        assert "Not downloaded: excluded by the media filter" in html
-        assert "Will download on next backup" in html  # still the wording for a genuine pending row
+        # The reason is read once (mediaMissingReason) and worded once
+        # (MISSING_REASONS), for the placeholder and an album's tile alike.
+        reasons = html[html.index("const MISSING_REASONS = {") :]
+        reasons = reasons[: reasons.index("}")]
+        assert "oversize: 'over the download limit'" in reasons
+        assert "filtered: 'skipped by the media filter'" in reasons
+        # A genuine pending row: never "will download on next backup", which is
+        # false once the retries gave up.
+        assert "pending: 'not downloaded yet'" in reasons
+        assert "Will download on next backup" not in html
+        which = html[html.index("const mediaMissingReason = (msg) => {") :]
+        which = which[: which.index("\n                }\n")]
+        assert "if (media.skip_reason === 'oversize') return 'oversize'" in which
+        assert "if (media.skip_reason === 'filtered') return 'filtered'" in which
+        assert "return 'pending'" in which
+        body = html[html.index("const mediaPlaceholder = (msg) => {") :]
+        body = body[: body.index("\n                }\n")]
+        assert "const reason = MISSING_REASONS[kind]" in body
+        # The size leads the reason when the row knows it: "24 MB · over the download limit".
+        assert "`${size} · ${reason}`" in body
         assert "statusData.media.skipped" in html
 
 
@@ -717,18 +732,14 @@ class TestNoDownloadSessionKeepsTheReason:
 
     def test_the_placeholder_reason_branches_do_not_depend_on_the_session(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        start = html.index("<!-- Placeholder for media not yet downloaded -->")
-        block = html[start : html.index("Will download on next backup", start)]
-
-        assert '<div v-if="!msg.media?.file_path && msg.media?.type"' in block
-        assert "<div v-if=\"msg.media?.skip_reason === 'oversize'\"" in block
-        assert "<div v-else-if=\"msg.media?.skip_reason === 'filtered'\"" in block
-        # A no-download login has every file_path blanked, so the generic
-        # "will download" line was a lie for archived files; the reason
-        # branches still win for a skipped row.
-        no_download = block.index('<div v-else-if="msg.media?.no_download"')
-        assert block.index("skip_reason === 'filtered'") < no_download
-        assert "Not available for this login" in block[no_download:]
+        body = html[html.index("const mediaMissingReason = (msg) => {") :]
+        body = body[: body.index("\n                }\n")]
+        # A no-download login has every file_path blanked, so a generic "will
+        # download" line would be a lie for archived files; the reason branches
+        # still win for a skipped row, and the login's own reason comes after.
+        no_download = body.index("if (media.no_download) return 'hidden'")
+        assert body.index("media.skip_reason === 'oversize'") < no_download
+        assert body.index("media.skip_reason === 'filtered'") < no_download
 
 
 class TestScriptsLogTheConfigSummary:

@@ -67,9 +67,10 @@ def _assert_accessible_toggle(test: unittest.TestCase, block: str) -> None:
     test.assertIn('class="transcript-loop"', button)
     region = block[block.index(':id="transcriptRegionId(msg)"') :]
     test.assertEqual(block.count(':id="transcriptRegionId(msg)"'), 1)
-    test.assertIn('<p dir="auto" class="transcript-text', region)
+    test.assertIn('<p class="transcript-text', region)
     test.assertIn("transcriptErrorText(msg)", region)
-    test.assertIn('aria-label="Transcript version"', region)
+    # Several versions: "1 of 2" at the end of the text steps through them.
+    test.assertIn('@click.stop="nextTranscript(msg)"', region)
 
 
 # ============================================================================
@@ -82,12 +83,21 @@ class TestBubbleMarkup(unittest.TestCase):
         bubble = _audio_bubble(_html())
         button = _between(bubble, '<button v-if="hasTranscriptButton(msg)"', "</button>")
         self.assertIn('type="button"', button)
-        self.assertIn('class="transcript-btn"', button)
+        # hit-40: a 40px touch target around the 32px square.
+        self.assertIn('class="transcript-btn hit-40"', button)
         self.assertIn(":aria-expanded=\"isTranscriptExpanded(msg) ? 'true' : 'false'\"", button)
         self.assertIn(':aria-controls="transcriptRegionId(msg)"', button)
         self.assertIn(":aria-busy=\"transcriptStatus(msg) === 'loading' ? 'true' : 'false'\"", button)
         self.assertIn("'Hide transcript' : 'Show transcript'", button)
-        self.assertIn("isTranscriptExpanded(msg) ? 'A→' : '→A'", button)
+        # The waveform glyph, a chevron up once the text is open, and a small dot
+        # when the transcript failed; aria-expanded carries the state.
+        self.assertIn('<svg v-else class="transcript-icon"', button)
+        self.assertIn(
+            '<svg v-if="isTranscriptExpanded(msg) && transcriptStatus(msg) === \'done\'" class="transcript-icon"',
+            button,
+        )
+        self.assertIn('<span v-if="transcriptStatus(msg) === \'error\'" class="transcript-dot"', button)
+        self.assertNotIn("A→", button)
         self.assertIn('class="transcript-loop"', button)
         self.assertIn('pathLength="100"', button)
 
@@ -97,14 +107,31 @@ class TestBubbleMarkup(unittest.TestCase):
         self.assertLess(bubble.index('<button v-if="hasTranscriptButton(msg)"'), row_end)
         region = bubble[row_end:]
         self.assertIn(':id="transcriptRegionId(msg)"', region)
-        self.assertIn('<p dir="auto" class="transcript-text', region)
+        self.assertIn('<p class="transcript-text', region)
         self.assertIn("whitespace-pre-wrap", region)
         # No line cap and no "show more": a long transcript makes the bubble taller.
         for cap in ("line-clamp", "truncate", "max-h-", "Show more"):
-            self.assertNotIn(cap, _between(region, '<p dir="auto"', "</p>"))
+            self.assertNotIn(cap, _between(region, '<p class="transcript-text', "</p>"))
         self.assertIn("transcriptErrorText(msg)", region)
-        self.assertIn('<select v-if="doneTranscripts(msg).length > 1"', region)
-        self.assertIn('aria-label="Transcript version"', region)
+        # No heading line and no select inside the bubble: the text straight
+        # under the row, and a "Version 1 of 2" chip at its end.
+        self.assertNotIn("<select", region)
+        self.assertNotIn(">Transcript</span>", region)
+        self.assertIn('class="transcript-version hit-40"', region)
+        self.assertIn("Version {{ transcriptVersionLabel(msg) }}", region)
+        # The transcript's own paragraph direction, so a right-to-left one reads right.
+        # The text inside carries none of its own: dir="auto" on the body skips a
+        # child with its own dir, and resolved left-to-right for every transcript.
+        self.assertIn('class="transcript-body" dir="auto"', region)
+        self.assertNotIn('<p dir="auto" class="transcript-text', _html())
+        self.assertNotIn('<p dir="auto" class="transcript-note', _html())
+
+    def test_the_time_does_not_ride_a_right_to_left_transcript(self):
+        """An RTL transcript's last line ends on the left, away from the time."""
+        html = _html()
+        rides = html[html.index("const metaRidesTranscript = (msg) => {") :]
+        rides = rides[: rides.index("\n                }\n")]
+        self.assertIn("if (transcriptIsRtl(msg)) return false", rides)
 
     def test_the_round_video_keeps_its_circle_and_the_button_sits_on_the_corner(self):
         block = _round_video(_html())
@@ -115,14 +142,14 @@ class TestBubbleMarkup(unittest.TestCase):
         self.assertIn(':aria-controls="transcriptRegionId(msg)"', overlay)
         # Expanded, it becomes a voice bubble with a placeholder waveform.
         self.assertIn('v-for="(h, i) in transcriptPlaceholderBars"', block)
-        self.assertIn('<p dir="auto" class="transcript-text', block)
+        self.assertIn('<p class="transcript-text', block)
         self.assertEqual(block.count(':id="transcriptRegionId(msg)"'), 1)
 
     def test_a_video_carries_the_button_over_the_corner_and_the_text_under_the_player(self):
         block = _video(_html())
         _assert_accessible_toggle(self, block)
         overlay = _between(block, "<button v-if=", "</button>")
-        self.assertIn('class="transcript-btn transcript-btn--overlay"', overlay)
+        self.assertIn('class="transcript-btn transcript-btn--overlay hit-40"', overlay)
         self.assertIn(":class=\"isOwnMessage(msg) ? 'left-1' : 'right-1'\"", overlay)
         # Inside the player that opens the lightbox, so the press must not open it too.
         self.assertLess(block.index('@click="msg.mediaLoadFailed || openMedia(msg)"'), block.index("<button v-if="))
@@ -141,14 +168,15 @@ class TestBubbleMarkup(unittest.TestCase):
         """Silence comes back as an empty text; the bubble says so in the error states' grey, as the official apps do."""
         html = _html()
         pairs = re.findall(
-            r'<p dir="auto" class="transcript-text[^\n]*v-if="selectedTranscript\(msg\)\.text"></p>\n'
-            r' *<p v-else class="text-\[11px\] text-tg-n400">No speech detected</p>',
+            r'<p class="transcript-text[^\n]*v-if="selectedTranscript\(msg\)\.text"></p>\n'
+            r' *<p v-else class="transcript-note italic">No speech detected</p>',
             html,
         )
         self.assertEqual(len(pairs), 4)
         self.assertEqual(len(pairs), html.count('class="transcript-text text-sm'))
-        # The same small grey style as the failed and skipped reasons.
-        self.assertIn('class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>', html)
+        # The same 13px time-coloured style as the failed and skipped reasons,
+        # never the warning colour.
+        self.assertIn('class="transcript-note">{{ transcriptErrorText(msg) }}</p>', html)
 
     def test_a_polite_live_region_announces_the_result(self):
         html = _html()
@@ -170,15 +198,24 @@ class TestBubbleMarkup(unittest.TestCase):
         self.assertIn('@click="toggleExpandAllTranscripts"', toggle)
         self.assertIn(":aria-pressed=", toggle)
         self.assertIn("'Collapse all transcripts' : 'Expand all transcripts'", toggle)
-        self.assertIn('<dd class="text-tg-ink text-right">{{ transcriptionSettingText }}</dd>', html)
+        # Archive status: a "Voice transcripts" row, the engine as a link or the
+        # state in words as its value, and how to set one up when none is set.
+        self.assertIn('<span v-else class="tg-row-value">{{ transcriptionSettingText }}</span>', html)
+        self.assertIn(
+            'class="tg-row-value text-tg-accent-soft hover:underline">{{ transcriptionSettingText }}</a>', html
+        )
+        self.assertIn(':href="TRANSCRIPTION_DOCS_URL"', html)
 
     def test_the_button_styles_read_theme_tokens(self):
         html = _html()
         css = _between(html, ".transcript-btn {", "@media (prefers-reduced-motion: reduce)")
-        self.assertIn("rgb(var(--tg-n300))", css)
-        self.assertIn("rgb(var(--tg-accent))", css)
-        # Only the overlay's white-on-scrim is a literal, like the other media overlays.
-        self.assertEqual(re.findall(r"#[0-9a-fA-F]{3,6}\b", css), ["#fff"])
+        # The bubble side's link colour on its quote tint, measured in every palette.
+        self.assertIn("color: rgb(var(--tg-quote));", css)
+        self.assertIn("background: var(--tg-quote-bg);", css)
+        # The overlay's white-on-scrim is the media pill's tokens, like the other media overlays.
+        self.assertIn("color: var(--tg-media-meta-fg);", css)
+        self.assertIn("background: var(--tg-media-meta-bg);", css)
+        self.assertEqual(re.findall(r"#[0-9a-fA-F]{3,6}\b", css), [])
 
     def test_the_setup_returns_what_the_markup_uses(self):
         html = _html()
@@ -197,6 +234,7 @@ class TestBubbleMarkup(unittest.TestCase):
             "doneTranscripts",
             "pickTranscript",
             "transcriptCaption",
+            "transcriptTitle",
             "transcriptErrorText",
             "transcriptHtml",
             "pressTranscript",
@@ -304,6 +342,21 @@ def test_the_bubble_rule_is_the_drains_rule() -> None:
             transcriptionState.value = {{ enabled: true, configured: true }}
             const media = {json.dumps(media)}
             assert.deepEqual(media.map(hasTranscriptButton), {json.dumps(expected)})
+            """
+        )
+    )
+
+
+def test_a_right_to_left_transcript_is_told_apart_by_its_first_letter() -> None:
+    _run_node(
+        _script(
+            """
+            assert.equal(transcriptIsRtl(voice(1, [done(1, { text: 'مرحبا، الخريطة على الثلاجة 12' })])), true)
+            assert.equal(transcriptIsRtl(voice(2, [done(2, { text: '12 שלום עולם' })])), true, 'digits carry no direction')
+            assert.equal(transcriptIsRtl(voice(3, [done(3, { text: 'The trail map is on the fridge' })])), false)
+            assert.equal(transcriptIsRtl(voice(4, [done(4, { text: '— ¿Dónde está? مرحبا' })])), false, 'the first letter decides')
+            assert.equal(transcriptIsRtl(voice(5, [done(5, { text: '' })])), false)
+            assert.equal(transcriptIsRtl(voice(6, [])), false)
             """
         )
     )
@@ -511,17 +564,18 @@ def test_attribution_picker_and_settings_row() -> None:
             assert.equal(selectedTranscript(msg).id, 9, 'the newest done row is the default')
             assert.deepEqual(transcriptCaption(msg),
                 { engine: 'akou', link: 'https://github.com/GeiserX/akou', rest: ['parakeet-v3', 'es', '2026-01-02'] })
+            assert.equal(transcriptTitle(msg), 'Transcribed by akou · parakeet-v3 · es · 2026-01-02')
             pickTranscript(msg, '7')
             assert.equal(selectedTranscript(msg).id, 7)
             assert.deepEqual(transcriptCaption(msg), { engine: 'speaches', link: null, rest: ['whisper-1', 'en', '2026-01-01'] })
 
-            assert.equal(transcriptionSettingText.value, 'on, server not detected yet')
+            assert.equal(transcriptionSettingText.value, 'Server not found yet')
             transcriptionState.value = { enabled: true, configured: true, server_name: 'akou', server_version: '0.2.0' }
-            assert.equal(transcriptionSettingText.value, 'on, akou 0.2.0')
+            assert.equal(transcriptionSettingText.value, 'akou 0.2.0')
             transcriptionState.value = { enabled: true, configured: false }
-            assert.equal(transcriptionSettingText.value, 'on, no server configured')
+            assert.equal(transcriptionSettingText.value, 'No server set')
             transcriptionState.value = { enabled: false, configured: false }
-            assert.equal(transcriptionSettingText.value, 'off')
+            assert.equal(transcriptionSettingText.value, 'Off')
             """
         )
     )

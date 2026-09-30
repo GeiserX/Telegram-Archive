@@ -153,3 +153,31 @@
 .md-typeset table:not([class]) code {
   word-break: normal;
 }
+
+/* The phone screenshots on the home page: four in a row on a wide screen,
+   two on a narrow one, each with a short caption. */
+.md-typeset .ta-phone-gallery {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.8rem;
+  margin: 1em 0;
+}
+
+.md-typeset .ta-phone-gallery figure {
+  margin: 0;
+}
+
+.md-typeset .ta-phone-gallery img {
+  border-radius: 0.4rem;
+}
+
+.md-typeset .ta-phone-gallery figcaption {
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .md-typeset .ta-phone-gallery {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
