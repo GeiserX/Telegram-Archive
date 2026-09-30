@@ -1,0 +1,74 @@
+/* C. Peek: the text before the last edit, in a popover above the mark. */
+.message-meta {
+    position: relative;
+}
+.ev-peek {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: -6px;
+    z-index: 30;
+    width: max-content;
+    min-width: 220px;
+    max-width: min(320px, calc(100vw - 48px));
+    padding: 8px 12px 6px;
+    border-radius: 12px;
+    background: rgb(var(--tg-sidebar));
+    color: rgb(var(--tg-text));
+    box-shadow: var(--tg-shadow-popup);
+    text-align: left;
+    white-space: normal;
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+}
+.ev-peek::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    right: 44px;
+    border: 7px solid transparent;
+    border-top-color: rgb(var(--tg-sidebar));
+}
+.ev-peek-head {
+    color: rgb(var(--tg-muted));
+    font-size: 12px;
+    line-height: 16px;
+    margin-bottom: 2px;
+}
+.ev-peek-text {
+    font-size: var(--tg-text-size, 0.9375rem);
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.ev-peek .ev-del {
+    color: rgb(var(--tg-text));
+    background: var(--tg-diff-del-bg);
+    text-decoration: line-through;
+    text-decoration-color: rgb(var(--tg-diff-del-line));
+    text-decoration-thickness: 1.5px;
+    border-radius: 3px;
+    padding: 0 2px;
+}
+.ev-peek-all {
+    display: block;
+    margin-top: 4px;
+    padding: 4px 0;
+    color: rgb(var(--tg-accent-soft));
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+}
+.ev-peek-all:hover {
+    text-decoration: underline;
+}
+/* On a touch screen: above the bubble, arrow down at its start. */
+.message-bubble > .ev-peek.ev-peek-above {
+    bottom: calc(100% + 10px);
+    left: 0;
+    right: auto;
+    max-width: calc(100vw - 72px);
+}
+.ev-peek.ev-peek-above::after {
+    right: auto;
+    left: 24px;
+}

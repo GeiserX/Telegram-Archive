@@ -2512,6 +2512,21 @@ class DatabaseAdapter:
             async for row in result.scalars():
                 yield self._message_version_to_dict(row)
 
+    @staticmethod
+    def _edited_predicate():
+        """A message counts as edited when Telegram marks it (``edit_date``) or
+        the archive kept an earlier version of it. Either alone happens: a
+        message first captured after its edit has ``edit_date`` and no version,
+        and a late-hydrated empty text keeps a version with no ``edit_date``.
+        It is the viewer's own rule for the pencil in a bubble, so the chat's
+        count, the "Edited only" list and the marked bubbles agree."""
+        kept = exists().where(
+            MessageVersion.account_id == Message.account_id,
+            MessageVersion.chat_id == Message.chat_id,
+            MessageVersion.message_id == Message.id,
+        )
+        return or_(Message.edit_date.isnot(None), kept)
+
     async def get_chat_stats(
         self, chat_id: int, *, account_id: int | None = None, with_kept_changes: bool = False
     ) -> dict[str, Any]:
@@ -2522,7 +2537,8 @@ class DatabaseAdapter:
         Returns:
             Dict with keys: messages, media_files, total_size_bytes, first_message_date,
             last_message_date. With ``with_kept_changes`` also deleted_messages (deleted
-            in Telegram, kept here) and edited_messages (edited at least once).
+            in Telegram, kept here) and edited_messages (``_edited_predicate``:
+            marked edited by Telegram, or with an earlier version kept).
         """
         msg_where = [Message.chat_id == chat_id]
         media_where = [Media.chat_id == chat_id]
@@ -2574,8 +2590,30 @@ class DatabaseAdapter:
                 ).where(and_(*msg_where))
             )
             kept_row = kept_result.one()
+            # Edited is _edited_predicate, counted in two cheap parts so this
+            # scan needs no per-row lookup: the rows Telegram marks, plus the
+            # few unmarked rows that have a kept version (read from the small
+            # versions table and its chat index).
+            unmarked = (
+                select(MessageVersion.account_id, MessageVersion.message_id)
+                .join(
+                    Message,
+                    and_(
+                        Message.account_id == MessageVersion.account_id,
+                        Message.chat_id == MessageVersion.chat_id,
+                        Message.id == MessageVersion.message_id,
+                    ),
+                )
+                .where(MessageVersion.chat_id == chat_id, Message.edit_date.is_(None))
+                .distinct()
+            )
+            if account_id is not None:
+                unmarked = unmarked.where(MessageVersion.account_id == account_id)
+            unmarked_count = (
+                await session.execute(select(func.count()).select_from(unmarked.subquery("unmarked_edits")))
+            ).scalar()
             stats["deleted_messages"] = int(kept_row[0] or 0)
-            stats["edited_messages"] = int(kept_row[1] or 0)
+            stats["edited_messages"] = int(kept_row[1] or 0) + int(unmarked_count or 0)
             return stats
 
     # ========== Media Operations ==========
@@ -5020,6 +5058,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         with_transcripts: bool = True,
         deleted_only: bool = False,
+        edited_only: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
@@ -5051,6 +5090,9 @@ class DatabaseAdapter:
             deleted_only: Keep only the rows deleted in Telegram that the
                 archive kept (``is_deleted=1``). Combines with every other
                 filter and cursor; a read-only narrowing of the same query.
+            edited_only: Keep only the edited rows (``_edited_predicate``):
+                ``edit_date`` set, or an earlier version kept. Combines like
+                ``deleted_only``.
 
         Returns:
             List of message dictionaries with user and media info. A row that is a
@@ -5090,6 +5132,10 @@ class DatabaseAdapter:
             # The viewer's "Deleted only" list: the kept deletions of this chat.
             if deleted_only:
                 stmt = stmt.where(Message.is_deleted == 1)
+
+            # The viewer's "Edited only" list: what the bubble marks as edited.
+            if edited_only:
+                stmt = stmt.where(self._edited_predicate())
 
             # Chat search, like global search, is the UNION of two indexed key
             # sets: the message index and the transcript index reached through

@@ -1,0 +1,15 @@
+/* G. Edit time: "08:52 · edited 08:57". The send time moves first; the edit
+   mark follows with its own time. */
+.message-meta .order-3 {
+    order: 1;
+}
+.message-meta .ev-g {
+    order: 3;
+}
+.message-meta .ev-g::before {
+    content: "·";
+    margin-right: 1px;
+}
+.message-meta .ev-g .ev-edit-time {
+    margin-left: -1px;
+}
