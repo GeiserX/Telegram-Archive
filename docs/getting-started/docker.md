@@ -94,6 +94,8 @@ docker compose up -d
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) on the Docker host and sign in with `VIEWER_USERNAME` and `VIEWER_PASSWORD`.
 
+![The viewer's sign-in card, with a username field, a password field and a Sign in button](../images/screenshots/login.png)
+
 The compose file publishes the viewer on 127.0.0.1 only. From another machine, use an SSH tunnel and open the same address locally:
 
 ```bash
