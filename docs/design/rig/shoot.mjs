@@ -146,24 +146,93 @@ async function centerOn(page, text, block = 'center') {
     await page.waitForTimeout(1400)
 }
 
+// Whether a bubble's time sits under the jump-to-latest button.
+async function timeUnderScrollButton(page) {
+    return page.evaluate(() => {
+        const button = document.querySelector('.scroll-to-bottom-btn')
+        if (!button) return false
+        const b = button.getBoundingClientRect()
+        return [...document.querySelectorAll('.message-meta')].some((meta) => {
+            const m = meta.getBoundingClientRect()
+            return m.right > b.left - 4 && m.left < b.right + 4 && m.bottom > b.top - 4 && m.top < b.bottom + 4
+        })
+    })
+}
+
 // Scrolled up, the list shows the jump-to-latest button over its bottom right
 // corner, as Telegram does. For a picture, move the list a little (up to 160px
 // back towards the album) until no bubble's time sits under the button.
 async function clearOfScrollButton(page) {
     for (let step = 0; step <= 20; step++) {
-        const covered = await page.evaluate(() => {
-            const button = document.querySelector('.scroll-to-bottom-btn')
-            if (!button) return false
-            const b = button.getBoundingClientRect()
-            return [...document.querySelectorAll('.message-meta')].some((meta) => {
-                const m = meta.getBoundingClientRect()
-                return m.right > b.left - 4 && m.left < b.right + 4 && m.bottom > b.top - 4 && m.top < b.bottom + 4
-            })
-        })
-        if (!covered) break
+        if (!(await timeUnderScrollButton(page))) break
         await page.locator('.messages-scroll').first().evaluate((el) => el.scrollBy(0, -8))
         await page.waitForTimeout(50)
     }
+    await page.waitForTimeout(1400)
+}
+
+// Where the rows of the message list stand against its top edge, in pixels
+// from that edge: the row or day separator crossing it (`cut`), the one after
+// it, and the last one wholly above it.
+function readTopEdge(list) {
+    const edge = list.getBoundingClientRect().top
+    const items = [...list.querySelectorAll(':scope > .message-row, :scope > .date-separator, :scope > [data-msg-id]')]
+        .map((el) => {
+            const r = el.getBoundingClientRect()
+            return { top: r.top - edge, bottom: r.bottom - edge, separator: el.classList.contains('date-separator') }
+        })
+        .filter((r) => r.bottom > r.top)
+        .sort((a, b) => a.top - b.top)
+    const i = items.findIndex((r) => r.top < -0.5 && r.bottom > 0.5)
+    return {
+        scrollTop: list.scrollTop,
+        cut: i >= 0 ? items[i] : null,
+        next: i >= 0 ? items[i + 1] || null : null,
+        above: items.filter((r) => r.bottom <= 0.5).pop() || null,
+    }
+}
+
+// A picture starts on a whole element, never on half a bubble. Run after
+// every other scroll of a view: the row or day separator crossing the top of
+// the list is shown whole with 8px of wallpaper above it when it is a day
+// separator or short, and otherwise scrolled out, leaving 8px above the next
+// one. Where hiding it would put a time under the jump-to-latest button, or
+// the list cannot scroll that far, the element is revealed instead, and while
+// a time still sits under the button the element above comes into view whole.
+async function frameTopEdge(page) {
+    const list = page.locator('.messages-scroll').first()
+    if (!(await list.isVisible().catch(() => false))) return
+    const scrollTo = async (top) => {
+        await list.evaluate((el, t) => { el.scrollTop = t }, top)
+        await page.waitForTimeout(150)
+    }
+    let revealOnly = false
+    for (let pass = 0; pass < 8; pass++) {
+        const edge = await list.evaluate(readTopEdge)
+        if (edge.cut) {
+            const reveal = edge.scrollTop + edge.cut.top - 8
+            const short = edge.cut.separator || edge.cut.bottom - edge.cut.top < 80
+            if (short || revealOnly) {
+                await scrollTo(reveal)
+                continue
+            }
+            const hide = edge.scrollTop + (edge.next ? Math.max(edge.cut.bottom, edge.next.top - 8) : edge.cut.bottom)
+            await scrollTo(hide)
+            const after = await list.evaluate(readTopEdge)
+            if (after.cut || await timeUnderScrollButton(page)) {
+                revealOnly = true
+                await scrollTo(reveal)
+            }
+            continue
+        }
+        if (!(await timeUnderScrollButton(page)) || !edge.above) break
+        revealOnly = true
+        await scrollTo(edge.scrollTop + edge.above.top - 8)
+    }
+    const final = await list.evaluate(readTopEdge)
+    if (final.cut) console.error(`warning: an element still crosses the top of the list (${Math.round(final.cut.top)}px)`)
+    if (await timeUnderScrollButton(page)) console.error('warning: a bubble time sits under the jump-to-latest button')
+    // The floating day fades 1.2 s after the last scroll.
     await page.waitForTimeout(1400)
 }
 
@@ -234,6 +303,7 @@ async function openMediaMissing(page) {
     await page.locator('.cursor-pointer h3').filter({ hasText: 'Orson Quill' }).first().click()
     await page.locator('.media-placeholder').first().waitFor({ state: 'visible', timeout: 20000 })
     await centerOn(page, 'The panorama from the top', 'start')
+    await frameTopEdge(page)
 }
 
 // A forum's topics in the sidebar, with one topic open.
@@ -244,6 +314,7 @@ async function openTopics(page) {
     await page.locator('.chat-row').filter({ hasText: 'Events' }).first().click()
     await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 20000 })
     await settle(page)
+    await frameTopEdge(page)
 }
 
 async function openAdmin(page) {
@@ -267,6 +338,7 @@ async function openTranscripts(page) {
     if (await dismiss.count()) await dismiss.first().click()
     await page.mouse.move(0, 0)
     await centerOn(page, 'The trail map is on the fridge', 'center')
+    await frameTopEdge(page)
 }
 
 async function openEditHistory(page) {
@@ -275,6 +347,7 @@ async function openEditHistory(page) {
     const edited = page.locator('.message-meta button[aria-expanded]').first()
     await edited.waitFor({ state: 'attached', timeout: 15000 })
     await edited.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
+    await frameTopEdge(page)
     await edited.click()
     await page.locator('#versions-title').waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(400)
@@ -286,6 +359,7 @@ async function openAvatarHistory(page) {
     await page.getByRole('button', { name: 'Chat information' }).click()
     await page.locator('[data-testid="previous-avatars"]').waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(300)
+    await frameTopEdge(page)
 }
 
 // The earlier photos paged in the lightbox, opened from the info panel.
@@ -300,6 +374,7 @@ async function openAvatarLightbox(page) {
 async function openExportDialog(page, mobile) {
     await open(page)
     await openGroup(page)
+    await frameTopEdge(page)
     if (mobile) {
         // On a phone the export action lives in the info panel.
         await page.getByRole('button', { name: 'Chat information' }).click()
@@ -314,12 +389,13 @@ async function openExportDialog(page, mobile) {
     await page.waitForTimeout(300)
 }
 
-// Both kept deletions in view: the deleted text at the top, the deleted
+// Both kept deletions in view: the deleted text near the top, the deleted
 // photo under it.
 async function openDeleted(page) {
     await open(page)
     await openGroup(page)
     await centerOn(page, 'Parking at the north lot', 'start')
+    await frameTopEdge(page)
 }
 
 async function openArchivedChats(page) {
@@ -334,6 +410,7 @@ async function openDatePicker(page) {
     await openGroup(page)
     const separator = page.locator('.date-separator button').first()
     await separator.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+    await frameTopEdge(page)
     await separator.click()
     await page.locator('.flatpickr-calendar').first().waitFor({ state: 'visible', timeout: 10000 })
     // The click that opened it would otherwise leave a hovered day under the pointer.
@@ -352,11 +429,13 @@ const desktopViews = {
         await open(page)
         await openGroup(page)
         await centerOn(page, 'A few shots from the ridge loop', 'start')
+        await frameTopEdge(page)
     },
     '03-chat-replies': async (page) => {
         await open(page)
         await openGroup(page)
         await centerOn(page, 'The north lot. It fills up by 8')
+        await frameTopEdge(page)
     },
     '06-search': async (page) => {
         await open(page)
@@ -382,6 +461,7 @@ const desktopViews = {
         await page.locator('.message-row [id^="transcript-"]').first().waitFor({ state: 'visible', timeout: 10000 })
         await btn.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
         await page.waitForTimeout(400)
+        await frameTopEdge(page)
     },
     '09-theme-picker': (page) => openMainMenu(page, 'Theme'),
     '10-changes-feed': (page) => openChangesFeed(page),
@@ -407,6 +487,7 @@ const mobileViews = {
         await openGroup(page)
         await centerOn(page, 'A few shots from the ridge loop', 'start')
         await clearOfScrollButton(page)
+        await frameTopEdge(page)
     },
     '05-chat-list-mobile': async (page) => {
         await open(page)
@@ -432,6 +513,7 @@ const shareViews = {
         await page.getByText(GROUP, { exact: true }).first().waitFor({ state: 'visible', timeout: 30000 })
         await openGroup(page)
         await centerOn(page, 'Found this view on the way back')
+        await frameTopEdge(page)
         await page.getByRole('button', { name: 'Main menu' }).click()
         await page.mouse.move(0, 0)
         await page.waitForTimeout(400)
