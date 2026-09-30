@@ -615,7 +615,12 @@ async function openRemovedReactionsPicture(page) {
     for (let i = 0; i < 20; i++) {
         const found = await page.evaluate(`(${findRemovedOnlyPicture})() ? true : false`)
         if (found) break
-        await page.evaluate(() => { document.querySelector('.messages-scroll')?.scrollTo(0, 0) })
+        // The list is column-reverse: 0 is the newest edge, and the older
+        // sentinel sits at -scrollHeight, so scroll there to load another page.
+        await page.evaluate(() => {
+            const list = document.querySelector('.messages-scroll')
+            list?.scrollTo(0, -list.scrollHeight)
+        })
         await page.waitForTimeout(800)
     }
     await page.evaluate(`(() => {
