@@ -1,5 +1,18 @@
 # Viewer look: four proposals and a recommendation
 
+> **Implemented.** The viewer now ships the Telegram Desktop proposal, with these decisions:
+>
+> - The default theme is Match system: Telegram Day on a light system and Telegram Night on a dark one. `VIEWER_DEFAULT_THEME` can still pin one theme.
+> - Browsers that never picked a theme move to the new default. Saved choices and `?theme=` links keep working.
+> - Text uses the system font stack, as Telegram's own apps do. The viewer no longer loads Inter.
+> - The sender's photo sits at the bottom of a run, beside the tail.
+> - The line pattern ships as a static file for Telegram Day, with a dark version for iOS Night and Slate. `VIEWER_CHAT_BACKGROUND` still replaces it.
+> - The theme list has twelve entries: system, telegram, night, iosnight, slate, minimal, graphite, amoled, forest, aubergine, day and paper.
+> - Account tags show in the chat list only when the archive holds more than one Telegram account, and on messages only in a chat that more than one account holds.
+> - The chat list shows no last-message preview and voice messages show no waveform yet. Both are open questions for later.
+>
+> The current look is on [Themes and wallpaper](../viewer/themes.md) and [Using the viewer](../viewer/using-the-viewer.md). The pictures below are the proposals as they were compared.
+
 The viewer works, but it does not look like a Telegram client. Messages sit in tall boxy bubbles, every sender in a group gets the same colour, the light themes turn grey, and the default palette is a generic dark admin navy. This document shows what is wrong, four ways to fix it, and which one to build.
 
 Every proposal is one override stylesheet, the `theme.css` in its folder, loaded into the real viewer after the viewer's own styles. We changed no markup or script for the pictures. [`design/rig/shoot.mjs`](rig/shoot.mjs) took the screenshots against a demo archive with fake chats and people. Desktop views are 1440 by 900 and phone views 390 by 844. The current look is in [`mockups/00-current/`](mockups/00-current/).

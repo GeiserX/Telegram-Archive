@@ -52,21 +52,28 @@ hide:
 
 The viewer looks and works like the Telegram app, with the archive behind it. See [Using the viewer](viewer/using-the-viewer.md).
 
-=== "Desktop"
+![A group chat in the viewer, with a pinned message, an album, replies and reactions](images/screenshots/chat-desktop.png)
 
-    ![A group chat open in the viewer, with a pinned message, a photo and reactions](images/screenshots/chat-desktop.png)
+<div class="ta-phone-gallery" markdown>
+<figure markdown>
+![The same group chat on a phone](images/screenshots/chat-mobile.png)
+<figcaption>On a phone</figcaption>
+</figure>
+<figure markdown>
+![A message deleted in Telegram, kept and marked in the archive](images/screenshots/chat-deleted-mobile.png)
+<figcaption>Deletions kept</figcaption>
+</figure>
+<figure markdown>
+![The edit history of a message edited twice](images/screenshots/edit-history-mobile.png)
+<figcaption>Every edit kept</figcaption>
+</figure>
+<figure markdown>
+![The group chat in Telegram Night](images/screenshots/chat-mobile-dark.png)
+<figcaption>Telegram Night</figcaption>
+</figure>
+</div>
 
-=== "Phone"
-
-    ![The same group chat on a phone](images/screenshots/chat-mobile.png){ width="300" }
-
-=== "Telegram Night"
-
-    ![The same group chat in Telegram Night](images/screenshots/chat-desktop-night.png)
-
-What Telegram no longer shows, the archive keeps and marks: a message deleted in Telegram stays with its text, and What changed lists every deletion, edit and new transcript. See [Deleted messages](viewer/using-the-viewer.md#deleted-messages) and [What changed](viewer/using-the-viewer.md#what-changed).
-
-![A deleted text and a deleted photo, each marked in a calm colour](images/screenshots/deleted-desktop.png)
+What Telegram no longer shows, the archive keeps and marks: a message deleted in Telegram stays with its text, an edited message keeps its earlier versions, and What changed lists every deletion, edit and new transcript. See [Deleted messages](viewer/using-the-viewer.md#deleted-messages), [Reactions, edits and deletions](viewer/using-the-viewer.md#reactions-edits-and-deletions) and [What changed](viewer/using-the-viewer.md#what-changed).
 
 ## What it saves
 

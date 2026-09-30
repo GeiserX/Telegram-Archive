@@ -119,7 +119,7 @@ The master login manages accounts in the viewer itself. Open the main menu, **Ad
 | Active | Switch it off to block the account without deleting it. |
 | Allow downloads | Switch it off to make this a [no-download login](#no-download-logins). |
 
-![Admin settings with the viewer accounts](../images/screenshots/admin-viewers-desktop.png)
+![Admin settings with the viewer accounts](../images/screenshots/admin-settings.png)
 
 Saving a change to a viewer account, or deleting it, ends all of its sessions, closes its live connections and deletes its push subscriptions. The user has to log in again. A second viewer on the same database drops those sessions within 60 seconds. See [A second viewer](#a-second-viewer).
 

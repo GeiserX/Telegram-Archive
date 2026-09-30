@@ -28,6 +28,14 @@ Each browser remembers its own widths.
 
 The top of the sidebar shows folder tabs under the search field. **All Chats** comes first, then one tab per Telegram folder, with the folder's emoji when it has one. Hover a folder tab to see its chat count; a screen reader reads it with the tab's name. The tabs only appear when the archive holds at least one folder. In All Chats, an **Archived Chats** row appears when you have archived chats in Telegram. Inside Archived Chats the tabs hide, a row at the top names the list and counts its chats, and its back arrow returns to the list.
 
+=== "Desktop"
+
+    ![Archived Chats open in the sidebar, with a back arrow and the chat count](../images/screenshots/archived-chats.png){ width="400" }
+
+=== "Phone"
+
+    ![Archived Chats on a phone](../images/screenshots/archived-chats-mobile.png){ width="300" }
+
 Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message. Under the name, a group or a channel shows what kind of chat it is and its member count, for example `group · 24 members`, and a private chat shows the person's username, or `private chat` when there is none. A group's username and the chat's Telegram id are in the info panel.
 
 When you can see more than one Telegram account, each row carries a tag with the account's label, in the style of Telegram's folder tags: each account keeps its own colour. The chat header names the account after the member count. When more than one archived account holds or writes in the open chat, an incoming message names its account at the right end of the sender's name, and an outgoing one before its time. See [Multiple accounts](../configuration/multiple-accounts.md).
@@ -113,7 +121,13 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 
 When a file is not in the archive, a placeholder takes its place in the same shape: a photo or a video keeps its proportions, a round video its circle, and a voice message, an audio or a document its file row. A ring in the middle holds a sign for the reason, and two lines say what it is and why, with its size when the archive knows it, for example `24 MB · over the download limit`. The ring is not a button: nothing downloads from here. A file missing from the archive disk, the one fault among the reasons, shows an amber disc instead. [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer) lists each reason and the setting behind it.
 
-![A photo over the download limit, a filtered document, a photo not downloaded yet and a video missing from the disk](../images/screenshots/media-missing.png)
+=== "Desktop"
+
+    ![A photo over the download limit, a filtered document, a photo not downloaded yet and a video missing from the disk](../images/screenshots/media-missing.png)
+
+=== "Phone"
+
+    ![The same placeholders on a phone](../images/screenshots/media-missing-mobile.png){ width="300" }
 
 Voice messages and other audio can carry a transcript that opens under the player. See [Voice transcription](../configuration/transcription.md).
 
@@ -125,11 +139,11 @@ An edited message shows "edited" before its time, as Telegram does. When the arc
 
 === "Telegram Day"
 
-    ![The edit history with the words each edit changed](../images/screenshots/edit-history-desktop.png)
+    ![The edit history with the words each edit changed](../images/screenshots/edit-history.png)
 
 === "Telegram Night"
 
-    ![The edit history in Telegram Night](../images/screenshots/edit-history-desktop-night.png)
+    ![The edit history in Telegram Night](../images/screenshots/edit-history-night.png)
 
 === "Phone"
 
@@ -141,15 +155,15 @@ A deleted message stays in place with its text in full. A faint wash of a calm r
 
 === "Telegram Day"
 
-    ![A deleted text and a deleted photo, each with its calm deleted mark](../images/screenshots/deleted-desktop.png)
+    ![A deleted text and a deleted photo, each with its calm deleted mark](../images/screenshots/chat-deleted.png)
 
 === "Telegram Night"
 
-    ![The same deleted messages in Telegram Night](../images/screenshots/deleted-desktop-night.png)
+    ![The same deleted messages in Telegram Night](../images/screenshots/chat-deleted-night.png)
 
 === "Phone"
 
-    ![The deleted messages on a phone](../images/screenshots/deleted-mobile.png){ width="300" }
+    ![The deleted messages on a phone](../images/screenshots/chat-deleted-mobile.png){ width="300" }
 
 ### Service messages
 
@@ -252,6 +266,16 @@ With the panel open, <kbd>Up</kbd> and <kbd>Down</kbd> move the selection to the
 
     ![The info panel as a page on a phone](../images/screenshots/info-panel-mobile.png){ width="300" }
 
+The lightbox for earlier photos counts them, for example "2 of 3", and each caption says when the archive saw that photo. The archive keeps every profile photo it sees, so a photo changed or removed in Telegram stays here.
+
+=== "Desktop"
+
+    ![An earlier profile photo in the lightbox, with the day the archive saw it](../images/screenshots/avatar-history.png)
+
+=== "Phone"
+
+    ![Earlier profile photos on a phone](../images/screenshots/avatar-history-mobile.png){ width="300" }
+
 The master login also sees each file's **Archive path** with a copy button. Other logins do not.
 
 ### Open and Show in folder
@@ -309,13 +333,19 @@ The file is named `<title>_export.json`. It holds the chat, the filters you used
 
 The three lines at the top of the sidebar open the main menu. It names the signed-in login and its role (Owner for the master login, Viewer, or Shared link), with "downloads off" for a [no-download login](access.md#no-download-logins). Then come **What changed**, **Statistics**, **Theme** (see [Themes and wallpaper](themes.md)), **Notifications** (see [Live updates and notifications](live-updates.md)), and for the master login **Archive status** and **Admin settings**. **Log out** ends the menu. On a phone the menu is a bottom sheet. The arrow keys move between its rows and <kbd>Esc</kbd> closes it.
 
-![The main menu](../images/screenshots/main-menu-desktop.png)
+![The main menu](../images/screenshots/main-menu-desktop.png){ width="480" }
 
 ## Statistics
 
 **Statistics**, in the main menu, shows the number of chats, messages and media files, the size of the media on disk and when the numbers were calculated, as Telegram's Storage Usage lists its figures. Counts show every digit, and sizes read in KB, MB and GB. For the master login the last row is **Total on disk**, the media and the database together, and it opens Archive status. A login restricted to some chats reads "For the chats you can see." Before the numbers are first calculated, the page says so.
 
-![Statistics as a bottom sheet on a phone](../images/screenshots/statistics-mobile.png){ width="300" }
+=== "Desktop"
+
+    ![Statistics in the main menu, with the media on disk and the total on disk](../images/screenshots/stats.png){ width="480" }
+
+=== "Phone"
+
+    ![Statistics as a bottom sheet on a phone](../images/screenshots/stats-mobile.png){ width="300" }
 
 The numbers are cached. These recalculate them:
 
@@ -344,7 +374,7 @@ The master login has **Archive status** in the main menu. It opens with one line
 | Disk use | the database (SQLite or PostgreSQL) and its size, the media on disk, and the total on disk |
 | Statistics | when they were last calculated |
 
-![Archive status in the main menu](../images/screenshots/archive-status-desktop.png)
+![Archive status in the main menu](../images/screenshots/archive-status.png){ width="480" }
 
 ## On a phone
 
@@ -356,7 +386,17 @@ Below 768 px wide, the layout changes:
 - Header buttons get 44 px touch targets, and the menus and dialogs open as bottom sheets.
 - The resize handles are hidden.
 
-![The chat list on a phone](../images/screenshots/chat-list-mobile.png){ width="300" }
+=== "Chat list"
+
+    ![The chat list on a phone](../images/screenshots/chat-list-mobile.png){ width="300" }
+
+=== "Chat"
+
+    ![A group chat on a phone](../images/screenshots/chat-mobile.png){ width="300" }
+
+=== "Telegram Night"
+
+    ![The same group chat on a phone in Telegram Night](../images/screenshots/chat-mobile-dark.png){ width="300" }
 
 ## Install as an app
 

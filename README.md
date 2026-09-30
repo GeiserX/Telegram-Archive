@@ -15,13 +15,16 @@
 
 Telegram Archive backs up one or more Telegram accounts to a machine you host. It runs in Docker and saves messages, media, edits and deletions to SQLite or PostgreSQL on your own disk. A web viewer lets you read and search what it saved. The viewer never talks to Telegram.
 
-![Telegram Archive viewer](https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-desktop.png)
+<p align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-desktop.png" alt="A group chat in the viewer, with a pinned message, an album, replies and reactions" width="880"></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-mobile.png" alt="A group chat on a phone" width="250">
-  <img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/deleted-mobile.png" alt="Messages deleted in Telegram, kept and marked" width="250">
-  <img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/what-changed-mobile.png" alt="What changed: deletions, edits and transcripts" width="250">
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-mobile.png" alt="The same group chat on a phone" width="190"><br><sub>On a phone</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-deleted-mobile.png" alt="A message deleted in Telegram, kept and marked in the archive" width="190"><br><sub>Deletions kept</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/edit-history-mobile.png" alt="The edit history of a message edited twice" width="190"><br><sub>Every edit kept</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-mobile-dark.png" alt="The group chat in Telegram Night" width="190"><br><sub>Telegram Night</sub></td>
+  </tr>
+</table>
 
 ## Features
 

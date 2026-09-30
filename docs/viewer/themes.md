@@ -4,9 +4,9 @@ This page shows how to pick a colour theme in the viewer, set a default theme fo
 
 ## Pick a theme
 
-Open the main menu, the three lines at the top of the sidebar, and click **Theme**. Its row names the theme you use now. A list opens in the menu with **Match system** at the top and the eleven themes below it. Click one and the viewer switches to it at once. Each row shows a tiny chat: the theme's background with a message from someone else at the top left and one of your own at the bottom right. The one for Match system is split on the diagonal between the two themes it can show, and its row says which one it shows now. The back arrow returns to the menu. On a phone the menu opens as a sheet, with the themes two to a row.
+Open the main menu, the three lines at the top of the sidebar, and click **Theme**. Its row names the theme you use now. A list opens in the menu with **Match system** at the top and the eleven themes below it, grouped under Light and Dark. Click one and the viewer switches to it at once. Each row shows a tiny chat: the theme's background with a message from someone else at the top left and one of your own at the bottom right. The one for Match system is split on the diagonal between the two themes it can show, and its row says which one it shows now. The back arrow returns to the menu. On a phone the menu opens as a sheet, with the themes two to a row.
 
-![The Theme page of the main menu](../images/screenshots/theme-picker.png)
+![The Theme page of the main menu](../images/screenshots/theme-picker.png){ width="480" }
 
 ## The themes
 
@@ -14,9 +14,9 @@ Open the main menu, the three lines at the top of the sidebar, and click **Theme
 |----|-------|------|
 | `system` | Match system | Telegram Day or Telegram Night, the default |
 | `telegram` | Telegram Day | Light, green wallpaper with a line pattern |
-| `night` | Telegram Night | Dark |
-| `iosnight` | iOS Night | Dark, black lists and blue outgoing messages |
-| `slate` | Slate | Dark |
+| `night` | Telegram Night | Dark, plain dark blue wallpaper |
+| `iosnight` | iOS Night | Dark, black lists, blue outgoing messages and a dark line pattern |
+| `slate` | Slate | Dark blue-grey with a dark line pattern, the old default |
 | `minimal` | Minimal | Light, one colour for every name |
 | `graphite` | Graphite | Dark, one colour for every name |
 | `amoled` | AMOLED | Dark, true black |
@@ -29,7 +29,11 @@ Open the main menu, the three lines at the top of the sidebar, and click **Theme
 
 Every theme keeps text at a contrast of at least 4.5:1, including the times, the quotes and the names in group chats.
 
-Each screenshot below shows the same group chat in one theme. Telegram Day comes first because Match system shows it on a light system.
+Each screenshot below shows the same group chat in one theme. The Match system picture is split on the diagonal: a light system sees the top left half, a dark system the bottom right half.
+
+=== "Match system"
+
+    ![Match system, Telegram Day on a light system and Telegram Night on a dark one](../images/screenshots/theme-system.png)
 
 === "Telegram Day"
 
@@ -86,6 +90,8 @@ When the page loads, the viewer takes the first of these that holds a known them
 
 The choice is stored in the browser. It does not follow a user to another browser or another device. A browser that never picked a theme stores nothing, so it follows the default.
 
+Up to 8.17.0 the default was Slate. A browser that never picked a theme now opens in Match system. A theme picked in the picker, including Slate, stays picked, and every `?theme=` link keeps working.
+
 To open the viewer in Day for someone else, send them a link with `?theme=day`, for example `https://archive.example.com/?theme=day`. Their browser keeps Day until they pick something else.
 
 ## Set a default for all browsers
@@ -108,7 +114,7 @@ docker compose up -d telegram-viewer
 
 ## Add a chat wallpaper
 
-Telegram Day and iOS Night draw their own wallpaper, a line pattern over a gradient. The other themes use a flat colour.
+Telegram Day draws its own wallpaper: a light line pattern of small doodles over a green gradient, as in Telegram's apps. iOS Night and Slate draw the same pattern in a dark version. The other themes use a flat colour, so the messages stand on a calm plain background. The pattern is a static file that ships with the viewer, so it needs no setting and no network.
 
 `VIEWER_CHAT_BACKGROUND` names an image file that the viewer shows behind the messages in every theme, in place of the theme's own wallpaper.
 

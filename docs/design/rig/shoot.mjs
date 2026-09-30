@@ -268,6 +268,15 @@ async function openAvatarHistory(page) {
     await page.waitForTimeout(300)
 }
 
+// The earlier photos paged in the lightbox, opened from the info panel.
+async function openAvatarLightbox(page) {
+    await openAvatarHistory(page)
+    await page.locator('[data-testid="previous-avatars"] .earlier-photo').first().click()
+    await page.locator('[role="dialog"][aria-modal="true"] img').first().waitFor({ state: 'visible', timeout: 10000 })
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(400)
+}
+
 async function openExportDialog(page, mobile) {
     await open(page)
     await openGroup(page)
@@ -369,6 +378,7 @@ const desktopViews = {
     '21-topics': (page) => openTopics(page),
     '22-admin': (page) => openAdmin(page),
     '24-transcripts': (page) => openTranscripts(page),
+    '25-avatar-lightbox': (page) => openAvatarLightbox(page),
 }
 
 const mobileViews = {
@@ -391,6 +401,7 @@ const mobileViews = {
     '17-date-picker-mobile': (page) => openDatePicker(page),
     '19-main-menu-mobile': (page) => openMainMenu(page),
     '20-media-missing-mobile': (page) => openMediaMissing(page),
+    '25-avatar-lightbox-mobile': (page) => openAvatarLightbox(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the

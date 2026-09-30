@@ -60,7 +60,7 @@ The listener applies an edit only when the text changed and the edit is not olde
 
 When an edit is applied, the previous text is saved as a version. The viewer marks the message "edited", with the number of saved versions in its tooltip, and lets you open the earlier texts.
 
-![The edit history of a message edited twice](../images/screenshots/edit-history-desktop.png)
+![The edit history of a message edited twice](../images/screenshots/edit-history.png)
 
 An edit that changes only the formatting refreshes the stored formatting quietly. It saves no version, sends no update to the viewer and fires no webhook.
 
