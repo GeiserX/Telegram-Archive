@@ -421,20 +421,81 @@ class TestPeerColourContrast(unittest.TestCase):
             assert "--tg-accent-strong" not in rule, selector
 
     def test_the_edit_history_marks_stay_readable(self):
-        """Added words keep the side's text colour on the green tint; removed
-        words take the time colour on the faint red tint."""
+        """The edit history is a timeline on the panel colour: each text on a card,
+        the field grey for an earlier version and the accent's light tint for the
+        current one. Added words keep the ink on the green tint; removed words take
+        the darker neutral (n300) on the faint red tint, on both cards and on the
+        panel (the key under the header). The time of each version is the ink on
+        the panel, the "Edit 1 · 2 min later" beside it the muted colour."""
+        for name, tokens in self.palettes.items():
+            panel = _triplet(tokens["--tg-sidebar"])
+            ink = _triplet(tokens["--tg-ink"])
+            removed_fg = _triplet(tokens["--tg-n300"])
+            self._check(name, "version time on the panel", ink, panel)
+            self._check(name, "version label on the panel", _triplet(tokens["--tg-muted"]), panel)
+            self._check(name, "removed sample in the key", removed_fg, self._tinted(tokens, "--tg-diff-del-bg", panel))
+            for card_name, token in (("earlier card", "--tg-field"), ("current card", "--tg-accent-dim")):
+                card = _triplet(tokens[token])
+                self._check(name, f"text on the {card_name}", ink, card)
+                added = self._tinted(tokens, "--tg-diff-ins-bg", card)
+                removed = self._tinted(tokens, "--tg-diff-del-bg", card)
+                self._check(name, f"added words on the {card_name}", ink, added)
+                self._check(name, f"removed words on the {card_name}", removed_fg, removed)
+                # The underline under added words is a non-text mark: 3:1 on the card.
+                line = _triplet(tokens["--tg-diff-ins-line"])
+                self._check(name, f"added underline on the {card_name}", line, card, 3.0)
+
+    def test_the_removed_word_colour_is_the_one_that_reads_everywhere(self):
+        # Positive control: the time colour the bubbles used, and the n400 of the
+        # first mockup, both fall under 4.5:1 for a removed word on some theme's
+        # tinted card; n300 is the neutral that clears every theme.
+        def worst(token: str) -> float:
+            ratios = []
+            for tokens in self.palettes.values():
+                for card in ("--tg-field", "--tg-accent-dim"):
+                    tinted = self._tinted(tokens, "--tg-diff-del-bg", _triplet(tokens[card]))
+                    ratios.append(_contrast(_triplet(tokens[token]), tinted))
+            return min(ratios)
+
+        self.assertLess(worst("--tg-muted"), 4.5)
+        self.assertLess(worst("--tg-n400"), 4.5)
+        self.assertGreaterEqual(worst("--tg-n300"), 4.5)
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        for selector in (".version-bubble .diff-del {", ".version-key .diff-del {", ".edit-peek .diff-del {"):
+            rule = html[html.index("}\n        " + selector) + 1 :]
+            rule = rule[: rule.index("}")]
+            assert "color: rgb(var(--tg-n300));" in rule, selector
+
+    def test_the_peek_reads_on_the_panel_colour(self):
+        """The peek over the pencil is a popup on the panel colour: its first line
+        ("Edited at 08:57, 2 earlier versions kept") and the earlier text in the
+        ink, "Before the last edit · edited 08:54" muted, the removed words in n300
+        on the red tint, and "See all 3 versions" in the link colour."""
+        for name, tokens in self.palettes.items():
+            panel = _triplet(tokens["--tg-sidebar"])
+            self._check(name, "peek head and text", _triplet(tokens["--tg-ink"]), panel)
+            self._check(name, "peek label", _triplet(tokens["--tg-muted"]), panel)
+            self._check(
+                name,
+                "peek removed words",
+                _triplet(tokens["--tg-n300"]),
+                self._tinted(tokens, "--tg-diff-del-bg", panel),
+            )
+            self._check(name, "See all versions", _triplet(tokens["--tg-accent-soft"]), panel)
+
+    def test_the_edit_mark_and_the_edited_head_read_on_the_bubble(self):
+        """The pencil and its count sit in the meta row in the time colour; in the
+        "Edited only" list the head of each bubble says "Edited · 08:57" in the
+        time colour and "Show in chat" in the link colour, on the plain bubble."""
         for name, tokens in self.palettes.items():
             for side in ("in", "out"):
                 for fill in self._fills(tokens, side):
-                    added = self._tinted(tokens, "--tg-diff-ins-bg", fill)
-                    removed = self._tinted(tokens, "--tg-diff-del-bg", fill)
-                    self._check(name, f"text-{side} on the added tint", _triplet(tokens[f"--tg-text-{side}"]), added)
                     self._check(
-                        name, f"meta-{side} on the removed tint", _triplet(tokens[f"--tg-meta-{side}"]), removed
+                        name, f"pencil and count on the {side} bubble", _triplet(tokens[f"--tg-meta-{side}"]), fill
                     )
-                    # The underline under added words is a non-text mark: 3:1 on the fill.
-                    line = _triplet(tokens["--tg-diff-ins-line"])
-                    self._check(name, f"added underline on the {side} bubble", line, fill, 3.0)
+                    self._check(
+                        name, f"Show in chat on the {side} bubble", _triplet(tokens[f"--tg-quote-{side}"]), fill
+                    )
 
     def test_added_words_carry_a_mark_beside_the_colour(self):
         """Added words are underlined and removed ones struck through, so the

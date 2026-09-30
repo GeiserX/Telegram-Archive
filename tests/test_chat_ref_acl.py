@@ -57,7 +57,7 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_chat_ref_"
 
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import Chat, Media, Message
+from telegram_archive.db.models import Chat, Media, Message, MessageVersion
 from telegram_archive.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -120,6 +120,11 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
                     deleted_at=start + timedelta(days=1),
                 )
             )
+            # Two edits in chat A, one of each kind: message 2 is marked edited by
+            # Telegram with no earlier text kept, message 3 has a kept version and
+            # no mark. Chat B's message 1 is edited, under the id of chat A's
+            # unedited message 1, so an edit list that leaked across chats could
+            # not hide behind the id alone either.
             session.add(
                 Message(
                     account_id=1,
@@ -128,6 +133,7 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
                     date=start + timedelta(minutes=1),
                     text="alpha photo",
                     sender_id=SENDER_ID,
+                    edit_date=start + timedelta(minutes=6),
                 )
             )
             session.add(
@@ -142,6 +148,28 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
                     text="beta",
                     is_deleted=1,
                     deleted_at=start + timedelta(hours=2),
+                    edit_date=start + timedelta(hours=1, minutes=3),
+                )
+            )
+            session.flush()
+            session.add(
+                MessageVersion(
+                    account_id=1,
+                    message_id=3,
+                    chat_id=CHAT_A_ID,
+                    text="alpha clip draft",
+                    date=start + timedelta(minutes=2),
+                    change_hash="matrix-version-a3",
+                )
+            )
+            session.add(
+                MessageVersion(
+                    account_id=1,
+                    message_id=1,
+                    chat_id=CHAT_B_ID,
+                    text="beta draft",
+                    date=start + timedelta(hours=1),
+                    change_hash="matrix-version-b1",
                 )
             )
             session.add(
@@ -423,6 +451,76 @@ async def test_a_restricted_viewer_never_sees_another_chats_deletions(viewer_app
         for ref in (archive.ref_a, archive.ref_b):
             resp = await client.get(f"/api/chats/{ref}/messages?deleted_only=true")
             assert (resp.status_code, resp.json()) == (404, UNIFORM_404)
+
+
+# ============================================================================
+# (b3) The "Edited only" list, the same way
+# ============================================================================
+
+
+async def test_edited_only_lists_the_chats_own_edits_and_matches_the_count(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter)
+        resp = await client.get(f"/api/chats/{archive.ref_a}/messages?limit=50&offset=0&edited_only=true")
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        # Newest first: the kept version without a mark, then the mark without a version.
+        assert [(row["id"], row["version_count"], row["edit_date"] is not None) for row in rows] == [
+            (3, 1, False),
+            (2, 0, True),
+        ]
+        # The chat's figure counts the same rows the list holds.
+        stats = await client.get(f"/api/chats/{archive.ref_a}/stats")
+        assert stats.status_code == 200, stats.text
+        assert stats.json()["edited_messages"] == len(rows)
+        # A text query narrows the list; one that matches only unedited rows empties it.
+        hit = await client.get(f"/api/chats/{archive.ref_a}/messages?search=clip&edited_only=true")
+        assert [row["text"] for row in hit.json()] == ["alpha clip"]
+        miss = await client.get(f"/api/chats/{archive.ref_a}/messages?search=hello&edited_only=true")
+        assert miss.status_code == 200, miss.text
+        assert miss.json() == []
+        # Chat B holds one edit, under the id of chat A's unedited message.
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages?edited_only=true")
+        assert [row["text"] for row in other.json()] == ["beta"]
+
+
+async def test_a_restricted_viewer_never_sees_another_chats_edits(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a]))
+        own = await client.get(f"/api/chats/{archive.ref_a}/messages?edited_only=true")
+        assert own.status_code == 200, own.text
+        assert [row["text"] for row in own.json()] == ["alpha clip", "alpha photo"]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages?edited_only=true")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
+        other_versions = await client.get(f"/api/chats/{archive.ref_b}/messages/1/versions")
+        assert (other_versions.status_code, other_versions.json()) == (404, UNIFORM_404)
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_accounts=json.dumps([2]))
+        for ref in (archive.ref_a, archive.ref_b):
+            resp = await client.get(f"/api/chats/{ref}/messages?edited_only=true")
+            assert (resp.status_code, resp.json()) == (404, UNIFORM_404)
+
+
+async def test_a_share_link_never_sees_another_chats_edits(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        resp = await client.post("/api/login", json={"username": MASTER_USERNAME, "password": MASTER_PASSWORD})
+        assert resp.status_code == 200, resp.text
+        created = await client.post(
+            "/api/admin/tokens", json={"label": "matrix-edits", "allowed_chat_refs": [archive.ref_a]}
+        )
+        assert created.status_code == 200, created.text
+        share_token = created.json()["token"]
+    async with _client() as client:
+        resp = await client.post("/auth/token", json={"token": share_token})
+        assert resp.status_code == 200, resp.text
+        own = await client.get(f"/api/chats/{archive.ref_a}/messages?edited_only=true")
+        assert own.status_code == 200, own.text
+        assert [row["id"] for row in own.json()] == [3, 2]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages?edited_only=true")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
 
 
 # ============================================================================

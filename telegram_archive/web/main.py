@@ -3055,6 +3055,7 @@ async def get_messages(
     after_id: int | None = None,
     topic_id: int | None = None,
     deleted_only: bool = False,
+    edited_only: bool = False,
 ):
     """
     Get messages for a specific chat with user and media info.
@@ -3072,6 +3073,10 @@ async def get_messages(
     reads, never writes, and stays inside the chat the route already resolved
     for this viewer, so it cannot widen what a viewer sees. With no ``search``
     it lists every deletion of the chat; with one it narrows the search.
+
+    ``edited_only=true`` does the same for edits: the messages Telegram marks
+    as edited (``edit_date`` set) or with at least one earlier version kept in
+    ``message_versions``. The same read-only narrowing, inside the same chat.
 
     Cursor-based pagination is preferred for infinite scroll.
     """
@@ -3099,6 +3104,7 @@ async def get_messages(
             account_id=chat.account_id,
             with_transcripts=not user.no_download,
             deleted_only=deleted_only,
+            edited_only=edited_only,
         )
         # get_messages_paginated returns a list of message dicts; guard so an
         # unexpected shape can never turn a read into a 500.

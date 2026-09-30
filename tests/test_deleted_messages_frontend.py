@@ -42,6 +42,7 @@ const viewerTimezone = { value: 'UTC' }
 const selectedChat = { value: { id: 7, ref: 'r7' } }
 const messageSearchQuery = { value: '' }
 const deletedOnly = { value: false }
+const editedOnly = { value: false }
 const openDeletedMessages = { value: {} }
 let ALBUMS = {}
 const getAlbumForMessage = (msg) => ALBUMS[msg.raw_data?.grouped_id] || null
@@ -358,7 +359,9 @@ class TestTheDeletedOnlyMode(unittest.TestCase):
 
     def test_the_menu_item_shows_the_count_and_hides_at_zero(self) -> None:
         menu = self.html[
-            self.html.index('<div v-if="!noDownload || chatDeletedCount > 0" class="relative phone-hide">') :
+            self.html.index(
+                '<div v-if="!noDownload || chatDeletedCount > 0 || chatEditedCount > 0" class="relative phone-hide">'
+            ) :
         ]
         menu = menu[: menu.index("<!-- Info panel toggle")]
         item = menu[menu.index('<button v-if="chatDeletedCount !== 0" type="button" @click="openDeletedOnly"') :]
@@ -443,6 +446,7 @@ class TestTheDeletedOnlyMode(unittest.TestCase):
         prelude = """
 const chatMenuOpen = { value: true }
 const deletedOnly = { value: false }
+const editedOnly = { value: true }
 const messageSearchQuery = { value: 'north' }
 const chatSearchOpen = { value: false }
 let messageSearchDebounceTimer = null
@@ -458,14 +462,23 @@ const loadMessagesAroundId = async (id) => CALLS.push(`jump:${id}:${deletedOnly.
             prelude,
             """(async () => {
     await openDeletedOnly()
-    const opened = { deletedOnly: deletedOnly.value, menu: chatMenuOpen.value, search: chatSearchOpen.value, calls: CALLS.slice() }
+    const opened = { deletedOnly: deletedOnly.value, editedOnly: editedOnly.value, menu: chatMenuOpen.value, search: chatSearchOpen.value, calls: CALLS.slice() }
     CALLS.length = 0
     await showDeletedInChat({ id: 5 })
-    console.log(JSON.stringify({ opened, shown: { deletedOnly: deletedOnly.value, search: chatSearchOpen.value, calls: CALLS } }))
+    console.log(JSON.stringify({ opened, shown: { deletedOnly: deletedOnly.value, editedOnly: editedOnly.value, search: chatSearchOpen.value, calls: CALLS } }))
 })();""",
         )
         self.assertEqual(
             out["opened"],
-            {"deletedOnly": True, "menu": False, "search": True, "calls": ["closePinned", "search:true", "openSearch"]},
+            {
+                "deletedOnly": True,
+                # The two modes never hold at once: opening one leaves the other.
+                "editedOnly": False,
+                "menu": False,
+                "search": True,
+                "calls": ["closePinned", "search:true", "openSearch"],
+            },
         )
-        self.assertEqual(out["shown"], {"deletedOnly": False, "search": False, "calls": ["jump:5:false:"]})
+        self.assertEqual(
+            out["shown"], {"deletedOnly": False, "editedOnly": False, "search": False, "calls": ["jump:5:false:"]}
+        )

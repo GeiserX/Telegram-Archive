@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from telegram_archive.db.adapter import DatabaseAdapter, _strip_tz, retry_on_locked
-from telegram_archive.db.models import Message
+from telegram_archive.db.models import Message, MessageVersion
 
 # ============================================================
 # _strip_tz helper
@@ -1946,12 +1946,15 @@ class TestGetChatStats:
         date_result.one.return_value = (datetime(2024, 1, 1), datetime(2025, 6, 1))
         kept_result = MagicMock()
         kept_result.one.return_value = (3, 7)
-        mock_session.execute.side_effect = [msg_result, media_result, date_result, kept_result]
+        unmarked_result = MagicMock()
+        unmarked_result.scalar.return_value = 2
+        mock_session.execute.side_effect = [msg_result, media_result, date_result, kept_result, unmarked_result]
 
         result = await adapter.get_chat_stats(100, with_kept_changes=True)
 
         assert result["deleted_messages"] == 3
-        assert result["edited_messages"] == 7
+        # Seven marked edited, plus two unmarked rows with a kept version.
+        assert result["edited_messages"] == 9
         date_sql = str(mock_session.execute.call_args_list[2].args[0]).lower()
         assert "min(" in date_sql and "max(" in date_sql
         assert "sum(" not in date_sql and "case" not in date_sql
@@ -1977,7 +1980,10 @@ class TestGetChatStats:
         kept_result = MagicMock()
         kept_result.one.return_value = (None, None)
 
-        mock_session.execute.side_effect = [msg_result, media_result, date_result, kept_result]
+        unmarked_result = MagicMock()
+        unmarked_result.scalar.return_value = None
+
+        mock_session.execute.side_effect = [msg_result, media_result, date_result, kept_result, unmarked_result]
 
         result = await adapter.get_chat_stats(999, with_kept_changes=True)
         assert result["messages"] == 0
@@ -2036,12 +2042,36 @@ class TestGetChatStatsKeptChanges:
                             edit_date=edited,
                         )
                     )
+                await session.flush()
+                # Kept versions: message 4 has one and no mark (it counts), message
+                # 3 has two and a mark (it counts once), and the same ids in the
+                # other account and the other chat never count here.
+                versions = [(1, -500, 4), (1, -500, 3), (1, -500, 3), (2, -500, 1), (1, -600, 1)]
+                for index, (account, chat, mid) in enumerate(versions):
+                    session.add(
+                        MessageVersion(
+                            account_id=account,
+                            chat_id=chat,
+                            message_id=mid,
+                            text=f"old {index}",
+                            date=when,
+                            change_hash=f"hash-{index}",
+                        )
+                    )
                 await session.commit()
             adapter = DatabaseAdapter(db_manager)
             stats = await adapter.get_chat_stats(-500, account_id=1, with_kept_changes=True)
             assert stats["messages"] == 5
             assert stats["deleted_messages"] == 2
-            assert stats["edited_messages"] == 2
+            assert stats["edited_messages"] == 3
+            # The "Edited only" list holds the same rows the count counts, newest
+            # first, and only this chat's and this account's.
+            listed = await adapter.get_messages_paginated(-500, account_id=1, edited_only=True)
+            assert sorted(row["id"] for row in listed) == [2, 3, 4]
+            both = await adapter.get_messages_paginated(-500, account_id=1, edited_only=True, deleted_only=True)
+            assert [row["id"] for row in both] == [2]
+            plain = await adapter.get_messages_paginated(-500, account_id=1)
+            assert len(plain) == 5
             empty = await adapter.get_chat_stats(-999, account_id=1, with_kept_changes=True)
             assert empty["deleted_messages"] == 0
             assert empty["edited_messages"] == 0

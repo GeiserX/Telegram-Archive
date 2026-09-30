@@ -270,15 +270,20 @@ class TestSenderPresentation(unittest.TestCase):
 
 
 def test_message_versions_are_loaded_only_from_click_handler():
-    """Viewer message versions should be fetched lazily from the edited button."""
+    """Viewer message versions are fetched lazily: from the pencil's click (or its
+    peek), never with the message list."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert '@click.stop="toggleMessageVersions(msg)"' in html
+    assert '@click.stop="onEditMarkClick(msg)"' in html
     assert 'v-if="versionsMessage"' in html
-    assert '@click.self="closeVersionsPanel"' in html
+    # The phone's sheet closes from its scrim; the side panel has none.
+    assert '<div v-if="versionsMessage && versionsSheet" class="versions-scrim' in html
+    assert '@click="closeVersionsPanel()" aria-hidden="true"' in html
     assert "const loadMessageVersions = async (msg) =>" in html
     assert "const toggleMessageVersions = async (msg) =>" in html
     assert "const versionsMessage = ref(null)" in html
+    click = _setup_slice(html, "const onEditMarkClick = (msg) =>")
+    assert "toggleMessageVersions(msg)" in click
 
     load_start = html.index("const loadMessageVersions = async (msg) =>")
     toggle_start = html.index("const toggleMessageVersions = async (msg) =>")
@@ -289,51 +294,49 @@ def test_message_versions_are_loaded_only_from_click_handler():
     assert "/edits?limit=100" not in html
 
 
-def test_message_versions_trigger_is_plain_text():
-    """The edited trigger stays quiet: the word Telegram uses and a small history icon.
-
-    The count of versions the archive kept rides the tooltip and the accessible
-    name, and the edit history it opens states it first, so a touch screen still
-    gets it in one tap. The button carries a 40px hit area.
-    """
+def test_the_edit_mark_is_a_pencil_with_the_count():
+    """The meta row marks an edit with a pencil and the number of earlier versions
+    the archive kept, not the word "edited". Its accessible name says when the last
+    edit was and how many versions are kept; it is a button with a 40px hit area
+    that opens a dialog (the edit history)."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert "fa-solid fa-pen" not in html
-    assert "decoration-dotted" not in html
-    assert "underline-offset-2" not in html
     assert "edited({{ msg.version_count }})" not in html
-    start = html.index('<button v-if="Number(msg.version_count) > 0"')
+    start = html.index('<button v-if="isEditedMessage(msg)"')
     button = html[start : html.index("</button>", start)]
-    assert "</svg>edited\n" in button
-    assert "edited · {{ msg.version_count }}" not in button
-    assert "kept. Open edit history" in button
+    assert '<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>' in button  # the pencil
+    assert (
+        '<span v-if="editedCount(msg) > 0" class="meta-edited-count">{{ formatCount(editedCount(msg)) }}</span>'
+        in button
+    )
+    assert "</svg>edited" not in button
     assert 'class="meta-edited hit-40 order-2' in button
-    assert "earlier ${Number(msg.version_count) === 1 ? 'version' : 'versions'}" in button
-    assert ":aria-label=" in button
+    assert ':aria-label="editedLabel(msg)"' in button
+    assert 'aria-haspopup="dialog"' in button
+    assert ":aria-expanded=\"isVersionsPanelOpenFor(msg) ? 'true' : 'false'\"" in button
+    # No native tooltip: the peek is the tooltip, and a title would draw a second one.
+    assert ":title=" not in button
 
 
-def test_edited_without_versions_is_not_clickable():
-    """Edited messages should open versions only when retained versions exist."""
+def test_edited_without_versions_is_still_a_button():
+    """A message Telegram marks edited with no earlier text kept shows the pencil
+    alone. It is still a button, so a keyboard and a touch screen reach what its
+    tooltip says: the history opens on "The archive did not see an earlier version"."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    clickable = 'v-if="Number(msg.version_count) > 0"'
-    fallback = 'v-else-if="msg.edit_date"'
-    click_handler = '@click.stop="toggleMessageVersions(msg)"'
-
-    assert clickable in html
-    assert fallback in html
-    assert html.index(clickable) < html.index(click_handler) < html.index(fallback)
-    assert '<span v-else-if="msg.edit_date"' in html
-    assert ">edited</span>" in html
+    assert '<span v-else-if="msg.edit_date"' not in html
+    assert "const isEditedMessage = (msg) => !!msg?.edit_date || editedCount(msg) > 0" in html
+    assert "The archive did not see an earlier version." in html
 
 
 def test_versions_can_open_without_edit_date_when_count_exists():
     """Retained versions should be clickable even when the current edit marker is absent."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'v-if="Number(msg.version_count) > 0"' in html
+    assert '<button v-if="isEditedMessage(msg)"' in html
     assert 'v-if="msg.edit_date && Number(msg.version_count) > 0"' not in html
-    assert ':title="editedTitle(msg)"' in html
+    assert "const editedCount = (msg) => Number(msg?.version_count) || 0" in html
 
 
 def test_message_versions_ignore_stale_load_responses():
@@ -361,10 +364,10 @@ def test_message_status_badges_show_timestamps_on_hover():
     """Edited/deleted status badges should expose their event timestamps on hover."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    # An edit keeps its mark beside the time. A deletion moved to the head of
-    # the bubble, with its own time: the meta row carries the send time only.
-    edited_title = ':title="editedTitle(msg)"'
-    assert edited_title in html
+    # An edit keeps its mark beside the time, named with the edit's own time.
+    # A deletion moved to the head of the bubble, with its own time: the meta
+    # row carries the send time only.
+    assert ':aria-label="editedLabel(msg)"' in html
     assert "isBubbleDeleted(msg) && metaOpensInfo" not in html
     assert '<span v-else-if="isBubbleDeleted(msg)" class="meta-deleted' not in html
     assert '<span class="deleted-head" :title="deletedNoticedTitle(msg)">' in html
@@ -372,10 +375,9 @@ def test_message_status_badges_show_timestamps_on_hover():
     deleted = deleted[: deleted.index("\n                }\n")]
     assert "formatStamp(member.deleted_at)" in deleted
     assert "The archive kept it." in deleted
-    edited = html[html.index("const editedTitle = (msg) =>") :]
-    edited = edited[: edited.index("\n                }\n")]
-    assert "Click to see them." in edited
-    assert "The archive did not see the earlier text." in edited
+    edited = _setup_slice(html, "const editedLabel = (msg) =>")
+    assert "earlier ${kept === 1 ? 'version' : 'versions'} kept" in edited
+    assert "The archive did not see the earlier text" in edited
     # The time's own tooltip carries the full date, the edit and the deletion.
     assert '<span v-else class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
     start = html.index("const messageTimeTitle = (msg) =>")
@@ -431,12 +433,13 @@ def test_versions_drawer_dialog_semantics():
     """The versions drawer aside must carry ARIA dialog attributes."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    drawer_index = html.index("<!-- Message Versions Drawer -->")
-    lightbox_index = html.index("<!-- Lightbox Modal for Images -->")
-    drawer_html = html[drawer_index:lightbox_index]
+    start = html.index('<aside v-if="versionsMessage" ref="versionsDialog"')
+    aside = html[start : html.index(">", start)]
 
-    assert 'role="dialog"' in drawer_html
-    assert 'aria-modal="true"' in drawer_html
+    assert 'role="dialog"' in aside
+    assert 'aria-labelledby="versions-title"' in aside
+    # Modal only as the phone's sheet; beside the chat it is not.
+    assert ":aria-modal=\"versionsSheet ? 'true' : null\"" in aside
 
 
 def test_versions_401_sets_unauthenticated():
@@ -642,8 +645,8 @@ def test_realtime_polling_skips_search_results():
     search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
 
     assert "isRefreshing || messageFilterOn()" in refresh_body
-    # The "Deleted only" list is a filtered view too: the same guards cover it.
-    assert "const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value" in html
+    # The "Deleted only" and "Edited only" lists are filtered views too: the same guards cover them.
+    assert "const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value || editedOnly.value" in html
     assert "chatVersion++" in search_body
     # The version bump makes an invalidated in-flight load skip its own loading=false
     # (finally sees a version mismatch), so search must reset the gate itself or a
@@ -2120,7 +2123,8 @@ const selectedPaneTopic = { value: null }
 const messages = { value: [] }
 const messageSearchQuery = { value: '' }
 const deletedOnly = { value: false }
-const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
+const editedOnly = { value: false }
+const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value || editedOnly.value
 const chatStats = { value: null }
 const pinnedMessages = { value: [] }
 const currentPinnedIndex = { value: 0 }
@@ -2709,7 +2713,8 @@ const messageWindowIsContiguous = { value: false }
 const isAuthenticated = { value: true }
 const messageSearchQuery = { value: '' }
 const deletedOnly = { value: false }
-const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
+const editedOnly = { value: false }
+const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value || editedOnly.value
 const selectedChat = { value: { id: 7, ref: 'r7', title: 'chat' } }
 let oldestMessageCursor = null
 let loadFailureStreak = 0
@@ -3481,7 +3486,8 @@ const previewFallback = ref({})
 const isAuthenticated = ref(true)
 const messageSearchQuery = ref('')
 const deletedOnly = ref(false)
-const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
+const editedOnly = ref(false)
+const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value || editedOnly.value
 const selectedChat = ref({ id: 7, ref: 'r7', title: 'chat' })
 const selectedPaneTopic = ref(null)
 const pinnedMessages = ref([])
@@ -5483,12 +5489,15 @@ def test_a_failed_load_does_not_look_like_loading():
 
 def test_the_info_panel_counts_what_the_archive_kept():
     html = INDEX_HTML.read_text(encoding="utf-8")
-    # The deleted count opens the chat's "Deleted only" list; the edited one is a figure.
+    # The deleted count opens the chat's "Deleted only" list, the edited one its "Edited only" list.
     assert (
         '<button v-if="chatStats.deleted_messages > 0" type="button" class="tg-row" @click="openDeletedOnlyFromInfo"'
         in html
     )
-    assert '<div v-if="chatStats.edited_messages > 0" class="tg-row">' in html
+    assert (
+        '<button v-if="chatStats.edited_messages > 0" type="button" class="tg-row" @click="openEditedOnlyFromInfo"'
+        in html
+    )
     # The message's deletion is a fact in the calm deleted colour, never a red pill.
     status = html[html.index('<div v-if="infoPanelMessage.is_deleted" class="tg-fact">') :]
     status = status[: status.index("</div>\n                            </div>")]
