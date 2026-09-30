@@ -5,15 +5,14 @@
 <h1 align="center">Telegram Archive</h1>
 
 <p align="center">
-  <a href="https://hub.docker.com/r/drumsergio/telegram-archive"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker" alt="Docker Pulls"></a>
-  <a href="https://github.com/GeiserX/Telegram-Archive/stargazers"><img src="https://img.shields.io/github/stars/GeiserX/Telegram-Archive?style=flat-square&logo=github" alt="GitHub Stars"></a>
-  <a href="https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE"><img src="https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square" alt="License"></a>
   <a href="https://github.com/GeiserX/Telegram-Archive/releases"><img src="https://img.shields.io/github/v/release/GeiserX/Telegram-Archive?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/GeiserX/Telegram-Archive/tests.yml?style=flat-square&label=tests" alt="Tests"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE"><img src="https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square" alt="License"></a>
+  <a href="https://hub.docker.com/r/drumsergio/telegram-archive"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker" alt="Docker Pulls"></a>
   <a href="https://codecov.io/gh/GeiserX/Telegram-Archive"><img src="https://codecov.io/gh/GeiserX/Telegram-Archive/graph/badge.svg" alt="codecov"></a>
-  <a href="https://geiserx.github.io/Telegram-Archive/"><img src="https://img.shields.io/badge/docs-geiserx.github.io-blue?style=flat-square" alt="Docs"></a>
 </p>
 
-Telegram Archive backs up one or more Telegram accounts to a machine you host. It runs in Docker and saves messages, media, edits and deletions to SQLite or PostgreSQL on your own disk. A web viewer lets you read and search what it saved. The viewer never talks to Telegram.
+Telegram Archive backs up one or more Telegram accounts to a machine you host. It runs in Docker and saves messages, media, edits and deletions to SQLite or PostgreSQL on your own disk. A web viewer, which never talks to Telegram, lets you read and search what it saved.
 
 <p align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-desktop.png" alt="A group chat in the viewer, with a pinned message, an album, replies and reactions" width="880"></p>
 
@@ -41,62 +40,17 @@ Telegram Archive backs up one or more Telegram accounts to a machine you host. I
 
 ## Quick start
 
-1. Get an `api_id` and `api_hash` for your account at [my.telegram.org/apps](https://my.telegram.org/apps).
+You need Docker Compose, and an `api_id` and `api_hash` for your account from [my.telegram.org/apps](https://my.telegram.org/apps).
 
-2. Get the files:
-
-   ```bash
-   git clone https://github.com/GeiserX/Telegram-Archive.git
-   cd Telegram-Archive
-   ```
-
-3. Copy the settings file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   Open `.env` and set these lines. The three viewer lines start commented out, so remove the `#` in front of them:
-
-   ```ini
-   TELEGRAM_API_ID=12345678
-   TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
-   TELEGRAM_PHONE=+15551234567
-   VIEWER_USERNAME=admin
-   VIEWER_PASSWORD=choose-a-long-password
-   VIEWER_TIMEZONE=Europe/London
-   ```
-
-4. Create the data directory. Both containers run as user ID 1000, so that user must own the directory:
-
-   ```bash
-   mkdir -p data && sudo chown -R 1000:1000 data
-   ```
-
-5. Log in to Telegram:
-
-   ```bash
-   docker compose run --rm telegram-backup python -m telegram_archive auth
-   ```
-
-   Telegram sends a login code, and the command asks for it. If the account uses two-step verification, the command also asks for that password. The password is visible as you type, so run this where nobody can see your screen. See [Log in to Telegram](https://geiserx.github.io/Telegram-Archive/getting-started/telegram-login/) if the login fails or must run without a terminal.
-
-6. Start both containers:
-
-   ```bash
-   docker compose up -d
-   ```
-
-7. Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and sign in with `VIEWER_USERNAME` and `VIEWER_PASSWORD`.
-
-The first backup starts right away. [Your first backup](https://geiserx.github.io/Telegram-Archive/getting-started/first-backup/) covers the schedule and what to check next.
-
-The compose file pins both images to this release:
-
-```text
-drumsergio/telegram-archive:8.17.0
-drumsergio/telegram-archive-viewer:8.17.0
+```bash
+git clone https://github.com/GeiserX/Telegram-Archive.git && cd Telegram-Archive
+cp .env.example .env   # set TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE; uncomment and set VIEWER_USERNAME, VIEWER_PASSWORD
+mkdir -p data && sudo chown -R 1000:1000 data   # both containers run as uid 1000; with Colima on macOS, skip the chown
+docker compose run --rm telegram-backup python -m telegram_archive auth
+docker compose up -d   # starts drumsergio/telegram-archive:8.17.0 and drumsergio/telegram-archive-viewer:8.17.0
 ```
+
+The `auth` step asks for the code Telegram sends you (and your two-step verification password, which shows on screen as you type); then open [http://127.0.0.1:8000](http://127.0.0.1:8000), sign in with the viewer username and password, and the first backup is already running. [Run with Docker](https://geiserx.github.io/Telegram-Archive/getting-started/docker/) has every step in detail, and [Log in to Telegram](https://geiserx.github.io/Telegram-Archive/getting-started/telegram-login/) covers a login that fails or must run without a terminal.
 
 ## Documentation
 
@@ -118,4 +72,4 @@ Open an [issue](https://github.com/GeiserX/Telegram-Archive/issues) for bugs and
 
 ## License
 
-GPL-3.0. See [LICENSE](https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE). Built on [Telethon](https://github.com/LonamiWebs/Telethon).
+[GPL-3.0-or-later](https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE). Built on [Telethon](https://github.com/LonamiWebs/Telethon).

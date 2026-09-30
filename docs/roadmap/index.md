@@ -57,7 +57,7 @@ This page lists what Telegram Archive does not do yet, written as what you will 
 
 ## Suggest a feature
 
-Search the [open issues](https://github.com/GeiserX/Telegram-Archive/issues) first, then open a feature request if yours is not there. To build something yourself, read [Contributing](../contributing.md).
+Search the [open issues](https://github.com/GeiserX/Telegram-Archive/issues) first, then open a feature request if yours is not there. To build something yourself, read [Development](../development.md).
 
 ## Recently shipped
 

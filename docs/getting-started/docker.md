@@ -72,7 +72,7 @@ Two defaults to know before the first run:
 mkdir -p data && sudo chown -R 1000:1000 data
 ```
 
-Both containers run as uid 1000 and write the session, database and media under `./data`. The directory must belong to that uid. `chmod 755` does not fix a `Permission denied` here. On Podman, add `--userns=keep-id:uid=1000,gid=1000` to your run commands instead.
+Both containers run as uid 1000 and write the session, database and media under `./data`. The directory must belong to that uid. `chmod 755` does not fix a `Permission denied` here. On Podman, add `--userns=keep-id:uid=1000,gid=1000` to your run commands instead. On macOS with Colima, skip the `chown`: Colima shares the folder as your own user, so the containers can already write it, and a `chown` to 1000 makes it unwritable.
 
 ### 4. Log in to Telegram
 

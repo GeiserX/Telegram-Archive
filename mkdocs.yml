@@ -4,12 +4,13 @@ site_description: Self-hosted Telegram backup with a web viewer. Messages, media
 repo_url: https://github.com/GeiserX/Telegram-Archive
 repo_name: GeiserX/Telegram-Archive
 edit_uri: edit/main/docs/
+strict: true
 
 theme:
   name: material
   language: en
-  logo: logo.svg
-  favicon: icon.svg
+  logo: images/logo.svg
+  favicon: images/icon.svg
   palette:
     - scheme: slate
       primary: custom
@@ -46,6 +47,10 @@ validation:
 
 plugins:
   - search
+  # Old page URLs keep working after a rename.
+  - redirects:
+      redirect_maps:
+        contributing.md: development.md
 
 markdown_extensions:
   - admonition
@@ -97,8 +102,10 @@ extra_css:
 #
 # MkDocs builds every Markdown file in docs_dir, listed in nav or not. A file
 # left out of nav still gets a public URL. `mkdocs build --strict` does not
-# catch this: validation.nav.omitted_files defaults to `info`, and --strict
-# only turns warnings into errors. The only reliable guard is this list.
+# catch this by default, because validation.nav.omitted_files defaults to
+# `info`. Setting it to `warn` makes the strict build fail on any page left
+# out of nav (files listed below are exempt). This list is what keeps these
+# files off the site.
 exclude_docs: |
   # The changelog stays beside the code. People compare the version they run
   # with the one they are about to pull on GitHub, and its links are written
@@ -155,4 +162,4 @@ nav:
       - Environment variables: reference/environment-variables.md
       - Command line and Python API: reference/cli.md
       - HTTP API: reference/api.md
-  - Contributing: contributing.md
+  - Development: development.md

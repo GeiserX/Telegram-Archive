@@ -1,4 +1,4 @@
-# Contributing
+# Development
 
 This page explains how to send a change to Telegram-Archive: the two project rules, local setup, and what a pull request needs before it can merge. The project is licensed GPL-3.0-or-later, and by contributing you agree to license your work under it. Changes arrive as pull requests against `main` from a fork.
 
