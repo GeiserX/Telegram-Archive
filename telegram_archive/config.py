@@ -1116,8 +1116,8 @@ class Config:
         # inside WINDOW are applied immediately (in hard deletion mode,
         # irreversibly), and only the overflow is blocked. Nothing is buffered
         # and nothing already applied is ever rolled back. Edits are never
-        # limited: an edit keeps the earlier text as a version (its earlier
-        # formatting is replaced in place), and Telegram sends reaction changes
+        # limited: an edit keeps the earlier text and its formatting as a
+        # version, and Telegram sends reaction changes
         # as edit events, which must not use up the deletion budget.
         #
         # THRESHOLD: Max deletions applied per chat per window (default: 10)

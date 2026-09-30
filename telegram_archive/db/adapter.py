@@ -457,6 +457,87 @@ def _message_version_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _raw_data_dict(raw_data: Any) -> dict | None:
+    """``raw_data`` as a dict, from its JSON string or a dict; None when it is not one."""
+    if isinstance(raw_data, dict):
+        return raw_data
+    if not raw_data:
+        return {}
+    try:
+        parsed = json.loads(raw_data)
+    except ValueError, TypeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _json_or_none(value: str | None) -> Any:
+    """A JSON column's value, or None when it is empty or unreadable."""
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except ValueError, TypeError:
+        return None
+
+
+def _formatting_of(raw_data: Any) -> list | None:
+    """The formatting entities in ``raw_data``, or None when it has none."""
+    raw = _raw_data_dict(raw_data)
+    entities = raw.get("entities") if raw else None
+    return entities if isinstance(entities, list) and entities else None
+
+
+# The keys of raw_data that describe a text's formatting. An edit moves them
+# into the version it supersedes; nothing else may replace them.
+_FORMATTING_KEYS = ("entities", "rich_message")
+
+
+def _keep_archived_formatting(archived_raw_data: Any, incoming_raw_data: str) -> str:
+    """``incoming_raw_data`` with the archived formatting kept in place.
+
+    For a write that is not an edit (an import that renders text its own way,
+    an older read, an edit Telegram hides). The archived formatting keys win;
+    a key the archive does not have is filled from the incoming payload.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if not archived or incoming is None:
+        return incoming_raw_data
+    merged = dict(incoming)
+    for key in _FORMATTING_KEYS:
+        if key in archived:
+            merged[key] = archived[key]
+    if merged == incoming:
+        return incoming_raw_data
+    return json.dumps(merged)
+
+
+def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
+    """The archived ``raw_data`` with its formatting keys taken from the incoming one.
+
+    For a formatting edit read with no other extras (``"{}"``): the old
+    formatting has gone into the version it supersedes, and the rest of the
+    archived payload stays as it was.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if archived is None or incoming is None:
+        return incoming_raw_data
+    merged = dict(archived)
+    for key in _FORMATTING_KEYS:
+        if key in incoming:
+            merged[key] = incoming[key]
+        else:
+            merged.pop(key, None)
+    return json.dumps(merged) if merged else "{}"
+
+
+# The writers whose upserts are reads of the message from Telegram, so a newer
+# edit_date with other formatting is an edit. An import renders text and
+# formatting its own way, so a difference there is not evidence of an edit.
+_TELEGRAM_READ_SOURCES = ("backup", "listener")
+
+
 def retry_on_locked(
     max_retries: int = 5, initial_delay: float = 0.1, max_delay: float = 2.0, backoff_factor: float = 2.0
 ):
@@ -646,14 +727,21 @@ class DatabaseAdapter:
         message_id: int,
         text: str | None,
         date: datetime,
+        entities: list | None = None,
+        source: str | None = None,
     ) -> bool:
-        """Best-effort capture of a superseded text into message_versions.
+        """Best-effort capture of a superseded version into message_versions.
 
-        Versioning is plain text only — formatting/entity-only edits produce the
-        same text and are intentionally not versioned. Runs inside a SAVEPOINT so
-        an unexpected failure here can never poison the transaction or abort the
-        message upsert/batch it belongs to (the expected duplicate case is already
-        silenced by ON CONFLICT DO NOTHING on change_hash).
+        A version is the text, its formatting (``entities``, the list that was
+        in ``raw_data["entities"]``) and the path that saw it (``source``:
+        listener, sync, backup or import). The formatting is not part of the
+        dedup hash, whose payload is frozen: a version is identified by its
+        text and the time it became current, and a formatting-only edit still
+        gets its own row because every edit moves the time. Runs inside a
+        SAVEPOINT so an unexpected failure here can never poison the
+        transaction or abort the message upsert/batch it belongs to (the
+        expected duplicate case is already silenced by ON CONFLICT DO NOTHING
+        on change_hash).
         """
         date = _strip_tz(date)
         if date is None:
@@ -675,6 +763,8 @@ class DatabaseAdapter:
             "date": date,
             "change_hash": change_hash,
             "captured_at": utcnow_naive(),
+            "entities": json.dumps(entities) if entities else None,
+            "source": source,
         }
         try:
             async with session.begin_nested():
@@ -727,23 +817,38 @@ class DatabaseAdapter:
             return True
         return False
 
-    def _should_apply_edit_text(self, existing: Message, new_text: str, edit_date: datetime | None) -> bool:
+    def _should_apply_edit_text(
+        self,
+        existing: Message,
+        new_text: str,
+        edit_date: datetime | None,
+        formatting_changed: bool = False,
+    ) -> bool:
         """Decide whether a live edit event (listener/sync) may replace archived text.
 
         Differs from the upsert policy on the no-edit_date case: a live event with
         ``edit_date=None`` is applied only when the archived row was never edited —
         an already-edited row is never rolled over on date-less evidence (rare
         bot-API edits may hit this; conservative by design, covered by tests).
+
+        ``formatting_changed`` says the event's formatting differs from the
+        archived one in an edit Telegram shows. Such an edit with the same text
+        applies only with a strictly newer ``edit_date``: every edit moves the
+        date, and the same date means the archive already holds this edit.
         """
         old_edit_date = _strip_tz(existing.edit_date)
         edit_date = _strip_tz(edit_date)
 
         if existing.text == new_text:
-            # Text unchanged -> not a real text edit. Telegram bumps edit_date for
-            # reaction-only changes (#219), so applying here would set edit_date
-            # with no version and surface a phantom "edited" marker. Reactions are
-            # captured by the dedicated reaction path instead.
-            return False
+            if not formatting_changed:
+                # Text and formatting unchanged -> not an edit. Telegram bumps
+                # edit_date for reaction-only changes (#219), so applying here
+                # would set edit_date with no version and surface a phantom
+                # "edited" marker. Reactions are captured by the reaction path.
+                return False
+            if edit_date is None:
+                return False
+            return old_edit_date is None or edit_date > old_edit_date
         if edit_date is None:
             return old_edit_date is None
         if old_edit_date is None:
@@ -825,6 +930,28 @@ class DatabaseAdapter:
         new_edit_date = _strip_tz(values.get("edit_date"))
         return new_edit_date is None or new_edit_date < old_edit_date
 
+    def _is_upsert_formatting_edit(
+        self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
+    ) -> bool:
+        """True when a read from Telegram shows an edit that changed only the formatting.
+
+        Same text, other formatting, and an ``edit_date`` newer than the
+        archived one, in an edit Telegram shows (a hidden edit is a reaction).
+        Only the backup's and the listener's reads qualify: an import renders
+        formatting its own way, and a rendering difference is not an edit.
+        """
+        if message_data.get("version_source") not in _TELEGRAM_READ_SOURCES:
+            return False
+        if values.get("text") != existing.text or values.get("edit_hide"):
+            return False
+        new_edit_date = _strip_tz(values.get("edit_date"))
+        old_edit_date = _strip_tz(existing.edit_date)
+        if new_edit_date is None or (old_edit_date is not None and new_edit_date <= old_edit_date):
+            return False
+        if _raw_data_dict(values.get("raw_data")) is None or _raw_data_dict(existing.raw_data) is None:
+            return False
+        return _formatting_of(values.get("raw_data")) != _formatting_of(existing.raw_data)
+
     def _pending_update_values(
         self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
     ) -> dict[str, Any]:
@@ -838,11 +965,17 @@ class DatabaseAdapter:
         snapshot is immutable.
         """
         update_values = _message_conflict_update_values(message_data, values)
-        if self._should_apply_upsert_text(existing, values):
+        text_applied = self._should_apply_upsert_text(existing, values)
+        formatting_edit = not text_applied and self._is_upsert_formatting_edit(existing, message_data, values)
+        if text_applied:
             if values.get("edit_date") is None and existing.edit_date is not None:
                 # Text change arrived without edit evidence (e.g. late hydration):
                 # keep the existing edit_date rather than nulling it.
                 update_values.pop("edit_date", None)
+        elif formatting_edit:
+            # The text is the same; the edit's date moves, as for a text edit,
+            # so the version it supersedes keeps its own date.
+            update_values.pop("text", None)
         else:
             update_values.pop("text", None)
             update_values.pop("edit_date", None)
@@ -864,6 +997,17 @@ class DatabaseAdapter:
         # information.
         if not _has_raw_payload(values.get("raw_data")) and _has_raw_payload(getattr(existing, "raw_data", None)):
             update_values.pop("raw_data", None)
+
+        # Formatting belongs to the text it came with. An edit moves the old
+        # formatting into the version it supersedes and writes the new one; any
+        # other write keeps the archived formatting and only fills a missing key.
+        if formatting_edit:
+            if _has_raw_payload(values.get("raw_data")):
+                update_values["raw_data"] = values["raw_data"]
+            else:
+                update_values["raw_data"] = _with_formatting_of(existing.raw_data, values["raw_data"])
+        elif not text_applied and "raw_data" in update_values:
+            update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
 
         changed = {}
         for key, value in update_values.items():
@@ -899,6 +1043,7 @@ class DatabaseAdapter:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
 
+        source = message_data.get("version_source")
         if self._older_read_text_to_keep(existing, message_data, values):
             await self._record_message_version(
                 session=session,
@@ -907,12 +1052,17 @@ class DatabaseAdapter:
                 message_id=existing.id,
                 text=values["text"],
                 date=_strip_tz(values.get("edit_date")) or _strip_tz(values["date"]),
+                entities=_formatting_of(values.get("raw_data")),
+                source=source,
             )
 
+        formatting_edit = not self._should_apply_upsert_text(existing, values) and self._is_upsert_formatting_edit(
+            existing, message_data, values
+        )
         update_values = self._pending_update_values(existing, message_data, values)
         if not update_values:
             return
-        if "text" in update_values:
+        if "text" in update_values or formatting_edit:
             await self._record_message_version(
                 session=session,
                 account_id=existing.account_id,
@@ -920,6 +1070,8 @@ class DatabaseAdapter:
                 message_id=existing.id,
                 text=existing.text,
                 date=self._message_version_date(existing),
+                entities=_formatting_of(existing.raw_data),
+                source=source,
             )
         await session.execute(
             update(Message)
@@ -2073,11 +2225,18 @@ class DatabaseAdapter:
         entities: list | None = None,
         update_entities: bool = False,
         rich_message: dict | None = None,
+        source: str | None = None,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
         ``edit_hide`` is Telegram's flag for that ``edit_date`` and is written
-        beside it (None: the caller does not know it).
+        beside it (None: the caller does not know it). ``source`` names the
+        caller's path (``listener`` or ``sync``) on the version it writes.
+
+        An edit writes the version it supersedes first: the old text, its
+        formatting and its date. With ``update_entities`` an edit that changed
+        only the formatting is an edit too, when Telegram shows it and its
+        ``edit_date`` is newer: it gets a version and moves ``edit_date``.
 
         Returns ``(outcome, prior)`` so callers can keep honest counters and
         only broadcast edits that actually changed the archive. ``outcome`` is
@@ -2099,12 +2258,23 @@ class DatabaseAdapter:
                 logger.debug("Edit no-op: message not found in archive")
                 return "not_found", None
 
-            if not self._should_apply_edit_text(message, new_text, edit_date):
-                # Formatting-only edits arrive with UNCHANGED text but different
-                # entities. Merge them silently — no edit_date bump, no version,
-                # no webhook — so formatting stays current without the phantom
-                # "edited" marker #219 removed.
-                if update_entities and self._merge_raw_data_entities(message, entities, rich_message):
+            archived_entities = _formatting_of(message.raw_data)
+            formatting_changed = (
+                update_entities
+                and not edit_hide
+                and _raw_data_dict(message.raw_data) is not None
+                and (entities or None) != archived_entities
+            )
+            if not self._should_apply_edit_text(message, new_text, edit_date, formatting_changed):
+                # Not an edit: the same text and formatting (a reaction moves
+                # edit_date, #219), an edit Telegram hides, or older evidence.
+                # The archived formatting stays; a key the row never had is
+                # filled when the text is the same, since it describes that text.
+                if (
+                    update_entities
+                    and message.text == new_text
+                    and self._fill_missing_formatting(message, entities, rich_message)
+                ):
                     await session.execute(
                         update(Message)
                         .where(
@@ -2117,21 +2287,22 @@ class DatabaseAdapter:
                         .values(raw_data=message.raw_data)
                     )
                     await session.commit()
-                    logger.debug("Edit no-op text, entities refreshed")
+                    logger.debug("Edit no-op text, missing formatting filled")
                 else:
                     logger.debug("Edit no-op: message already current")
                 return "noop", None
 
             prior = {"text": message.text, "sender_id": message.sender_id, "sender_name": message.sender_name}
-            if message.text != new_text:
-                await self._record_message_version(
-                    session=session,
-                    account_id=account_id,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=message.text,
-                    date=self._message_version_date(message),
-                )
+            await self._record_message_version(
+                session=session,
+                account_id=account_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message.text,
+                date=self._message_version_date(message),
+                entities=archived_entities,
+                source=source,
+            )
             await session.execute(
                 update(Message)
                 .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
@@ -2177,6 +2348,27 @@ class DatabaseAdapter:
                     raw.pop(key)
                     changed = True
             elif raw.get(key) != value:
+                raw[key] = value
+                changed = True
+        if not changed:
+            return False
+        message.raw_data = json.dumps(raw)
+        return True
+
+    def _fill_missing_formatting(self, message: Message, entities: list | None, rich_message: dict | None) -> bool:
+        """Add formatting keys the loaded row does not have; True if anything was added.
+
+        Rows archived before formatting was captured have no entities. A later
+        event that is not an edit may fill them, and never replaces a key the
+        archive already holds.
+        """
+        raw = _raw_data_dict(message.raw_data)
+        if raw is None:
+            return False
+        raw = dict(raw)
+        changed = False
+        for key, value in (("entities", entities), ("rich_message", rich_message)):
+            if value and key not in raw:
                 raw[key] = value
                 changed = True
         if not changed:
@@ -2269,11 +2461,15 @@ class DatabaseAdapter:
         }
 
     def _message_version_to_dict(self, row: MessageVersion) -> dict[str, Any]:
+        entities = _formatting_of({"entities": _json_or_none(row.entities)})
         return {
             "chat_id": row.chat_id,
             "message_id": row.message_id,
             "text": row.text,
             "date": row.date,
+            "captured_at": row.captured_at,
+            "source": row.source,
+            "entities": entities,
         }
 
     async def get_message_versions(

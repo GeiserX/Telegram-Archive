@@ -457,6 +457,8 @@ class TestEventHandlers:
         assert listener.stats["new_messages_saved"] == 1
         listener.db.insert_message.assert_called_once()
         listener.db.upsert_chat.assert_called_once()
+        # A version this write makes (an edit read after an older capture) names the listener.
+        assert listener.db.insert_message.call_args.args[0]["version_source"] == "listener"
 
     def test_on_new_message_captures_forward_origin(self, listener_with_handlers, full_config):
         """A forwarded channel post stores the origin pointer in raw_data."""
@@ -872,6 +874,7 @@ class TestEventHandlers:
             entities=None,
             update_entities=True,
             rich_message=None,
+            source="listener",
         )
 
     def test_on_message_edited_carries_rich_text_editor_content(self, listener_with_handlers):

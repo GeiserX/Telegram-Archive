@@ -56,15 +56,15 @@ Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_
 
 ## Edits
 
-The listener applies an edit only when the text changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. An edit to a message that is not in the archive yet stores the message, with its current text and edit time, the way a new message is stored. It is stored quietly: the message is not new, so the viewer gets no new row and no notification or Web Push is sent. That needs `LISTEN_NEW_MESSAGES`, and the text from before the edit is not known unless a backup run read it at the same time, in which case it is kept as an earlier version.
+The listener applies an edit only when the text or the formatting changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. An edit to a message that is not in the archive yet stores the message, with its current text and edit time, the way a new message is stored. It is stored quietly: the message is not new, so the viewer gets no new row and no notification or Web Push is sent. That needs `LISTEN_NEW_MESSAGES`, and the text from before the edit is not known unless a backup run read it at the same time, in which case it is kept as an earlier version.
 
-When an edit is applied, the previous text is saved as a version. The viewer marks the message with a pencil and the number of saved versions, says when the last edit was, and lets you open the earlier texts. See [Reactions, edits and deletions](../viewer/using-the-viewer.md#reactions-edits-and-deletions).
+When an edit is applied, the previous text and its formatting are saved as a version, named as seen by the listener. The viewer marks the message with a pencil and the number of saved versions, says when the last edit was, and lets you open the earlier texts. See [Reactions, edits and deletions](../viewer/using-the-viewer.md#reactions-edits-and-deletions).
 
 ![The edit history of a message edited twice](../images/screenshots/edit-history.png)
 
 Telegram moves a message's edit time when only its reactions change, and flags that edit as one not to show. The archive keeps the flag beside the edit time, and the viewer does not mark or count such a message as edited unless it kept an earlier text.
 
-An edit that changes only the formatting refreshes the stored formatting quietly. It saves no version, sends no update to the viewer and fires no webhook.
+An edit that changes only the formatting, such as a word made bold, is an edit too: it saves a version with the old formatting, moves the edit time and fires the webhook, with the same old and new text. It needs an edit time newer than the stored one, since every edit moves it. An edit Telegram hides replaces no formatting. It only fills the formatting of a message archived before the archive kept formatting.
 
 ## Deletions
 
@@ -99,7 +99,7 @@ The listener can miss some reaction changes. Telegram does not reliably push rea
 
 A burst of deletions, such as someone clearing a whole chat, could remove large parts of the archive. The listener guards against this with a rate limiter on deletions.
 
-Edits are not limited. An edit keeps the earlier text as a version, so the words are never lost. It does replace the earlier formatting (bold, links, a Rich Text Editor layout) in place, and a formatting-only edit makes no version at all. With no limit, a burst of edits replaces the formatting of every message it reaches. Telegram also sends many reaction changes as edit events, so a limit on edits would let a burst of reactions block real edits.
+Edits are not limited. An edit keeps the earlier text and its formatting as a version, so nothing is lost. Telegram also sends many reaction changes as edit events, so a limit on edits would let a burst of reactions block real edits.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|

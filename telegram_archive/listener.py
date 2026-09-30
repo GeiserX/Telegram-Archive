@@ -8,8 +8,8 @@ Safety features:
 - Mass operation detection: Blocks bulk deletions to protect data
 
 Mass operation protection is rate limiting, not buffering, and covers
-deletions only. An edit keeps the earlier text as a version but replaces the
-earlier formatting in place, so edits are never limited. Deletions under
+deletions only. An edit keeps the earlier text and its formatting as a
+version, so edits are never limited. Deletions under
 the threshold are applied immediately; disable LISTEN_DELETIONS to guarantee
 Telegram deletions never remove archived messages.
 """
@@ -79,8 +79,7 @@ class MassOperationProtector:
     Rate-limiting protection against mass deletions.
 
     Only deletions pass through it. Edits are never rate limited: an edit
-    keeps the earlier text as a version, though it replaces the earlier
-    formatting (raw_data entities and rich_message) in place, and Telegram
+    keeps the earlier text and its formatting as a version, and Telegram
     sends many reaction changes as edit events, which would use up the budget
     and drop real text edits.
 
@@ -248,8 +247,8 @@ class TelegramListener:
 
     RATE LIMITING PROTECTION:
     Uses a sliding window to limit deletions per chat. Edits are not limited,
-    since an edit keeps the earlier text as a version (its earlier formatting
-    is replaced in place, not kept). Normal usage (deleting
+    since an edit keeps the earlier text and its formatting as a version.
+    Normal usage (deleting
     a few messages) works instantly. Mass operations (deleting 50+ messages)
     are blocked after the threshold, protecting most of your backup.
 
@@ -1078,8 +1077,8 @@ class TelegramListener:
             Handle message edit events.
 
             Edits are applied at once and never pass through the mass-deletion
-            guard: an edit keeps the earlier text as a version (the earlier
-            formatting is replaced in place, not kept), and a reaction-only
+            guard: an edit keeps the earlier text and its formatting as a
+            version, and a reaction-only
             edit event must not use up a budget that would then drop real
             text edits.
             """
@@ -1129,6 +1128,7 @@ class TelegramListener:
                     entities=message_entities(message),
                     update_entities=True,
                     rich_message=message_rich_payload(message),
+                    source="listener",
                 )
                 if outcome == "not_found":
                     # The archive has not stored this message yet: the backup has
@@ -1355,6 +1355,8 @@ class TelegramListener:
                     "edit_hide": message_edit_hide(message),
                     "raw_data": {},
                     "is_outgoing": 1 if message.out else 0,
+                    # The path named on any version this read writes.
+                    "version_source": "listener",
                 }
 
                 # Capture grouped_id for album detection (multiple photos/videos sent together)

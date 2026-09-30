@@ -1643,6 +1643,12 @@ class TestProcessMessage(unittest.TestCase):
         msg.edit_hide = False
         self.assertEqual(self._run(self.backup._process_message(msg, 100))["edit_hide"], 0)
 
+    def test_a_read_names_the_backup_on_the_versions_it_writes(self):
+        """A version the backup's read writes says it came from the backup, which
+        reads only the text current at that moment (5kr)."""
+        result = self._run(self.backup._process_message(self._make_message(4), 100))
+        self.assertEqual(result["version_source"], "backup")
+
     def test_outgoing_message_sets_flag(self):
         """Outgoing message sets is_outgoing=1."""
         msg = self._make_message(2)

@@ -8262,11 +8262,10 @@
                         </li>
                         <li v-for="entry in versionEntries" :key="entry.key"
                             class="version-item" :class="{ 'is-current': entry.current }">
-                            <p class="version-label"><span v-if="entry.when" class="version-when">{{ entry.when }}</span><span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template><template v-if="entry.parts === null"> · changes not marked, long text</template></span></p>
+                            <p class="version-label"><span v-if="entry.when" class="version-when">{{ entry.when }}</span><span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template><template v-if="entry.formattingOnly"> · formatting only</template><template v-if="entry.parts === null"> · changes not marked, long text</template></span></p>
+                            <!-- entry.html comes from versionHtml: the bubble's renderer, escape-first. -->
                             <div class="version-bubble" :class="{ 'is-current': entry.current }" dir="auto">
-                                <template v-if="entry.parts"><span v-for="(part, i) in entry.parts" :key="i"
-                                    :class="part.kind === 'ins' ? 'diff-ins' : part.kind === 'del' ? 'diff-del' : null">{{ part.text }}</span></template>
-                                <template v-else-if="entry.text">{{ entry.text }}</template>
+                                <span v-if="entry.html" v-html="entry.html"></span>
                                 <span v-else class="version-empty">No text</span>
                             </div>
                         </li>
@@ -15814,40 +15813,121 @@
                     return `${Math.round(hours / 24)} days later`
                 }
 
+                // One piece of a version's text, start to end, with the formatting
+                // of that version, drawn by the bubble's own renderer. An entity
+                // that runs past the piece is cut to it.
+                const formattedSlice = (text, entityList, start, end) => {
+                    const slice = text.slice(start, end)
+                    if (!Array.isArray(entityList) || !entityList.length) return linkifyText(slice)
+                    const local = []
+                    for (const e of entityList) {
+                        if (!e || !Number.isInteger(e.offset) || !Number.isInteger(e.length)) continue
+                        const from = Math.max(e.offset, start)
+                        const to = Math.min(e.offset + e.length, end)
+                        if (from < to) local.push({ ...e, offset: from - start, length: to - from })
+                    }
+                    if (!local.length) return linkifyText(slice)
+                    try {
+                        return renderEntityHtml(slice, local)
+                    } catch (e) {
+                        return linkifyText(slice)
+                    }
+                }
+                // A version's card: its text with its own formatting, the way the
+                // bubble draws it, and what its edit added underlined and what it
+                // removed struck through. A removed word keeps the formatting of the
+                // version it was removed from. Every piece is escaped by the renderer.
+                const versionHtml = (entry, before) => {
+                    if (!entry.parts) return formattedSlice(entry.text, entry.entities, 0, entry.text.length)
+                    let html = ''
+                    let oldAt = 0
+                    let newAt = 0
+                    for (const part of entry.parts) {
+                        const size = part.text.length
+                        if (part.kind === 'del') {
+                            html += `<span class="diff-del">${formattedSlice(before.text, before.entities, oldAt, oldAt + size)}</span>`
+                            oldAt += size
+                        } else if (part.kind === 'ins') {
+                            html += `<span class="diff-ins">${formattedSlice(entry.text, entry.entities, newAt, newAt + size)}</span>`
+                            newAt += size
+                        } else {
+                            html += formattedSlice(entry.text, entry.entities, newAt, newAt + size)
+                            oldAt += size
+                            newAt += size
+                        }
+                    }
+                    return html
+                }
+
+                // What the archive can say about how many edits there were. Only the
+                // listener sees each edit; the sync, a backup and an import read the
+                // text current at that moment, so edits between two reads leave no
+                // version. A message whose oldest kept version is newer than its
+                // send time was first archived already edited. Either way the count
+                // is a lower bound. Versions from before the archive named its paths
+                // have no source and change nothing.
+                const VERSIONS_LIMIT = 100
+                const versionHistoryShape = (msg, kept) => {
+                    const truncated = kept.length >= VERSIONS_LIMIT
+                    const oldest = kept.length ? kept[kept.length - 1] : null
+                    const firstSeenEdited = !truncated && !!oldest && !!oldest.date && !!msg.date
+                        && moment.utc(oldest.date).valueOf() > moment.utc(msg.date).valueOf()
+                    const missedSome = kept.some(entry => entry.source && entry.source !== 'listener')
+                    return {
+                        truncated,
+                        firstSeenEdited,
+                        lowerBound: firstSeenEdited || missedSome,
+                        edits: kept.length + (firstSeenEdited ? 1 : 0),
+                    }
+                }
+
                 // The edit history as a timeline, oldest first: "Sent", "Edit 1", ...
                 // and "Edit N, current", each with its time and how long after the one
                 // before. A version's date is when that text became current (the send
                 // time for the original, Telegram's edit time for each later one), and
                 // the current text's is the message's edit_date. Each later text
-                // carries its word diff against the one before. When the archive
-                // returned its limit of versions the oldest shown may not be the
-                // original, so the labels drop the numbers.
-                const VERSIONS_LIMIT = 100
+                // carries its word diff against the one before, and each is drawn
+                // with its own formatting. When the archive returned its limit of
+                // versions the oldest shown may not be the original, and when edits
+                // may have been missed the numbers would be wrong, so the labels
+                // drop them.
                 const versionEntries = computed(() => {
                     const msg = versionsMessage.value
                     if (!msg) return []
                     const kept = getMessageVersions(msg)
-                    const truncated = kept.length >= VERSIONS_LIMIT
+                    const shape = versionHistoryShape(msg, kept)
                     const oldestFirst = [...kept].reverse()
+                    const firstLabel = shape.firstSeenEdited ? 'First seen, already edited' : 'Sent'
                     const entries = oldestFirst.map((entry, index) => ({
                         key: `${entry.date || ''}:${index}`,
                         date: entry.date || null,
-                        what: truncated ? 'Earlier version' : (index === 0 ? 'Sent' : `Edit ${index}`),
+                        what: shape.truncated ? 'Earlier version'
+                            : index === 0 ? firstLabel
+                                : shape.lowerBound ? 'Edit' : `Edit ${index}`,
                         text: entry.text || '',
+                        entities: Array.isArray(entry.entities) ? entry.entities : null,
                         current: false,
                     }))
+                    const currentEntities = msg.raw_data?.entities
                     entries.push({
                         key: 'current',
                         date: msg.edit_date || null,
-                        what: truncated || !kept.length ? 'Current' : `Edit ${kept.length}, current`,
+                        what: shape.truncated || shape.lowerBound || !kept.length ? 'Current' : `Edit ${kept.length}, current`,
                         text: msg.text || '',
+                        entities: Array.isArray(currentEntities) ? currentEntities : null,
                         current: true,
                     })
                     for (let index = 0; index < entries.length; index++) {
                         const entry = entries[index]
+                        const before = index > 0 ? entries[index - 1] : null
                         entry.when = versionWhen(msg, entry.date)
-                        entry.gap = index > 0 ? versionGap(entries[index - 1].date, entry.date) : ''
-                        if (index > 0) entry.parts = diffWords(entries[index - 1].text, entry.text)
+                        entry.gap = before ? versionGap(before.date, entry.date) : ''
+                        if (before) {
+                            entry.parts = diffWords(before.text, entry.text)
+                            entry.formattingOnly = before.text === entry.text
+                                && JSON.stringify(before.entities || []) !== JSON.stringify(entry.entities || [])
+                        }
+                        entry.html = versionHtml(entry, before)
                     }
                     return entries
                 })
@@ -15970,12 +16050,18 @@
                     closeVersionsPanel()
                     if (id != null) nextTick(() => scrollToMessage(id))
                 }
-                // "Sent September 29 at 16:29 · 2 earlier versions"
+                // "Sent September 29 at 16:29 · 2 earlier versions", or "· at least 3
+                // edits" when the archive may have missed some (versionHistoryShape).
                 const versionsSubtitle = computed(() => {
                     const msg = versionsMessage.value
                     if (!msg) return ''
                     const sent = `Sent ${formatDatePill(msg.date)} at ${formatTime(msg.date)}`
-                    const kept = getMessageVersions(msg).length || Number(msg.version_count) || 0
+                    const loaded = getMessageVersions(msg)
+                    const shape = versionHistoryShape(msg, loaded)
+                    if (loaded.length && shape.lowerBound && !shape.truncated) {
+                        return `${sent} · at least ${shape.edits} ${shape.edits === 1 ? 'edit' : 'edits'}`
+                    }
+                    const kept = loaded.length || Number(msg.version_count) || 0
                     return kept ? `${sent} · ${kept} earlier ${kept === 1 ? 'version' : 'versions'}` : sent
                 })
 

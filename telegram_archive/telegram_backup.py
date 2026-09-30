@@ -2773,6 +2773,7 @@ class TelegramBackup:
                             entities=message_entities(remote_msg),
                             update_entities=True,
                             rich_message=message_rich_payload(remote_msg),
+                            source="sync",
                         )
                         if outcome == "applied":
                             total_updated += 1
@@ -3309,6 +3310,8 @@ class TelegramBackup:
             # A read from Telegram: when the listener stored a newer edit while
             # this batch was pending, the upsert keeps this text as a version.
             "keeps_older_text": True,
+            # The path named on any version this read writes.
+            "version_source": "backup",
         }
 
         # Capture-time web preview (mf7): Telegram resolved it when the

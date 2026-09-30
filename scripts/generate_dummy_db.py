@@ -9,7 +9,8 @@ messages deleted in Telegram that the archive kept, and pinned messages.
 
 It also holds every state the viewer draws for what the archive alone knows:
 media never downloaded (too large, filtered out, not yet) or missing from
-disk, an edit made on a later day, transcripts that failed, found no
+disk, an edit made on a later day, an edit that changed only the
+formatting, edits the sync found (so the history says "at least"), transcripts that failed, found no
 speech or came in two versions, a closed and a pinned topic, two viewer
 accounts (password DEMO_VIEWER_PASSWORD), two share links (one revoked; the
 other opens with DEMO_SHARE_TOKEN and has downloads off), and a few audit
@@ -31,6 +32,7 @@ and the round video; without it those messages keep their rows but no file.
 import argparse
 import asyncio
 import hashlib
+import json
 import math
 import os
 import random
@@ -232,7 +234,8 @@ class ChatScript:
         self.messages: list[dict] = []
         self.media: list[dict] = []
         self.reactions: list[tuple[int, str, int, list[int]]] = []
-        self.versions: list[tuple[int, str, datetime]] = []
+        # (message id, text, date, formatting entities, the path that saw it)
+        self.versions: list[tuple[int, str, datetime, list | None, str | None]] = []
         self.transcripts: list[tuple[str, str, int]] = []
         # (message id, emoji, when it was removed): reactions the archive keeps
         # as tombstones after they were taken back.
@@ -250,7 +253,8 @@ class ChatScript:
         raw: dict | None = None,
         pinned: bool = False,
         topic: int | None = None,
-        edited_from: str | list[str] | None = None,
+        edited_from: str | list[str | tuple[str, list | None]] | None = None,
+        edit_source: str | None = None,
         react: dict[str, int] | None = None,
         forward: tuple[int, int, str] | None = None,
         deleted_after: timedelta | None = None,
@@ -286,12 +290,14 @@ class ChatScript:
             # Oldest first: each earlier text is kept as a version, a few minutes apart.
             # edited_after moves the edits later, a day on for an edit made the
             # next day.
+            # An earlier version is its text, or (text, formatting entities).
             earlier = [edited_from] if isinstance(edited_from, str) else list(edited_from)
             shift = edited_after or timedelta(0)
-            for step, old_text in enumerate(earlier):
+            for step, old in enumerate(earlier):
+                old_text, old_entities = old if isinstance(old, tuple) else (old, None)
                 # The original text dates from the send; each later one from its edit.
                 version_date = when if step == 0 else when + shift + timedelta(minutes=2 * step)
-                self.versions.append((mid, old_text, version_date))
+                self.versions.append((mid, old_text, version_date, old_entities, edit_source))
             msg["edit_date"] = when + shift + timedelta(minutes=2 * len(earlier) + 1)
         if reacted_after is not None:
             # Telegram moves edit_date when only the reactions change and sets
@@ -738,6 +744,28 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         edited_from="Next month we read The Salt Orchard. Meeting on the 12th.",
         edited_after=day + timedelta(hours=2),
     )
+    # An edit that changed only the formatting: the same words, "annotated" made bold.
+    s.add(
+        now - 3 * day + timedelta(hours=2),
+        WREN,
+        "Bring the annotated copy if you have one.",
+        raw={"entities": [{"type": "bold", "offset": 10, "length": 9}]},
+        edited_from=[("Bring the annotated copy if you have one.", None)],
+        edit_source="listener",
+    )
+    # Edits the sync found: it reads only the text current at each run, so the
+    # history can say only "at least". Each version keeps its own formatting.
+    s.add(
+        now - 3 * day + timedelta(hours=5),
+        LIOR,
+        "Chapter 4 has the best opening line in the book.",
+        raw={"entities": [{"type": "bold", "offset": 23, "length": 7}]},
+        edited_from=[
+            ("Chapter 3 has the best line in the book.", [{"type": "italic", "offset": 18, "length": 4}]),
+            ("Chapter 4 has the best line in the book.", None),
+        ],
+        edit_source="sync",
+    )
     scripts.append(s)
 
     # --- Maker Space: a forum with topics --------------------------------------------
@@ -1149,7 +1177,7 @@ async def seed(data_dir: Path) -> None:
                         .where(Reaction.chat_id == s.chat_id, Reaction.message_id == mid, Reaction.emoji == emoji)
                         .values(removed_at=removed)
                     )
-                for index, (mid, old_text, when) in enumerate(s.versions):
+                for index, (mid, old_text, when, old_entities, source) in enumerate(s.versions):
                     digest = hashlib.sha256(f"{account}:{s.chat_id}:{mid}:{old_text}".encode()).hexdigest()
                     # Captured when the next text appeared: the next kept
                     # version of the same message, or its last edit.
@@ -1164,6 +1192,8 @@ async def seed(data_dir: Path) -> None:
                             date=when,
                             captured_at=captured,
                             change_hash=digest,
+                            entities=json.dumps(old_entities) if old_entities else None,
+                            source=source,
                         )
                     )
                 await session.commit()

@@ -16,6 +16,7 @@ import json
 import unittest
 
 from test_deleted_messages_frontend import _MOMENT
+from test_entity_rendering_frontend import _renderer_bundle
 from test_frontend_bootstrap import (
     _PRODUCER_PRELUDE,
     INDEX_HTML,
@@ -57,7 +58,10 @@ _TIMELINE_DECLARATIONS = (
     "const diffWords = (before, after) =>",
     "const versionWhen = (msg, dateStr) =>",
     "const versionGap = (fromStr, toStr) =>",
+    "const formattedSlice = (text, entityList, start, end) =>",
+    "const versionHtml = (entry, before) =>",
     "const VERSIONS_LIMIT = 100",
+    "const versionHistoryShape = (msg, kept) =>",
     "const versionEntries = computed(() =>",
     "const messageVersionsKey = (msg) =>",
     "const getMessageVersions = (msg) =>",
@@ -223,13 +227,13 @@ class TestTheTimeline(unittest.TestCase):
     """E: Sent, Edit 1, Edit 2 current, each with its time and the gap before it."""
 
     def _entries(self, msg: dict, kept: list[dict]) -> list[dict]:
-        prelude = f"""
+        prelude = f"""{_renderer_bundle(HTML)}
 versionsMessage.value = {json.dumps(msg)}
 messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
 """
         return _run(
             "versionEntries.value.map(e => ({ what: e.what, when: e.when, gap: e.gap, current: e.current,"
-            " parts: e.parts === undefined ? 'none' : e.parts }))",
+            " parts: e.parts === undefined ? 'none' : e.parts, html: e.html, formattingOnly: !!e.formattingOnly }))",
             _TIMELINE_DECLARATIONS,
             prelude,
         )
@@ -277,7 +281,81 @@ messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
         self.assertIn(
             '<span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template>', item
         )
-        self.assertIn("part.kind === 'ins' ? 'diff-ins' : part.kind === 'del' ? 'diff-del' : null", item)
+        self.assertIn('<template v-if="entry.formattingOnly"> · formatting only</template>', item)
+        # The card is the bubble's own renderer's output, the only v-html here.
+        self.assertIn('<span v-if="entry.html" v-html="entry.html"></span>', item)
+        self.assertEqual(item.count("v-html"), 1)
+
+    def test_the_marks_sit_on_the_formatted_words(self) -> None:
+        out = self._entries(_MSG, _KEPT)
+        self.assertEqual(out[0]["html"], "The north lot.")
+        self.assertIn('<span class="diff-ins"> It fills up by 9.</span>', out[1]["html"])
+        self.assertIn('<span class="diff-del">9.</span>', out[2]["html"])
+
+    def test_each_version_keeps_its_own_formatting(self) -> None:
+        """t2h: a version is drawn with the formatting it had, the way the bubble
+        draws it; a removed word keeps the formatting of the version it left."""
+        msg = {**_MSG, "text": "Meet at 8", "raw_data": {"entities": [{"type": "italic", "offset": 8, "length": 1}]}}
+        kept = [
+            {
+                "text": "Meet at 9",
+                "date": "2026-09-30T08:54:00",
+                "entities": [{"type": "bold", "offset": 8, "length": 1}],
+            },
+            {"text": "Meet at 9", "date": _SENT, "entities": None},
+        ]
+        out = self._entries(msg, kept)
+        self.assertEqual(out[0]["html"], "Meet at 9")
+        self.assertEqual(out[1]["html"], "Meet at <strong>9</strong>")
+        self.assertTrue(out[1]["formattingOnly"])
+        self.assertFalse(out[2]["formattingOnly"])
+        self.assertIn('<span class="diff-del"><strong>9</strong></span>', out[2]["html"])
+        self.assertIn('<span class="diff-ins"><em>8</em></span>', out[2]["html"])
+
+    def test_the_card_escapes_the_text(self) -> None:
+        kept = [{"text": "<img src=x onerror=alert(1)>", "date": _SENT, "entities": None}]
+        out = self._entries({**_MSG, "text": "<b>now</b> and then"}, kept)
+        self.assertNotIn("<img", out[0]["html"])
+        self.assertNotIn("<b>", out[1]["html"])
+        self.assertIn("&lt;b&gt;now&lt;/b&gt;", out[1]["html"])
+
+    def test_versions_from_the_sync_make_the_count_a_lower_bound(self) -> None:
+        """5kr: the sync reads only the current text, so edits between two runs
+        leave no version; the labels drop their numbers."""
+        kept = [{**_KEPT[0], "source": "sync"}, {**_KEPT[1], "source": "listener"}]
+        out = self._entries(_MSG, kept)
+        self.assertEqual([e["what"] for e in out], ["Sent", "Edit", "Current"])
+        # Versions from the listener, or from before the archive named its paths, keep the numbers.
+        for source in ("listener", None):
+            kept = [{**entry, "source": source} for entry in _KEPT]
+            out = self._entries(_MSG, kept)
+            self.assertEqual([e["what"] for e in out], ["Sent", "Edit 1", "Edit 2, current"])
+
+    def test_a_message_first_seen_already_edited_says_so(self) -> None:
+        kept = [{"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00", "source": "backup"}]
+        out = self._entries(_MSG, kept)
+        self.assertEqual([e["what"] for e in out], ["First seen, already edited", "Current"])
+
+    def test_the_subtitle_says_at_least_when_edits_may_be_missing(self) -> None:
+        def subtitle(kept: list[dict]) -> str:
+            prelude = f"""
+const formatDatePill = () => 'September 30'
+const formatTime = () => '08:52'
+versionsMessage.value = {json.dumps(_MSG)}
+messageVersionsByMessage.value = {{ '7:5': {json.dumps(kept)} }}
+"""
+            return _run(
+                "versionsSubtitle.value", (*_TIMELINE_DECLARATIONS, "const versionsSubtitle = computed("), prelude
+            )
+
+        self.assertEqual(subtitle(_KEPT), "Sent September 30 at 08:52 · 2 earlier versions")
+        self.assertEqual(
+            subtitle([{**_KEPT[0], "source": "sync"}, _KEPT[1]]), "Sent September 30 at 08:52 · at least 2 edits"
+        )
+        # First seen already edited: the oldest kept text was itself an edit.
+        self.assertEqual(
+            subtitle([{**_KEPT[0], "source": "listener"}]), "Sent September 30 at 08:52 · at least 2 edits"
+        )
 
 
 class TestThePanelAndTheSheet(unittest.TestCase):

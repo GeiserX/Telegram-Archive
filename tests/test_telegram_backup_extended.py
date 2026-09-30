@@ -1283,6 +1283,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
             entities=None,
             update_entities=True,
             rich_message=None,
+            source="sync",
         )
         assert any("misaligned" in line for line in captured.output)
 

@@ -269,7 +269,15 @@ event.listen(
 
 
 class MessageVersion(Base):
-    """Historical text versions for edited messages."""
+    """Earlier versions of edited messages: the text, its formatting, and who saw it.
+
+    ``entities`` is the version's formatting as a JSON list, the same shape as
+    ``raw_data["entities"]`` (035; NULL for rows from before it and for a text
+    with no formatting). ``source`` is the path that wrote the row (035):
+    ``listener``, ``sync``, ``backup`` or ``import``; NULL for older rows. Only
+    the listener sees each edit as it happens; the other paths read the text
+    current at that moment, so edits between two reads leave no row.
+    """
 
     __tablename__ = "message_versions"
 
@@ -281,6 +289,8 @@ class MessageVersion(Base):
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     change_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    entities: Mapped[str | None] = mapped_column(Text)  # JSON string
+    source: Mapped[str | None] = mapped_column(String(16))
 
     message: Mapped[Message] = relationship(
         "Message",

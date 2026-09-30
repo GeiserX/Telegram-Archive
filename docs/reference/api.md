@@ -191,7 +191,7 @@ All of these need a login that can see the chat.
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
 | `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only` and `edited_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
-| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message |
+| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message, newest first: `[{chat_id, message_id, text, date, captured_at, source, entities}]`. See [Message versions](#message-versions) |
 | `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
 | `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
@@ -225,6 +225,20 @@ curl -s -b jar.txt \
 ```
 
 Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
+
+### Message versions
+
+Each earlier version of an edited message has these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `text` | The text of that version. |
+| `date` | When that text became current, by Telegram's clock: the send time for the original, the edit time for each later one. |
+| `captured_at` | When the archive saw it, by the archive's own clock. |
+| `source` | The path that saw it: `listener`, `sync`, `backup` or `import`. Null for a version archived before the archive kept it. |
+| `entities` | The formatting of that version, in the shape of the message's `raw_data.entities`: `[{type, offset, length, ...}]`. Null when it had none, or for a version archived before the archive kept it. |
+
+Only the listener sees each edit as it happens. The sync, a backup and an import read the text current at that moment, so several edits between two reads leave one version. When any version has one of those sources, the number of versions is a lower bound on the number of edits. The same holds when the oldest version's `date` is later than the message's `date`: the archive first saw the message already edited.
 
 ## Search, tags and the change feed
 
@@ -306,7 +320,7 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 }
 ```
 
-`filters` appears only when `from` or `to` was given. `message_versions` holds the earlier versions of edited messages in the same window.
+`filters` appears only when `from` or `to` was given. `message_versions` holds the earlier versions of edited messages in the same window, with the fields of [Message versions](#message-versions).
 
 ## Transcripts
 
