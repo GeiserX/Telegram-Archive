@@ -15,8 +15,9 @@ accounts (password DEMO_VIEWER_PASSWORD), two share links (one revoked; the
 other opens with DEMO_SHARE_TOKEN and has downloads off), and a few audit
 log entries. A few reactions were taken back: the archive keeps them as
 tombstones, and the viewer shows them after the live ones, folded into one
-quiet chip: on a photo beside live reactions, on the only reaction of an
-outgoing message, on a message deleted later, and a day after the message.
+quiet chip: on a photo beside live reactions, on a photo with no caption,
+on the only reaction of an outgoing message, on a message deleted later, and
+a day after the message.
 
 Usage:
     python scripts/generate_dummy_db.py --data-dir ./demo-data
@@ -443,6 +444,10 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         if i == 0:
             # Taken back the next day: the time it went shows with its date.
             s.take_back(mid, "🔥", 1, sent + day + timedelta(hours=2))
+        if i == 3:
+            # A photo with no caption whose only reaction was taken back: it
+            # is framed like a photo with live reactions, to hold the row.
+            s.take_back(mid, "👍", 1, sent + timedelta(hours=1))
     filler(s, "hikers", members, now - 27 * day, now - 3 * day, 26)
     t = now - timedelta(minutes=110)
     s.add(t, ESME, "Trail report from Saturday is up. The ridge loop was muddy but worth it.")

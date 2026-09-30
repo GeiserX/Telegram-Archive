@@ -5328,7 +5328,7 @@ class DatabaseAdapter:
                     reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
                 reactions_result = await session.execute(reactions_stmt)
                 for r in reactions_result.scalars():
-                    if isinstance(r.removed_at, datetime):
+                    if r.removed_at is not None:
                         # One entry per emoji: the count it had when it went, and
                         # the latest time the archive noticed it gone.
                         removed = removed_by_message[r.message_id].get(r.emoji)

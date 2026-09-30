@@ -2847,10 +2847,10 @@ class TestProcessMessageReactionEdgeCases(unittest.TestCase):
         self.assertEqual(result["reactions"], [{"emoji": "thumbs_up", "count": 3}])
         self.assertNotIn("user_ids", result["reactions"][0])
 
-    def test_min_reactions_are_not_authoritative(self):
+    def test_min_reactions_are_flagged(self):
         """A min MessageReactions may leave out this account's own reaction, so
-        _process_message returns None (skip reconcile), not a snapshot that would
-        tombstone it, as the resweep and the listener do."""
+        _process_message flags it: _commit_batch stores it only for a message
+        with no reaction rows yet, where it cannot tombstone anything."""
         msg = _make_message(5)
         reaction = MagicMock()
         reaction.reaction = MagicMock(spec=["emoticon"])
@@ -2862,7 +2862,8 @@ class TestProcessMessageReactionEdgeCases(unittest.TestCase):
 
         result = _run(self.backup._process_message(msg, 100))
 
-        self.assertIsNone(result["reactions"])
+        self.assertEqual(result["reactions"], [{"emoji": "thumbs_up", "count": 3}])
+        self.assertIs(result["_reactions_min"], True)
 
     def test_full_reactions_with_min_false_are_extracted(self):
         msg = _make_message(6)
@@ -2877,6 +2878,7 @@ class TestProcessMessageReactionEdgeCases(unittest.TestCase):
         result = _run(self.backup._process_message(msg, 100))
 
         self.assertEqual(result["reactions"], [{"emoji": "thumbs_up", "count": 3}])
+        self.assertIs(result["_reactions_min"], False)
 
     def test_reactions_extraction_failure_returns_none_sentinel(self):
         """#219: extraction failure yields None (skip reconcile), not [] — a []

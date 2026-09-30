@@ -167,3 +167,26 @@ class TestRemovedReactionsOnThePage:
         async with real_adapter.db_manager.async_session_factory() as session:
             rows = (await session.execute(Reaction.__table__.select())).mappings().all()
         assert [(row["emoji"], row["count"], row["removed_at"] is not None) for row in rows] == [("👍", 1, True)]
+
+    async def test_a_tombstone_without_a_count_reads_as_one(self, real_adapter):
+        """reconcile_reactions stores the summed count on a tombstone, so a
+        legacy group whose counts were NULL leaves count 0. The entry and the
+        toggle total must still say one reaction went, never zero."""
+        await _seed(real_adapter, 1)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            session.add(
+                Reaction(
+                    account_id=1,
+                    message_id=1,
+                    chat_id=CHAT_ID,
+                    emoji="👍",
+                    user_id=None,
+                    count=0,
+                    created_at=BASE_DATE,
+                    removed_at=BASE_DATE + timedelta(hours=1),
+                )
+            )
+            await session.commit()
+
+        page = await _page(real_adapter)
+        assert [(r["emoji"], r["count"]) for r in page[1]["removed_reactions"]] == [("👍", 1)]

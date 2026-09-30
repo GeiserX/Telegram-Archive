@@ -14103,8 +14103,10 @@
                 }
 
                 // Cheap checks first; the album caption lookup runs last. A row that
-                // shows a sender name or account chip, or an edited marker, keeps its
-                // frame: those have nowhere else to sit. A deleted picture does not:
+                // shows a sender name or account chip, an edited marker or a reactions
+                // row keeps its frame: those have nowhere else to sit. That holds for a
+                // row that only has the chip for reactions taken back: the picture is
+                // framed the way it was while the reaction stood. A deleted picture does not:
                 // its trash rides the time pill over the corner. So does a clip that
                 // failed to load or shows its transcript: text needs the padding. A
                 // sticker and a round video are the exception for the name: they

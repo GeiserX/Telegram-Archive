@@ -91,7 +91,7 @@ Pins and unpins are always captured while the listener runs. No setting turns th
 
 With `LISTEN_REACTIONS=true`, the listener stores per-emoji counts. It never stores who reacted. Updates are buffered per message and written every `REACTION_DEBOUNCE_SECONDS`, so a burst of changes becomes one write. When an emoji disappears, the listener marks it removed and keeps the row. Reactions on messages that are not in the archive are skipped.
 
-The listener can miss some reaction changes. Telegram does not reliably push reactions that you add from another device. The listener narrows the gap by also reading the reactions carried on edits and on new messages. It skips partial reaction objects, because those can leave out your own reaction. To correct counts on older messages, set `REACTION_RESWEEP_DAYS` so each scheduled backup re-checks recent days. See [Schedule and backup tuning](schedule.md).
+The listener can miss some reaction changes. Telegram does not reliably push reactions that you add from another device. The listener narrows the gap by also reading the reactions carried on edits and on new messages. It skips partial reaction objects (Telegram flags them `min`), because those can leave out your own reaction. That includes live reaction updates: a partial one is not written and the viewer gets no live change for it, so the reactions catch up at the next full snapshot, from a backup or the re-sweep. To correct counts on older messages, set `REACTION_RESWEEP_DAYS` so each scheduled backup re-checks recent days. See [Schedule and backup tuning](schedule.md).
 
 ## Mass-operation protection
 

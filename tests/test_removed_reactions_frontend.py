@@ -12,6 +12,7 @@ real vendored moment, so a broken rule fails here and not only in a browser.
 """
 
 import json
+import re
 import unittest
 
 from test_deleted_messages_frontend import _MOMENT
@@ -151,6 +152,17 @@ class TestTheTemplate(unittest.TestCase):
         self.assertIn("hit-40", toggle)
         self.assertIn("focus-visible:ring-2", toggle)
 
+    def test_the_toggle_shows_only_when_reactions_went(self) -> None:
+        # Without its v-if the chip would read "0" on every bubble with live
+        # reactions.
+        row = self._row_markup()
+        self.assertIn('<button v-if="removedReactions(msg).length > 0" type="button"', row)
+
+    def test_the_list_stays_folded_until_the_toggle_opens_it(self) -> None:
+        row = self._row_markup()
+        self.assertIn('v-if="removedReactions(msg).length > 0 && isRemovedReactionsOpen(msg)"', row)
+        self.assertIn(":aria-expanded=\"isRemovedReactionsOpen(msg) ? 'true' : 'false'\"", row)
+
     def test_the_list_follows_the_toggle_and_speaks_each_chip(self) -> None:
         row = self._row_markup()
         self.assertLess(row.index("reaction-removed-toggle"), row.index("reaction-removed-list"))
@@ -175,6 +187,14 @@ class TestTheTemplate(unittest.TestCase):
         self.assertIn("background: none;", rule)
         self.assertIn("color: rgb(var(--tg-meta));", rule)
         self.assertIn("dashed", rule)
+
+    def test_a_removed_emoji_is_faded(self) -> None:
+        start = HTML.index(".reaction-removed .reaction-emoji {")
+        rule = HTML[start : HTML.index("}", start)]
+        opacity = re.search(r"opacity:\s*([0-9.]+);", rule)
+        self.assertIsNotNone(opacity)
+        self.assertLess(float(opacity.group(1)), 1)
+        self.assertIn("grayscale(", rule)
 
     def test_hover_never_fills_the_toggle(self) -> None:
         # The chip's text is the time colour, which test_a_deleted_bubble_stays_readable
