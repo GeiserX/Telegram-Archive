@@ -410,13 +410,39 @@ async function openExportDialog(page, mobile) {
     await page.waitForTimeout(300)
 }
 
-// Both kept deletions in view: the deleted text near the top, the deleted
-// photo under it.
+// Both kept deletions in view, at the end of the chat. A deleted message is
+// folded to one line until it is opened: the deleted photo is opened (Show)
+// and the deleted text above it stays folded, so the picture has one of each.
 async function openDeleted(page) {
     await open(page)
     await openGroup(page)
-    await centerOn(page, 'Parking at the north lot', 'start')
+    const pill = page.locator('.deleted-pill').filter({ hasText: 'Deleted photo' }).first()
+    await pill.waitFor({ state: 'attached', timeout: 15000 })
+    await pill.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+    await pill.click()
+    await page.evaluate(() => document.activeElement?.blur())
+    await page.locator('.messages-scroll').first().evaluate((el) => { el.scrollTop = 0 })
+    await page.waitForTimeout(1400)
     await frameTopEdge(page)
+}
+
+// The chat's "More actions" menu, with "Deleted messages" and its count, over
+// the same end of the chat as the deletion picture.
+async function openDeletedMenu(page) {
+    await openDeleted(page)
+    await page.getByRole('button', { name: 'More actions' }).click()
+    await page.locator('.popover-sheet').filter({ hasText: 'Deleted messages' }).waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(300)
+}
+
+// The chat search in its "Deleted only" mode, opened from that menu item.
+async function openDeletedOnly(page) {
+    await openDeletedMenu(page)
+    await page.locator('.popover-sheet .info-action').filter({ hasText: 'Deleted messages' }).click()
+    await page.locator('.deleted-filter-bar').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(1400)
 }
 
 async function openArchivedChats(page) {
@@ -500,6 +526,8 @@ const desktopViews = {
     '22-admin': (page) => openAdmin(page),
     '24-transcripts': (page) => openTranscripts(page),
     '25-avatar-lightbox': (page) => openAvatarLightbox(page),
+    '26-deleted-menu': (page) => openDeletedMenu(page),
+    '27-deleted-only': (page) => openDeletedOnly(page),
 }
 
 const mobileViews = {
