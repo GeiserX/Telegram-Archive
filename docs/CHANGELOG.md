@@ -33,6 +33,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
     - **Notifications** have a switch in the main menu instead of banners, and a one-time row at the top of the chat list asks first.
 - **A second viewer drops ended sessions within 60 seconds.** A viewer checks each session it holds in memory against the database again once a minute. A session ended on one viewer, by the end-all action, by editing an account or by revoking a token, stops working on a second viewer on the same database within that minute. It used to keep working there until a restart or until `AUTH_SESSION_DAYS` ran out. A browser there that only holds a live connection is closed by the sweep every 900 seconds. ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
 
+### Fixed
+- **A partial reaction snapshot no longer marks a reaction as taken back.** Telegram can send reactions flagged `min`, which may leave out the account's own reaction. The live reaction handler and the backup's message read reconciled them anyway, so the account's own reaction could show as taken back when nobody took it back. They now skip them, as the resweep and the new-message path already did; the next full snapshot brings the reaction up to date.
+
 ## [8.17.0] - 2026-09-29
 
 Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.

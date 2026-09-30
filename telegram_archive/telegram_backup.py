@@ -3478,7 +3478,14 @@ class TelegramBackup:
 
         # Extract reactions (per-emoji aggregate snapshot). Reconciled after the
         # message is inserted; see DatabaseAdapter.reconcile_reactions (#219).
-        message_data["reactions"] = extract_reactions(getattr(message, "reactions", None))
+        # A min payload is partial (it may leave out this account's own
+        # reaction), so it is not authoritative: None makes _commit_batch skip
+        # it, as the resweep and the listener do.
+        reactions_obj = getattr(message, "reactions", None)
+        if getattr(reactions_obj, "min", False) is True:
+            message_data["reactions"] = None
+        else:
+            message_data["reactions"] = extract_reactions(reactions_obj)
 
         # Return message data for batch processing
         return message_data

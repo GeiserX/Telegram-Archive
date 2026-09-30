@@ -176,6 +176,18 @@ class TestTheTemplate(unittest.TestCase):
         self.assertIn("color: rgb(var(--tg-meta));", rule)
         self.assertIn("dashed", rule)
 
+    def test_hover_never_fills_the_toggle(self) -> None:
+        # The chip's text is the time colour, which test_a_deleted_bubble_stays_readable
+        # checks on the plain and the washed bubble. A hover fill in that colour
+        # would sit under the text and drop it below 4.5:1 on the wash, so no
+        # rule for these chips may paint a background other than none.
+        start = HTML.index(".message-bubble .reaction-chip.reaction-removed-toggle,")
+        css = HTML[start : HTML.index(".reaction-removed .reaction-emoji", start)]
+        backgrounds = [line.strip() for line in css.splitlines() if "background" in line]
+        self.assertEqual(backgrounds, ["background: none;"])
+        hover = css[css.index("reaction-removed-toggle:hover") :]
+        self.assertIn("border-color: rgb(var(--tg-meta));", hover[: hover.index("}")])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -135,7 +135,7 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 Reactions show as chips with the emoji and its count.
 
-A reaction taken back stays in the archive. After the live chips, a quieter chip with no fill and a dashed edge holds an undo arrow and how many reactions were taken back. Click or tap it, or reach it with <kbd>Tab</kbd> and press <kbd>Enter</kbd>, to show them: each emoji with the count it had and when the archive noticed it gone, for example "1 · 17:33", or "Sep 2, 20:55" when that was on a later day. Click it again to hide them. The time is when the backup or the listener saw the reaction missing, not when it was taken back, and the archive does not know who took it back: it stores counts per emoji. A count that drops without reaching zero shows only the new count.
+A reaction taken back stays in the archive. After the live chips, a quieter chip with no fill and a dashed edge holds an undo arrow and how many reactions were taken back. Click or tap it, or reach it with <kbd>Tab</kbd> and press <kbd>Enter</kbd>, to show them: each emoji with the count it had and when the archive noticed it gone, for example "1 · 17:33", or "1 · Sep 2, 20:55" when that was on a later day. Click it again to hide them. The time is when the backup or the listener saw the reaction missing, not when it was taken back, and the archive does not know who took it back: it stores counts per emoji. A count that drops without reaching zero shows only the new count. Only the latest removal of an emoji is kept: a reaction that comes back clears its earlier removal.
 
 === "Desktop"
 

@@ -2220,7 +2220,9 @@
            the text in the time colour, which keeps 4.5:1 on the bubble and on
            the deleted wash in every theme. Quieter than a live chip: no tint,
            a regular count, a faded emoji. The toggle's edge turns solid while
-           the list is open. */
+           the list is open. Hover darkens the edge and never adds a fill: a
+           fill in the time colour drops the count under 4.5:1 on the deleted
+           wash. */
         .message-bubble .reaction-chip.reaction-removed-toggle,
         .message-bubble .reaction-chip.reaction-removed {
             gap: 4px;
@@ -2238,7 +2240,7 @@
         }
         @media (hover: hover) {
             .message-bubble .reaction-chip.reaction-removed-toggle:hover {
-                background: rgb(var(--tg-meta) / 0.08);
+                border-color: rgb(var(--tg-meta));
             }
         }
         .reaction-removed-toggle svg {

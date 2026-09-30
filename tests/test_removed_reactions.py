@@ -122,6 +122,40 @@ class TestRemovedReactionsOnThePage:
         assert [(r["emoji"], r["count"]) for r in first[1]["removed_reactions"]] == [("👍", 1)]
         assert [(r["emoji"], r["count"]) for r in second[1]["removed_reactions"]] == [("🎉", 5)]
 
+    async def test_rows_reconcile_never_writes_still_read_right(self, real_adapter):
+        """reconcile_reactions keeps one row per emoji, but the read must not
+        depend on it: a tombstone beside a live row of the same emoji stays out
+        of the removed list, and two tombstones of one emoji merge into one
+        entry with the summed count and the later time."""
+        await _seed(real_adapter, 1)
+        earlier = BASE_DATE + timedelta(hours=1)
+        later = BASE_DATE + timedelta(hours=2)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            for emoji, count, removed_at in (
+                ("👍", 2, None),
+                ("👍", 1, earlier),
+                ("🔥", 1, earlier),
+                ("🔥", 2, later),
+            ):
+                session.add(
+                    Reaction(
+                        account_id=1,
+                        message_id=1,
+                        chat_id=CHAT_ID,
+                        emoji=emoji,
+                        user_id=None,
+                        count=count,
+                        created_at=BASE_DATE,
+                        removed_at=removed_at,
+                    )
+                )
+            await session.commit()
+
+        page = await _page(real_adapter)
+        assert page[1]["reactions"] == [{"emoji": "👍", "count": 2, "user_ids": []}]
+        removed = page[1]["removed_reactions"]
+        assert [(r["emoji"], r["count"], r["removed_at"]) for r in removed] == [("🔥", 3, later)]
+
     async def test_the_read_keeps_every_row(self, real_adapter):
         """Reading is read-only: the tombstones are all still there after it."""
         await _seed(real_adapter, 1)
