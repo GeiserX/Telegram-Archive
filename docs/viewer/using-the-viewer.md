@@ -135,11 +135,17 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 Reactions show as chips with the emoji and, when above one, the count.
 
-An edited message shows "edited" before its time, as Telegram does. When the archive kept earlier texts, a small history mark comes before the word and the word is a button; its tooltip gives the edit time and how many earlier versions were kept. When the archive did not see the earlier text, the tooltip says so. Click the button to open the **Edit history**. It shows the original, each edit and the current text as bubbles, oldest first, each labelled with its time, and with its day when that is not the day the message was sent. The words each edit added are underlined on a green tint and the words it removed are struck through, and a key under the header says so. It lists up to 100 earlier texts. On a phone it opens as a page with a back arrow.
+An edited message shows a small pencil before its time, with the number of earlier texts the archive kept: a pencil and "2" before 08:52 means two earlier versions. The time is still the time it was sent. A message Telegram marks as edited but whose earlier text the archive never saw shows the pencil alone. The pencil's name, read by a screen reader and shown when you peek, gives the time of the last edit by Telegram's clock, for example "Edited at 08:57, 2 earlier versions kept", or "Edited on Oct 1 at 09:05" when the edit came on a later day.
+
+Rest the pointer on the pencil, reach it with <kbd>Tab</kbd>, or press and hold it on a phone, to peek at the text before the last edit, with the time it was written and the words that edit removed struck through. **See all 3 versions** opens the history. The peek closes when you move away, tap elsewhere or press <kbd>Esc</kbd>.
+
+![A popover over the pencil: "Edited at 10:57, 2 earlier versions kept", the text before the last edit and See all 3 versions](../images/screenshots/edit-peek.png)
+
+Click the pencil to open the **Edit history**. On a wide screen it opens beside the chat, which stays readable, and the message it belongs to is highlighted there. On a phone it opens as a sheet from the bottom, with the message above it. The versions run down a timeline, oldest first: "08:52 Sent", "08:54 Edit 1 · 2 min later", "08:57 Edit 2, current · 3 min later", with the date when an edit came on another day. Each text sits on a card, the current one tinted. The words each edit added are underlined on a green tint and the words it removed are struck through, and a key under the header says so. It lists up to 100 earlier texts. <kbd>Esc</kbd> or the cross closes it, and focus goes back to the pencil. A message with the pencil alone opens the history too, which says the archive did not see an earlier version.
 
 === "Telegram Day"
 
-    ![The edit history with the words each edit changed](../images/screenshots/edit-history.png)
+    ![The edit history beside the chat, with the edited message highlighted and the versions on a timeline](../images/screenshots/edit-history.png)
 
 === "Telegram Night"
 
@@ -147,7 +153,13 @@ An edited message shows "edited" before its time, as Telegram does. When the arc
 
 === "Phone"
 
-    ![The edit history as a page on a phone](../images/screenshots/edit-history-mobile.png){ width="300" }
+    ![The edit history as a sheet from the bottom of a phone, under the edited message](../images/screenshots/edit-history-mobile.png){ width="300" }
+
+To see every edited message of a chat, open **More actions** and choose **Edited messages**, under **Deleted messages**. The item shows the chat's count and is hidden when the chat has none. It opens the chat search in an **Edited only** mode, the same way as **Deleted only**: the chat shows only its edited messages, newest first, with their days, each headed "Edited · 08:57" and **Show in chat**. The search field narrows them further, and the pressed **Edited only** chip, the search's close button and <kbd>Esc</kbd> leave the mode. On a phone, the **Edited messages** row of the chat's info panel does the same. A message counts as edited when Telegram marks it or the archive kept an earlier version of it, so the count, the list and the pencils agree.
+
+=== "The menu"
+
+    ![More actions with Deleted messages and Edited messages, each with its count](../images/screenshots/edited-menu.png)
 
 ### Deleted messages
 
@@ -259,7 +271,7 @@ The info panel shows the open chat, in rows the way Telegram's info page writes 
 - **Earlier photos**: the profile photos the archive recorded before the current one. Each circle's tooltip says when the archive saw it. Click one, or the avatar, to page through them all in the lightbox, the current photo first.
 - description or bio, username and Telegram ID
 - the account tags, when more than one account is visible
-- **In the archive**: messages, media files, **Media size** (every media file of the chat, downloaded or not), **Deleted messages** and **Edited messages** (deleted in Telegram or edited, which the archive kept), and the oldest message. Click the oldest message to jump to it.
+- **In the archive**: messages, media files, **Media size** (every media file of the chat, downloaded or not), **Deleted messages** and **Edited messages** (deleted in Telegram or edited, which the archive kept), and the oldest message. Click **Deleted messages** or **Edited messages** to list them in the chat, and the oldest message to jump to it.
 - shortcuts into the shared media
 
 With the panel open, click a message to select it. On a touch screen, or in a window under 768 px wide, tap a message's time or its "deleted" mark instead: the panel opens on that message. The panel then also shows:
@@ -429,7 +441,7 @@ After you upgrade the viewer, reload any open tabs or app windows. An open page 
 | Key | Where | Does |
 |-----|-------|------|
 | <kbd>Esc</kbd> | search field | clears the field, then leaves it |
-| <kbd>Esc</kbd> | info panel, lightbox, edit history, Jump to date, sender details, What changed, main menu, More actions, dialogs | closes it |
+| <kbd>Esc</kbd> | info panel, lightbox, edit history, the peek at an edit, Jump to date, sender details, What changed, main menu, More actions, dialogs | closes it |
 | <kbd>Up</kbd> <kbd>Down</kbd> | main menu, More actions | moves between rows |
 | <kbd>Up</kbd> <kbd>Down</kbd> | search results | moves between chats and messages |
 | <kbd>Up</kbd> <kbd>Down</kbd> | open info panel | selects the previous or next message |
@@ -439,6 +451,6 @@ After you upgrade the viewer, reload any open tabs or app windows. An open page 
 | <kbd>Left</kbd> <kbd>Right</kbd> | focused resize handle | resizes the pane by 16 px |
 | <kbd>Enter</kbd> | search results | opens the highlighted result |
 | <kbd>Enter</kbd> <kbd>Space</kbd> | spoiler, round video | reveals the spoiler, toggles the sound |
-| <kbd>Tab</kbd> | Jump to date, sender details, edit history, lightbox | stays inside the dialog |
+| <kbd>Tab</kbd> | Jump to date, sender details, edit history on a phone, lightbox | stays inside the dialog |
 
 There are no single-letter shortcuts such as `j` and `k`.

@@ -190,7 +190,7 @@ All of these need a login that can see the chat.
 
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
-| `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
+| `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only` and `edited_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message |
 | `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
@@ -215,6 +215,13 @@ A lone `before_id=N` returns messages with ids below N. `after_id=N` returns mes
 ```bash
 curl -s -b jar.txt \
   'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&deleted_only=true'
+```
+
+`edited_only=true` keeps only the edited messages, newest first, the same way. A message counts as edited when Telegram marks it (`edit_date` is set) or the archive kept at least one earlier version of it (`version_count` above 0): either can hold without the other, for a message first archived after its edit or an earlier empty text the archive filled in. It is the rule the viewer's pencil follows, and `edited_messages` in `/api/chats/{chat_ref}/stats` counts the same rows. Like `deleted_only`, it is a read that combines with `search`, `topic_id` and the cursors and stays inside the chat the ref names.
+
+```bash
+curl -s -b jar.txt \
+  'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&edited_only=true'
 ```
 
 Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.

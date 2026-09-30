@@ -127,7 +127,8 @@ async function parkPointer(page) {
 // picture, after any mockupBeforeShot, that returns the rectangle to keep.
 async function shot(page, name, frame = null) {
     if (JS) await page.evaluate(() => window.mockupBeforeShot?.())
-    await parkPointer(page)
+    // A view that pictures a hover (the edit peek) keeps the pointer where it is.
+    if (!page.keepPointer) await parkPointer(page)
     await settle(page)
     const file = join(OUT, `${name}.png`)
     const clip = frame ? await page.evaluate(frame) : null
@@ -371,16 +372,42 @@ async function openTranscripts(page) {
     await frameTopEdge(page)
 }
 
+// The edit history of the demo's edited message: a panel beside the chat on a
+// wide screen, a bottom sheet on a phone. The chat narrows when the panel opens,
+// so its top edge is framed again after.
 async function openEditHistory(page) {
     await open(page)
     await openGroup(page)
-    const edited = page.locator('.message-meta button[aria-expanded]').first()
+    const edited = page.locator('.message-row').filter({ hasText: EDITED_TEXT }).last().locator('.meta-edited')
     await edited.waitFor({ state: 'attached', timeout: 15000 })
     await edited.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
     await frameTopEdge(page)
     await edited.click()
     await page.locator('#versions-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.locator('#versions-panel .version-list').waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(400)
+    await frameTopEdge(page)
+}
+
+// The peek: the pointer resting on the pencil of the demo's edited message.
+// The picture is cropped to the message column around it (peekFrame).
+async function openEditPeek(page) {
+    await openEdited(page)
+    const mark = page.locator('[data-mockup-anchor] .meta-edited')
+    await mark.hover()
+    await page.locator('.edit-peek.is-placed').waitFor({ state: 'visible', timeout: 10000 })
+    await page.locator('.edit-peek .edit-peek-text').waitFor({ state: 'visible', timeout: 10000 })
+    page.keepPointer = true
+}
+
+// The chat's "More actions" menu with "Deleted messages" and "Edited messages",
+// each with its count, over the edited message.
+async function openEditedMenu(page) {
+    await openEdited(page)
+    await page.getByRole('button', { name: 'More actions' }).click()
+    await page.locator('.popover-sheet').filter({ hasText: 'Edited messages' }).waitFor({ state: 'visible', timeout: 10000 })
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(300)
 }
 
 async function openAvatarHistory(page) {
@@ -530,6 +557,32 @@ function editedFrame() {
     return { x: Math.round(left), y: Math.round(top), width: Math.round(right - left), height: Math.round(bottom - top) }
 }
 
+// The peek's picture: the message column from the peek down to the row after
+// the edited one, with both edges on whole elements (8px of wallpaper beyond a
+// bubble or a day separator), never on half a bubble.
+function peekFrame() {
+    const list = document.querySelector('.messages-scroll')
+    const pane = list.getBoundingClientRect()
+    const row = document.querySelector('[data-mockup-anchor]')
+    const peek = document.querySelector('.edit-peek')
+    const r = row.getBoundingClientRect()
+    const p = peek.getBoundingClientRect()
+    const items = [...list.querySelectorAll(':scope > .message-row, :scope > .date-separator')]
+        .map((el) => el.getBoundingClientRect())
+        .filter((b) => b.height > 0)
+    let top = Math.min(r.top, p.top) - 16
+    let bottom = r.bottom + 8
+    const next = items.filter((b) => b.top >= r.bottom - 1).sort((a, b) => a.top - b.top)[0]
+    if (next) bottom = next.bottom + 8
+    const crossingTop = items.find((b) => b.top < top && b.bottom > top)
+    if (crossingTop) top = crossingTop.top - 8
+    top = Math.max(pane.top, top)
+    bottom = Math.min(pane.bottom, bottom)
+    const gutter = row.querySelector('.message-avatar-gutter, .message-bubble')
+    const left = Math.max(pane.left, (gutter ? gutter.getBoundingClientRect().left : pane.left) - 16)
+    return { x: Math.round(left), y: Math.round(top), width: Math.round(pane.right - left), height: Math.round(bottom - top) }
+}
+
 // --- views -----------------------------------------------------------------
 
 const desktopViews = {
@@ -596,6 +649,11 @@ const desktopViews = {
         await openEdited(page)
         return editedFrame
     },
+    '29-edit-peek': async (page) => {
+        await openEditPeek(page)
+        return peekFrame
+    },
+    '30-edited-menu': (page) => openEditedMenu(page),
 }
 
 const mobileViews = {
