@@ -14,7 +14,16 @@
 
 Telegram Archive backs up one or more Telegram accounts to a machine you host. It runs in Docker and saves messages, media, edits and deletions to SQLite or PostgreSQL on your own disk. A web viewer, which never talks to Telegram, lets you read and search what it saved.
 
-![Telegram Archive viewer](https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-desktop.png)
+<p align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-desktop.png" alt="A group chat in the viewer, with a pinned message, an album, replies and reactions" width="880"></p>
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-mobile.png" alt="The same group chat on a phone" width="190"><br><sub>On a phone</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-deleted-mobile.png" alt="A message deleted in Telegram, kept and marked in the archive" width="190"><br><sub>Deletions kept</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/edit-history-mobile.png" alt="The edit history of a message edited twice" width="190"><br><sub>Every edit kept</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-mobile-dark.png" alt="The group chat in Telegram Night" width="190"><br><sub>Telegram Night</sub></td>
+  </tr>
+</table>
 
 ## Features
 
@@ -23,7 +32,7 @@ Telegram Archive backs up one or more Telegram accounts to a machine you host. I
 - Keeps earlier versions of edited messages, and keeps deleted messages marked as deleted. The real-time listener or the scheduled edit and deletion sync records both.
 - Several Telegram accounts in one archive.
 - Imports from Telegram Desktop exports.
-- A web viewer with search, forum topics, folders, a media gallery and seven themes.
+- A web viewer that looks like Telegram, with search, forum topics, folders, a media gallery, a What changed feed of deletions, edits and transcripts, and eleven themes plus a Match system setting.
 - Extra viewer accounts, share links that open only chosen chats, and browser notifications for new messages.
 - Optional voice transcription.
 - SQLite by default, or PostgreSQL.

@@ -110,9 +110,11 @@ The viewer accepts a WebSocket from the same origin as the page. A socket from a
 
 With `off`, a browser that already granted permission for this origin still shows a basic notification for the open chat while the tab is hidden. Revoke the permission in the browser to stop them.
 
-The `PUSH_NOTIFICATIONS` value is lowercased but not trimmed. Any other value, including one with a stray space, silently becomes `basic`. `ENABLE_NOTIFICATIONS` is an older switch and is not needed. Setting it to `true` while `PUSH_NOTIFICATIONS=off` turns the permission banner and basic notifications back on. Under the stock compose file the viewer does not receive it. Add it to the viewer's `environment` block if you want that.
+The `PUSH_NOTIFICATIONS` value is lowercased but not trimmed. Any other value, including one with a stray space, silently becomes `basic`. `ENABLE_NOTIFICATIONS` is an older switch and is not needed. Setting it to `true` while `PUSH_NOTIFICATIONS=off` turns the notifications switch and basic notifications back on. Under the stock compose file the viewer does not receive it. Add it to the viewer's `environment` block if you want that.
 
-When notifications are on and the browser has not decided yet, the sidebar shows **Enable notifications for new messages**. Click **Enable** and allow notifications when the browser asks.
+When notifications are on and the browser has not decided yet, the top of the chat list shows a row, **Turn on notifications**. Click it and allow notifications when the browser asks, or dismiss it with its cross; the browser remembers either.
+
+The main menu's **Notifications** row has a switch that turns them on and off at any time. On subscribes to Web Push when the viewer offers it, off unsubscribes. When the browser blocked notifications, the row says "Blocked in the browser settings" and the switch is disabled: allow them again in the browser's site settings. If this browser still holds a push subscription, the row reads "Blocked in the browser. Turn off to stop push." and the switch stays on, so you can turn it off.
 
 Basic mode uses the page's WebSocket. It fires only when a new message arrives in the chat that is open and the tab is hidden. It shows the chat title and the first 100 characters of the text. A message without text shows `New message received`. When the browser has a Web Push subscription, the page skips basic notifications so you do not get two.
 
@@ -142,7 +144,7 @@ Full mode uses Web Push. The browser's push service delivers the notification, s
 
     The viewer uses the environment keys only when both are set. One key alone is ignored. `VAPID_CONTACT` defaults to `mailto:admin@example.com` and is sent with every push, so set a real address.
 
-4. Restart the viewer, open it in the browser and click **Enable** in the sidebar banner.
+4. Restart the viewer, open it in the browser and click **Turn on notifications** at the top of the chat list, or turn on **Notifications** in the main menu. Allow notifications when the browser asks.
 
 A subscription made from the viewer covers every chat that user may see.
 
@@ -168,6 +170,6 @@ A newer push for the same chat replaces the older one. Clicking a notification o
 - When a push service answers 404, 410 or 403, the viewer deletes that subscription.
 - Each subscription keeps a snapshot of its owner's account and chat grants, and gets pushes only for those chats. It is skipped when its owner is disabled, or when the share token behind it is revoked or expired.
 - Logging out removes every subscription of that username. Other browsers of the same user subscribe again the next time they load the viewer.
-- When a browser has a subscription but has blocked notifications, the sidebar shows **Notifications blocked by browser** with an **Unsubscribe** button that removes that subscription.
+- When a browser has blocked notifications, the main menu's **Notifications** row says so. Turning the switch off removes that browser's subscription.
 - When the push service replaces a subscription, the service worker subscribes again and sends the new one to the viewer.
 - The service worker at `/sw.js` is registered only when notifications are on. It handles pushes and notification clicks. It has no offline cache, so the viewer does not work without a connection.

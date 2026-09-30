@@ -388,8 +388,10 @@ def test_the_markup_uses_what_the_setup_returns() -> None:
     returned = html[html.rindex("return {") :]
     for name in ("mediaGalleryFilter", "galleryVoiceItems", "galleryTranscriptLine"):
         assert f"                    {name},\n" in returned, name
-    # The changes panel renders the transcript kind with its own body, not as an edit.
-    assert "v-else-if=\"change.kind === 'transcript'\"" in html
+    # What changed renders the transcript kind with its own body, not as an edit:
+    # its own header ("Transcribed in ..."), and a recording row over the text.
+    assert "const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed' }" in html
+    assert '<div v-if="card.kind === \'transcript\'" class="flex items-center gap-2.5 mb-1.5">' in html
 
 
 pytest.importorskip("fastapi")

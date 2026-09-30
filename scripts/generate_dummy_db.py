@@ -4,7 +4,18 @@
 Every person, chat and message in it is invented. The archive holds two
 accounts, private chats, groups, a forum with topics and channels, with
 photos, an album, a sticker, voice notes with transcripts, a round video, a
-document, replies, forwards, reactions, edits and pinned messages.
+document, replies, forwards, reactions, edits with their earlier versions,
+messages deleted in Telegram that the archive kept, and pinned messages.
+
+It also holds every state the viewer draws for what the archive alone knows:
+media never downloaded (too large, filtered out, not yet) or missing from
+disk, an edit made on a later day, transcripts that failed, found no
+speech or came in two versions, a closed and a pinned topic, two viewer
+accounts (password DEMO_VIEWER_PASSWORD), two share links (one revoked; the
+other opens with DEMO_SHARE_TOKEN and has downloads off), and a few audit
+log entries. One reaction was taken back: the archive keeps it as a
+tombstone, and the viewer does not show it (it reads live reactions only),
+so the photo it sits on shows the reactions that still stand.
 
 Usage:
     python scripts/generate_dummy_db.py --data-dir ./demo-data
@@ -59,6 +70,13 @@ HARBOR = -1001900000003
 BOOKS = -4012345678
 PLATFORM = -1001900000010
 RELEASES = -1001900000011
+
+# Chats with earlier profile photos in the archive, and how many.
+EARLIER_AVATARS = {HIKERS: 2, KOFI: 1}
+
+# Obviously fake credentials for the demo's viewer accounts and share link.
+DEMO_VIEWER_PASSWORD = "demo-viewer-not-a-secret"
+DEMO_SHARE_TOKEN = "demo-share-link-not-a-secret"
 
 PALETTES = [
     # sky top, sky bottom, sun, three mountain layers (far to near), water
@@ -216,6 +234,9 @@ class ChatScript:
         self.reactions: list[tuple[int, str, int, list[int]]] = []
         self.versions: list[tuple[int, str, datetime]] = []
         self.transcripts: list[tuple[str, str, int]] = []
+        # (message id, emoji, when it was removed): reactions the archive keeps
+        # as tombstones after they were taken back.
+        self.removed_reactions: list[tuple[int, str, datetime]] = []
         self.by_id: dict[int, dict] = {}
 
     def add(
@@ -229,9 +250,11 @@ class ChatScript:
         raw: dict | None = None,
         pinned: bool = False,
         topic: int | None = None,
-        edited_from: str | None = None,
+        edited_from: str | list[str] | None = None,
         react: dict[str, int] | None = None,
         forward: tuple[int, int, str] | None = None,
+        deleted_after: timedelta | None = None,
+        edited_after: timedelta | None = None,
     ) -> int:
         mid = self.next_id
         self.next_id += 1
@@ -246,6 +269,10 @@ class ChatScript:
             "is_pinned": 1 if pinned else 0,
             "reply_to_top_id": topic,
         }
+        if sender in USERS:
+            # The backup stores the sender's name as seen at capture time.
+            first, last, _username = USERS[sender]
+            msg["sender_name"] = f"{first} {last}"
         if reply is not None:
             msg["reply_to_msg_id"] = reply
             msg["reply_to_text"] = (self.by_id[reply]["text"] or "")[:100]
@@ -255,8 +282,20 @@ class ChatScript:
             raw["forward_from_name"] = origin_name
             raw["forward_origin"] = {"chat_id": origin_chat, "message_id": origin_msg}
         if edited_from is not None:
-            msg["edit_date"] = when + timedelta(minutes=3)
-            self.versions.append((mid, edited_from, when))
+            # Oldest first: each earlier text is kept as a version, a few minutes apart.
+            # edited_after moves the edits later, a day on for an edit made the
+            # next day.
+            earlier = [edited_from] if isinstance(edited_from, str) else list(edited_from)
+            shift = edited_after or timedelta(0)
+            for step, old_text in enumerate(earlier):
+                # The original text dates from the send; each later one from its edit.
+                version_date = when if step == 0 else when + shift + timedelta(minutes=2 * step)
+                self.versions.append((mid, old_text, version_date))
+            msg["edit_date"] = when + shift + timedelta(minutes=2 * len(earlier) + 1)
+        if deleted_after is not None:
+            # Deleted in Telegram, kept by the archive (soft deletion).
+            msg["is_deleted"] = 1
+            msg["deleted_at"] = when + deleted_after
         if media is not None:
             media = dict(media)
             media["message_id"] = mid
@@ -414,7 +453,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         ESME,
         "The north lot. It fills up by 8, so get there early.",
         reply=q,
-        edited_from="The north lot. It fills up by 9.",
+        edited_from=["The north lot.", "The north lot. It fills up by 9."],
     )
     s.add(t + timedelta(minutes=25), OWNER_PERSONAL, "Adding this one to the list for next month.")
     s.add(
@@ -465,13 +504,17 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         },
     )
     s.add(t + timedelta(minutes=70), HUGO, "", media={"type": "sticker"}, raw={"sticker": {"emoji": "☀️"}})
-    s.add(
+    view = s.add(
         t + timedelta(minutes=83),
         KOFI,
         "Found this view on the way back",
         media={"type": "photo", "seed": 24},
         react={"❤️": 5, "🔥": 1},
     )
+    # Someone took their 😮 back: the archive keeps it as a tombstone, and the
+    # viewer leaves it out (it reads live reactions only).
+    s.reactions.append((view, "😮", 1, [ORSON]))
+    s.removed_reactions.append((view, "😮", t + timedelta(minutes=88)))
     s.add(
         t + timedelta(minutes=95),
         ORSON,
@@ -479,7 +522,20 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         pinned=True,
         react={"👌": 4},
     )
+    s.add(
+        t + timedelta(minutes=96),
+        HUGO,
+        "Parking at the north lot is free before nine, after that it's the paid lot by the café.",
+        deleted_after=timedelta(minutes=4),
+    )
     s.add(t + timedelta(minutes=97), OWNER_PERSONAL, "I can drive, room for three more.")
+    s.add(
+        t + timedelta(minutes=98),
+        KOFI,
+        "Blurry one, sorry",
+        media={"type": "photo", "seed": 26},
+        deleted_after=timedelta(minutes=2),
+    )
     s.add(t + timedelta(minutes=99), ESME, "Perfect, save me a seat 🙌", react={"❤️": 1})
     scripts.append(s)
 
@@ -526,6 +582,29 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         },
     )
     s.add(t + timedelta(minutes=17), OWNER_PERSONAL, "Deal. I'll bring the bag too.", react={"❤️": 1})
+    # Transcripts in the other states: two versions of one, one that found no
+    # speech, and one the server refused as too large.
+    s.add(
+        t + timedelta(minutes=20),
+        JUNIPER,
+        "",
+        media={
+            "type": "voice",
+            "duration": 9,
+            "seed": 11,
+            "transcript": [
+                "The trail map is on the fridge, next to the bus times.",
+                "The trail map is on the fridge next to the bus timetable.",
+            ],
+        },
+    )
+    s.add(t + timedelta(minutes=22), JUNIPER, "", media={"type": "voice", "duration": 4, "seed": 12, "transcript": ""})
+    s.add(
+        t + timedelta(minutes=24),
+        JUNIPER,
+        "",
+        media={"type": "voice", "duration": 42, "seed": 13, "transcript_error": "too_large"},
+    )
     scripts.append(s)
 
     # --- Orson: a document and a forward -----------------------------------------
@@ -556,7 +635,49 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         forward=(HARBOR, 3015, "Harbor Town Weekly"),
         media={"type": "photo", "seed": 31},
     )
-    s.add(t + timedelta(minutes=14), ORSON, "Worth checking before we book.")
+    q = s.add(t + timedelta(minutes=14), ORSON, "Worth checking before we book.")
+    # Media the viewer cannot show, one of each reason: too large for the
+    # download limit, filtered out, not downloaded yet, and a file the row
+    # claims that is missing from the disk.
+    later = t + timedelta(hours=3)
+    s.add(later - timedelta(minutes=5), OWNER_PERSONAL, "Good call. Send the rest when you can.", reply=q)
+    s.add(
+        later,
+        ORSON,
+        "The panorama from the top, full size",
+        media={"type": "photo", "skip": "oversize", "file_size": 25_165_824, "width": 6000, "height": 2400},
+    )
+    s.add(
+        later + timedelta(minutes=1),
+        ORSON,
+        "Gear list for the cabin",
+        media={
+            "type": "document",
+            "skip": "filtered",
+            "file_name": "cabin-gear-list.xlsx",
+            "file_size": 48_210,
+            "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+    )
+    s.add(
+        later + timedelta(minutes=2),
+        ORSON,
+        "",
+        media={"type": "photo", "skip": "pending", "width": 1600, "height": 1200},
+    )
+    s.add(
+        later + timedelta(minutes=3),
+        ORSON,
+        "The clip from the ferry",
+        media={
+            "type": "video",
+            "skip": "missing",
+            "file_size": 3_407_872,
+            "width": 1280,
+            "height": 720,
+            "duration": 21,
+        },
+    )
     scripts.append(s)
 
     # --- Kofi, Mirela (archived), Tobias -----------------------------------------
@@ -596,11 +717,13 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     s = ChatScript(1, OWNER_PERSONAL, BOOKS, first_id=300)
     filler(s, "books", [NOOR, WREN, MIRELA, LIOR, OWNER_PERSONAL], now - 42 * day, now - 1 * day, 34)
     s.add(
-        now - day + timedelta(hours=3),
+        now - 2 * day + timedelta(hours=3),
         NOOR,
         "Next month we read The Salt Orchard. Meeting on the 14th.",
         pinned=True,
         react={"📚": 4},
+        edited_from="Next month we read The Salt Orchard. Meeting on the 12th.",
+        edited_after=day + timedelta(hours=2),
     )
     scripts.append(s)
 
@@ -695,6 +818,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
                 "icon_color": color,
                 "date": start,
                 "is_pinned": 1 if title == "Events" else 0,
+                "is_closed": 1 if title == "Woodworking" else 0,
             }
         )
         times = spread(rng, start + timedelta(hours=1), now - timedelta(hours=rng.randint(2, 70)), len(lines) + 6)
@@ -842,6 +966,22 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
             folder = media_root / str(s.chat_id)
             kind = m["type"]
             file_id = int(hashlib.sha256(m["id"].encode()).hexdigest()[:8], 16)
+            skip = m.pop("skip", None)
+            if skip in ("oversize", "filtered", "pending"):
+                # Never downloaded: the row says why, or nothing when it is only
+                # waiting for the next backup.
+                m["downloaded"] = False
+                if skip != "pending":
+                    m["skip_reason"] = skip
+                continue
+            if skip == "missing":
+                # The row claims a file the disk does not have.
+                name = f"{file_id}_{kind}.mp4" if kind == "video" else f"{file_id}_{kind}.jpg"
+                m.update(file_name=name, mime_type="video/mp4" if kind == "video" else "image/jpeg")
+                m["file_path"] = f"{s.chat_id}/{name}"
+                m["downloaded"] = True
+                m["download_date"] = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+                continue
             if kind == "photo":
                 name = f"{file_id}_photo.jpg"
                 w, h = draw_landscape(folder / name, m.pop("seed"))
@@ -885,10 +1025,10 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
 
 
 async def seed(data_dir: Path) -> None:
-    from sqlalchemy import insert
+    from sqlalchemy import insert, update
 
     from telegram_archive.db import close_adapter, create_adapter
-    from telegram_archive.db.models import MessageVersion, Reaction
+    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MessageVersion, Reaction
 
     backup = data_dir / "backups"
     media_root = backup / "media"
@@ -915,26 +1055,69 @@ async def seed(data_dir: Path) -> None:
                 folder = "users" if chat["type"] == "private" else "chats"
                 draw_avatar(media_root / "avatars" / folder / f"{chat['id']}_{photo_id}.jpg", 60 + i * 7, avatar)
             await db.upsert_chat(chat, account_id=account)
+            # Earlier profile photos the archive saw, so the info panel shows
+            # its "Previous photos" row: an older file beside the current one
+            # and a sighting of it, dated before the current photo's.
+            for n in range(EARLIER_AVATARS.get(chat["id"], 0)):
+                old_id = photo_id + 1000 * (n + 1)
+                # Two palette steps from the current photo per earlier one, so an
+                # earlier photo never reads as the current one in the panel.
+                draw_avatar(
+                    media_root / "avatars" / folder / f"{chat['id']}_{old_id}.jpg", 60 + i * 7 + 2 * (n + 1), avatar
+                )
+                async with db.db_manager.async_session_factory() as session:
+                    await session.execute(
+                        insert(AvatarHistory).values(
+                            account_id=account,
+                            chat_id=chat["id"],
+                            photo_id=old_id,
+                            seen_at=now - timedelta(days=150 * (n + 1)),
+                        )
+                    )
+                    await session.commit()
 
         for s in scripts:
             account = accounts[s.account_id]
             await db.insert_messages_batch(s.messages, account_id=account)
             for m in s.media:
                 transcript = m.pop("transcript", None)
+                transcript_error = m.pop("transcript_error", None)
                 await db.insert_media(m, account_id=account)
-                if transcript and m.get("downloaded"):
-                    row = await db.enqueue_media_transcript(m["id"], account_id=account)
+                if not m.get("downloaded"):
+                    continue
+                sent = s.by_id[m["message_id"]]["date"]
+                # One text, several texts (later versions of the same audio, each a
+                # row of its own), an empty text (no speech), or a failure.
+                texts = transcript if isinstance(transcript, list) else ([transcript] if transcript is not None else [])
+                for step, text in enumerate(texts):
+                    row = await db.enqueue_media_transcript(
+                        m["id"], account_id=account, preset="fast" if step == 0 else "best", force=step > 0
+                    )
                     await db.fill_media_transcript(
                         row["id"],
                         status="done",
                         account_id=account,
-                        text=transcript,
+                        text=text,
                         language="en",
                         source="akou",
                         engine_name="akou",
-                        preset="fast",
+                        preset="fast" if step == 0 else "best",
                         confidence=0.94,
                         duration_s=float(m["duration"]),
+                    )
+                    # Finished a minute after the voice note arrived, so What
+                    # changed dates it like a real run, not at seed time.
+                    async with db.db_manager.async_session_factory() as session:
+                        await session.execute(
+                            update(MediaTranscript)
+                            .where(MediaTranscript.id == row["id"])
+                            .values(completed_at=sent + timedelta(minutes=1 + step))
+                        )
+                        await session.commit()
+                if transcript_error:
+                    row = await db.enqueue_media_transcript(m["id"], account_id=account)
+                    await db.fill_media_transcript(
+                        row["id"], status="failed", account_id=account, error=transcript_error
                     )
             async with db.db_manager.async_session_factory() as session:
                 for mid, emoji, count, voters in s.reactions:
@@ -945,8 +1128,20 @@ async def seed(data_dir: Path) -> None:
                                 account_id=account, message_id=mid, chat_id=s.chat_id, emoji=emoji, user_id=uid, count=n
                             )
                         )
-                for mid, old_text, when in s.versions:
+                # A reaction taken back stays as a tombstone (removed_at), the way
+                # the backup keeps it.
+                for mid, emoji, removed in s.removed_reactions:
+                    await session.execute(
+                        update(Reaction)
+                        .where(Reaction.chat_id == s.chat_id, Reaction.message_id == mid, Reaction.emoji == emoji)
+                        .values(removed_at=removed)
+                    )
+                for index, (mid, old_text, when) in enumerate(s.versions):
                     digest = hashlib.sha256(f"{account}:{s.chat_id}:{mid}:{old_text}".encode()).hexdigest()
+                    # Captured when the next text appeared: the next kept
+                    # version of the same message, or its last edit.
+                    following = s.versions[index + 1] if index + 1 < len(s.versions) else None
+                    captured = following[2] if following and following[0] == mid else s.by_id[mid]["edit_date"]
                     await session.execute(
                         insert(MessageVersion).values(
                             account_id=account,
@@ -954,6 +1149,7 @@ async def seed(data_dir: Path) -> None:
                             chat_id=s.chat_id,
                             text=old_text,
                             date=when,
+                            captured_at=captured,
                             change_hash=digest,
                         )
                     )
@@ -975,12 +1171,104 @@ async def seed(data_dir: Path) -> None:
         )
         await db.sync_folder_members(3, [HIKERS, MAKERS, HARBOR, BOOKS], account_id=personal)
 
+        await seed_access(db, accounts, now)
+
         await db.set_metadata("last_backup_time", (now - timedelta(minutes=25)).isoformat() + "Z")
         await db.calculate_and_store_statistics(storage_path=str(backup))
         total = sum(len(s.messages) for s in scripts)
         print(f"Demo archive ready: {len(chats)} chats, {total} messages, {sum(len(s.media) for s in scripts)} media")
     finally:
         await close_adapter()
+
+
+async def seed_access(db, accounts: dict[int, int], now: datetime) -> None:
+    """Two viewer accounts, two share links (one revoked) and a few audit rows."""
+    import json
+    import secrets
+
+    from sqlalchemy import select, update
+
+    from telegram_archive.db.models import Chat, ViewerAuditLog, ViewerToken
+
+    async with db.db_manager.async_session_factory() as session:
+        rows = (await session.execute(select(Chat.account_id, Chat.id, Chat.ref))).all()
+    ref = {(account_id, chat_id): chat_ref for account_id, chat_id, chat_ref in rows}
+    personal, work = accounts[1], accounts[2]
+
+    def password(salt: str) -> str:
+        return hashlib.pbkdf2_hmac("sha256", DEMO_VIEWER_PASSWORD.encode(), salt.encode(), 600_000).hex()
+
+    salt = secrets.token_hex(16)
+    await db.create_viewer_account(
+        username="family",
+        password_hash=password(salt),
+        salt=salt,
+        created_by="admin",
+        allowed_chat_refs=json.dumps([ref[(personal, HIKERS)], ref[(personal, JUNIPER)], ref[(personal, BOOKS)]]),
+    )
+    salt = secrets.token_hex(16)
+    await db.create_viewer_account(
+        username="work-readonly",
+        password_hash=password(salt),
+        salt=salt,
+        created_by="admin",
+        no_download=1,
+        is_active=0,
+        allowed_accounts=json.dumps([work]),
+    )
+
+    def token_hash(plaintext: str, token_salt: str) -> str:
+        return hashlib.pbkdf2_hmac("sha256", plaintext.encode(), bytes.fromhex(token_salt), 600_000).hex()
+
+    token_salt = secrets.token_hex(16)
+    await db.create_viewer_token(
+        label="Hike photos",
+        token_hash=token_hash(DEMO_SHARE_TOKEN, token_salt),
+        token_salt=token_salt,
+        created_by="admin",
+        allowed_chat_ids="[]",
+        no_download=1,
+        expires_at=now + timedelta(days=14),
+        allowed_chat_refs=json.dumps([ref[(personal, HIKERS)]]),
+    )
+    token_salt = secrets.token_hex(16)
+    old = await db.create_viewer_token(
+        label="Book club link",
+        token_hash=token_hash(secrets.token_urlsafe(24), token_salt),
+        token_salt=token_salt,
+        created_by="admin",
+        allowed_chat_ids="[]",
+        allowed_chat_refs=json.dumps([ref[(personal, BOOKS)]]),
+    )
+    async with db.db_manager.async_session_factory() as session:
+        await session.execute(
+            update(ViewerToken)
+            .where(ViewerToken.id == old["id"])
+            .values(is_revoked=1, use_count=5, last_used_at=now - timedelta(days=3))
+        )
+        await session.commit()
+
+    events = [
+        ("admin", "master", "login_success", 190),
+        ("admin", "master", "viewer_created", 185),
+        ("admin", "master", "token_created", 180),
+        ("family", "viewer", "login_failed", 95),
+        ("family", "viewer", "login_success", 94),
+        ("Hike photos", "token", "token_auth_success", 40),
+        ("admin", "master", "token_updated", 12),
+    ]
+    async with db.db_manager.async_session_factory() as session:
+        for username, role, action, minutes_ago in events:
+            await session.execute(
+                ViewerAuditLog.__table__.insert().values(
+                    username=username,
+                    role=role,
+                    action=action,
+                    ip_address="192.0.2.10",
+                    created_at=now - timedelta(minutes=minutes_ago),
+                )
+            )
+        await session.commit()
 
 
 # Written into the demo backups folder so --force can tell a demo archive from a

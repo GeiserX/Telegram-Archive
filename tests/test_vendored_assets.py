@@ -72,7 +72,10 @@ def test_vendored_css_targets_exist_locally():
             assert resolved.is_relative_to(STATIC), f"{css.name}: {target} escapes /static"
             assert resolved.is_file(), f"{css.name}: {target} missing on disk"
             checked += 1
-    assert checked, "expected url() targets in vendored css"
+    # The Font Awesome sheet was the one that fetched files (its webfonts); the
+    # viewer draws its icons as inline SVG now, and flatpickr's sheet fetches
+    # nothing. A sheet that does fetch is checked above.
+    assert not (VENDOR / "fontawesome").exists()
 
 
 def test_csp_allows_only_local_sources():

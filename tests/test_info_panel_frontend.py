@@ -40,7 +40,8 @@ const selectedChat = ref({ ref: 'c1', type: 'group', id: -100123 });
 const userRole = ref('master');
 const albums = new Map();
 const getAlbumForMessage = msg => albums.get(msg.id) || null;
-const formatFileSize = bytes => `${bytes} B`;
+const formatBytes = bytes => `${bytes} B`;
+const formatCount = n => Number(n || 0).toLocaleString('en-US');
 const isDeletedChat = chat => !!chat.deleted;
 const getMediaUrl = msg => msg.media?.url || '';
 const formatDuration = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -81,28 +82,29 @@ def _script(body: str, capabilities: dict | None = None) -> str:
 def test_labels_read_like_the_apps() -> None:
     _run_node(
         _script("""
-assert.equal(getChatTypeLabel({ type: 'private' }), 'Private chat');
-assert.equal(getChatTypeLabel({ type: 'private', deleted: true }), 'Deleted account');
-assert.equal(getChatTypeLabel({ type: 'group' }), 'Private group');
-assert.equal(getChatTypeLabel({ type: 'group', username: 'g', is_forum: 1 }), 'Public group with topics');
-assert.equal(getChatTypeLabel({ type: 'channel', username: 'c' }), 'Public channel');
-assert.equal(getChatTypeLabel({ type: 'channel' }), 'Private channel');
-assert.equal(getChatTypeLabel({ type: 'supergroup', username: 's' }), 'Public group', 'an imported supergroup is a group');
+assert.equal(getChatTypeLabel({ type: 'private' }), 'private chat');
+assert.equal(getChatTypeLabel({ type: 'private', deleted: true }), 'deleted account');
+assert.equal(getChatTypeLabel({ type: 'group' }), 'private group');
+assert.equal(getChatTypeLabel({ type: 'group', username: 'g', is_forum: 1 }), 'public group with topics');
+assert.equal(getChatTypeLabel({ type: 'channel', username: 'c' }), 'public channel');
+assert.equal(getChatTypeLabel({ type: 'channel' }), 'private channel');
+assert.equal(getChatTypeLabel({ type: 'supergroup', username: 's' }), 'public group', 'an imported supergroup is a group');
 assert.equal(getChatTypeLabel(null), '');
 assert.equal(chatStatusLine({ type: 'group', participants_count: 1234 }), '1,234 members');
 assert.equal(chatStatusLine({ type: 'group', participants_count: 1 }), '1 member');
 assert.equal(chatStatusLine({ type: 'channel', participants_count: 20000 }), '20,000 subscribers');
-assert.equal(chatStatusLine({ type: 'channel', participants_count: null }), 'Private channel');
-assert.equal(chatStatusLine({ type: 'private', username: 'x' }), 'Private chat');
-selectedChat.value = { type: 'private' }; assert.equal(infoPanelTitle.value, 'User Info');
-selectedChat.value = { type: 'group' }; assert.equal(infoPanelTitle.value, 'Group Info');
-selectedChat.value = { type: 'supergroup' }; assert.equal(infoPanelTitle.value, 'Group Info');
-selectedChat.value = { type: 'channel' }; assert.equal(infoPanelTitle.value, 'Channel Info');
-selectedChat.value = { type: 'weird' }; assert.equal(infoPanelTitle.value, 'Chat Info');
+assert.equal(chatStatusLine({ type: 'channel', participants_count: null }), 'private channel');
+assert.equal(chatStatusLine({ type: 'private', username: 'x' }), 'private chat');
+selectedChat.value = { type: 'private' }; assert.equal(infoPanelTitle.value, 'User info');
+selectedChat.value = { type: 'group' }; assert.equal(infoPanelTitle.value, 'Group info');
+selectedChat.value = { type: 'supergroup' }; assert.equal(infoPanelTitle.value, 'Group info');
+selectedChat.value = { type: 'channel' }; assert.equal(infoPanelTitle.value, 'Channel info');
+selectedChat.value = { type: 'weird' }; assert.equal(infoPanelTitle.value, 'Chat info');
 assert.equal(mediaSummaryLine({ mime_type: 'image/jpeg', file_size: 10, width: 4, height: 3 }), 'image/jpeg · 10 B · 4 × 3');
-assert.equal(mediaSummaryLine({ type: 'photo' }), 'photo');
-assert.equal(mediaSummaryLine({ type: 'video', file_size: 0 }), 'video · 0 B');
-assert.equal(mediaSummaryLine({ type: 'video', duration: 754, file_size: 9 }), 'video · 12:34 · 9 B', 'duration leads, as the apps show it');
+assert.equal(mediaSummaryLine({ type: 'photo' }), 'Photo', 'the type in words');
+assert.equal(mediaSummaryLine({ type: 'video', file_size: 0 }), 'Video · 0 B');
+assert.equal(mediaSummaryLine({ type: 'video', duration: 754, file_size: 9 }), 'Video · 12:34 · 9 B', 'duration leads, as the apps show it');
+assert.equal(mediaSummaryLine({ type: 'document', mime_type: 'application/pdf', file_size: 9 }), 'application/pdf · 9 B', 'the MIME type for a document only');
 
 // Long descriptions fold; the fold resets with the chat.
 selectedChat.value = { ref: 'a', type: 'group', description: 'short' };
@@ -359,9 +361,8 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
         r"\b(?:text|bg|border|ring|from|via|to)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green"
         r"|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b"
     )
-    avatar_gradient = "bg-gradient-to-br from-blue-500 to-purple-600"  # the chat list's own initials fill
-    assert aside.count(avatar_gradient) == 1
-    assert palette.findall(aside.replace(avatar_gradient, "")) == [], "the panel uses theme tokens only"
+    assert palette.findall(aside) == [], "the panel uses theme tokens only"
+    assert "getChatAvatarFill(selectedChat)" in aside, "the initials fill is the chat's peer colour"
     assert aside.count('class="pane-resize-handle hidden md:block"') == 1, "the grab strip is a desktop affordance"
     assert 'ref="infoPanelCloseBtn"' in aside
     assert "formatDateFull(infoPanelMessage.date)" in aside and "formatTime(infoPanelMessage.date)" in aside
@@ -383,7 +384,7 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert 'class="chat-list-pane relative bg-tg-sidebar' in html, "the chat list width is a CSS variable"
     assert "'--chat-list-width': chatListWidth + 'px'" in html
     assert '@click="selectMessage(msg, $event)"' in html
-    assert 'class="message-row flex items-end gap-2"' in html, "the keyboard walk selects on this class"
+    assert 'class="message-row flex items-end"' in html, "the keyboard walk selects on this class"
     assert "querySelectorAll('.message-row[data-msg-id]')" in html
     assert "isSelectedMessage(msg) ? 'message-info-selected' : ''" in html
     assert 'aria-controls="info-panel"' in html

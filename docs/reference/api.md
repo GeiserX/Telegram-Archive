@@ -196,7 +196,7 @@ All of these need a login that can see the chat.
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
 | `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
 | `GET /api/chats/{chat_ref}/topics` | None | `{topics}` for a forum chat |
-| `GET /api/chats/{chat_ref}/stats` | None | `{chat_id, messages, media_files, total_size_bytes, total_size_mb, first_message_date, last_message_date}`, cached for 60 seconds |
+| `GET /api/chats/{chat_ref}/stats` | None | `{chat_id, messages, media_files, total_size_bytes, total_size_mb, first_message_date, last_message_date, deleted_messages, edited_messages}`, cached for 60 seconds. `deleted_messages` counts the messages deleted in Telegram that the archive kept, `edited_messages` the messages edited at least once |
 | `GET /api/chats/{chat_ref}/avatars` | None | `[{photo_id, seen_at, url, available}]` |
 
 ### Paging through messages
@@ -261,7 +261,7 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 
 The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment. Media responses carry `Cache-Control: private`. Thumbnails and avatars add `max-age=86400`.
 
-The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`.
+The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`, and the message's `text`, `is_deleted` and `deleted_at`.
 
 The open routes answer `{"ok": true}` on success and 404 `Not configured` when their command is unset. `/media/open` accepts only types the viewer shows inline and answers 415 for others. `/media/open-path` accepts any type. Both answer 400 `File name cannot be passed to the command` when the file name cannot be passed to the command, and 500 when the command fails to start or exits non-zero within half a second.
 

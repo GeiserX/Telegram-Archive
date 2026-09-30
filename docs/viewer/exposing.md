@@ -87,7 +87,7 @@ The rest of the protection is in how the viewer serves files and errors:
 
 Chat refs keep chat ids out of URLs, but ids are not hidden from users:
 
-- The chat list, the info panel and the sender dialog show Telegram chat and user ids. API payloads include chat and sender ids.
+- The info panel and the sender dialog show Telegram chat and user ids. API payloads include chat and sender ids.
 - Message payloads include each file's path in the archive for every login except no-download logins. Only the master login displays the path, but any logged-in user can read it from the API response.
 
 Scope viewer accounts and share tokens to the chats you mean to share. See [Logins, viewer accounts and share links](access.md).

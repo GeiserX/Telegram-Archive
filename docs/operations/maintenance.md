@@ -127,7 +127,7 @@ docker compose start telegram-backup
 `-c CHAT_ID` limits it to one chat. Without it, every chat with videos is checked. The summary lists chats scanned, round videos found and rows re-typed.
 
 !!! note "Reload open viewer tabs afterwards"
-    An open viewer tab shows "Media not found" for a re-typed video until you reload the page.
+    An open viewer tab shows "missing from the archive disk" for a re-typed video until you reload the page.
 
 ## Verify media files
 
