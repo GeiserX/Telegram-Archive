@@ -1066,6 +1066,12 @@ class Config:
         self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
         self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
         self.transcription_backfill_per_run = 50
+        # The viewer's transcript button, which ALLOW_ANONYMOUS_VIEWER opens to
+        # anyone: presses per client per ten minutes, and how many pressed
+        # rows may wait for the backup before a press from anyone but the
+        # master is refused. 0 or less turns a limit off.
+        self.transcription_ask_rate_limit = 30
+        self.transcription_ask_max_open = 50
         # Chats whose media the drain sends first, in this order, in every
         # account. A list, not a set: the order is the point.
         self.transcription_priority_chat_ids: list[int] = []
@@ -1077,6 +1083,8 @@ class Config:
             # Unset, TRANSCRIPTION_PROVIDER=openai caps uploads at 25 MB instead.
             self.transcription_max_upload_mb_set = bool(os.getenv("TRANSCRIPTION_MAX_UPLOAD_MB", "").strip())
             self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
+            self.transcription_ask_rate_limit = max(0, _parse_int_env("TRANSCRIPTION_ASK_RATE_LIMIT", 30))
+            self.transcription_ask_max_open = max(0, _parse_int_env("TRANSCRIPTION_ASK_MAX_OPEN", 50))
             self.transcription_priority_chat_ids = self._parse_ordered_id_list(
                 os.getenv("TRANSCRIPTION_PRIORITY_CHAT_IDS", "")
             )

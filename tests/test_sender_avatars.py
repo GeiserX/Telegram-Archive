@@ -1002,7 +1002,7 @@ class TestMemberAvatarAclEndpoint(unittest.IsolatedAsyncioTestCase):
         async with self._client() as client:
             resp = await client.get(f"/media/avatar/{self.VISIBLE_REF}/1")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("private", resp.headers.get("cache-control", ""))
+        self.assertEqual("private, no-cache", resp.headers.get("cache-control", ""))
 
     async def test_unknown_message_or_forbidden_chat_blocked(self):
         """No sender resolvable → 404; a chat outside the grant → the SAME 404."""

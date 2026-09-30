@@ -106,7 +106,7 @@ Proxy users also get `"proxy_auth": true`. When no login mode is configured, the
 
 ### Log out
 
-`POST /api/logout` ends the session named by the cookie, closes that session's WebSocket connections, deletes every push subscription of that user and clears the cookie. It always answers `{"success": true}`.
+`POST /api/logout` ends the session named by the cookie, closes that session's WebSocket connections, deletes every push subscription of that user and clears the cookie. It always answers `{"success": true}`. When the request carried a session cookie, the answer also sends `Clear-Site-Data: "cache"` so the browser drops the media it kept. A request without the cookie, such as another site's form post, does not get the header. That header empties the browser's HTTP cache for the viewer only. The service worker, cookies and local settings stay, and the viewer's static files download again on the next visit. Browsers apply it over HTTPS only.
 
 ```bash
 curl -s -b jar.txt -X POST http://localhost:8000/api/logout
@@ -116,7 +116,7 @@ The master can end other people's sessions through the admin routes. See [End se
 
 ### Rate limit
 
-`/api/login` and `/auth/token` share one limit: 15 attempts per client IP in 5 minutes, then 429. The client IP is the socket peer unless `TRUST_PROXY_HEADERS=true`, in which case the viewer reads `X-Forwarded-For` or `X-Real-IP`. No other route is rate limited. [Exposing the viewer safely](../viewer/exposing.md) explains the proxy setup.
+`/api/login` and `/auth/token` share one limit: 15 attempts per client IP in 5 minutes, then 429. The client IP is the socket peer unless `TRUST_PROXY_HEADERS=true`, in which case the viewer reads `X-Forwarded-For` or `X-Real-IP`. The only other rate limit is on asking for a transcript. See [Transcripts](#transcripts). [Exposing the viewer safely](../viewer/exposing.md) explains the proxy setup.
 
 ## Who can call what
 
@@ -226,6 +226,8 @@ curl -s -b jar.txt \
 
 Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 
+In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
+
 ### Message versions
 
 Each earlier version of an edited message has these fields:
@@ -251,7 +253,7 @@ All of these need any login. Results cover only chats the caller can see.
 |-----------------|-----------|----------|
 | `GET /api/search/messages` | `q` required, 1 to 500 characters. `limit` default 20, up to 100. `offset` up to 5000. | `{query, limit, offset, has_more, indexed, results}` |
 | `GET /api/tags/{tag}` | `scope` is `chat`, `mine` or `all`, default `all`. `chat_ref`, required with `scope=chat`. `limit` default 50, up to 200. `offset`. | `{tag, results, has_more, truncated}` |
-| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. | `{changes, next_before}` |
+| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. `chat_ref` for one chat. | `{changes, next_before}` |
 
 `/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum` and `avatar_url`.
 
@@ -268,6 +270,8 @@ curl -s -b jar.txt 'http://localhost:8000/api/tags/%23holiday?scope=all&limit=50
 | `deleted` | `text` |
 | `edited` | `old_text`, `new_text` |
 | `transcript` | `text`, `language` |
+
+`chat_ref` narrows the feed to one chat. For a channel or group that several accounts hold, that is every copy the caller may see, and each change is listed once under the copy the feed for every chat lists it under, so a row's `chat.ref` can name another account's copy of the same chat. A private chat narrows to the copy that ref names, since each account's private chat with one person is a different conversation. A chat the caller cannot see answers 404, the same as an unknown ref. Paging works the same way.
 
 Hard deletions never appear, and no-download logins get no transcript rows. The response is sent with `Cache-Control: private, no-store`. To walk the feed, pass `next_before` from each answer as `before` on the next request until it comes back empty. To poll for new changes, pass the time of your last poll as `since`:
 
@@ -290,7 +294,11 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 | `POST /media/open/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_CMD` on the file, on the viewer's host |
 | `POST /media/open-path/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_PATH_CMD` on the file, on the viewer's host |
 
-The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment. Media responses carry `Cache-Control: private`. Thumbnails and avatars add `max-age=86400`. After an edit replaced a message's media, the `url` of its current media carries `?v={n}`, so a browser never shows cached bytes of the old media under it. The routes ignore the parameter; add `download=1` with `&`.
+The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment.
+
+Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`, an `ETag` and a `Last-Modified`. The browser may keep a copy, but it asks the server before each reuse, and the viewer runs the same login and chat checks on that request. A session that still has access gets `304 Not Modified` and no body, so the file is not sent again. A logged-out browser gets 401, never the kept copy. Copies cached by an older release, which did not ask, can still be reused until their old lifetime runs out, up to a day for thumbnails and avatars; logging out once over HTTPS clears them. Editing a viewer, or changing a token's chats or downloads, ends its sessions, so that browser gets 401 too. A session that no longer sees the chat gets 404. Originals and thumbnails answer 403 to a login whose downloads are off; avatars stay available to it. When its session ends, the viewer page reloads itself at the same address, so the next login on the same tab does not see the chat that was open until the server allows it again. The files under `/static` are not behind a login and keep their own caching.
+
+After an edit replaced a message's media, the `url` of its current media carries `?v={n}`, so a browser never shows cached bytes of the old media under it. The routes ignore the parameter; add `download=1` with `&`.
 
 The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`, and the message's `text`, `is_deleted` and `deleted_at`.
 
@@ -298,7 +306,7 @@ The open routes answer `{"ok": true}` on success and 404 `Not configured` when t
 
 ## Export
 
-`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file. It needs a login that can see the chat and answers 403 for no-download logins.
+`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file. It needs a login that can see the chat and answers 403 for no-download logins. It is sent with `Cache-Control: private, no-store`, so neither the browser nor a proxy keeps a copy.
 
 | Parameter | Meaning |
 |-----------|---------|
@@ -323,7 +331,20 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 }
 ```
 
-`filters` appears only when `from` or `to` was given. `message_versions` holds the earlier versions of edited messages in the same window, with the fields of [Message versions](#message-versions).
+`filters` appears only when `from` or `to` was given. The window picks messages by their send date.
+
+Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoing` and `reply_to`, and these fields that say what the archive kept:
+
+| Field | Content |
+|-------|---------|
+| `is_deleted` | `true` when the message was deleted in Telegram. The archive keeps it, so the export includes it. |
+| `deleted_at` | When the archive noticed the deletion, ISO 8601 UTC, or `null`. |
+| `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
+| `versions` | Every earlier text the archive kept of the message, oldest first, whatever its date. Each has `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced). An empty list means the archive kept no earlier text. |
+
+A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions, with the fields of [Message versions](#message-versions), picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
+
+The messages and their `versions` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
 
 ## Transcripts
 
@@ -337,7 +358,7 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 
 Each transcript has `id`, `status`, `error`, `text`, `language`, `source`, `engine_name`, `engine_version`, `preset`, `models`, `confidence`, `duration_s`, `requested_at`, `completed_at` and `turns`.
 
-The POST routes queue a request, or return the one already open, and make no outbound call themselves. They answer 409 when transcription is off, when the media has no sound, or when the file is not downloaded yet. All transcript routes except status answer 403 for no-download logins. Setup is in [Voice transcription](../configuration/transcription.md).
+The POST routes queue a request, or return the one already open, and make no outbound call themselves. They answer 409 when transcription is off, when the media has no sound, or when the file is not downloaded yet. For anyone but the master they answer 429 with a `Retry-After` header after `TRANSCRIPTION_ASK_RATE_LIMIT` presses in 10 minutes from the same client, or when `TRANSCRIPTION_ASK_MAX_OPEN` pressed files already wait for the backup. A press on a file whose request is already open returns that request and is never refused. In an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) the same holds for a file whose newest result is done or skipped: the press returns it and queues nothing. A login's press on such a file queues it again. For the rate limit, `Retry-After` and the `detail` say when the next press is allowed. For the cap, room only comes back when a backup run picks up waiting files, so `Retry-After` is a polling hint of one hour. All transcript routes except status answer 403 for no-download logins. Setup is in [Voice transcription](../configuration/transcription.md).
 
 ## Live updates over WebSocket
 
@@ -363,7 +384,7 @@ Event frames all carry `type` and `chat_ref`:
 | `edit` | `message_id`, `new_text`, `edit_date`, `edit_hide`, and `entities` when the frame carries the new formatting (left out when `new_text` was cut to fit) |
 | `delete` | `message_id`, `deletion_mode`, `deleted_at` |
 | `pin` | `message_ids`, `pinned` |
-| `reaction` | `message_id`, `reactions` |
+| `reaction` | `message_id`, `reactions` (the live set; an emoji missing from it was taken back) |
 | `transcript` | `message_id`, `transcript_id`, `status` |
 
 The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, an admin change to the viewer account or share token behind it, or the end-all action. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).
@@ -457,7 +478,7 @@ There is no route that lists or ends sessions by id. These calls end sessions:
 | `DELETE /api/admin/viewers/{id}` | The same, and removes the account |
 | `PUT /api/admin/tokens/{id}` changing `is_revoked`, `allowed_chat_refs` or `no_download` | Every session opened with that token, with its sockets and push subscriptions |
 | `DELETE /api/admin/tokens/{id}` | The same, and removes the token |
-| `POST /api/admin/sessions/end-all` | Every session: the master login's, every viewer account's and every share token's, with their sockets and push subscriptions. `keep_current=true`, in the query string or as the JSON body `{"keep_current": true}`, keeps the caller's own session. Answers `{success, ended, current_session_ended}` and clears the cookie when the caller's session ended. |
+| `POST /api/admin/sessions/end-all` | Every session: the master login's, every viewer account's and every share token's, with their sockets and push subscriptions. `keep_current=true`, in the query string or as the JSON body `{"keep_current": true}`, keeps the caller's own session. Answers `{success, ended, current_session_ended}` and clears the cookie and sends `Clear-Site-Data: "cache"` when the caller's session ended. |
 
 Lock a viewer out without deleting the account:
 
@@ -514,7 +535,7 @@ Errors come back as `{"detail": "..."}`.
 | 409 | A name clash, or a transcript that cannot be made |
 | 413 | A transcription callback body over 256 KiB |
 | 415 | `/media/open` on a type the viewer does not show inline |
-| 429 | Login rate limit |
+| 429 | Login rate limit, or a transcript ask limit. Comes with `Retry-After` on transcript asks |
 | 500 | Any other failure. The detail is always `Internal server error` |
 | 503 | Database unreachable, or no login mode configured. `POST /auth/token` answers 500 with `Database not available` instead |
 

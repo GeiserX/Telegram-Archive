@@ -59,6 +59,20 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_callback_url, "")
         self.assertEqual(config.transcription_webhook_secret, "")
         self.assertEqual(config.transcription_backfill_per_run, 50)
+        # The viewer's ask limits are on out of the box.
+        self.assertEqual(config.transcription_ask_rate_limit, 30)
+        self.assertEqual(config.transcription_ask_max_open, 50)
+
+    def test_ask_limits_parse_by_name_and_zero_or_less_is_off(self):
+        config = self._config(TRANSCRIPTION_ASK_RATE_LIMIT="5", TRANSCRIPTION_ASK_MAX_OPEN="7")
+        self.assertEqual((config.transcription_ask_rate_limit, config.transcription_ask_max_open), (5, 7))
+        config = self._config(TRANSCRIPTION_ASK_RATE_LIMIT="0", TRANSCRIPTION_ASK_MAX_OPEN="-3")
+        self.assertEqual((config.transcription_ask_rate_limit, config.transcription_ask_max_open), (0, 0))
+        config = self._config(TRANSCRIPTION_ASK_RATE_LIMIT="", TRANSCRIPTION_ASK_MAX_OPEN=" ")
+        self.assertEqual((config.transcription_ask_rate_limit, config.transcription_ask_max_open), (30, 50))
+        for name in ("TRANSCRIPTION_ASK_RATE_LIMIT", "TRANSCRIPTION_ASK_MAX_OPEN"):
+            with self.assertRaisesRegex(ValueError, name):
+                self._config(**{name: "lots"})
 
     def test_no_server_is_valid_and_logs_no_warning(self):
         with self.assertNoLogs("telegram_archive.config", level="WARNING"):

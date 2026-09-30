@@ -2461,6 +2461,8 @@ class TestGetMessagesPaginated:
             r.emoji = emoji
             r.count = count
             r.user_id = user_id
+            # A live row: removed_at is NULL (a bare MagicMock would read as set).
+            r.removed_at = None
             return r
 
         # The batched reactions query reuses the same execute() mock, so both

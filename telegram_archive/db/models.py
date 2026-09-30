@@ -613,8 +613,10 @@ class Reaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     # v7.23.0 (#219): retain-on-removal tombstone. When a reaction is no longer
     # present in a fresh snapshot it is stamped here instead of being deleted, so
-    # a removed reaction is preserved rather than silently dropped. The live count
-    # (get_messages_paginated) excludes rows where removed_at IS NOT NULL.
+    # a removed reaction is preserved rather than silently dropped. In
+    # get_messages_paginated a row with removed_at set stays out of the live
+    # `reactions` count and comes back beside it in `removed_reactions` (emoji,
+    # count, removed_at; never a reactor id).
     removed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationship to message (composite foreign key)

@@ -57,7 +57,7 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_chat_ref_"
 
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import Chat, Media, Message, MessageVersion
+from telegram_archive.db.models import Chat, Media, Message, MessageVersion, Reaction
 from telegram_archive.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -170,6 +170,31 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
                     text="beta draft",
                     date=start + timedelta(hours=1),
                     change_hash="matrix-version-b1",
+                )
+            )
+            # Reactions as the backup stores them: one row per emoji, no reactor.
+            # Chat A's message 2 keeps a live one and one taken back; chat B's
+            # message 1 has one taken back, under the id of chat A's message 1,
+            # so a list that leaked across chats could not hide behind the id.
+            session.add(Reaction(account_id=1, message_id=2, chat_id=CHAT_A_ID, emoji="👍", count=2))
+            session.add(
+                Reaction(
+                    account_id=1,
+                    message_id=2,
+                    chat_id=CHAT_A_ID,
+                    emoji="😮",
+                    count=1,
+                    removed_at=start + timedelta(minutes=10),
+                )
+            )
+            session.add(
+                Reaction(
+                    account_id=1,
+                    message_id=1,
+                    chat_id=CHAT_B_ID,
+                    emoji="🔥",
+                    count=3,
+                    removed_at=start + timedelta(hours=3),
                 )
             )
             session.add(
@@ -524,6 +549,76 @@ async def test_a_share_link_never_sees_another_chats_edits(viewer_app):
 
 
 # ============================================================================
+# (b4) Reactions taken back ride the same read, inside the same chat
+# ============================================================================
+
+
+def _reaction_rows(rows: list[dict]) -> list[tuple]:
+    return [
+        (
+            row["id"],
+            [(r["emoji"], r["count"]) for r in row["reactions"]],
+            [(r["emoji"], r["count"], r["removed_at"]) for r in row["removed_reactions"]],
+        )
+        for row in rows
+    ]
+
+
+async def test_removed_reactions_come_back_beside_the_live_ones(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter)
+        resp = await client.get(f"/api/chats/{archive.ref_a}/messages")
+        assert resp.status_code == 200, resp.text
+        # The live count leaves the one taken back out; it comes back beside it
+        # with the count it had and when the archive noticed it gone.
+        assert _reaction_rows(resp.json()) == [
+            (3, [], []),
+            (2, [("👍", 2)], [("😮", 1, "2026-04-01T09:10:00")]),
+            (1, [], []),
+        ]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages")
+        assert _reaction_rows(other.json()) == [(1, [], [("🔥", 3, "2026-04-01T12:00:00")])]
+
+
+async def test_a_restricted_viewer_never_sees_another_chats_removed_reactions(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a]))
+        own = await client.get(f"/api/chats/{archive.ref_a}/messages")
+        assert own.status_code == 200, own.text
+        removed = [r["emoji"] for row in own.json() for r in row["removed_reactions"]]
+        assert removed == ["😮"]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_accounts=json.dumps([2]))
+        for ref in (archive.ref_a, archive.ref_b):
+            resp = await client.get(f"/api/chats/{ref}/messages")
+            assert (resp.status_code, resp.json()) == (404, UNIFORM_404)
+
+
+async def test_a_share_link_never_sees_another_chats_removed_reactions(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        resp = await client.post("/api/login", json={"username": MASTER_USERNAME, "password": MASTER_PASSWORD})
+        assert resp.status_code == 200, resp.text
+        created = await client.post(
+            "/api/admin/tokens", json={"label": "matrix-reactions", "allowed_chat_refs": [archive.ref_a]}
+        )
+        assert created.status_code == 200, created.text
+        share_token = created.json()["token"]
+    async with _client() as client:
+        resp = await client.post("/auth/token", json={"token": share_token})
+        assert resp.status_code == 200, resp.text
+        own = await client.get(f"/api/chats/{archive.ref_a}/messages")
+        assert own.status_code == 200, own.text
+        assert [r["emoji"] for row in own.json() for r in row["removed_reactions"]] == ["😮"]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
+
+
+# ============================================================================
 # (c) An account grant that matches no chats
 # ============================================================================
 
@@ -728,7 +823,20 @@ async def test_media_via_forbidden_ref_is_indistinguishable(viewer_app):
         resp = await control.get(f"/media/{archive.ref_a}/2_photo")
         assert resp.status_code == 200
         assert resp.content == b"ref-jpg"
-        assert resp.headers["cache-control"] == "private"
+        # The browser may keep the bytes but must ask before each reuse; the
+        # entitled session is told its copy is still good.
+        assert resp.headers["cache-control"] == "private, no-cache"
+        etag = resp.headers["etag"]
+        again = await control.get(f"/media/{archive.ref_a}/2_photo", headers={"If-None-Match": etag})
+        assert again.status_code == 304
+        assert again.content == b""
+
+    async with _client() as client:
+        # The same validator from a session without the grant is the uniform 404.
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_b]))
+        resp = await client.get(f"/media/{archive.ref_a}/2_photo", headers={"If-None-Match": etag})
+        assert resp.status_code == 404
+        assert json.loads(resp.text) == UNIFORM_404
 
 
 async def test_media_ids_and_cursors_are_chat_free(viewer_app):

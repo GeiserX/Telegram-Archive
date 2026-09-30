@@ -2486,18 +2486,31 @@ class TelegramBackup:
         # skip rather than tombstone valid rows. An empty snapshot can only
         # tombstone when stored rows exist, so one batched probe replaces the
         # per-message lock+scan for the reaction-free majority, where the
-        # reconcile was a guaranteed no-op.
-        empty_ids = [msg["id"] for msg in batch_data if msg.get("reactions") == []]
+        # reconcile was a guaranteed no-op. A min snapshot is partial (it may
+        # leave out this account's own reaction), so it is stored only when the
+        # message has no rows yet: then it can add reactions and never mark one
+        # as taken back. With rows it waits for a full snapshot.
+        probe_ids: list[int] = []
+        for msg in batch_data:
+            observed = msg.get("reactions")
+            if msg.get("_reactions_min"):
+                if observed:
+                    probe_ids.append(msg["id"])
+            elif observed == []:
+                probe_ids.append(msg["id"])
         stored_ids: set[int] = set()
-        if empty_ids:
+        if probe_ids:
             stored_ids = await self.db.get_message_ids_with_reaction_rows(
-                chat_id, empty_ids, account_id=self.account_id
+                chat_id, probe_ids, account_id=self.account_id
             )
         for msg in batch_data:
             observed = msg.get("reactions")
             if observed is None:
                 continue
-            if not observed and msg["id"] not in stored_ids:
+            if msg.get("_reactions_min"):
+                if not observed or msg["id"] in stored_ids:
+                    continue
+            elif not observed and msg["id"] not in stored_ids:
                 continue
             await self.db.reconcile_reactions(
                 msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id
@@ -3525,7 +3538,12 @@ class TelegramBackup:
 
         # Extract reactions (per-emoji aggregate snapshot). Reconciled after the
         # message is inserted; see DatabaseAdapter.reconcile_reactions (#219).
-        message_data["reactions"] = extract_reactions(getattr(message, "reactions", None))
+        # A min payload is partial (it may leave out this account's own
+        # reaction), so it is flagged: _commit_batch stores it only for a
+        # message with no reaction rows yet, where it cannot tombstone anything.
+        reactions_obj = getattr(message, "reactions", None)
+        message_data["reactions"] = extract_reactions(reactions_obj)
+        message_data["_reactions_min"] = bool(getattr(reactions_obj, "min", False))
 
         # Return message data for batch processing
         return message_data

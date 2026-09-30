@@ -80,6 +80,20 @@ class TestReactionHandler:
         assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "👍", "count": 2}]
         assert listener.stats["reactions_received"] == 1
 
+    def test_min_payload_not_buffered(self):
+        # A min UpdateMessageReactions may leave out this account's own
+        # reaction; reconciling it would tombstone a reaction nobody took back.
+        listener, handler, _db = _build()
+        asyncio.run(handler(_event(reactions=_reactions(("👍", 3), is_min=True))))
+        assert listener._reaction_pending == {}
+        assert listener.stats["reactions_received"] == 0
+
+    def test_min_payload_does_not_replace_a_buffered_full_snapshot(self):
+        listener, handler, _db = _build()
+        asyncio.run(handler(_event(reactions=_reactions(("❤️", 1), ("👍", 3)))))
+        asyncio.run(handler(_event(reactions=_reactions(("👍", 3), is_min=True))))
+        assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "❤️", "count": 1}, {"emoji": "👍", "count": 3}]
+
     def test_disabled_when_flag_false(self):
         listener, handler, _db = _build(listen_reactions=False)
         asyncio.run(handler(_event(reactions=_reactions(("👍", 2)))))

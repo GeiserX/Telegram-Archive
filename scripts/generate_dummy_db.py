@@ -14,9 +14,11 @@ formatting, edits the sync found (so the history says "at least"), transcripts t
 speech or came in two versions, a closed and a pinned topic, two viewer
 accounts (password DEMO_VIEWER_PASSWORD), two share links (one revoked; the
 other opens with DEMO_SHARE_TOKEN and has downloads off), and a few audit
-log entries. One reaction was taken back: the archive keeps it as a
-tombstone, and the viewer does not show it (it reads live reactions only),
-so the photo it sits on shows the reactions that still stand.
+log entries. A few reactions were taken back: the archive keeps them as
+tombstones, and the viewer shows them after the live ones, folded into one
+quiet chip: on a photo beside live reactions, on a photo with no caption,
+on the only reaction of an outgoing message, on a message deleted later, and
+a day after the message.
 
 Usage:
     python scripts/generate_dummy_db.py --data-dir ./demo-data
@@ -330,6 +332,12 @@ class ChatScript:
         self.by_id[mid] = msg
         return mid
 
+    def take_back(self, mid: int, emoji: str, count: int, when: datetime) -> None:
+        """A reaction taken back: stored as the backup stores it, one row per
+        emoji with no reactor and the count it had, tombstoned at ``when``."""
+        self.reactions.append((mid, emoji, count, []))
+        self.removed_reactions.append((mid, emoji, when))
+
 
 FILLER = {
     "hikers": [
@@ -441,13 +449,21 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     for i, cap in enumerate(
         ["Lake loop at sunrise", "", "Top of the pass", "", "The long way back", "Worth the climb"]
     ):
-        s.add(
-            now - (29 - i * 3) * day + timedelta(hours=rng.randint(1, 8)),
+        sent = now - (29 - i * 3) * day + timedelta(hours=rng.randint(1, 8))
+        mid = s.add(
+            sent,
             rng.choice(members[:-1]),
             cap,
             media={"type": "photo", "seed": 10 + i},
             react={"❤️": rng.randint(1, 5)} if cap else None,
         )
+        if i == 0:
+            # Taken back the next day: the time it went shows with its date.
+            s.take_back(mid, "🔥", 1, sent + day + timedelta(hours=2))
+        if i == 3:
+            # A photo with no caption whose only reaction was taken back: it
+            # is framed like a photo with live reactions, to hold the row.
+            s.take_back(mid, "👍", 1, sent + timedelta(hours=1))
     filler(s, "hikers", members, now - 27 * day, now - 3 * day, 26)
     t = now - timedelta(minutes=110)
     s.add(t, ESME, "Trail report from Saturday is up. The ridge loop was muddy but worth it.")
@@ -538,9 +554,8 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         edited_from="Found this view on the way back",
     )
     # Someone took their 😮 back: the archive keeps it as a tombstone, and the
-    # viewer leaves it out (it reads live reactions only).
-    s.reactions.append((view, "😮", 1, [ORSON]))
-    s.removed_reactions.append((view, "😮", t + timedelta(minutes=88)))
+    # viewer shows it after the live chips, folded into one quiet chip.
+    s.take_back(view, "😮", 1, t + timedelta(minutes=88))
     s.add(
         t + timedelta(minutes=95),
         ORSON,
@@ -548,13 +563,17 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         pinned=True,
         react={"👌": 4},
     )
-    s.add(
+    parking = s.add(
         t + timedelta(minutes=96),
         HUGO,
         "Parking at the north lot is free before nine, after that it's the paid lot by the café.",
         deleted_after=timedelta(minutes=4),
     )
-    s.add(t + timedelta(minutes=97), OWNER_PERSONAL, "I can drive, room for three more.")
+    # A reaction taken back on a message deleted later, and the only reaction
+    # of an outgoing message taken back.
+    s.take_back(parking, "👍", 1, t + timedelta(minutes=98))
+    drive = s.add(t + timedelta(minutes=97), OWNER_PERSONAL, "I can drive, room for three more.")
+    s.take_back(drive, "👍", 2, t + timedelta(minutes=100))
     s.add(
         t + timedelta(minutes=98),
         KOFI,

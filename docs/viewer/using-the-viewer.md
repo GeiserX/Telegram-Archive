@@ -133,7 +133,17 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 ### Reactions, edits and deletions
 
-Reactions show as chips with the emoji and, when above one, the count.
+Reactions show as chips with the emoji and its count.
+
+A reaction taken back stays in the archive. After the live chips, a quieter chip with no fill and a dashed edge holds an undo arrow and how many reactions were taken back. Click or tap it, or reach it with <kbd>Tab</kbd> and press <kbd>Enter</kbd>, to show them: each emoji with the count it had and when the archive noticed it gone, for example "1 · 17:33", or "1 · Sep 2, 20:55" when that was on a later day. Click it again to hide them. The time is when the backup or the listener saw the reaction missing, not when it was taken back, and the archive does not know who took it back: it stores counts per emoji. "Taken back" covers every way a reaction leaves Telegram's count: the person removed it, their account was deleted, or an admin turned that reaction off for the chat. Two gaps remain, and they are known limits, not the design: a count that drops without reaching zero shows only the new count, and only the latest removal of an emoji is kept, because a reaction that comes back clears its earlier removal.
+
+=== "Desktop"
+
+    ![A photo with two live reactions, then the chip for one reaction taken back, open: a faded surprised face with "1 · 17:33"](../images/screenshots/reactions-taken-back.png)
+
+=== "Phone"
+
+    ![The same chips on a phone, and an outgoing message whose only reactions were taken back](../images/screenshots/reactions-taken-back-mobile.png){ width="300" }
 
 An edited message shows a small pencil before its time, with the number of earlier texts the archive kept: a pencil and "2" before 08:52 means two earlier versions. The time is still the time it was sent. A message Telegram marks as edited but whose earlier text the archive never saw shows the pencil alone. The pencil's name, read by a screen reader and shown when you peek, gives the time of the last edit by Telegram's clock, for example "Edited at 08:57, 2 earlier versions kept", or "Edited on Oct 1 at 09:05" when the edit came on a later day.
 
@@ -161,7 +171,7 @@ To see every edited message of a chat, open **More actions** and choose **Edited
 
 === "The menu"
 
-    ![More actions with Deleted messages and Edited messages, each with its count](../images/screenshots/edited-menu.png)
+    ![More actions with Deleted messages and Edited messages, each with its count, then What changed in this chat, Export chat and Expand all transcripts](../images/screenshots/edited-menu.png)
 
 ### Deleted messages
 
@@ -189,7 +199,7 @@ To see every deletion of a chat, open **More actions**, the three dots in the ch
 
 === "The menu"
 
-    ![More actions with Deleted messages and its count](../images/screenshots/deleted-menu.png)
+    ![More actions with Deleted messages and Edited messages, each with its count, then What changed in this chat, Export chat and Expand all transcripts](../images/screenshots/deleted-menu.png)
 
 === "Deleted only"
 
@@ -341,6 +351,8 @@ The feed lists deletions, edits and new voice transcripts, newest first, grouped
 
 The filter button in the feed's header picks what to show, **Deleted**, **Edited** and **Transcripts**, and the period: **Last 24 hours**, **Last 7 days**, **Last 30 days** or **All time**. The browser remembers both. With nothing ticked, nothing loads. When few entries match, the feed stops loading by itself after three pages that add nothing, and **Load older** carries on. [No-download logins](access.md#no-download-logins) see no transcripts.
 
+To see what changed in one chat, open **More actions** in the chat header and choose **What changed in this chat**, under **Edited messages**. On a phone, use the **What changed in this chat** row of the chat's info panel. The feed opens with the chat as a pressed chip under its header and lists only that chat's deletions, edits and transcripts, with the same filter. For a channel or group that more than one account holds, it lists what any of those accounts captured, each change once, the same entries the feed for every chat shows for it. A private chat lists only the conversation of the account you opened it from. The chip's cross widens the feed back to every chat. The **Deleted messages** and **Edited messages** rows of the info panel and of **More actions** keep opening the chat's own **Deleted only** and **Edited only** modes, which show each message in the chat around it and let the search narrow them; **What changed in this chat** is the way to the feed. The sidebar button and the main menu always open it for every chat. The dot and the main menu's count clear only when you read the feed for every chat.
+
 === "Desktop"
 
     ![What changed in the chat's place, with deletions, an edit and transcripts](../images/screenshots/what-changed-desktop.png)
@@ -357,7 +369,7 @@ Deletions appear here only when the archive learns about them: the listener runs
 
 ![The Export chat dialog with its From and To days](../images/screenshots/export-desktop.png)
 
-The file is named `<title>_export.json`. It holds the chat, the filters you used, the messages and their earlier versions. It holds no media files.
+The file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date` and, under `versions`, every earlier text the archive kept. The fields are in [Export](../reference/api.md#export). It holds no media files.
 
 [No-download logins](access.md#no-download-logins) cannot export, and have no **More actions** menu.
 

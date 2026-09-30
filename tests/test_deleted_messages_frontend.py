@@ -61,6 +61,7 @@ _FOLD_DECLARATIONS = (
     "const isDeletedFolded = (msg) =>",
     "const DELETED_KIND = {",
     "const deletedKindLabel = (msg) =>",
+    "const noticedStamp = (sentIso, noticedIso) =>",
     "const deletedStamp = (msg) =>",
     "const deletedHeadText = (msg) =>",
     "const deletedNoticedTitle = (msg) =>",

@@ -48,7 +48,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     TRANSCRIPTION_PRESET=auto
     ```
 
-    The stock `docker-compose.yml` has a commented `akou` service block. It pins `drumsergio/akou:0.5.1` and makes akou reachable as `http://akou:8476`. Before you uncomment it:
+    The stock `docker-compose.yml` has a commented `akou` service block. It pins `drumsergio/akou:0.5.2` and makes akou reachable as `http://akou:8476`. Before you uncomment it:
 
     1. The image runs as uid 1000. Create its data and models folders and give them to that user:
 
@@ -59,7 +59,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     2. Pull the models once before the first start:
 
         ```bash
-        docker run --rm -v ./akou/data:/data -v ./akou/models:/models drumsergio/akou:0.5.1 models pull fast
+        docker run --rm -v ./akou/data:/data -v ./akou/models:/models drumsergio/akou:0.5.2 models pull fast
         ```
 
     3. In a container, akou must accept connections from other containers. It only does that when its settings say it runs behind a proxy. Set `server.behind_proxy` to `true` in akou's settings.
@@ -230,6 +230,8 @@ The button has five states:
 | None | A server is configured, but this file has no transcript yet. Pressing queues it. |
 | Unconfigured | No server is set. Pressing opens the banner instead. |
 
+Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets anyone press. In an open viewer a press on a file that was already transcribed or skipped shows that result and queues nothing, so a visitor cannot send a finished file to the server again. Logins can ask again. One client may press `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, 30 by default. A client is its login session, the proxy user name, or, in an open viewer, the client IP. Separately, once `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50 by default) wait for the backup, presses are refused until the next backup run picks some up. The master is exempt from both limits. Only asks from the last 24 hours on downloaded files count, so asks no backup run will pick up, such as those in an account no backup runs for, stop counting after a day. They stay in the archive and stay queued: a backup that takes them later still sends them. So while the backup is stopped, or has transcription off, the waiting asks can grow by up to one `TRANSCRIPTION_ASK_MAX_OPEN` a day. Pressing a file that is already queued returns that request and counts against neither limit. A refused press leaves the button as it was and a short message says why.
+
 ### Error texts
 
 | Reason | Text shown |
@@ -292,7 +294,7 @@ The SQLite to PostgreSQL mover copies transcripts with everything else.
 
 ## Settings
 
-All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL` and `TRANSCRIPTION_WEBHOOK_SECRET` matter on the backup container only. "Stops startup" means a bad value aborts the process with an error. "Warns" means one warning is logged and the setting falls back as described. The number settings are checked only while transcription is enabled.
+All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL`, `TRANSCRIPTION_WEBHOOK_SECRET` and the two `TRANSCRIPTION_ASK_*` limits matter on the backup container only. "Stops startup" means a bad value aborts the process with an error. "Warns" means one warning is logged and the setting falls back as described. The number settings are checked only while transcription is enabled.
 
 | Variable | Default | Read by | Bad value |
 |---|---|---|---|
@@ -312,6 +314,8 @@ All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL` and `TRANSCRIPT
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | viewer | Warns and ignores a value without the `whsec_` prefix |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | backup | Stops startup. Values below 1 become 1 |
 | `TRANSCRIPTION_PRIORITY_CHAT_IDS` | empty | backup | Stops startup on a non-integer id |
+| `TRANSCRIPTION_ASK_RATE_LIMIT` | `30` | viewer | Stops startup. `0` or less means no limit |
+| `TRANSCRIPTION_ASK_MAX_OPEN` | `50` | viewer | Stops startup. `0` or less means no limit |
 
 The full list of variables is in [Environment variables](../reference/environment-variables.md).
 
