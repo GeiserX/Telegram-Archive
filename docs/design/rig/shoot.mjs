@@ -78,7 +78,27 @@ async function settle(page) {
     await page.waitForTimeout(300)
 }
 
+// A pointer left where the last click was draws that control's hover state,
+// so a row looks selected. Before each picture it moves to a spot with
+// nothing clickable under it: the right edge of the chat pane first.
+async function parkPointer(page) {
+    const { width, height } = page.viewportSize()
+    const spots = [[width - 4, Math.round(height / 2)], [width - 4, height - 4], [Math.round(width / 2), height - 4], [0, 0]]
+    for (const [x, y] of spots) {
+        const free = await page.evaluate(([px, py]) => {
+            const el = document.elementFromPoint(px, py)
+            return !!el && !el.closest('button, a, input, label, [role="button"], [role="option"], [tabindex], .cursor-pointer, .chat-row, .message-row')
+        }, [x, y])
+        if (free) {
+            await page.mouse.move(x, y)
+            return
+        }
+    }
+    await page.mouse.move(0, 0)
+}
+
 async function shot(page, name) {
+    await parkPointer(page)
     await settle(page)
     const file = join(OUT, `${name}.png`)
     await page.screenshot({ path: file, animations: 'disabled', caret: 'hide' })

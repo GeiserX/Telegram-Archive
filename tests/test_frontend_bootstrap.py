@@ -798,7 +798,7 @@ def test_gallery_close_restores_reading_position_and_focus():
     watcher_start = html.index("watch(showMediaGallery")
     watcher_body = html[watcher_start : html.index("const filteredChats = computed", watcher_start)]
     jump_start = html.index("const jumpToMessage = async (item) =>")
-    jump_body = html[jump_start : html.index("const downloadMedia = (item) =>", jump_start)]
+    jump_body = html[jump_start : html.index("const formatMediaDate = (dateStr) =>", jump_start)]
 
     assert "let galleryReturnState = null" in html
     assert "scrollTop: messagesContainer.value ? messagesContainer.value.scrollTop : 0" in watcher_body
@@ -3883,7 +3883,8 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
         self.assertIn('<span v-if="msg.media?.duration" class="whitespace-nowrap">', self.bubble)
         self.assertIn('<span v-if="isCurrentAudioMessage(msg)" class="text-tg-quote whitespace-nowrap">', self.bubble)
         self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">', self.bubble)
-        self.assertIn("playback off for this login</span>", self.bubble)
+        # "login" for a viewer account, "link" for a share-link session (sessionWord).
+        self.assertIn("playback off for this {{ sessionWord }}</span>", self.bubble)
 
     def test_the_filename_span_keeps_its_own_protection(self) -> None:
         """``truncate`` implies nowrap; the duration span never had either."""
@@ -4702,7 +4703,7 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         ``.message-bubble`` (not just the download button) silently gets
         stretched to 100% width/height:auto again."""
         rule = self._bubble_media_rule()
-        self.assertIn(".message-bubble a:not(.bubble-icon-action),", rule)
+        self.assertIn(".message-bubble a:not(.bubble-icon-action) {", rule)
 
     def test_the_download_anchor_opts_out_via_the_icon_action_class(self) -> None:
         """Without ``bubble-icon-action`` on the anchor itself, the CSS
@@ -5015,8 +5016,25 @@ class TestStatsPopupMediaRows(unittest.TestCase):
 def test_the_two_media_rows_hide_only_when_the_figure_is_absent():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert html.count('v-if="statsData.media_files != null"') == 1
-    # Statistics' "Media on disk" and the Media row of Archive status's Disk use.
-    assert html.count('v-if="statsData.total_size_mb != null"') == 2
+    # Archive status's "Media on disk", and the one a viewer reads in Statistics
+    # (the owner reads "Disk use" there, which opens Archive status).
+    assert html.count('v-if="statsData.total_size_mb != null"') == 1
+    assert html.count('v-else-if="statsData.total_size_mb != null"') == 1
+
+
+def test_disk_use_has_one_home():
+    """Statistics holds counts and one Disk use row for the owner; the
+    breakdown lives in Archive status, whose media figure is rounded, so no
+    row derived from total_size_mb claims an exact byte count."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "@click=\"openStatusPanel('disk')\"" in html
+    assert '<span class="tg-row-label">Disk use</span>' in html
+    assert 'id="status-disk-title"' in html
+    assert html.count('<span class="tg-row-label">Total on disk</span>') == 1
+    assert "formatBytesTitle(Math.round(statsData.total_size_mb" not in html
+    assert "formatBytesTitle(statusDiskTotal)" not in html
+    # The chat's figure sums every media row, downloaded or not: never "on disk".
+    assert 'title="Every media file in this chat, downloaded or not">Media size</span>' in html
 
 
 @unittest.skipIf(NODE is None, "node executable is not installed")
@@ -5624,11 +5642,12 @@ def test_folder_tabs_carry_no_count_that_reads_as_unread():
 
 
 def test_what_changed_has_its_own_glyph_and_an_unseen_dot():
-    """The clock with an arrow means "edited" on a message; the feed has a pulse glyph."""
+    """The clock with an arrow means "edited" on a message; the feed has a list
+    with a small clock."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     button = html[html.index('<button @click="openChangesFeed"') :]
     button = button[: button.index("</button>")]
-    assert 'd="M22 12h-4l-3 9L9 3l-3 9H2"' in button
+    assert '<circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/>' in button
     assert "M3 12a9 9 0 1 0 9-9" not in button
     assert '<span v-if="changesUnseen" class="changes-dot" aria-hidden="true"></span>' in button
     opener = html[html.index("const openChangesFeed = (fromMenu = false) => {") :]
@@ -5642,3 +5661,53 @@ def test_lightbox_shows_caption_deleted_tag_and_way_back():
     assert '<span v-if="lightboxMedia.is_deleted" class="lightbox-deleted' in lightbox
     assert '@click="lightboxShowInChat"' in lightbox
     assert "-webkit-line-clamp: 3;" in html
+
+
+# ---------------------------------------------------------------------------
+# Viewer redesign, final review: the archive's own marks.
+# ---------------------------------------------------------------------------
+
+
+def test_the_confirm_and_export_dialogs_keep_tab_inside():
+    """Both are aria-modal, like the other dialogs: Tab cycles inside them."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert '@keydown.tab="cycleTabWithin(confirmDialog, $event)"' in html
+    assert '@keydown.tab="cycleTabWithin(exportDialog, $event)"' in html
+    assert "                    cycleTabWithin,\n" in html
+
+
+def test_what_changed_has_a_glyph_of_its_own():
+    """A list with a clock in the header and the menu, never the heart pulse
+    Archive status uses."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    glyph = '<circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/>'
+    assert html.count(glyph) == 2
+    assert "M22 12h-4l-3 9L9 3l-3 9H2" not in html
+    menu_row = html[html.index('@click="closeMainMenu(false); openChangesFeed(true)"') :]
+    menu_row = menu_row[: menu_row.index("</button>")]
+    assert glyph in menu_row
+
+
+def test_the_transcribed_label_carries_a_glyph():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index('<span v-else class="inline-flex items-center gap-1"><svg')
+    label = html[start : html.index("</span>", start)]
+    assert label.endswith("transcribed")
+    assert '<path d="M14 16h4"/>' in label
+
+
+def test_hidden_media_names_a_share_link_as_a_link():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "const sessionWord = computed(() => (userRole.value === 'token' ? 'link' : 'login'))" in html
+    assert "get hidden() { return `hidden for this ${sessionWord.value}` }," in html
+    assert "hidden: 'hidden for this login'" not in html
+
+
+def test_a_deleted_gallery_tile_uses_the_photo_pill():
+    """The mark rides the dark pill a photo's time uses in the chat, bottom
+    left, never a white disc; the tile's tooltip gives the deletion's date."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "--tg-media-deleted-fg" not in html
+    assert '<span v-if="item.is_deleted" class="media-tile-badge media-tile-deleted">' in html
+    assert ':title="item.is_deleted ? deletedTitle(item) : null"' in html
+    assert "deleted_at: m.deleted_at || null," in html

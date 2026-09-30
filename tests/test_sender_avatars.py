@@ -382,6 +382,26 @@ class TestPeerColourContrast(unittest.TestCase):
                     self._check(
                         name, f"meta-{side} on the removed tint", _triplet(tokens[f"--tg-meta-{side}"]), removed
                     )
+                    # The underline under added words is a non-text mark: 3:1 on the fill.
+                    line = _triplet(tokens["--tg-diff-ins-line"])
+                    self._check(name, f"added underline on the {side} bubble", line, fill, 3.0)
+
+    def test_added_words_carry_a_mark_beside_the_colour(self):
+        """Added words are underlined and removed ones struck through, so the
+        edit history reads without telling the tints apart (WCAG 1.4.1). The key
+        under the header names both marks."""
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        for selector in (".version-bubble .diff-ins {", ".version-key .diff-ins {"):
+            rule = html[html.index(selector) :]
+            rule = rule[: rule.index("}")]
+            assert "text-decoration: underline;" in rule, selector
+            assert "rgb(var(--tg-diff-ins-line))" in rule, selector
+        for selector in ("}\n        .version-bubble .diff-del {", "}\n        .version-key .diff-del {"):
+            rule = html[html.index(selector) + 1 :]
+            rule = rule[: rule.index("}")]
+            assert "text-decoration: line-through;" in rule, selector
+        assert '<span class="diff-ins text-tg-ink">Underlined</span> was added' in html
+        assert ">Green</span> was added" not in html
 
     def test_a_missing_file_reason_reads_in_a_deleted_bubble(self):
         """A placeholder in a deleted bubble is drawn over the plain fill, like the

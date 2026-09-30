@@ -8,7 +8,7 @@
 > - The sender's photo sits at the bottom of a run, beside the tail.
 > - The line pattern ships as a static file for Telegram Day, with a dark version for iOS Night and Slate. `VIEWER_CHAT_BACKGROUND` still replaces it.
 > - The theme list has twelve entries: system, telegram, night, iosnight, slate, minimal, graphite, amoled, forest, aubergine, day and paper.
-> - Account tags show in the chat list only when the archive holds more than one Telegram account, and on messages only in a chat that more than one account holds.
+> - Account tags show in the chat list only when the login can see more than one Telegram account, and on messages only in a chat that more than one archived account holds or writes in.
 > - The chat list shows no last-message preview and voice messages show no waveform yet. Both are open questions for later.
 >
 > The current look is on [Themes and wallpaper](../viewer/themes.md) and [Using the viewer](../viewer/using-the-viewer.md). The pictures below are the proposals as they were compared.

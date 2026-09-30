@@ -226,7 +226,7 @@ A message whose file the viewer cannot show keeps its place: a placeholder in th
 |-------------|---------|
 | over the download limit | Skip reason `oversize`. Raise `MAX_MEDIA_SIZE_MB` to fetch it. |
 | skipped by the media filter | Skip reason `filtered`. Relax `DOWNLOAD_MEDIA_TYPES` or `DOWNLOAD_DOCUMENT_MIME_TYPES`, or remove the chat from `SKIP_MEDIA_CHAT_IDS`. |
-| hidden for this login | The viewer account or share token has downloads off. The file may be archived. See [No-download logins](../viewer/access.md#no-download-logins). |
+| hidden for this login, hidden for this link | The viewer account or share token has downloads off. A share-link session reads "link". The file may be archived. See [No-download logins](../viewer/access.md#no-download-logins). |
 | not downloaded yet | The row is pending. The retry pass picks it up, until it gives up. Archive status counts the files that gave up. |
 | missing from the archive disk | The row says the file was downloaded, but the viewer could not load it: the file was moved or deleted outside the archive. |
 

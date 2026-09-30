@@ -76,7 +76,7 @@ The `VIEWER_USERNAME` and `VIEWER_PASSWORD` credentials, and the session opened 
 
 ## No-download login
 
-A viewer account or share token with downloads off. It can read messages, but media files, thumbnails, exports and transcripts answer HTTP 403, and files show `hidden for this login`. See [No-download logins](../viewer/access.md#no-download-logins).
+A viewer account or share token with downloads off. It can read messages, but media files, thumbnails, exports and transcripts answer HTTP 403, and files show `hidden for this login` (`hidden for this link` through a share link). See [No-download logins](../viewer/access.md#no-download-logins).
 
 ## One client per session
 

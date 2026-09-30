@@ -36,7 +36,7 @@ Open the viewer while the backup runs. You will see the following:
 
 - Chats appear in the list as they are written. The list does not refresh on its own, so reload the page to pick up new chats.
 - The open chat checks for new messages every 3 seconds, so you can watch a chat fill up.
-- The statistics dropdown (the chart icon) in the sidebar header shows cached totals and a **Backup in progress** marker from the last page load. On a new archive the totals show what the viewer saw when it started. The run recalculates them when it finishes. Reload the page to see the new totals or a change in the marker.
+- **Statistics**, in the main menu (the three lines at the top of the sidebar), shows cached totals and a **Backup running** marker from the last page load. While a run is active, the sidebar's status line reads "Backing up…". On a new archive the totals show what the viewer saw when it started. The run recalculates them when it finishes. Reload the page to see the new totals or a change in the marker.
 - Only the master login sees [Archive status](../viewer/using-the-viewer.md#archive-status), in the viewer's main menu.
 
 For a full tour of the viewer, see [Using the viewer](../viewer/using-the-viewer.md).

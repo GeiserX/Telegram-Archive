@@ -100,9 +100,6 @@
             --tg-wall-pattern-size: 640px;
             --tg-media-meta-bg: rgb(0 0 0 / 0.55);
             --tg-media-meta-fg: #fff;
-            /* The deleted mark on a white disc over a photo, the same in every
-               theme because the disc is: about 6:1 on it. */
-            --tg-media-deleted-fg: 176 42 32;
             /* The operator's wallpaper (VIEWER_CHAT_BACKGROUND): off unless it
                names a file in /static. The server's declarations land in their
                own rule after every palette (see _chat_background_css) and switch
@@ -296,8 +293,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(163 58 47 / 0.06);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(79 174 78 / 0.18);
+            --tg-diff-ins-line: 46 125 50;
             --tg-diff-del-bg: rgb(209 67 67 / 0.10);
             --tg-diff-del-line: 209 67 67;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -439,8 +438,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(122 46 46 / 0.16);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -582,8 +583,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(122 46 46 / 0.16);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -728,8 +731,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(122 46 46 / 0.16);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -871,8 +876,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(163 58 47 / 0.06);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(79 174 78 / 0.18);
+            --tg-diff-ins-line: 46 125 50;
             --tg-diff-del-bg: rgb(209 67 67 / 0.10);
             --tg-diff-del-line: 209 67 67;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -1013,8 +1020,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(122 46 46 / 0.16);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -1155,8 +1164,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(90 30 30 / 0.3);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -1297,8 +1308,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(122 46 46 / 0.16);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -1439,8 +1452,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(122 46 46 / 0.16);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(110 200 110 / 0.22);
+            --tg-diff-ins-line: 130 215 130;
             --tg-diff-del-bg: rgb(255 138 128 / 0.10);
             --tg-diff-del-line: 255 138 128;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -1582,8 +1597,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(163 58 47 / 0.06);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(79 174 78 / 0.18);
+            --tg-diff-ins-line: 46 125 50;
             --tg-diff-del-bg: rgb(209 67 67 / 0.10);
             --tg-diff-del-line: 209 67 67;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -1727,8 +1744,10 @@
             --tg-danger-strong: 185 28 28;
             --tg-deleted-wash: rgb(163 58 47 / 0.06);
             /* What an edit changed, in the edit history: added words on green,
-               removed ones struck through in red. */
+               removed ones struck through in red. Added words are also
+               underlined, so the mark does not rest on colour alone. */
             --tg-diff-ins-bg: rgb(79 174 78 / 0.18);
+            --tg-diff-ins-line: 46 125 50;
             --tg-diff-del-bg: rgb(209 67 67 / 0.10);
             --tg-diff-del-line: 209 67 67;
             /* The deleted mark: calm, never the danger colour. -in and -out
@@ -2416,46 +2435,56 @@
             width: 18px;
             height: 18px;
         }
-        /* A clip's length over its tile: the dark pill, bottom left. */
-        .media-tile-badge {
+        /* What a tile says over its picture, bottom left: a clip's length and
+           a kept deletion, each on the dark pill the chat puts the time on over
+           a photo. The tile is a size container, so a narrow one drops the
+           word "deleted" and keeps the trash. */
+        .media-open {
+            container-type: inline-size;
+        }
+        .media-tile-marks {
             position: absolute;
             left: 4px;
+            right: 4px;
             bottom: 4px;
+            display: flex;
+            gap: 4px;
+            overflow: hidden;
+        }
+        .media-tile-badge {
             display: inline-flex;
+            flex-shrink: 0;
             align-items: center;
-            gap: 2px;
-            height: 18px;
-            padding: 0 5px;
-            border-radius: 9px;
+            gap: 3px;
+            height: 20px;
+            padding: 0 6px;
+            border-radius: 10px;
             font-size: 11px;
-            line-height: 18px;
+            line-height: 20px;
             font-variant-numeric: tabular-nums;
-            color: #fff;
+            color: var(--tg-media-meta-fg);
             background: var(--tg-media-badge-bg);
         }
         .media-tile-badge svg {
             width: 9px;
             height: 9px;
         }
-        /* A kept deletion on a gallery tile: the chat's trash in the deleted
-           colour on a white disc, in the top corner. */
-        .media-tile-deleted {
-            position: absolute;
-            top: 4px;
-            right: 4px;
-            width: 22px;
-            height: 22px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 9999px;
-            color: rgb(var(--tg-media-deleted-fg));
-            background: rgb(var(--tg-on-scrim) / 0.92);
-            box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
-        }
+        /* The trash and "deleted" in white on the pill, as a deleted photo's
+           time pill reads in the chat: the calm deleted colour of a bubble
+           would not reach 4.5:1 on a dark pill over a bright picture. */
         .media-tile-deleted svg {
-            width: 13px;
-            height: 13px;
+            width: 12px;
+            height: 12px;
+        }
+        @container (max-width: 99px) {
+            .media-tile-deleted-word {
+                display: none;
+            }
+        }
+        @container (max-width: 149px) {
+            .media-tile-badge + .media-tile-deleted .media-tile-deleted-word {
+                display: none;
+            }
         }
         /* "deleted" on the scrim: plain white at 80%, no colour and no pill.
            On the caption's near-black backing it keeps about 10:1. */
@@ -3020,7 +3049,10 @@
         .version-bubble .diff-ins {
             color: inherit;
             background: var(--tg-diff-ins-bg);
-            text-decoration: none;
+            text-decoration: underline;
+            text-decoration-color: rgb(var(--tg-diff-ins-line));
+            text-decoration-thickness: 1.5px;
+            text-underline-offset: 2px;
         }
         .version-bubble .diff-del {
             color: rgb(var(--tg-meta));
@@ -3036,6 +3068,10 @@
         }
         .version-key .diff-ins {
             background: var(--tg-diff-ins-bg);
+            text-decoration: underline;
+            text-decoration-color: rgb(var(--tg-diff-ins-line));
+            text-decoration-thickness: 1.5px;
+            text-underline-offset: 2px;
         }
         .version-key .diff-del {
             background: var(--tg-diff-del-bg);
@@ -3342,7 +3378,7 @@
             color: rgb(var(--tg-muted));
         }
         .tg-fact > .info-fact-icon.is-deleted {
-            color: rgb(var(--tg-deleted));
+            color: rgb(var(--tg-deleted-fg));
         }
         .tg-fact-button {
             cursor: pointer;
@@ -3711,15 +3747,18 @@
             }
         }
 
-        /* Admin settings: a 640px dialog, a full page on a phone. One height
-           for every tab, so the tabs and the close button stay put when the
-           tab changes; a long list scrolls inside. */
+        /* Admin settings: a 640px dialog, a full page on a phone. On a wide
+           screen it takes its content's height, up to 680px, and a long list
+           scrolls inside under the header and the tabs. Its top sits where
+           the tallest dialog's top would, so the tabs and the close button
+           stay put when the tab changes and only the bottom edge moves. */
         .admin-dialog {
             max-height: 90vh;
         }
         @media (min-width: 768px) {
             .admin-dialog {
-                height: min(680px, 86vh);
+                max-height: min(680px, 90vh);
+                margin: max(0px, calc((100vh - min(680px, 90vh)) / 2 - 16px)) auto auto;
             }
         }
         @media (max-width: 767px) {
@@ -4319,8 +4358,7 @@
         .message-bubble img,
         .message-bubble video,
         .message-bubble audio,
-        .message-bubble a:not(.bubble-icon-action),
-        .message-bubble .media-wrapper {
+        .message-bubble a:not(.bubble-icon-action) {
             max-width: 100%;
             width: 100%;
             height: auto;
@@ -5692,14 +5730,16 @@
                             </p>
                         </div>
                         <!-- What changed: the archive's own feed of deletions, edits and
-                             transcripts. A pulse glyph of its own (the clock with an
-                             arrow means "edited" on a message), and a dot while the
-                             feed has entries newer than the last time it was opened. -->
+                             transcripts. A list with a small clock, close to Telegram's
+                             Recent Actions: never the clock with an arrow, which means
+                             "edited" on a message, nor the heart pulse of Archive status.
+                             A dot while the feed has entries newer than the last time
+                             it was opened. -->
                         <button @click="openChangesFeed" type="button" class="sidebar-icon-btn"
                             :class="{ 'is-on': showChangesFeed }"
                             title="What changed" aria-label="What changed"
                             :aria-description="changesUnseen ? 'New changes since your last visit' : null">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h14"/><path d="M3 10h9"/><path d="M3 15h5"/><circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/></svg>
                             <span v-if="changesUnseen" class="changes-dot" aria-hidden="true"></span>
                         </button>
                         <!-- The main menu, Telegram Desktop's three lines: who is signed
@@ -5729,7 +5769,7 @@
                                         </span>
                                     </div>
                                     <button type="button" class="tg-row menu-row" @click="closeMainMenu(false); openChangesFeed(true)">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h14"/><path d="M3 10h9"/><path d="M3 15h5"/><circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/></svg>
                                         <span class="tg-row-label">What changed</span>
                                         <span v-if="changesUnseenCount" class="tg-badge">{{ changesUnseenCount > 99 ? '99+' : changesUnseenCount }}<span class="sr-only"> new</span></span>
                                     </button>
@@ -5828,11 +5868,11 @@
                                         <div class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="tg-row-label">Chats</span><span class="tg-row-value">{{ formatCount(statsData.chats) }}</span></div>
                                         <div class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg><span class="tg-row-label">Messages</span><span class="tg-row-value">{{ formatCount(statsData.messages) }}</span></div>
                                         <div v-if="statsData.media_files != null" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg><span class="tg-row-label">Media files</span><span class="tg-row-value">{{ formatCount(statsData.media_files) }}</span></div>
-                                        <div v-if="statsData.total_size_mb != null" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="tg-row-label">Media on disk</span><span class="tg-row-value" :title="formatBytesTitle(Math.round(statsData.total_size_mb * 1048576))">{{ formatBytes(statsData.total_size_mb * 1048576) }}</span></div>
-                                        <!-- The owner's disk question answered here too: media and the
-                                             database together, the last line of Archive status, which
-                                             the row opens. -->
-                                        <button v-if="userRole === 'master'" type="button" class="tg-row menu-row" @click="openStatusPanel()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg><span class="tg-row-label">Total on disk</span><span v-if="statusDiskTotal != null" class="tg-row-value" :title="formatBytesTitle(statusDiskTotal)">{{ formatBytes(statusDiskTotal) }}</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+                                        <!-- Disk use has one home, Archive status. The owner reads the
+                                             total here and the row opens its breakdown; a viewer, who
+                                             has no Archive status, reads the media on disk. -->
+                                        <button v-if="userRole === 'master'" type="button" class="tg-row menu-row" @click="openStatusPanel('disk')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="tg-row-label">Disk use</span><span v-if="statusDiskTotal != null" class="tg-row-value">{{ formatBytes(statusDiskTotal) }}</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+                                        <div v-else-if="statsData.total_size_mb != null" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="tg-row-label">Media on disk</span><span class="tg-row-value">{{ formatBytes(statsData.total_size_mb * 1048576) }}</span></div>
                                     </div>
                                     <div class="flex items-center justify-between gap-2 px-3 pt-2 pb-1 text-[12px] leading-4 text-tg-muted">
                                         <span :title="formatStamp(statsData.stats_calculated_at, true)">Updated {{ formatAgo(statsData.stats_calculated_at) }}</span>
@@ -5900,11 +5940,13 @@
                                             <span v-else class="tg-row-value">{{ transcriptionSettingText }}</span>
                                         </div>
                                         <!-- Disk use, with its scope in every label: the database file,
-                                             the media files (from the daily statistics) and both. -->
-                                        <h3 class="tg-section-title">Disk use</h3>
+                                             the media files (from the daily statistics) and both. Only
+                                             the database size is exact; the media figure comes rounded
+                                             to hundredths of a MB, so its rows carry no byte count. -->
+                                        <h3 id="status-disk-title" class="tg-section-title">Disk use</h3>
                                         <div class="tg-row"><span class="tg-row-label">Database <span class="text-tg-muted">· {{ statusData.database.backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}</span></span><span v-if="statusData.database.size_bytes != null" class="tg-row-value" :title="formatBytesTitle(statusData.database.size_bytes)">{{ formatBytes(statusData.database.size_bytes) }}</span></div>
-                                        <div v-if="statsData.total_size_mb != null" class="tg-row"><span class="tg-row-label">Media on disk</span><span class="tg-row-value" :title="formatBytesTitle(Math.round(statsData.total_size_mb * 1048576))">{{ formatBytes(statsData.total_size_mb * 1048576) }}</span></div>
-                                        <div v-if="statusDiskTotal != null" class="tg-row"><span class="tg-row-label">Total on disk</span><span class="tg-row-value text-tg-ink" :title="formatBytesTitle(statusDiskTotal)">{{ formatBytes(statusDiskTotal) }}</span></div>
+                                        <div v-if="statsData.total_size_mb != null" class="tg-row"><span class="tg-row-label">Media on disk</span><span class="tg-row-value">{{ formatBytes(statsData.total_size_mb * 1048576) }}</span></div>
+                                        <div v-if="statusDiskTotal != null" class="tg-row"><span class="tg-row-label">Total on disk</span><span class="tg-row-value text-tg-ink">{{ formatBytes(statusDiskTotal) }}</span></div>
                                         <h3 class="tg-section-title">Statistics</h3>
                                         <div class="tg-row"><span class="tg-row-label">Updated</span><span class="tg-row-value" :title="formatStamp(statusData.stats_calculated_at, true)">{{ statusData.stats_calculated_at ? formatAgo(statusData.stats_calculated_at) : 'Never' }}</span></div>
                                     </template>
@@ -6368,7 +6410,10 @@
                                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>{{ card.versions.length - 1 }} earlier versions
                                                     </button>
                                                     <span v-else-if="card.kind === 'edited'">edited</span>
-                                                    <span v-else>transcribed</span>
+                                                    <!-- The transcript controls' own glyph, a waveform turning
+                                                         into lines, so the label reads as metadata like the
+                                                         other two and never runs on from the text. -->
+                                                    <span v-else class="inline-flex items-center gap-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4"/><path d="M6.5 7v10"/><path d="M10 9.5v5"/><path d="M14 8h7"/><path d="M14 12h7"/><path d="M14 16h4"/></svg>transcribed</span>
                                                 </span>
                                                 <button type="button" class="sr-only focus:not-sr-only change-show" @click.stop="openChangeCard(card)">Show in chat</button>
                                             </div>
@@ -6720,6 +6765,7 @@
                                     <button v-for="item in mediaGalleryItems" :key="item.id" type="button"
                                         @click="openMediaItem(item)"
                                         :aria-label="(item.type === 'photo' ? 'Open photo' : 'Play video') + (item.message_date ? ', ' + formatMediaDate(item.message_date) : '') + (item.is_deleted ? ', deleted in Telegram' : '')"
+                                        :title="item.is_deleted ? deletedTitle(item) : null"
                                         class="media-open aspect-square relative cursor-pointer group overflow-hidden">
                                         <!-- No loading="lazy" here: a deferred image never fires
                                              load, so it would hold its admission slot until the
@@ -6737,16 +6783,17 @@
                                                 <svg v-else data-glyph="image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>
                                             </span>
                                         </div>
-                                        <!-- A clip's length: a dark pill, bottom left. -->
-                                        <span v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note'"
-                                            class="media-tile-badge">
-                                            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>{{ formatDuration(item.duration) }}
-                                        </span>
-                                        <!-- A kept deletion: the chat's trash in the deleted colour
-                                             on a white disc, top right, the mark a deleted bubble
-                                             carries (.media-tile-deleted). -->
-                                        <span v-if="item.is_deleted" class="media-tile-deleted" title="Deleted in Telegram" aria-hidden="true">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                        <!-- A clip's length and a kept deletion: dark pills, bottom
+                                             left, like the time over a photo in the chat. The button's
+                                             label already says "deleted in Telegram". -->
+                                        <span v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note' || item.is_deleted"
+                                            class="media-tile-marks" aria-hidden="true">
+                                            <span v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note'" class="media-tile-badge">
+                                                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>{{ formatDuration(item.duration) }}
+                                            </span>
+                                            <span v-if="item.is_deleted" class="media-tile-badge media-tile-deleted">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="media-tile-deleted-word">deleted</span>
+                                            </span>
                                         </span>
                                         <!-- Hover overlay -->
                                         <div class="absolute inset-0 bg-tg-scrim/0 group-hover:bg-tg-scrim/20 transition"></div>
@@ -7003,7 +7050,8 @@
                                     </div>
 
                                     <!-- Media the bubble cannot show: never downloaded (too large,
-                                         filtered out, not yet), hidden for this login, or a file the
+                                         filtered out, not yet), hidden for this login or share link
+                                         (the words follow the session, sessionWord), or a file the
                                          row claims that is missing from the archive disk. One shape
                                          for every case, rendered BY Vue from the row (never written
                                          into the DOM): a picture keeps its proportions and runs to
@@ -7136,7 +7184,7 @@
                                                         <span v-if="isCurrentAudioMessage(msg)" class="text-tg-quote whitespace-nowrap">
                                                             {{ audioIsPlaying ? 'Now playing' : 'Paused' }}
                                                         </span>
-                                                        <span v-else-if="noDownload" class="whitespace-nowrap"><span v-if="msg.media?.duration" class="whitespace-nowrap mr-1.5" aria-hidden="true">&middot;</span>playback off for this login</span>
+                                                        <span v-else-if="noDownload" class="whitespace-nowrap"><span v-if="msg.media?.duration" class="whitespace-nowrap mr-1.5" aria-hidden="true">&middot;</span>playback off for this {{ sessionWord }}</span>
                                                     </div>
                                                 </div>
                                                 <div class="flex items-center gap-2 shrink-0">
@@ -7717,10 +7765,10 @@
                         <div v-if="chatStats">
                             <div class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg><span class="tg-row-label">Messages</span><span class="tg-row-value">{{ formatCount(chatStats.messages) }}</span></div>
                             <div class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg><span class="tg-row-label" title="Stickers and link previews included">Media files</span><span class="tg-row-value">{{ formatCount(chatStats.media_files) }}</span></div>
-                            <div class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="tg-row-label">Media on disk</span><span class="tg-row-value" :title="formatBytesTitle(chatStats.total_size_bytes)">{{ formatBytes(chatStats.total_size_bytes ?? (chatStats.total_size_mb || 0) * 1048576) }}</span></div>
+                            <div class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><span class="tg-row-label" title="Every media file in this chat, downloaded or not">Media size</span><span class="tg-row-value" :title="formatBytesTitle(chatStats.total_size_bytes)">{{ formatBytes(chatStats.total_size_bytes ?? (chatStats.total_size_mb || 0) * 1048576) }}</span></div>
                             <!-- What Telegram no longer shows and the archive kept. -->
-                            <div v-if="chatStats.deleted_messages > 0" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="tg-row-label">Deleted in Telegram</span><span class="tg-row-value">{{ formatCount(chatStats.deleted_messages) }}</span></div>
-                            <div v-if="chatStats.edited_messages > 0" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="tg-row-label">Edited</span><span class="tg-row-value">{{ formatCount(chatStats.edited_messages) }}</span></div>
+                            <div v-if="chatStats.deleted_messages > 0" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="tg-row-label">Deleted messages</span><span class="tg-row-value">{{ formatCount(chatStats.deleted_messages) }}</span></div>
+                            <div v-if="chatStats.edited_messages > 0" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="tg-row-label">Edited messages</span><span class="tg-row-value">{{ formatCount(chatStats.edited_messages) }}</span></div>
                             <!-- The oldest message opens: the calendar's "First message". -->
                             <button v-if="chatStats.first_message_date" type="button" class="tg-row" @click="jumpToFirstMessage"
                                 :title="formatStamp(chatStats.first_message_date)">
@@ -8007,7 +8055,8 @@
              in place; no new tab. Not offered to a login without downloads. -->
         <div v-if="showExportModal"
             class="tg-dialog-scrim is-sheet"
-            @click.self="showExportModal = false" @keydown.escape="showDatePickerModal || (showExportModal = false)">
+            @click.self="showExportModal = false" @keydown.escape="showDatePickerModal || (showExportModal = false)"
+            @keydown.tab="cycleTabWithin(exportDialog, $event)">
             <section ref="exportDialog" role="dialog" aria-modal="true" aria-labelledby="export-modal-title"
                 class="tg-dialog max-w-[400px]">
                 <div class="tg-dialog-head">
@@ -8146,7 +8195,7 @@
                 <!-- The key to the marks, once, under the header. -->
                 <p v-if="versionEntries.some(entry => entry.parts && entry.parts.some(part => part.kind === 'ins' || part.kind === 'del'))"
                     class="version-key shrink-0 px-4 py-2 text-[13px] leading-[18px] text-tg-muted border-b border-tg-border">
-                    <span class="diff-ins text-tg-ink">Green</span> was added, <span class="diff-del">struck through</span> was removed.
+                    <span class="diff-ins text-tg-ink">Underlined</span> was added, <span class="diff-del">struck through</span> was removed.
                 </p>
 
                 <div class="chat-wallpaper flex-1 overflow-y-auto">
@@ -8349,7 +8398,7 @@
              place, and every destructive step asks first. -->
         <div v-if="showAdminPanel" class="tg-dialog-scrim admin-scrim" @click.self="showAdminPanel = false">
             <section role="dialog" aria-modal="true" aria-labelledby="admin-title"
-                class="tg-dialog admin-dialog max-w-[640px] max-h-[90vh] flex flex-col overflow-hidden">
+                class="tg-dialog admin-dialog max-w-[640px] flex flex-col overflow-hidden">
                 <!-- Header -->
                 <div class="flex items-center gap-2 px-3 pt-3 md:px-5 md:pt-4 shrink-0">
                     <button type="button" @click="showAdminPanel = false" class="tg-icon-btn md:hidden" aria-label="Back">
@@ -8671,7 +8720,8 @@
         <!-- A confirmation in the dialog shape (askConfirm): the question, then
              Cancel and the action, the action in the danger colour when it
              destroys something. -->
-        <div v-if="confirmState" class="tg-dialog-scrim is-sheet z-[70]" @click.self="settleConfirm(false)" @keydown.escape.stop="settleConfirm(false)">
+        <div v-if="confirmState" class="tg-dialog-scrim is-sheet z-[70]" @click.self="settleConfirm(false)" @keydown.escape.stop="settleConfirm(false)"
+            @keydown.tab="cycleTabWithin(confirmDialog, $event)">
             <section ref="confirmDialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body"
                 class="tg-dialog max-w-[400px]">
                 <div class="tg-dialog-head"><h3 id="confirm-title" class="tg-dialog-title">{{ confirmState.title }}</h3></div>
@@ -10726,12 +10776,16 @@
                     return Math.round(Number(db) + Number(media) * 1048576)
                 })
 
-                const openStatusPanel = async () => {
+                // section 'disk' (the Statistics row) scrolls to Disk use.
+                const openStatusPanel = async (section = null) => {
                     mainMenuPage.value = 'status'
                     if (!mainMenuOpen.value) mainMenuOpen.value = true
                     else focusPopover()
                     loadTranscriptionState()
                     await loadStatusData()
+                    if (section !== 'disk') return
+                    await nextTick()
+                    document.getElementById('status-disk-title')?.scrollIntoView({ block: 'start' })
                 }
                 const loadStatusData = async () => {
                     statusLoading.value = true
@@ -11216,7 +11270,7 @@
                 const openMainMenuPage = (page) => {
                     mainMenuPage.value = page
                     focusPopover()
-                    // Statistics ends on the owner's total on disk, which needs the
+                    // Statistics ends on the owner's disk use, which needs the
                     // database size from the status.
                     if (page === 'stats' && userRole.value === 'master' && !statusData.value && !statusLoading.value) loadStatusData()
                 }
@@ -12901,9 +12955,10 @@
                             id: m.message_id,
                             date: m.message_date,
                             sender_name: m.sender_name,
-                            // The caption and the "deleted" tag, as the chat shows them.
+                            // The caption and the "deleted" tag with its date, as the chat shows them.
                             text: m.text || '',
                             is_deleted: !!m.is_deleted,
+                            deleted_at: m.deleted_at || null,
                         }))
                         lightboxList.value = mapped
                         const startIdx = idx >= 0 ? idx : 0
@@ -12917,12 +12972,6 @@
                     galleryReturnState = null  // the jump repositions the view itself
                     showMediaGallery.value = false
                     await loadMessagesAroundId(item.message_id)
-                }
-
-                const downloadMedia = (item) => {
-                    if (item.media_url) {
-                        window.open(item.media_url + '?download=1', '_blank')
-                    }
                 }
 
                 // A gallery row's day: "Sep 29" this year, "Sep 29, 2025" before.
@@ -14897,11 +14946,6 @@
                     return lines.join('\n')
                 }
 
-                const formatMessageVersionDate = (dateStr) => {
-                    if (!dateStr) return ''
-                    return moment.utc(dateStr).tz(viewerTimezone.value).format('MMM D, HH:mm')
-                }
-
                 // Word diff for the edit history: what an edit inserted and removed
                 // against the version before it. Tokens are words and the runs of
                 // spaces between them, so the text reassembles exactly. A plain
@@ -15199,8 +15243,8 @@
                 // shows, or when something else draws it (an album tile, a link card,
                 // an extended-media chip).
                 // A no-download login keeps the voice row, its play disc dimmed and
-                // "playback off for this login" beside the duration: a chat of voice
-                // notes still reads like one.
+                // "playback off for this login" (or "this link") beside the duration:
+                // a chat of voice notes still reads like one.
                 const isLockedAudio = (msg) => !!msg.media?.no_download && !msg.media?.file_path && isAudioFile(msg)
                 // Why the archive does not show a file, with the glyph that says it:
                 // a download arrow over a bar for over the limit, a clock for not yet,
@@ -15215,12 +15259,16 @@
                     hidden: 'Hidden',
                     pending: 'Not downloaded',
                 }
+                // A share link is not a login: "hidden for this link" in a session
+                // opened through one, "hidden for this login" for a viewer account.
+                // Wording only; the server decides what is served.
+                const sessionWord = computed(() => (userRole.value === 'token' ? 'link' : 'login'))
                 const MISSING_REASONS = {
                     missing: 'missing from the archive disk',
                     oversize: 'over the download limit',
                     filtered: 'skipped by the media filter',
-                    hidden: 'hidden for this login',
                     pending: 'not downloaded yet',
+                    get hidden() { return `hidden for this ${sessionWord.value}` },
                 }
                 const mediaMissingReason = (msg) => {
                     const media = msg.media || {}
@@ -17220,8 +17268,6 @@
                 }
                 // "10.0.0.5 · today at 17:42", after the name and role.
                 const auditRest = (log) => [log.ip_address, formatAgo(log.created_at)].filter(Boolean).join(' · ')
-                const auditLine = (log) => [auditWho(log), AUDIT_ROLES[log.role] || log.role, auditRest(log)]
-                    .filter(Boolean).join(' · ')
 
                 // A confirmation in the dialog shape, never the browser's own box:
                 // askConfirm resolves true on the action button, false on Cancel,
@@ -17612,7 +17658,6 @@
                     fileExtension,
                     openMediaItem,
                     jumpToMessage,
-                    downloadMedia,
                     formatDuration,
                     formatCount,
                     formatBytes,
@@ -17671,7 +17716,6 @@
                     showVersionsInChat,
                     closeVersionsPanel,
                     reloadMessageVersions,
-                    formatMessageVersionDate,
                     versionEntries,
                     formatReactionEmoji,
                     getMediaUrl,
@@ -17754,6 +17798,7 @@
                     userRole,
                     currentUsername,
                     noDownload,
+                    sessionWord,
                     showAdminPanel,
                     chatAvatarByRef,
                     adminHeading,
@@ -17805,12 +17850,12 @@
                     adminAuditRows,
                     auditWords,
                     auditFamily,
-                    auditLine,
                     auditWho,
                     auditRest,
                     setAdminAuditFilter,
                     confirmState,
                     confirmDialog,
+                    cycleTabWithin,
                     askConfirm,
                     settleConfirm,
                     // Colors / avatars

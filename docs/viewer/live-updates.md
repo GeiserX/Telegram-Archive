@@ -114,7 +114,7 @@ The `PUSH_NOTIFICATIONS` value is lowercased but not trimmed. Any other value, i
 
 When notifications are on and the browser has not decided yet, the top of the chat list shows a row, **Turn on notifications**. Click it and allow notifications when the browser asks, or dismiss it with its cross; the browser remembers either.
 
-The main menu's **Notifications** row has a switch that turns them on and off at any time. On subscribes to Web Push when the viewer offers it, off unsubscribes. When the browser blocked notifications, the row says "Blocked in the browser settings" and the switch is disabled: allow them again in the browser's site settings.
+The main menu's **Notifications** row has a switch that turns them on and off at any time. On subscribes to Web Push when the viewer offers it, off unsubscribes. When the browser blocked notifications, the row says "Blocked in the browser settings" and the switch is disabled: allow them again in the browser's site settings. If this browser still holds a push subscription, the row reads "Blocked in the browser. Turn off to stop push." and the switch stays on, so you can turn it off.
 
 Basic mode uses the page's WebSocket. It fires only when a new message arrives in the chat that is open and the tab is hidden. It shows the chat title and the first 100 characters of the text. A message without text shows `New message received`. When the browser has a Web Push subscription, the page skips basic notifications so you do not get two.
 

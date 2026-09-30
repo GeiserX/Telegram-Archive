@@ -194,6 +194,7 @@ class TestGetMediaPaginated:
         result = await adapter.get_media_paginated(-1001, media_types=["video"])
         assert result["items"][0]["text"] == "video msg"
         assert result["items"][0]["is_deleted"] is False
+        assert result["items"][0]["deleted_at"] is None
 
         async with adapter.db_manager.async_session_factory() as session:
             await session.execute(
@@ -205,6 +206,8 @@ class TestGetMediaPaginated:
 
         result = await adapter.get_media_paginated(-1001, media_types=["video"])
         assert result["items"][0]["is_deleted"] is True
+        # The deletion's date, as the chat's "Deleted in Telegram on <date>" reads it.
+        assert result["items"][0]["deleted_at"] == "2026-01-05T10:00:00"
         # A read: the kept row and its text are still there.
         assert result["items"][0]["text"] == "video msg"
 

@@ -168,7 +168,7 @@ Each token login checks the presented token against every live token in turn, at
 A viewer account or share token with downloads off can read messages but cannot take files away:
 
 - Media files, thumbnails, chat exports and voice transcripts answer HTTP 403.
-- A photo or a video keeps its place and proportions as a placeholder that says `hidden for this login`. A voice message keeps its row, with its play button dimmed and "playback off for this login" beside its duration.
+- A photo or a video keeps its place and proportions as a placeholder that says `hidden for this login`, or `hidden for this link` in a session opened through a share link. A voice message keeps its row, with its play button dimmed and "playback off for this login" (or "this link") beside its duration.
 - **Export chat** is not offered, and What changed shows no transcripts.
 - The lightbox has no download button, and search skips hits that match only inside a transcript.
 - The main menu says "downloads off" under the login's name.
@@ -226,9 +226,9 @@ Three rules apply to every request, in this order:
 
 If you write a chat id in `DISPLAY_CHAT_IDS` without its `-100` prefix and only the prefixed form exists in the archive, the viewer corrects it at start. The viewer drops live updates for chats outside the list.
 
-A grant that is not set means no restriction. A grant set to an empty list denies everything. See [No chats ticked means all chats](#viewer-accounts) for how the **Admin settings** form saves an empty **Allowed Chats** box. A chat you may not see answers the same 404 `Chat not found` as a chat that does not exist, so a restricted user cannot probe for chats.
+A grant that is not set means no restriction. A grant set to an empty list denies everything. See [No chats ticked means all chats](#viewer-accounts) for how the **Admin settings** form saves an empty **Allowed chats** list. A chat you may not see answers the same 404 `Chat not found` as a chat that does not exist, so a restricted user cannot probe for chats.
 
-A restricted user never learns about accounts outside its grant. The account list and the message sender chips hide them, and the statistics are recomputed from that user's own chats.
+A restricted user never learns about accounts outside its grant. The account list and the account tags on messages hide them, and the statistics are recomputed from that user's own chats.
 
 Numeric chat and sender ids stay visible to every login. See [What logged-in users can see](exposing.md#what-logged-in-users-can-see).
 

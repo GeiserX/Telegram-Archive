@@ -152,3 +152,25 @@ def test_every_app_surface_lives_inside_the_mount_target():
     inside = "".join(auditor.inside_app_text)
     for marker in ("Admin settings", "toastMessage", "adminTokenError", "Add share token"):
         assert marker in inside, f"{marker!r} is OUTSIDE #app — Vue will never compile it"
+
+
+def _undefined_theme_tokens(html: str) -> set[str]:
+    """Every var(--tg-*) the template reads that nothing declares. A name built
+    at run time (``--tg-avatar-${i}``) is checked by its prefix."""
+    import re
+
+    used = {name for name, dynamic in re.findall(r"var\((--tg-[a-z0-9-]+)(\$\{)?", html) if not dynamic}
+    defined = set(re.findall(r"(--tg-[a-z0-9-]+)\s*:", html))
+    return used - defined
+
+
+def test_every_theme_token_the_template_reads_is_declared():
+    # An undeclared custom property is invalid at computed-value time, so the
+    # rule falls back to the inherited value without any error.
+    html = TEMPLATE.read_text(encoding="utf-8")
+    assert _undefined_theme_tokens(html) == set()
+
+
+def test_the_token_check_can_fail():
+    html = TEMPLATE.read_text(encoding="utf-8") + "\n.x { color: rgb(var(--tg-not-a-token)); }"
+    assert _undefined_theme_tokens(html) == {"--tg-not-a-token"}

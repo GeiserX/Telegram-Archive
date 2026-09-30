@@ -52,7 +52,7 @@ Under the archive's name the sidebar says how fresh the archive is:
 | Last backup did not finish | the master login only: the last run stopped before its statistics step. Click the line to open [Archive status](#archive-status). |
 | No backup yet | no backup has run |
 
-The pulse button beside it opens [What changed](#what-changed). The three lines open the [main menu](#main-menu).
+The button beside it, a list with a small clock, opens [What changed](#what-changed). The three lines open the [main menu](#main-menu).
 
 ## Search
 
@@ -63,7 +63,7 @@ One field at the top of the sidebar searches chats and messages together. Result
 
 Use <kbd>Up</kbd> and <kbd>Down</kbd> to move through both sections, <kbd>Enter</kbd> to open a result, and <kbd>Esc</kbd> to clear the field. A second <kbd>Esc</kbd> leaves the field.
 
-A hit found in a voice transcript carries a small transcript mark and the word "transcript". A hit on a message deleted in Telegram carries a trash mark and "deleted".
+A hit found in a voice transcript carries a small transcript mark and the word "transcript". A voice message with no caption reads "Recording · matched in its transcript". A hit on a message deleted in Telegram carries a trash mark and "deleted".
 
 If the archive has no full-text index yet, the message section says so. The index is created by the database migrations, which shipped in 8.3.0. The backup image applies them when its container starts. On a pip install, run `telegram-archive migrate`. A SQLite build without FTS5 keeps the older substring search.
 
@@ -75,7 +75,7 @@ Inside an open chat, the search button in the chat header opens a field that sea
 
 ## Reading messages
 
-The chat header shows the member count, for example `24 members` or `4,812 subscribers`. When the archive has no count, it shows what kind of chat it is, such as `private chat`.
+The chat header shows the member count, for example `24 members` or `4,812 subscribers`. When the archive has no count, it shows what kind of chat it is, such as `private chat`. Inside a forum topic the header shows the topic's name, with the forum and its message count under it.
 
 Messages from one sender in a row form a run. In a group, the sender's name sits on the first bubble and their photo beside the last. A run ends when someone else writes, at a new day, or when the same sender writes again more than 15 minutes later.
 
@@ -135,7 +135,7 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 Reactions show as chips with the emoji and, when above one, the count.
 
-An edited message shows "edited" before its time, as Telegram does. When the archive kept earlier texts, a small history mark comes before the word and the word is a button; its tooltip gives the edit time and how many earlier versions were kept. When the archive did not see the earlier text, the tooltip says so. Click the button to open the **Edit history**. It shows the original, each edit and the current text as bubbles, oldest first, each labelled with its time, and with its day when that is not the day the message was sent. The words each edit added are marked in the quote colour and the words it removed are struck through. It lists up to 100 earlier texts. On a phone it opens as a page with a back arrow.
+An edited message shows "edited" before its time, as Telegram does. When the archive kept earlier texts, a small history mark comes before the word and the word is a button; its tooltip gives the edit time and how many earlier versions were kept. When the archive did not see the earlier text, the tooltip says so. Click the button to open the **Edit history**. It shows the original, each edit and the current text as bubbles, oldest first, each labelled with its time, and with its day when that is not the day the message was sent. The words each edit added are underlined on a green tint and the words it removed are struck through, and a key under the header says so. It lists up to 100 earlier texts. On a phone it opens as a page with a back arrow.
 
 === "Telegram Day"
 
@@ -241,7 +241,7 @@ The info panel shows the open chat, in rows the way Telegram's info page writes 
 - **Earlier photos**: the profile photos the archive recorded before the current one. Each circle's tooltip says when the archive saw it. Click one, or the avatar, to page through them all in the lightbox, the current photo first.
 - description or bio, username and Telegram ID
 - the account tags, when more than one account is visible
-- **In the archive**: messages, media files, disk use, how many messages were deleted in Telegram or edited, which the archive kept, and the oldest message. Click the oldest message to jump to it.
+- **In the archive**: messages, media files, **Media size** (every media file of the chat, downloaded or not), **Deleted messages** and **Edited messages** (deleted in Telegram or edited, which the archive kept), and the oldest message. Click the oldest message to jump to it.
 - shortcuts into the shared media
 
 With the panel open, click a message to select it. On a touch screen, or in a window under 768 px wide, tap a message's time or its "deleted" mark instead: the panel opens on that message. The panel then also shows:
@@ -299,11 +299,11 @@ Playing a voice message or an audio file opens one player bar for the whole app.
 
 Voice and music each keep their own speed. Playback continues when you switch chats. When one item ends, the player moves on to the next audio in the chat.
 
-[No-download logins](access.md#no-download-logins) cannot play audio. Their play buttons are dimmed, the duration line says "playback off for this login", and the player bar does not appear.
+[No-download logins](access.md#no-download-logins) cannot play audio. Their play buttons are dimmed, the duration line says "playback off for this login" ("this link" through a share link), and the player bar does not appear.
 
 ## What changed
 
-The pulse button in the sidebar header opens **What changed**, after Telegram's Recent Actions. A dot on the button means there are entries newer than the last time you opened it in this browser, and the main menu's **What changed** row counts them. On a wide screen the feed takes the chat's place and the chat list stays usable: opening a chat leaves the feed. On a phone it is a page with a back arrow.
+The list button with a small clock in the sidebar header opens **What changed**, after Telegram's Recent Actions. A dot on the button means there are entries newer than the last time you opened it in this browser, and the main menu's **What changed** row counts them. On a wide screen the feed takes the chat's place and the chat list stays usable: opening a chat leaves the feed. On a phone it is a page with a back arrow.
 
 The feed lists deletions, edits and new voice transcripts, newest first, grouped by day. Each entry is a line such as "Deleted in Weekend Hikers · 17:57" over the message, drawn as a bubble with its sender's name. The line always names the chat; for a private chat that is the other person, even when they sent the message. A deleted message carries its deleted mark. An edited one shows its earlier text as a quote above the current text, and with more than one earlier version, a button that opens the edit history. A transcript shows its text under a recording row. Click a bubble to open the message in its chat, or the chat's name to open the chat. Older entries load as you reach the end.
 
@@ -337,11 +337,11 @@ The three lines at the top of the sidebar open the main menu. It names the signe
 
 ## Statistics
 
-**Statistics**, in the main menu, shows the number of chats, messages and media files, the size of the media on disk and when the numbers were calculated, as Telegram's Storage Usage lists its figures. Counts show every digit, and sizes read in KB, MB and GB. For the master login the last row is **Total on disk**, the media and the database together, and it opens Archive status. A login restricted to some chats reads "For the chats you can see." Before the numbers are first calculated, the page says so.
+**Statistics**, in the main menu, shows the number of chats, messages and media files and when the numbers were calculated, as Telegram's Storage Usage lists its figures. Counts show every digit, and sizes read in KB, MB and GB. For the master login the last row is **Disk use**, the media and the database together, and it opens the Disk use section of Archive status. Other logins read **Media on disk** there instead. A login restricted to some chats reads "For the chats you can see." Before the numbers are first calculated, the page says so.
 
 === "Desktop"
 
-    ![Statistics in the main menu, with the media on disk and the total on disk](../images/screenshots/stats.png){ width="480" }
+    ![Statistics in the main menu, with the disk use row](../images/screenshots/stats.png){ width="480" }
 
 === "Phone"
 
