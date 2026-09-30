@@ -65,9 +65,11 @@ class BackupExporter:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
 
-        # Get messages
-        messages = await self.db.get_messages_by_date_range(chat_id, start_dt, end_dt)
-        message_versions = await self.db.get_message_versions_by_date_range(chat_id, start_dt, end_dt)
+        # Messages, each with every earlier text the archive kept of it under
+        # ``versions`` whatever the version's date, and the flat
+        # ``message_versions`` list, windowed by the version's own date and
+        # without the account. One snapshot, so they cannot disagree.
+        messages, message_versions = await self.db.get_messages_and_versions_by_date_range(chat_id, start_dt, end_dt)
         # Voice transcripts sit on the message whose media they transcribe. The
         # account is part of the key: two accounts' private chats with the same
         # peer share the chat id and the message ids, and are two conversations.

@@ -5680,8 +5680,11 @@ def test_what_changed_has_its_own_glyph_and_an_unseen_dot():
     assert '<circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/>' in button
     assert "M3 12a9 9 0 1 0 9-9" not in button
     assert '<span v-if="changesUnseen" class="changes-dot" aria-hidden="true"></span>' in button
-    opener = html[html.index("const openChangesFeed = (fromMenu = false) => {") :]
-    assert opener[: opener.index("\n                }")].count("markChangesSeen()") == 1
+    opener = html[html.index("const openChangesFeed = (fromMenu = false, chat = null, returnFocus = null) => {") :]
+    opener = opener[: opener.index("\n                }")]
+    assert opener.count("markChangesSeen()") == 1
+    # Narrowed to one chat, opening the feed says nothing about the others.
+    assert "if (!changesChat.value) markChangesSeen()" in opener
 
 
 def test_lightbox_shows_caption_deleted_tag_and_way_back():
@@ -5711,7 +5714,9 @@ def test_what_changed_has_a_glyph_of_its_own():
     Archive status uses."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     glyph = '<circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/>'
-    assert html.count(glyph) == 2
+    # The sidebar button, the main menu, and the chat's menu and info panel
+    # entries that open the feed narrowed to that chat.
+    assert html.count(glyph) == 4
     assert "M22 12h-4l-3 9L9 3l-3 9H2" not in html
     menu_row = html[html.index('@click="closeMainMenu(false); openChangesFeed(true)"') :]
     menu_row = menu_row[: menu_row.index("</button>")]
