@@ -17,8 +17,11 @@
     const addMenuRows = () => {
         const menu = document.querySelector('.popover-sheet[aria-label="More actions"]')
         if (!menu || menu.querySelector('.ev-find')) return
-        menu.dataset.mockupFrame = '1'
         const s = stats()
+        // No rows, no divider: a divider alone would wake the menu's observer,
+        // which would call this again and again.
+        if (!s.deleted_messages && !s.edited_messages) return
+        menu.dataset.mockupFrame = '1'
         const divider = document.createElement('div')
         divider.className = 'ev-divider'
         menu.appendChild(divider)

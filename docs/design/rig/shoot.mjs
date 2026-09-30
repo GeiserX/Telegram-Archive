@@ -76,8 +76,9 @@ const MOBILE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, is
 
 async function injectCss(page) {
     if (CSS) {
-        const present = await page.evaluate(() => !!document.getElementById('mockup-override')).catch(() => false)
-        if (!present) await page.addStyleTag({ content: CSS }).then((h) => h.evaluate((el) => { el.id = 'mockup-override' }))
+        if (await claim(page, 'mockupCss')) {
+            await page.addStyleTag({ content: CSS }).then((h) => h.evaluate((el) => { el.id = 'mockup-override' }))
+        }
     }
     await injectJs(page)
 }
@@ -85,8 +86,21 @@ async function injectCss(page) {
 // The script runs once per document: a marker on the page stops a second run.
 async function injectJs(page) {
     if (!JS) return
-    const present = await page.evaluate(() => !!document.getElementById('mockup-script')).catch(() => false)
-    if (!present) await page.addScriptTag({ content: JS }).then((h) => h.evaluate((el) => { el.id = 'mockup-script' }))
+    if (await claim(page, 'mockupScript')) {
+        await page.addScriptTag({ content: JS }).then((h) => h.evaluate((el) => { el.id = 'mockup-script' }))
+    }
+}
+
+// Two injections can overlap (one after domcontentloaded, one after goto). The
+// page's own JavaScript is single-threaded, so checking and setting the marker
+// in one evaluate lets exactly one of them win for each document.
+async function claim(page, key) {
+    return page.evaluate((k) => {
+        const root = document.documentElement
+        if (root.dataset[k]) return false
+        root.dataset[k] = '1'
+        return true
+    }, key).catch(() => false)
 }
 
 async function settle(page) {

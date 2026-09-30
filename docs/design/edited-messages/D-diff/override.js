@@ -8,9 +8,13 @@
         const bubble = row.querySelector('.message-bubble')
         const body = row.querySelector('.message-body')
         const toggle = row.querySelector('.meta-edited')
-        bubble.classList.toggle('ev-diff-on', on)
-        toggle.setAttribute('aria-pressed', String(on))
-        if (!on) return
+        if (!on) {
+            bubble.classList.remove('ev-diff-on')
+            toggle.setAttribute('aria-pressed', 'false')
+            return
+        }
+        // The bubble's own text stays visible until the diff is built; with no
+        // earlier version, or a failed request, nothing changes.
         const list = await ev.versions(msg)
         if (list.length < 2) return
         const before = list[list.length - 2]
@@ -28,6 +32,8 @@
             head.append(ev.el('span', null, `What the edit at ${ev.hhmm(now.date)} changed`), all)
             body.parentElement.insertBefore(head, body)
         }
+        bubble.classList.add('ev-diff-on')
+        toggle.setAttribute('aria-pressed', 'true')
     }
     ev.eachEdited((row, msg) => {
         const toggle = row.querySelector('.message-meta .meta-edited')

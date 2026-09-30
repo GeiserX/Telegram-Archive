@@ -26,7 +26,7 @@ Two paths can tell the archive that a message changed. Both are off by default, 
 - **The listener** (`ENABLE_LISTENER=true`, with `LISTEN_EDITS=true`, which is the default once the listener runs). Telegram sends it an event for each edit while it is connected. `on_message_edited` in [`listener.py`](../../telegram_archive/listener.py) reads the new text and Telegram's `edit_date` and hands them to `update_message_text` in [`db/adapter.py`](../../telegram_archive/db/adapter.py).
 - **The sync** (`SYNC_DELETIONS_EDITS=true`). During a backup run, `_sync_deletions_and_edits` in [`telegram_backup.py`](../../telegram_archive/telegram_backup.py) asks Telegram for every archived message, 100 at a time, and calls the same `update_message_text` for each one whose `edit_date` differs from the stored one.
 
-A third, smaller path exists: a backup, gap fill or import that reads a message the archive already holds applies a changed text when it carries a newer `edit_date` (`_should_apply_upsert_text`). A normal backup run never reads old messages again, so in practice this only matters for imports and gap fills.
+A third, smaller path exists: a backup, gap fill or import that reads a message the archive already holds applies a changed text when its `edit_date` is the same as or newer than the stored one (`_should_apply_upsert_text`). Equal counts on purpose: the listener and the backup can deliver the same edit. A normal backup run never reads old messages again, so in practice this only matters for imports and gap fills.
 
 ## What it stores
 
