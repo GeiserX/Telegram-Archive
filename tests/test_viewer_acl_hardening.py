@@ -668,6 +668,14 @@ class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, resp.status_code)
         self.assertEqual('"cache"', resp.headers["clear-site-data"])
 
+    async def test_a_logout_without_a_session_cookie_leaves_the_cache_alone(self):
+        """Another site's POST arrives without the SameSite=Lax cookie: it must not empty the cache."""
+        async with AsyncClient(transport=ASGITransport(app=web_main.app), base_url="http://test") as client:
+            resp = await client.post("/api/logout")
+        self.assertEqual(200, resp.status_code)
+        self.assertNotIn("clear-site-data", resp.headers)
+        self.assertIn(self.COOKIE, web_main._sessions)
+
 
 # ============================================================================
 # The global exception handlers must not log the request path

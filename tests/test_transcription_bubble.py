@@ -12,6 +12,7 @@ and the drain picking the ask-now row up first.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -736,12 +737,13 @@ class TestAskNowRoute:
         assert [(r["status"], r["job_id"], r["preset"]) for r in rows] == [("queued", None, None)]
         assert viewer == [], "no outbound request"
 
-    async def test_a_click_after_a_done_row_adds_another_row(self, real_adapter, viewer):
+    async def test_a_login_click_after_a_done_row_adds_another_row(self, real_adapter, viewer):
         await _media(real_adapter, "m_1_voice")
         row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, preset="auto")
         await real_adapter.fill_media_transcript(row["id"], status="done", text="hola")
-        async with _client() as client:
-            resp = await client.post("/api/media/m_1_voice/transcripts")
+        with _logged_in("viewer"):
+            async with _client() as client:
+                resp = await client.post("/api/media/m_1_voice/transcripts")
         assert resp.status_code == 200
         rows = await real_adapter.list_media_transcripts("m_1_voice", account_id=1)
         assert [r["status"] for r in rows] == ["queued", "done"]
@@ -850,6 +852,19 @@ class TestAskNowRoute:
         assert await _drain(real_adapter, per_run=1) == ["m_1_voice"]
 
 
+@contextlib.contextmanager
+def _logged_in(role: str):
+    """A login with ``role`` instead of the open viewer's anonymous caller."""
+    web_main.app.dependency_overrides[web_main.require_auth] = lambda: web_main.UserContext(
+        username=f"{role}-test", role=role
+    )
+    try:
+        with patch.object(web_main, "AUTH_ENABLED", True):
+            yield
+    finally:
+        web_main.app.dependency_overrides.pop(web_main.require_auth, None)
+
+
 async def _waiting(adapter) -> int:
     return await adapter.count_waiting_transcript_asks(since=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1))
 
@@ -869,11 +884,11 @@ class TestAskLimits:
     Retry-After and write nothing.
     """
 
-    async def test_an_open_viewer_cannot_requeue_a_done_file_without_end(self, real_adapter, viewer):
+    async def test_a_login_cannot_requeue_a_done_file_without_end(self, real_adapter, viewer):
         await _media(real_adapter, "m_1_voice")
         rate, cap = _ask_limits(3, 0)
         statuses = []
-        with rate, cap:
+        with rate, cap, _logged_in("viewer"):
             async with _client("198.51.100.7") as client:
                 for _ in range(6):
                     resp = await client.post("/api/media/m_1_voice/transcripts")
@@ -884,6 +899,40 @@ class TestAskLimits:
         assert int(resp.headers["retry-after"]) in range(590, 601)
         assert resp.json()["detail"] == "Too many transcript requests. Try again in 10 minutes."
         assert len(await real_adapter.list_media_transcripts("m_1_voice", account_id=1)) == 3
+
+    async def test_an_open_viewer_never_sends_a_finished_file_again(self, real_adapter, viewer):
+        """Anonymous presses on a done or skipped file return that row, write nothing and cost no press."""
+        for n in range(1, 5):
+            await _media(real_adapter, f"m_{n}_voice")
+        done = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, preset="auto")
+        await real_adapter.fill_media_transcript(done["id"], status="done", text="hola")
+        skipped = await real_adapter.enqueue_media_transcript("m_2_voice", account_id=1, preset="auto")
+        await real_adapter.fill_media_transcript(skipped["id"], status="skipped", error="too_long")
+        ref = await _chat_ref(real_adapter)
+        rate, cap = _ask_limits(1, 0)
+        with rate, cap:
+            async with _client("198.51.100.7") as client:
+                finished = [await client.post("/api/media/m_1_voice/transcripts") for _ in range(3)]
+                finished.append(await client.post(f"/api/chats/{ref}/media/2_voice/transcripts"))
+                finished.append(await client.post("/api/media/m_2_voice/transcripts"))
+                fresh = await client.post("/api/media/m_3_voice/transcripts")
+                limited = await client.post("/api/media/m_4_voice/transcripts")
+        assert [resp.status_code for resp in finished] == [200] * 5
+        assert {resp.json()["id"] for resp in finished[:3]} == {done["id"]}
+        assert finished[4].json()["id"] == skipped["id"]
+        assert (fresh.status_code, limited.status_code) == (200, 429)
+        for media_id in ("m_1_voice", "m_2_voice"):
+            assert len(await real_adapter.list_media_transcripts(media_id, account_id=1)) == 1
+
+    async def test_the_master_is_never_rate_limited(self, real_adapter, viewer):
+        for n in range(1, 5):
+            await _media(real_adapter, f"m_{n}_voice")
+        rate, cap = _ask_limits(1, 0)
+        with rate, cap, _logged_in("master"):
+            async with _client() as client:
+                answers = [await client.post(f"/api/media/m_{n}_voice/transcripts") for n in range(1, 5)]
+        assert [resp.status_code for resp in answers] == [200, 200, 200, 200]
+        assert web_main._transcript_asks == {}
 
     async def test_the_rate_limit_counts_each_client_address_on_both_routes(self, real_adapter, viewer):
         for n in range(1, 6):

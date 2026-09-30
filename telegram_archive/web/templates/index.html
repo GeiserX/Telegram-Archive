@@ -13314,9 +13314,22 @@
                 // showing the login form. The form sits beside the main view, so
                 // the open chat, its messages and the media the document already
                 // decoded stayed in memory, and the next login on this tab, as
-                // anyone, showed them again without asking the server.
+                // anyone, showed them again without asking the server. The reload
+                // keeps the address, so the chat ref in it survives; the server
+                // checks it again on the next login. It runs at most once per
+                // SESSION_END_RELOAD_GUARD_MS: if the server calls a session live
+                // on load and then refuses it, the page stays on the login form
+                // instead of reloading without end.
+                const SESSION_END_RELOAD_KEY = 'session_end_reload_at'
+                const SESSION_END_RELOAD_GUARD_MS = 10000
                 const reloadWhenSessionEnds = (now, before) => {
-                    if (before && !now) window.location.replace('/')
+                    if (!before || now) return
+                    try {
+                        const last = Number(sessionStorage.getItem(SESSION_END_RELOAD_KEY) || 0)
+                        if (Date.now() - last < SESSION_END_RELOAD_GUARD_MS) return
+                        sessionStorage.setItem(SESSION_END_RELOAD_KEY, String(Date.now()))
+                    } catch (e) { /* no storage: reload anyway */ }
+                    window.location.reload()
                 }
                 watch(isAuthenticated, reloadWhenSessionEnds)
 

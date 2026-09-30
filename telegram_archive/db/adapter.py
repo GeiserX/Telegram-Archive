@@ -6716,13 +6716,11 @@ class DatabaseAdapter:
             await session.refresh(row)
             return self._transcript_to_dict(row)
 
-    async def get_open_media_transcript(self, media_id: str, *, account_id: int) -> dict[str, Any] | None:
-        """The newest transcript row of one media when it is open (``queued`` or ``running``), else None."""
+    async def get_newest_media_transcript(self, media_id: str, *, account_id: int) -> dict[str, Any] | None:
+        """The newest transcript row of one media, whatever its status, or None when it has none."""
         async with self.db_manager.async_session_factory() as session:
             newest = await self._newest_transcript(session, media_id, account_id)
-        if newest is None or newest.status not in TRANSCRIPT_OPEN_STATUSES:
-            return None
-        return self._transcript_to_dict(newest)
+        return self._transcript_to_dict(newest) if newest is not None else None
 
     async def count_waiting_transcript_asks(self, *, since: datetime) -> int:
         """How many viewer ask-now rows still wait for the backup, across every account.

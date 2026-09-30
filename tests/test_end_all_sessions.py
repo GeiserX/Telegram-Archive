@@ -643,17 +643,34 @@ def test_a_session_that_ends_in_the_tab_reloads_the_page():
             [
                 '"use strict";',
                 "const assert = require('node:assert/strict');",
-                "const replaced = [];",
-                "const window = { location: { replace: url => replaced.push(url) } };",
+                "let reloads = 0;",
+                "const window = { location: { reload: () => { reloads += 1 } } };",
+                "const store = new Map();",
+                "const sessionStorage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };",
+                "const SESSION_END_RELOAD_KEY = 'session_end_reload_at';",
+                "const SESSION_END_RELOAD_GUARD_MS = 10000;",
+                "let clock = 1000000;",
+                "Date.now = () => clock;",
                 function,
                 "reloadWhenSessionEnds(true, false);",
                 "reloadWhenSessionEnds(false, false);",
-                "assert.deepEqual(replaced, []);",
+                "assert.equal(reloads, 0);",
+                # A plain reload keeps the address, so the chat ref in it survives.
                 "reloadWhenSessionEnds(false, true);",
-                "assert.deepEqual(replaced, ['/']);",
+                "assert.equal(reloads, 1);",
+                # The server called the session live on load and then refused it:
+                # a second flip right after the reload stays put.
+                "clock += 2000;",
+                "reloadWhenSessionEnds(false, true);",
+                "assert.equal(reloads, 1);",
+                "clock += 10000;",
+                "reloadWhenSessionEnds(false, true);",
+                "assert.equal(reloads, 2);",
             ]
         )
     )
+    assert "const SESSION_END_RELOAD_KEY = 'session_end_reload_at'" in html
+    assert "const SESSION_END_RELOAD_GUARD_MS = 10000" in html
 
 
 def test_keeping_this_session_reports_the_count_and_stays():

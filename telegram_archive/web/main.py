@@ -47,7 +47,7 @@ from ..db.adapter import (
     parse_account_chat_stats_key,
     parse_entitlement_column,
 )
-from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
+from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_STATUSES, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name, utcnow_naive
 from ..realtime import RealtimeListener, resolve_internal_push_secret
 from ..status import collect_status
@@ -2430,6 +2430,12 @@ async def check_auth(request: Request, auth_cookie: str | None = Cookie(default=
             }
         return {"authenticated": False, "auth_required": True, "setup_required": True}
 
+    # Same rule as _resolve_user_context: with proxy auth only, a session
+    # cookie is not a login. Reporting it as one here while every other route
+    # answered 401 made the page reload itself without end.
+    if not AUTH_ENABLED:
+        return {"authenticated": False, "auth_required": True}
+
     if not auth_cookie:
         return {"authenticated": False, "auth_required": True}
 
@@ -2624,7 +2630,11 @@ async def logout(
 
     response = JSONResponse({"success": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
-    response.headers["Clear-Site-Data"] = LOGOUT_CLEAR_SITE_DATA
+    if auth_cookie:
+        # Only a logout that carried a session cookie empties the cache. The
+        # cookie is SameSite=Lax, so another site's POST arrives without it
+        # and cannot wipe the viewer's cache on demand.
+        response.headers["Clear-Site-Data"] = LOGOUT_CLEAR_SITE_DATA
     return response
 
 
@@ -3601,37 +3611,43 @@ def _too_many_asks(detail: str, retry_after: int) -> HTTPException:
 async def _ask_transcript(media: dict | None, account_id: int, user: UserContext, client: str) -> dict:
     """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
 
-    ``force`` because a user click may add a row after a done one, which the
-    drain never does. No preset: the viewer does not read it, and a queued
+    ``force`` because a login's click may add a row after a done one, which
+    the drain never does. An open viewer (ALLOW_ANONYMOUS_VIEWER) gets no
+    ``force``: a press on a file whose newest row is ``done`` or ``skipped``
+    returns that row and writes nothing, so an anonymous caller cannot send a
+    finished file to the transcription server again. No preset: the viewer does not read it, and a queued
     row without one is what the drain query sends first. No outbound request.
     A media the drain would never send is a 409 and no row: one with no
     sound (``is_transcribable``, whatever TRANSCRIPTION_TYPES says, since the
     drain query lets an ask-now row through the type filter), or a file not
     downloaded yet, whose queued row would never move.
 
-    Two limits answer 429 with Retry-After, since ``force`` lets anyone who
-    can open the viewer (ALLOW_ANONYMOUS_VIEWER) queue the same file again
-    and again: TRANSCRIPTION_ASK_RATE_LIMIT presses per client, and, for
-    everyone but the master, TRANSCRIPTION_ASK_MAX_OPEN ask-now rows waiting
-    for the backup across the archive. A press on a file whose newest row is
-    already open writes nothing, so it returns that row before either limit
-    and costs no press; a press the cap refuses costs none either.
+    Two limits answer 429 with Retry-After, for everyone but the master, who
+    can change every setting anyway: TRANSCRIPTION_ASK_RATE_LIMIT presses per
+    client, and TRANSCRIPTION_ASK_MAX_OPEN ask-now rows waiting for the
+    backup across the archive. A press that writes nothing (an open newest
+    row, or a finished one in an open viewer) returns that row before either
+    limit and costs no press; a press the cap refuses costs none either.
     """
     if not media or not is_transcribable(media.get("type"), media.get("mime_type")):
         raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
     if not media.get("downloaded"):
         raise HTTPException(status_code=409, detail="Not downloaded yet")
-    open_row = await db.get_open_media_transcript(media["id"], account_id=account_id)
-    if open_row is not None:
-        return open_row
-    wait = _transcript_ask_wait(client)
+    anonymous = not AUTH_ENABLED and not _PROXY_AUTH_ENABLED
+    newest = await db.get_newest_media_transcript(media["id"], account_id=account_id)
+    if newest is not None and newest["status"] in TRANSCRIPT_OPEN_STATUSES:
+        return newest
+    if anonymous and newest is not None and newest["status"] in ("done", "skipped"):
+        return newest
+    force = not anonymous
+    wait = 0 if user.role == "master" else _transcript_ask_wait(client)
     if wait:
         minutes = math.ceil(wait / 60)
         unit = "minute" if minutes == 1 else "minutes"
         raise _too_many_asks(f"Too many transcript requests. Try again in {minutes} {unit}.", wait)
     cap = getattr(config, "transcription_ask_max_open", 0)
     if user.role == "master" or not isinstance(cap, int) or cap <= 0:
-        row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
+        row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=force)
     else:
         async with _transcript_ask_lock:
             since = utcnow_naive() - _TRANSCRIPT_ASK_WAIT_WINDOW
@@ -3641,9 +3657,10 @@ async def _ask_transcript(media: dict | None, account_id: int, user: UserContext
                     "Many transcripts are waiting for the next backup run. Try again later.",
                     _TRANSCRIPT_ASK_FULL_RETRY_SECONDS,
                 )
-            row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
+            row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=force)
     if row is None:
-        # Only when a racing insert won and its row vanished before the re-read.
+        # Only when a racing insert won and its row vanished before the re-read,
+        # or, without ``force``, the file finished since the read above.
         raise HTTPException(status_code=503, detail="Try again")
     return row
 

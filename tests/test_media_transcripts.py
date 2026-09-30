@@ -92,16 +92,20 @@ class TestWaitingAsks:
         # Nothing is deleted: the stranded rows stay queued as they were.
         assert (await real_adapter.get_media_transcript(old["id"]))["status"] == "queued"
         assert len(await real_adapter.list_media_transcripts("m_3_voice", account_id=1)) == 1
-        assert (await real_adapter.get_open_media_transcript("m_1_voice", account_id=1))["id"] == fresh["id"]
+        assert (await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1))["id"] == fresh["id"]
 
-    async def test_the_open_row_is_only_the_newest_while_open(self, real_adapter):
+    async def test_the_newest_row_is_read_whatever_its_status_in_its_own_account(self, real_adapter):
         await _media(real_adapter, "m_1_voice")
-        assert await real_adapter.get_open_media_transcript("m_1_voice", account_id=1) is None
+        assert await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1) is None
         row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
-        assert (await real_adapter.get_open_media_transcript("m_1_voice", account_id=1))["id"] == row["id"]
-        assert await real_adapter.get_open_media_transcript("m_1_voice", account_id=2) is None
+        newest = await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1)
+        assert (newest["id"], newest["status"]) == (row["id"], "queued")
+        assert await real_adapter.get_newest_media_transcript("m_1_voice", account_id=2) is None
         await real_adapter.fill_media_transcript(row["id"], status="done", text="hola")
-        assert await real_adapter.get_open_media_transcript("m_1_voice", account_id=1) is None
+        newest = await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1)
+        assert (newest["id"], newest["status"]) == (row["id"], "done")
+        again = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        assert (await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1))["id"] == again["id"]
 
 
 class TestEnqueue:

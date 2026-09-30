@@ -244,6 +244,26 @@ class TestSessionCleanupTask(_WebTestBase):
         web_main._login_attempts.clear()
         web_main._login_attempts.update(saved_attempts)
 
+    async def test_sweeps_stale_transcript_press_counters(self):
+        """The loop trims the transcript press counters, so one entry per address cannot pile up."""
+        saved_asks = dict(web_main._transcript_asks)
+        web_main._transcript_asks["ip:198.51.100.7"] = [time.time() - web_main._TRANSCRIPT_ASK_WINDOW - 100]
+        web_main._transcript_asks["ip:198.51.100.8"] = [time.time()]
+
+        with patch.object(web_main, "_SESSION_CLEANUP_INTERVAL", 0):
+            task = asyncio.create_task(web_main.session_cleanup_task())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        self.assertNotIn("ip:198.51.100.7", web_main._transcript_asks)
+        self.assertIn("ip:198.51.100.8", web_main._transcript_asks)
+        web_main._transcript_asks.clear()
+        web_main._transcript_asks.update(saved_asks)
+
     async def test_handles_db_cleanup_failure(self):
         """session_cleanup_task continues when DB cleanup raises."""
         self.mock_db.cleanup_expired_sessions = AsyncMock(side_effect=Exception("db error"))
