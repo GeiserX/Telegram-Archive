@@ -143,6 +143,61 @@ class TestMessageUpsertConflictRealEngine:
         assert (await real_adapter.get_messages_paginated(900006, limit=10))[0]["text"] == "in chat B"
 
 
+class TestEditHideRealEngine:
+    """Telegram's edit_hide flag: kept beside edit_date, and a hidden edit with no
+    kept version is not an edit in the count, the "Edited only" list or the rows."""
+
+    async def test_a_hidden_edit_with_no_kept_version_is_not_counted(self, real_adapter):
+        chat = 900050
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        def captured(message_id: int, text: str, *, edit_hide: int | None) -> dict:
+            row = _message(chat, message_id, text=text, offset_minutes=message_id)
+            row["edit_date"] = edited_at
+            if edit_hide is not None:
+                row["edit_hide"] = edit_hide
+            return row
+
+        # 1: first captured after a reaction; Telegram bumped edit_date and hid it.
+        await real_adapter.insert_message(captured(1, "reacted to", edit_hide=1), account_id=1)
+        # 2: first captured after a real edit; Telegram shows it.
+        await real_adapter.insert_message(captured(2, "edited before capture", edit_hide=0), account_id=1)
+        # 3: a row with no flag (from before the column, or an import): shown, as before.
+        await real_adapter.insert_message(captured(3, "no flag", edit_hide=None), account_id=1)
+        # 4: hidden at first, then a real text edit arrives with the flag clear.
+        await real_adapter.insert_message(captured(4, "before", edit_hide=1), account_id=1)
+        outcome, _ = await real_adapter.update_message_text(
+            chat, 4, "after", edited_at + timedelta(minutes=1), account_id=1, edit_hide=0
+        )
+        assert outcome == "applied"
+        # 5: hidden, and an empty text later filled in: a kept version, so edited.
+        await real_adapter.insert_message(captured(5, "", edit_hide=1), account_id=1)
+        await real_adapter.insert_message(_message(chat, 5, text="filled", offset_minutes=5), account_id=1)
+        # 6: hidden; a re-scan with the same text and another flag writes nothing.
+        await real_adapter.insert_message(captured(6, "same", edit_hide=1), account_id=1)
+        rescan = captured(6, "same", edit_hide=0)
+        rescan["edit_date"] = edited_at + timedelta(minutes=9)
+        await real_adapter.insert_message(rescan, account_id=1)
+        # 7: never edited.
+        await real_adapter.insert_message(_message(chat, 7, text="plain", offset_minutes=7), account_id=1)
+
+        stats = await real_adapter.get_chat_stats(chat, account_id=1, with_kept_changes=True)
+        assert stats["edited_messages"] == 4
+        listed = await real_adapter.get_messages_paginated(chat, account_id=1, edited_only=True)
+        assert sorted(row["id"] for row in listed) == [2, 3, 4, 5]
+
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        # The raw fields stay as captured: the date is kept, the flag beside it.
+        assert rows[1]["edit_date"] == edited_at
+        assert rows[1]["edit_hide"] == 1
+        assert rows[3]["edit_hide"] is None
+        assert rows[4]["edit_hide"] == 0
+        assert rows[5]["edit_hide"] == 1
+        assert rows[6]["edit_hide"] == 1
+        assert rows[6]["edit_date"] == edited_at
+
+
 class TestPaginationRealEngine:
     """get_messages_paginated against a real planner and a real collation."""
 

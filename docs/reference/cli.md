@@ -130,7 +130,7 @@ The command writes the file with an indent of 2 and keeps non-ASCII text as UTF-
 | `messages` | The selected messages, ordered by date, oldest first. |
 | `message_versions` | Earlier texts of edited messages: `chat_id`, `message_id`, `text` and `date`. |
 
-Each message has `id`, `chat_id`, `sender_id`, `sender_name`, `date`, `text`, `reply_to_msg_id`, `reply_to_top_id`, `reply_to_text`, `forward_from_id`, `edit_date`, `raw_data`, `created_at`, `is_outgoing`, `is_pinned`, `is_deleted`, `deleted_at` and `account_id`. Messages deleted in soft mode are included, with `is_deleted` set to 1. A message with voice or media transcripts also has a `transcripts` list.
+Each message has `id`, `chat_id`, `sender_id`, `sender_name`, `date`, `text`, `reply_to_msg_id`, `reply_to_top_id`, `reply_to_text`, `forward_from_id`, `edit_date`, `edit_hide`, `raw_data`, `created_at`, `is_outgoing`, `is_pinned`, `is_deleted`, `deleted_at` and `account_id`. Messages deleted in soft mode are included, with `is_deleted` set to 1. `edit_hide` is 1 when Telegram says the edit at `edit_date` is not to be shown, as it does when only the reactions changed: such a message was not edited unless `message_versions` holds an earlier text of it. It is null for a message archived before the archive kept the flag. A message with voice or media transcripts also has a `transcripts` list.
 
 It exits 0 on success. On any failure, a date in the wrong format included, it prints `Export failed: <error>` on stderr and exits 1.
 

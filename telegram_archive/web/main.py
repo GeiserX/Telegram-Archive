@@ -442,6 +442,7 @@ async def handle_realtime_notification(payload: dict):
                 "message_id": data.get("message_id"),
                 "new_text": data.get("new_text"),
                 "edit_date": data.get("edit_date"),
+                "edit_hide": data.get("edit_hide"),
             },
         )
     elif notification_type == "delete":
@@ -3075,8 +3076,8 @@ async def get_messages(
     it lists every deletion of the chat; with one it narrows the search.
 
     ``edited_only=true`` does the same for edits: the messages Telegram marks
-    as edited (``edit_date`` set) or with at least one earlier version kept in
-    ``message_versions``. The same read-only narrowing, inside the same chat.
+    as edited (``edit_date`` set and ``edit_hide`` not) or with at least one
+    earlier version kept in ``message_versions``. The same read-only narrowing, inside the same chat.
 
     Cursor-based pagination is preferred for infinite scroll.
     """

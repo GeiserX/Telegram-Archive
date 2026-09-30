@@ -326,7 +326,7 @@ def test_edited_without_versions_is_still_a_button():
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert '<span v-else-if="msg.edit_date"' not in html
-    assert "const isEditedMessage = (msg) => !!msg?.edit_date || editedCount(msg) > 0" in html
+    assert "const isEditedMessage = (msg) => !!shownEditDate(msg) || editedCount(msg) > 0" in html
     assert "The archive did not see an earlier version." in html
 
 
@@ -382,7 +382,7 @@ def test_message_status_badges_show_timestamps_on_hover():
     assert '<span v-else class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
     start = html.index("const messageTimeTitle = (msg) =>")
     body = html[start : html.index("\n                }\n", start)]
-    assert "formatMetadataTimestampTitle('Edited', msg.edit_date)" in body
+    assert "formatMetadataTimestampTitle('Edited', shownEditDate(msg))" in body
     assert "formatMetadataTimestampTitle('Deletion noticed', msg.deleted_at)" in body
     assert "earlier ${versions === 1 ? 'version' : 'versions'} kept" in body
     assert "const formatMetadataTimestampTitle = (label, dateStr) =>" in html

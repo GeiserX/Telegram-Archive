@@ -43,6 +43,7 @@ const messageVersionsErrors = { value: {} }
 
 _MARK_DECLARATIONS = (
     "const editedCount = (msg) =>",
+    "const shownEditDate = (msg) =>",
     "const isEditedMessage = (msg) =>",
     "const editedMoment = (msg) =>",
     "const editedWhen = (msg) =>",
@@ -129,6 +130,22 @@ class TestTheCountAndItsName(unittest.TestCase):
         self.assertEqual(out["heads"][:3], ["Edited · 08:57"] * 3)
         self.assertEqual(out["heads"][3], "Edited")
 
+    def test_an_edit_telegram_hides_is_not_an_edit(self) -> None:
+        # Telegram bumps edit_date when only the reactions change and sets
+        # edit_hide: with no earlier text kept, no pencil. A kept version still
+        # counts, without the hidden time.
+        rows = [
+            {**_MSG, "version_count": 0, "edit_hide": 1},
+            {**_MSG, "version_count": 1, "edit_hide": 1},
+            {**_MSG, "version_count": 0, "edit_hide": 0},
+            {**_MSG, "version_count": 0, "edit_hide": None},
+        ]
+        out = self._labels(rows)
+        self.assertEqual(out["edited"], [False, True, True, True])
+        self.assertEqual(out["labels"][1], "Edited, 1 earlier version kept")
+        self.assertEqual(out["heads"][1], "Edited")
+        self.assertEqual(out["labels"][2], "Edited at 08:57. The archive did not see the earlier text")
+
     def test_an_edit_on_a_later_day_names_the_day(self) -> None:
         rows = [
             {**_MSG, "edit_date": "2026-10-01T09:05:00"},
@@ -182,6 +199,15 @@ class TestTheMarkInTheMetaRow(unittest.TestCase):
         # It comes before the time, which stays the send time.
         meta = HTML[start : HTML.index("</span>\n                                    </div>", start)]
         self.assertLess(meta.index("meta-edited"), meta.index("formatTime(msg.date)"))
+
+    def test_every_edited_check_goes_through_the_one_rule(self) -> None:
+        # A bare edit_date test would mark a message Telegram hid the edit of
+        # (a reaction), so the bubble frame, the time tooltip and the info panel
+        # all ask isEditedMessage, and the frame follows the realtime flag.
+        self.assertNotIn("edit_date || Number(", HTML)
+        self.assertNotIn("msg.edit_date || versions", HTML)
+        self.assertIn('<component v-if="isEditedMessage(infoPanelMessage)"', HTML)
+        self.assertIn("editMsg.edit_hide = data.edit_hide ? 1 : 0", HTML)
 
     def test_a_long_press_does_not_select_or_open_the_system_menu(self) -> None:
         rule = HTML[HTML.index("        .message-meta .meta-edited {") :]

@@ -31,6 +31,7 @@ from sqlalchemy import (
     func,
     literal,
     literal_column,
+    not_,
     nulls_last,
     or_,
     select,
@@ -605,6 +606,7 @@ class DatabaseAdapter:
             "reply_to_text": message_data.get("reply_to_text"),
             "forward_from_id": message_data.get("forward_from_id"),
             "edit_date": _strip_tz(message_data.get("edit_date")),
+            "edit_hide": message_data.get("edit_hide"),
             "raw_data": self._serialize_raw_data(message_data.get("raw_data", {})),
             "is_outgoing": message_data.get("is_outgoing", 0),
             "is_pinned": message_data.get("is_pinned", 0),
@@ -738,10 +740,9 @@ class DatabaseAdapter:
 
         if existing.text == new_text:
             # Text unchanged -> not a real text edit. Telegram bumps edit_date for
-            # reaction-only changes (server-side; message.edit_hide is documented as
-            # unreliable), so applying here would set edit_date with no version and
-            # surface a phantom "edited" marker (#219). Reactions are captured by the
-            # dedicated reaction path instead.
+            # reaction-only changes (#219), so applying here would set edit_date
+            # with no version and surface a phantom "edited" marker. Reactions are
+            # captured by the dedicated reaction path instead.
             return False
         if edit_date is None:
             return old_edit_date is None
@@ -791,6 +792,11 @@ class DatabaseAdapter:
         else:
             update_values.pop("text", None)
             update_values.pop("edit_date", None)
+        if "edit_date" not in update_values:
+            # edit_hide is Telegram's flag for the edit_date it came with, so it
+            # changes only when that date is written. A source with no flag (an
+            # import) writes NULL beside its date: unknown, not "shown".
+            update_values.pop("edit_hide", None)
 
         # Sender names are capture-time snapshots. A missing/blank snapshot may
         # be hydrated once, but a nonblank archived value is immutable.
@@ -1950,11 +1956,15 @@ class DatabaseAdapter:
         edit_date: datetime | None,
         *,
         account_id: int,
+        edit_hide: int | None = None,
         entities: list | None = None,
         update_entities: bool = False,
         rich_message: dict | None = None,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
+
+        ``edit_hide`` is Telegram's flag for that ``edit_date`` and is written
+        beside it (None: the caller does not know it).
 
         Returns ``(outcome, prior)`` so callers can keep honest counters and
         only broadcast edits that actually changed the archive. ``outcome`` is
@@ -2012,7 +2022,7 @@ class DatabaseAdapter:
             await session.execute(
                 update(Message)
                 .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
-                .values(text=new_text, edit_date=edit_date)
+                .values(text=new_text, edit_date=edit_date, edit_hide=edit_hide)
             )
             if update_entities and self._merge_raw_data_entities(message, entities, rich_message):
                 await session.execute(
@@ -2120,6 +2130,9 @@ class DatabaseAdapter:
             deleted_at = None
         sender_name = getattr(message, "sender_name", None)
         sender_name = sender_name.strip() if _is_nonblank_text(sender_name) else None
+        edit_hide = getattr(message, "edit_hide", None)
+        if not isinstance(edit_hide, int):
+            edit_hide = None
 
         return {
             "id": message.id,
@@ -2133,6 +2146,7 @@ class DatabaseAdapter:
             "reply_to_text": message.reply_to_text,
             "forward_from_id": message.forward_from_id,
             "edit_date": message.edit_date,
+            "edit_hide": edit_hide,
             "raw_data": message.raw_data,
             "created_at": message.created_at,
             "is_outgoing": message.is_outgoing,
@@ -2513,19 +2527,28 @@ class DatabaseAdapter:
                 yield self._message_version_to_dict(row)
 
     @staticmethod
+    def _marked_edited_predicate():
+        """Telegram marks a message edited: ``edit_date`` is set and its
+        ``edit_hide`` flag is not. Telegram bumps ``edit_date`` for a
+        reaction-only change and sets ``edit_hide`` to say the edit must not be
+        shown; NULL (a row from before the flag was kept) reads as shown."""
+        return and_(Message.edit_date.isnot(None), func.coalesce(Message.edit_hide, 0) == 0)
+
+    @staticmethod
     def _edited_predicate():
-        """A message counts as edited when Telegram marks it (``edit_date``) or
-        the archive kept an earlier version of it. Either alone happens: a
-        message first captured after its edit has ``edit_date`` and no version,
-        and a late-hydrated empty text keeps a version with no ``edit_date``.
-        It is the viewer's own rule for the pencil in a bubble, so the chat's
-        count, the "Edited only" list and the marked bubbles agree."""
+        """A message counts as edited when Telegram marks it
+        (``_marked_edited_predicate``) or the archive kept an earlier version of
+        it. Either alone happens: a message first captured after its edit is
+        marked and has no version, and a late-hydrated empty text keeps a
+        version with no mark. It is the viewer's own rule for the pencil in a
+        bubble, so the chat's count, the "Edited only" list and the marked
+        bubbles agree."""
         kept = exists().where(
             MessageVersion.account_id == Message.account_id,
             MessageVersion.chat_id == Message.chat_id,
             MessageVersion.message_id == Message.id,
         )
-        return or_(Message.edit_date.isnot(None), kept)
+        return or_(DatabaseAdapter._marked_edited_predicate(), kept)
 
     async def get_chat_stats(
         self, chat_id: int, *, account_id: int | None = None, with_kept_changes: bool = False
@@ -2586,7 +2609,7 @@ class DatabaseAdapter:
             kept_result = await session.execute(
                 select(
                     func.coalesce(func.sum(case((Message.is_deleted == 1, 1), else_=0)), 0),
-                    func.coalesce(func.sum(case((Message.edit_date.isnot(None), 1), else_=0)), 0),
+                    func.coalesce(func.sum(case((self._marked_edited_predicate(), 1), else_=0)), 0),
                 ).where(and_(*msg_where))
             )
             kept_row = kept_result.one()
@@ -2604,7 +2627,7 @@ class DatabaseAdapter:
                         Message.id == MessageVersion.message_id,
                     ),
                 )
-                .where(MessageVersion.chat_id == chat_id, Message.edit_date.is_(None))
+                .where(MessageVersion.chat_id == chat_id, not_(self._marked_edited_predicate()))
                 .distinct()
             )
             if account_id is not None:

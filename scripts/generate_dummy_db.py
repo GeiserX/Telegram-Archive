@@ -255,6 +255,7 @@ class ChatScript:
         forward: tuple[int, int, str] | None = None,
         deleted_after: timedelta | None = None,
         edited_after: timedelta | None = None,
+        reacted_after: timedelta | None = None,
     ) -> int:
         mid = self.next_id
         self.next_id += 1
@@ -292,6 +293,11 @@ class ChatScript:
                 version_date = when if step == 0 else when + shift + timedelta(minutes=2 * step)
                 self.versions.append((mid, old_text, version_date))
             msg["edit_date"] = when + shift + timedelta(minutes=2 * len(earlier) + 1)
+        if reacted_after is not None:
+            # Telegram moves edit_date when only the reactions change and sets
+            # edit_hide: the archive keeps both, and the viewer shows no edit.
+            msg["edit_date"] = when + reacted_after
+            msg["edit_hide"] = 1
         if deleted_after is not None:
             # Deleted in Telegram, kept by the archive (soft deletion).
             msg["is_deleted"] = 1
@@ -446,7 +452,14 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     s.add(t + timedelta(minutes=1), ESME, "", media={"type": "photo", "seed": 22, "grouped_id": album})
     s.add(t + timedelta(minutes=1), ESME, "", media={"type": "photo", "seed": 23, "grouped_id": album})
     s.add(t + timedelta(minutes=1), ESME, "", media={"type": "photo", "seed": 25, "grouped_id": album})
-    s.add(t + timedelta(minutes=6), HUGO, "That first one looks like a postcard", reply=first, react={"😂": 1})
+    s.add(
+        t + timedelta(minutes=6),
+        HUGO,
+        "That first one looks like a postcard",
+        reply=first,
+        react={"😂": 1},
+        reacted_after=timedelta(minutes=4),
+    )
     q = s.add(t + timedelta(minutes=9), KOFI, "Which trailhead did you park at?")
     s.add(
         t + timedelta(minutes=12),

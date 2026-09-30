@@ -1237,6 +1237,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
             "three edited",
             datetime(2024, 6, 15),
             account_id=1,
+            edit_hide=0,
             entities=None,
             update_entities=True,
             rich_message=None,

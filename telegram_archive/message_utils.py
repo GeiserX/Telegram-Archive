@@ -1326,6 +1326,16 @@ def message_plain_text(message: object) -> str:
     return render_rich_message(rich)[0] if rich is not None else ""
 
 
+def message_edit_hide(message: object) -> int:
+    """Telegram's ``edit_hide`` flag as the archive stores it: 1 or 0.
+
+    MTProto sets the flag when a message must be shown as not edited even
+    though its ``edit_date`` is set, which is what Telegram does when only the
+    reactions changed. The ``is True`` check keeps a MagicMock fixture at 0.
+    """
+    return 1 if getattr(message, "edit_hide", None) is True else 0
+
+
 _ENTITY_CLASS_PREFIX = "MessageEntity"
 _ENTITY_SNAKE_RE = re.compile(r"(?<!^)(?=[A-Z])")
 

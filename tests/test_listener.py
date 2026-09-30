@@ -868,6 +868,7 @@ class TestEventHandlers:
             new_text="Updated text",
             edit_date=msg.edit_date,
             account_id=1,
+            edit_hide=0,
             entities=None,
             update_entities=True,
             rich_message=None,
@@ -940,6 +941,95 @@ class TestEventHandlers:
         asyncio.run(handler(event))
 
         assert listener.stats["errors"] == 1
+
+    @staticmethod
+    def _edit_event(*, text: str = "Edited later", edit_hide: bool | None = None) -> MagicMock:
+        """A MessageEdited event for a group message sent before its edit."""
+        from datetime import datetime
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 77
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, 9, 0, tzinfo=UTC)
+        msg.message = text
+        msg.reply_to_msg_id = None
+        msg.edit_date = datetime(2025, 1, 1, 9, 5, tzinfo=UTC)
+        msg.edit_hide = edit_hide
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        event.message = msg
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+        return event
+
+    def test_on_message_edited_stores_a_message_the_archive_has_not_stored_yet(self, listener_with_handlers):
+        """An edit of a message the archive does not hold yet used to come back
+        not_found and be dropped, losing the newest text. It now stores the
+        message through the new-message path, with its current text and edit_date."""
+        listener, handlers = listener_with_handlers
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+        event = self._edit_event()
+
+        asyncio.run(handlers[events.MessageEdited](event))
+
+        assert listener.stats["edits_applied"] == 0
+        assert listener.stats["new_messages_saved"] == 1
+        listener.db.insert_message.assert_called_once()
+        stored = listener.db.insert_message.call_args.args[0]
+        assert stored["id"] == 77
+        assert stored["chat_id"] == -1001234567890
+        assert stored["text"] == "Edited later"
+        assert stored["edit_date"] == event.message.edit_date
+        assert stored["edit_hide"] == 0
+
+    def test_on_message_edited_not_found_keeps_listen_new_messages(self, listener_with_handlers, full_config):
+        """The new-message path keeps its own switch: with LISTEN_NEW_MESSAGES off
+        the listener stores no message, from an edit either."""
+        listener, handlers = listener_with_handlers
+        full_config.listen_new_messages = False
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event()))
+
+        listener.db.insert_message.assert_not_called()
+
+    def test_on_message_edited_already_current_stores_nothing_new(self, listener_with_handlers):
+        """Only not_found stores the message; an edit the archive already has does not."""
+        listener, handlers = listener_with_handlers
+        listener.db.update_message_text = AsyncMock(return_value=("noop", None))
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event()))
+
+        listener.db.insert_message.assert_not_called()
+        assert listener.stats["edits_skipped"] == 1
+
+    def test_on_message_edited_passes_telegrams_edit_hide(self, listener_with_handlers):
+        """The flag Telegram sends with an edit is written beside its edit_date."""
+        listener, handlers = listener_with_handlers
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event(edit_hide=True)))
+
+        assert listener.db.update_message_text.call_args.kwargs["edit_hide"] == 1
+
+    def test_on_new_message_keeps_telegrams_edit_hide(self, listener_with_handlers):
+        """A message first seen after Telegram bumped its edit_date for a reaction
+        carries edit_hide, and the archive keeps it beside the date."""
+        listener, handlers = listener_with_handlers
+
+        asyncio.run(handlers[events.NewMessage](self._edit_event(text="Unchanged", edit_hide=True)))
+
+        stored = listener.db.insert_message.call_args.args[0]
+        assert stored["edit_date"] is not None
+        assert stored["edit_hide"] == 1
 
     # ----------------------------------------------------------------
     # on_message_deleted tests

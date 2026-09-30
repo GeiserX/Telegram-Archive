@@ -55,6 +55,7 @@ from .message_utils import (
     finalize_atomic_download,
     is_youtube_preview_video,
     media_download_allowed,
+    message_edit_hide,
     message_entities,
     message_plain_text,
     message_rich_payload,
@@ -1081,6 +1082,7 @@ class TelegramListener:
                 self.stats["edits_received"] += 1
                 new_text = message_plain_text(message)
                 edit_date = message.edit_date
+                edit_hide = message_edit_hide(message)
 
                 # Apply the edit immediately; count and broadcast only when the
                 # archive actually changed, so stats stay honest and the viewer
@@ -1091,10 +1093,21 @@ class TelegramListener:
                     new_text=new_text,
                     edit_date=edit_date,
                     account_id=self.account_id,
+                    edit_hide=edit_hide,
                     entities=message_entities(message),
                     update_entities=True,
                     rich_message=message_rich_payload(message),
                 )
+                if outcome == "not_found":
+                    # The archive has not stored this message yet: the backup has
+                    # not reached it, or it arrived while the listener was away.
+                    # Dropping the edit would lose the newest text, so store the
+                    # message now through the new-message path, with its current
+                    # text and edit_date. That path makes its own scope checks.
+                    self.stats["edits_skipped"] += 1
+                    logger.debug("📝 Edit of a message not archived yet, storing it")
+                    await on_new_message(event)
+                    return
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
                     logger.debug("📝 Edit skipped (%s)", outcome)
@@ -1111,6 +1124,7 @@ class TelegramListener:
                         "message_id": message.id,
                         "new_text": new_text,
                         "edit_date": edit_date.isoformat() if edit_date else None,
+                        "edit_hide": edit_hide,
                     },
                 )
 
@@ -1203,13 +1217,17 @@ class TelegramListener:
                 self.stats["errors"] += 1
                 logger.error(f"Error processing deletion event: {e}", exc_info=True)
 
-        @self.client.on(events.NewMessage)
         async def on_new_message(event: events.NewMessage.Event) -> None:
             """
             Handle new messages.
 
             If LISTEN_NEW_MESSAGES is enabled, saves messages to database in real-time.
             Otherwise, just tracks chat IDs for edits/deletions.
+
+            on_message_edited also calls it, with its MessageEdited event (a
+            NewMessage event subclass), for an edit of a message the archive
+            has not stored yet. It is registered below the definition, not by a
+            decorator, so the name always holds this function.
             """
             try:
                 chat_id = self._get_marked_id(event.chat_id)
@@ -1318,6 +1336,7 @@ class TelegramListener:
                     "reply_to_text": None,
                     "forward_from_id": None,  # Will be filled by next backup if needed
                     "edit_date": message.edit_date,
+                    "edit_hide": message_edit_hide(message),
                     "raw_data": {},
                     "is_outgoing": 1 if message.out else 0,
                 }
@@ -1488,6 +1507,8 @@ class TelegramListener:
                 # OSError would print the media path that describe_exception
                 # just removed. Type and (where safe) message are kept.
                 logger.error(f"Error in new message handler: {describe_exception(e)}")
+
+        self.client.on(events.NewMessage)(on_new_message)
 
         # ChatAction handler - tracks chat metadata changes
         @self.client.on(events.ChatAction)

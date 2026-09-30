@@ -8497,14 +8497,14 @@
                                 </div>
                             </div>
                             <!-- Edited: with earlier versions a row that opens them. -->
-                            <component v-if="infoPanelMessage.edit_date || Number(infoPanelMessage.version_count) > 0"
+                            <component v-if="isEditedMessage(infoPanelMessage)"
                                 :is="Number(infoPanelMessage.version_count) > 0 ? 'button' : 'div'"
                                 :type="Number(infoPanelMessage.version_count) > 0 ? 'button' : null"
                                 @click="Number(infoPanelMessage.version_count) > 0 && toggleMessageVersions(infoPanelMessage)"
                                 class="tg-fact w-full text-left" :class="{ 'tg-fact-button': Number(infoPanelMessage.version_count) > 0 }">
                                 <svg class="info-fact-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
                                 <span class="tg-fact-text">
-                                    <span class="tg-fact-value">{{ infoPanelMessage.edit_date ? formatStamp(infoPanelMessage.edit_date) : 'Edited' }}</span>
+                                    <span class="tg-fact-value">{{ shownEditDate(infoPanelMessage) ? formatStamp(shownEditDate(infoPanelMessage)) : 'Edited' }}</span>
                                     <span class="tg-fact-label">Edited<template v-if="Number(infoPanelMessage.version_count) > 0"> · {{ infoPanelMessage.version_count }} earlier {{ Number(infoPanelMessage.version_count) === 1 ? 'version' : 'versions' }}</template></span>
                                 </span>
                                 <svg v-if="Number(infoPanelMessage.version_count) > 0" class="tg-row-chevron w-4 h-4 text-tg-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
@@ -12551,6 +12551,7 @@
                                 const previousText = editMsg.text
                                 editMsg.text = data.new_text
                                 editMsg.edit_date = data.edit_date
+                                editMsg.edit_hide = data.edit_hide ? 1 : 0
                                 if (previousText !== data.new_text) {
                                     editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
                                 }
@@ -14020,14 +14021,14 @@
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (!hasTranscriptButton(msg) || !showTranscriptText(msg)) return false
                     if (msg.text || msg.raw_data?.webpage || msg.raw_data?.poll || msg.reactions?.length) return false
-                    if (isBubbleDeleted(msg) || msg.edit_date || Number(msg.version_count) > 0) return false
+                    if (isBubbleDeleted(msg) || isEditedMessage(msg)) return false
                     if (transcriptIsRtl(msg)) return false
                     return !(isOwnMessage(msg) && bubbleAccountLabel(msg))
                 }
                 const isCompactAudioBubble = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (msg.text || msg.raw_data?.webpage || msg.reactions?.length) return false
-                    if (msg.is_deleted || msg.edit_date || Number(msg.version_count) > 0) return false
+                    if (msg.is_deleted || isEditedMessage(msg)) return false
                     if (hasTranscriptButton(msg) && (showTranscriptText(msg) || transcriptStatus(msg) === 'error')) return false
                     // The time column holds a bare time; an account name needs the meta row.
                     return !(isOwnMessage(msg) && bubbleAccountLabel(msg))
@@ -14050,7 +14051,7 @@
                     if (!rendersAsPicture(msg)) return false
                     if (msg.reply_to_msg_id || msg.raw_data?.webpage) return false
                     if (msg.reactions && msg.reactions.length > 0) return false
-                    if (msg.edit_date || Number(msg.version_count) > 0) return false
+                    if (isEditedMessage(msg)) return false
                     if (msg.text && msg.text.trim() !== '') return false
                     if (hasForwardHeader(msg)) return false
                     const namesSender = isGroup.value && !isOwnMessage(msg) && !FRAMELESS_MEDIA_TYPES.includes(msg.media.type)
@@ -15685,16 +15686,20 @@
                     await loadMessagesAroundId(msg.id)
                 }
                 // The pencil in the meta row. A message counts as edited when Telegram
-                // marks it (edit_date) or the archive kept an earlier version, the
-                // same rule as the server's edited_only filter and the chat's count.
+                // marks it or the archive kept an earlier version, the same rule as the
+                // server's edited_only filter and the chat's count. Telegram marks it
+                // with edit_date, unless edit_hide says the edit is not to be shown:
+                // Telegram bumps edit_date when only the reactions change.
                 const editedCount = (msg) => Number(msg?.version_count) || 0
-                const isEditedMessage = (msg) => !!msg?.edit_date || editedCount(msg) > 0
+                const shownEditDate = (msg) => (msg?.edit_date && !Number(msg?.edit_hide) ? msg.edit_date : null)
+                const isEditedMessage = (msg) => !!shownEditDate(msg) || editedCount(msg) > 0
                 // When the last edit was, by Telegram's clock: "at 08:57" on the day
                 // the message was sent, "on Sep 30 at 08:57" later, with the year
                 // when that differs too. Empty when Telegram gave no time.
                 const editedMoment = (msg) => {
-                    if (!msg?.edit_date) return null
-                    const at = moment.utc(msg.edit_date).tz(viewerTimezone.value)
+                    const editDate = shownEditDate(msg)
+                    if (!editDate) return null
+                    const at = moment.utc(editDate).tz(viewerTimezone.value)
                     if (!at.isValid()) return null
                     const sent = moment.utc(msg.date).tz(viewerTimezone.value)
                     return { at, sameDay: at.isSame(sent, 'day'), sameYear: at.isSame(sent, 'year') }
@@ -15729,14 +15734,14 @@
                 // rebuilt only when the zone or one of the facts it names changes.
                 const timeTitleCache = new WeakMap()
                 const messageTimeTitle = (msg) => {
-                    const stamp = [viewerTimezone.value, msg.date, msg.edit_date, msg.version_count, msg.is_deleted, msg.deleted_at].join('|')
+                    const stamp = [viewerTimezone.value, msg.date, msg.edit_date, msg.edit_hide, msg.version_count, msg.is_deleted, msg.deleted_at].join('|')
                     const cached = timeTitleCache.get(msg)
                     if (cached && cached.stamp === stamp) return cached.title
                     const lines = [formatStamp(msg.date)]
                     const versions = Number(msg.version_count) || 0
-                    if (msg.edit_date || versions > 0) {
+                    if (isEditedMessage(msg)) {
                         const kept = versions > 0 ? ` (${versions} earlier ${versions === 1 ? 'version' : 'versions'} kept)` : ''
-                        lines.push(formatMetadataTimestampTitle('Edited', msg.edit_date) + kept)
+                        lines.push(formatMetadataTimestampTitle('Edited', shownEditDate(msg)) + kept)
                     }
                     if (msg.is_deleted) lines.push(formatMetadataTimestampTitle('Deletion noticed', msg.deleted_at))
                     return lines.join('\n')
@@ -18698,6 +18703,7 @@
                     openEditedOnlyFromInfo,
                     closeEditedOnly,
                     editedCount,
+                    shownEditDate,
                     isEditedMessage,
                     editedLabel,
                     editedHeadText,

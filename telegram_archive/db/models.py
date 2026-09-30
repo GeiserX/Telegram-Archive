@@ -178,6 +178,10 @@ class Message(Base):
     reply_to_text: Mapped[str | None] = mapped_column(Text)
     forward_from_id: Mapped[int | None] = mapped_column(BigInteger)
     edit_date: Mapped[datetime | None] = mapped_column(DateTime)
+    # Telegram's edit_hide flag for the edit_date beside it: 1 when Telegram says
+    # the edit must not be shown (it bumps edit_date for reaction-only changes),
+    # 0 when it shows, NULL when unknown (rows from before migration 034, imports).
+    edit_hide: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # v6.0.0: media_type, media_id, media_path REMOVED - normalized to media table
     raw_data: Mapped[str | None] = mapped_column(Text)  # JSON string
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())

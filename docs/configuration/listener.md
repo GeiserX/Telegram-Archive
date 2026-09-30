@@ -56,11 +56,13 @@ Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_
 
 ## Edits
 
-The listener applies an edit only when the text changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. Edits to messages that are not in the archive are skipped.
+The listener applies an edit only when the text changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. An edit to a message that is not in the archive yet stores the message, with its current text and edit time, the way a new message is stored. That needs `LISTEN_NEW_MESSAGES`, and the text from before the edit is not known.
 
 When an edit is applied, the previous text is saved as a version. The viewer marks the message with a pencil and the number of saved versions, says when the last edit was, and lets you open the earlier texts. See [Reactions, edits and deletions](../viewer/using-the-viewer.md#reactions-edits-and-deletions).
 
 ![The edit history of a message edited twice](../images/screenshots/edit-history.png)
+
+Telegram moves a message's edit time when only its reactions change, and flags that edit as one not to show. The archive keeps the flag beside the edit time, and the viewer does not mark or count such a message as edited unless it kept an earlier text.
 
 An edit that changes only the formatting refreshes the stored formatting quietly. It saves no version, sends no update to the viewer and fires no webhook.
 
