@@ -24,7 +24,7 @@
             li.classList.add(current ? 'ev-now' : i === 0 ? 'ev-first' : 'ev-mid')
             const what = i === 0 ? 'Sent' : current ? `Edit ${i}, current` : `Edit ${i}`
             const gap = prev ? after(prev, time) : ''
-            label.innerHTML = `<span class="ev-when">${time}</span><span class="ev-what">${what}${gap ? ` · ${gap}` : ''}</span>`
+            label.replaceChildren(ev.el('span', 'ev-when', time), ev.el('span', 'ev-what', `${what}${gap ? ` · ${gap}` : ''}`))
             prev = time
         })
     }

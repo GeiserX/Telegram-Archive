@@ -18,13 +18,14 @@
         if (!body.querySelector('.ev-diff-text')) {
             const text = document.createElement('span')
             text.className = 'ev-diff-text whitespace-pre-wrap break-words'
-            text.innerHTML = ev.diffHtml(before.text, now.text)
+            text.appendChild(ev.diffNodes(before.text, now.text))
             body.insertBefore(text, body.firstChild)
             const head = document.createElement('div')
             head.className = 'ev-diff-head'
-            head.innerHTML = `<span>What the edit at ${ev.hhmm(now.date)} changed</span>` +
-                `<button type="button" class="ev-diff-all">All ${list.length} versions</button>`
-            head.querySelector('.ev-diff-all').addEventListener('click', (e) => { e.stopPropagation(); ev.app().toggleMessageVersions(msg) })
+            const all = ev.el('button', 'ev-diff-all', `All ${list.length} versions`)
+            all.type = 'button'
+            all.addEventListener('click', (e) => { e.stopPropagation(); ev.app().toggleMessageVersions(msg) })
+            head.append(ev.el('span', null, `What the edit at ${ev.hhmm(now.date)} changed`), all)
             body.parentElement.insertBefore(head, body)
         }
     }

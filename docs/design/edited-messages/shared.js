@@ -62,10 +62,29 @@
         return parts
     }
 
-    const escape = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
-    const diffHtml = (before, after) => diff(before, after).map((p) => (
-        p.kind === 'same' ? escape(p.text) : `<span class="${p.kind === 'ins' ? 'ev-ins' : 'ev-del'}">${escape(p.text)}</span>`
-    )).join('')
+    // Every value from the page or the versions API goes in as text, never as
+    // markup: el() sets textContent. Only the constant icons below are parsed.
+    const el = (tag, className, text) => {
+        const node = document.createElement(tag)
+        if (className) node.className = className
+        if (text != null) node.textContent = String(text)
+        return node
+    }
+    const icon = (constantSvg) => {
+        const holder = document.createElement('span')
+        holder.innerHTML = constantSvg
+        return holder.firstElementChild
+    }
+    // The diff as nodes: unchanged runs as text, added and removed runs as
+    // spans (ev-ins, ev-del). `kinds` picks which runs to keep.
+    const diffNodes = (before, after, kinds = ['same', 'ins', 'del']) => {
+        const out = document.createDocumentFragment()
+        for (const part of diff(before, after)) {
+            if (!kinds.includes(part.kind)) continue
+            out.appendChild(part.kind === 'same' ? document.createTextNode(part.text) : el('span', part.kind === 'ins' ? 'ev-ins' : 'ev-del', part.text))
+        }
+        return out
+    }
 
     const PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
 
@@ -81,5 +100,5 @@
         new MutationObserver(run).observe(document.documentElement, { childList: true, subtree: true })
     }
 
-    window.ev = { app, messageOf, versions, diff, diffHtml, escape, hhmm, eachEdited, PENCIL }
+    window.ev = { app, messageOf, versions, diff, diffNodes, el, icon, hhmm, eachEdited, PENCIL }
 })()

@@ -45,11 +45,21 @@
         sw.className = 'ev-switch order-2'
         sw.setAttribute('role', 'group')
         sw.setAttribute('aria-label', 'Versions of this message')
-        sw.innerHTML = `<button type="button" class="ev-prev hit-40" aria-label="Earlier version">${CHEV_L}</button>` +
-            `<span class="ev-switch-pos" aria-live="polite">${total}/${total}</span>` +
-            `<button type="button" class="ev-next hit-40" aria-label="Later version" disabled>${CHEV_R}</button>`
-        sw.querySelector('.ev-prev').addEventListener('click', (e) => { e.stopPropagation(); show(row, msg, Number(row.dataset.evIndex ?? n) - 1) })
-        sw.querySelector('.ev-next').addEventListener('click', (e) => { e.stopPropagation(); show(row, msg, Number(row.dataset.evIndex ?? n) + 1) })
+        const button = (cls, label, chevron) => {
+            const b = ev.el('button', `${cls} hit-40`)
+            b.type = 'button'
+            b.setAttribute('aria-label', label)
+            b.appendChild(ev.icon(chevron))
+            return b
+        }
+        const prev = button('ev-prev', 'Earlier version', CHEV_L)
+        const next = button('ev-next', 'Later version', CHEV_R)
+        next.disabled = true
+        const pos = ev.el('span', 'ev-switch-pos', `${total}/${total}`)
+        pos.setAttribute('aria-live', 'polite')
+        sw.append(prev, pos, next)
+        prev.addEventListener('click', (e) => { e.stopPropagation(); show(row, msg, Number(row.dataset.evIndex ?? n) - 1) })
+        next.addEventListener('click', (e) => { e.stopPropagation(); show(row, msg, Number(row.dataset.evIndex ?? n) + 1) })
         meta.querySelector('.meta-edited')?.classList.add('ev-hidden')
         meta.insertBefore(sw, meta.firstChild)
         if (typeof window.__evSwitchTo === 'number') show(row, msg, window.__evSwitchTo)

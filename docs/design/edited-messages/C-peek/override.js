@@ -16,14 +16,13 @@
         peek.dataset.mockupFrame = '1'
         // Removed words of the previous text are marked; the added ones are in
         // the bubble below, so the popover shows only the old side.
-        const oldSide = ev.diff(before.text, now.text)
-            .filter((p) => p.kind !== 'ins')
-            .map((p) => (p.kind === 'del' ? `<span class="ev-del">${ev.escape(p.text)}</span>` : ev.escape(p.text)))
-            .join('')
-        peek.innerHTML = `<div class="ev-peek-head">Before the last edit · ${before.label === 'Original' ? 'sent' : 'edited'} ${ev.hhmm(before.date)}</div>` +
-            `<div class="ev-peek-text" dir="auto">${oldSide}</div>` +
-            `<button type="button" class="ev-peek-all">See all ${list.length} versions</button>`
-        peek.querySelector('.ev-peek-all').addEventListener('click', (e) => { e.stopPropagation(); ev.app().toggleMessageVersions(msg) })
+        const text = ev.el('div', 'ev-peek-text')
+        text.dir = 'auto'
+        text.appendChild(ev.diffNodes(before.text, now.text, ['same', 'del']))
+        const all = ev.el('button', 'ev-peek-all', `See all ${list.length} versions`)
+        all.type = 'button'
+        all.addEventListener('click', (e) => { e.stopPropagation(); ev.app().toggleMessageVersions(msg) })
+        peek.append(ev.el('div', 'ev-peek-head', `Before the last edit · ${before.label === 'Original' ? 'sent' : 'edited'} ${ev.hhmm(before.date)}`), text, all)
         // A pointer gets it beside the mark. A long press gets it above the
         // bubble, so the finger and the popover leave the current text in view.
         if (matchMedia('(hover: hover)').matches) {

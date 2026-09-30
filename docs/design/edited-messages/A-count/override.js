@@ -11,7 +11,8 @@
         if (!target) return
         const mark = document.createElement('span')
         mark.className = 'ev-count'
-        mark.innerHTML = ev.PENCIL + (n > 0 ? `<span class="ev-count-n">${n}</span>` : '')
+        mark.appendChild(ev.icon(ev.PENCIL))
+        if (n > 0) mark.appendChild(ev.el('span', 'ev-count-n', n))
         target.classList.add('ev-count-host')
         target.appendChild(mark)
         const last = ev.hhmm(msg.edit_date)
@@ -23,7 +24,9 @@
             tip.className = 'ev-tip'
             tip.setAttribute('role', 'tooltip')
             tip.dataset.mockupFrame = '1'
-            tip.innerHTML = `Last edited at <b>${last}</b><br>${n} earlier ${n === 1 ? 'version' : 'versions'} kept<br><span class="ev-tip-hint">Click to compare them</span>`
+            tip.append('Last edited at ', ev.el('b', null, last), ev.el('br'),
+                `${n} earlier ${n === 1 ? 'version' : 'versions'} kept`, ev.el('br'),
+                ev.el('span', 'ev-tip-hint', 'Click to compare them'))
             target.appendChild(tip)
             target.classList.add('ev-hovered')
         }

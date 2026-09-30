@@ -28,7 +28,7 @@
             b.type = 'button'
             b.className = `info-action ev-find ev-find-${kind}`
             b.setAttribute('aria-label', `${label}: ${n}. Show only these in the chat`)
-            b.innerHTML = `${icon}<span class="flex-1 text-left">${label}</span><span class="ev-find-count">${n}</span>`
+            b.append(ev.icon(icon), ev.el('span', 'flex-1 text-left', label), ev.el('span', 'ev-find-count', n))
             b.addEventListener('click', () => { ev.app().chatMenuOpen = false; openSearch(kind) })
             menu.appendChild(b)
         }
@@ -41,7 +41,7 @@
             row.classList.add('ev-info-find')
             row.setAttribute('role', 'button')
             row.setAttribute('tabindex', '0')
-            row.insertAdjacentHTML('beforeend', CHEVRON)
+            row.appendChild(ev.icon(CHEVRON))
         }
     }
 
@@ -67,10 +67,17 @@
             bar.dataset.mockupFrame = '1'
             bar.setAttribute('role', 'group')
             bar.setAttribute('aria-label', 'Show only')
-            bar.innerHTML =
-                `<button type="button" class="ev-chip" data-kind="edited" aria-pressed="false">${CHECK}<span>Edited</span></button>` +
-                `<button type="button" class="ev-chip" data-kind="deleted" aria-pressed="false">${CHECK}<span>Deleted</span></button>` +
-                '<span class="ev-filter-count" aria-live="polite"></span>'
+            for (const [kind, label] of [['edited', 'Edited'], ['deleted', 'Deleted']]) {
+                const chip = ev.el('button', 'ev-chip')
+                chip.type = 'button'
+                chip.dataset.kind = kind
+                chip.setAttribute('aria-pressed', 'false')
+                chip.append(ev.icon(CHECK), ev.el('span', null, label))
+                bar.appendChild(chip)
+            }
+            const count = ev.el('span', 'ev-filter-count')
+            count.setAttribute('aria-live', 'polite')
+            bar.appendChild(count)
             header.insertAdjacentElement('afterend', bar)
             header.dataset.mockupFrame = '1'
         }
