@@ -226,6 +226,8 @@ curl -s -b jar.txt \
 
 Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 
+In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
+
 ## Search, tags and the change feed
 
 All of these need any login. Results cover only chats the caller can see.
@@ -361,7 +363,7 @@ Event frames all carry `type` and `chat_ref`:
 | `edit` | `message_id`, `new_text`, `edit_date` |
 | `delete` | `message_id`, `deletion_mode`, `deleted_at` |
 | `pin` | `message_ids`, `pinned` |
-| `reaction` | `message_id`, `reactions` |
+| `reaction` | `message_id`, `reactions` (the live set; an emoji missing from it was taken back) |
 | `transcript` | `message_id`, `transcript_id`, `status` |
 
 The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, an admin change to the viewer account or share token behind it, or the end-all action. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).

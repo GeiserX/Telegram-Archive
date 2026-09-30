@@ -583,6 +583,58 @@ async function openEdited(page) {
         .evaluate((el) => { el.dataset.mockupAnchor = '1' })
 }
 
+// The demo's photo with live reactions and one taken back, its list opened
+// with the chip after the live ones. The row is anchored for editedFrame.
+const REMOVED_TEXT = 'Found this view on the way back'
+
+async function openRemovedReactions(page) {
+    await open(page)
+    await openGroup(page)
+    await centerOn(page, REMOVED_TEXT)
+    await frameTopEdge(page)
+    const row = page.locator('.message-row').filter({ hasText: REMOVED_TEXT }).last()
+    await row.evaluate((el) => { el.dataset.mockupAnchor = '1' })
+    await row.locator('.reaction-removed-toggle').click()
+    await row.locator('.reaction-removed-list').waitFor({ state: 'visible', timeout: 10000 })
+    await page.evaluate(() => document.activeElement?.blur())
+}
+
+// The demo's photo with no caption whose only reaction was taken back, three
+// weeks up the chat. It keeps a bubble frame to hold the row, as it did while
+// the reaction stood. Older pages load as the list scrolls to its top.
+function findRemovedOnlyPicture() {
+    const rows = [...document.querySelectorAll('.message-row')]
+    return rows.find((row) => row.querySelector('img')
+        && row.querySelector('.reaction-removed-toggle')
+        && !row.querySelector('.reaction-chip:not(.reaction-removed-toggle):not(.reaction-removed)'))
+}
+
+async function openRemovedReactionsPicture(page) {
+    await open(page)
+    await openGroup(page)
+    for (let i = 0; i < 20; i++) {
+        const found = await page.evaluate(`(${findRemovedOnlyPicture})() ? true : false`)
+        if (found) break
+        // The list is column-reverse: 0 is the newest edge, and the older
+        // sentinel sits at -scrollHeight, so scroll there to load another page.
+        await page.evaluate(() => {
+            const list = document.querySelector('.messages-scroll')
+            list?.scrollTo(0, -list.scrollHeight)
+        })
+        await page.waitForTimeout(800)
+    }
+    await page.evaluate(`(() => {
+        const row = (${findRemovedOnlyPicture})()
+        row.dataset.mockupAnchor = '1'
+        row.scrollIntoView({ block: 'center' })
+    })()`)
+    await page.waitForTimeout(1400)
+    const row = page.locator('.message-row[data-mockup-anchor="1"]')
+    await row.locator('.reaction-removed-toggle').click()
+    await row.locator('.reaction-removed-list').waitFor({ state: 'visible', timeout: 10000 })
+    await page.evaluate(() => document.activeElement?.blur())
+}
+
 // The message column around the anchored row: from 16px left of the avatars
 // to the pane's right edge, where outgoing bubbles end, and at least 180px
 // above and below the row. It grows to take in anything a mockup marks with
@@ -718,6 +770,14 @@ const desktopViews = {
     },
     '33-edited-menu': (page) => openEditedMenu(page),
     '34-changes-chat': (page) => openChangesForChat(page),
+    '35-removed-reactions': async (page) => {
+        await openRemovedReactions(page)
+        return editedFrame
+    },
+    '36-removed-reactions-picture': async (page) => {
+        await openRemovedReactionsPicture(page)
+        return editedFrame
+    },
 }
 
 const mobileViews = {
@@ -744,6 +804,8 @@ const mobileViews = {
     '25-avatar-lightbox-mobile': (page) => openAvatarLightbox(page),
     '31-edited-mobile': (page) => openEdited(page),
     '34-changes-chat-mobile': (page) => openChangesForChat(page, true),
+    '35-removed-reactions-mobile': (page) => openRemovedReactions(page),
+    '36-removed-reactions-picture-mobile': (page) => openRemovedReactionsPicture(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the

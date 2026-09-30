@@ -2216,6 +2216,47 @@
         .message-reactions + .message-meta {
             margin-top: 10px;
         }
+        /* Reactions taken back: the same chip with no fill, a dashed edge and
+           the text in the time colour, which keeps 4.5:1 on the bubble and on
+           the deleted wash in every theme. Quieter than a live chip: no tint,
+           a regular count, a faded emoji. The toggle's edge turns solid while
+           the list is open. Hover darkens the edge and never adds a fill: a
+           fill in the time colour drops the count under 4.5:1 on the deleted
+           wash. */
+        .message-bubble .reaction-chip.reaction-removed-toggle,
+        .message-bubble .reaction-chip.reaction-removed {
+            gap: 4px;
+            padding: 0 7px;
+            border: 1px dashed rgb(var(--tg-meta) / 0.6);
+            background: none;
+            color: rgb(var(--tg-meta));
+        }
+        .message-bubble .reaction-chip.reaction-removed-toggle {
+            cursor: pointer;
+            -webkit-touch-callout: none;
+        }
+        .message-bubble .reaction-chip.reaction-removed-toggle[aria-expanded="true"] {
+            border-style: solid;
+        }
+        @media (hover: hover) {
+            .message-bubble .reaction-chip.reaction-removed-toggle:hover {
+                border-color: rgb(var(--tg-meta));
+            }
+        }
+        .reaction-removed-toggle svg {
+            width: 14px;
+            height: 14px;
+            flex-shrink: 0;
+        }
+        .reaction-removed-toggle .reaction-count,
+        .reaction-removed .reaction-count {
+            font-weight: 400;
+            color: inherit;
+        }
+        .reaction-removed .reaction-emoji {
+            opacity: 0.55;
+            filter: grayscale(0.5);
+        }
         .message-meta svg {
             width: 12px;
             height: 12px;
@@ -8113,13 +8154,38 @@
                                     </div>
 
                                     <!-- Reactions: inline chips on a line of their own, so the
-                                         time can join the last of them. -->
-                                    <span v-if="msg.reactions && msg.reactions.length > 0" class="message-reactions">
-                                        <span v-for="reaction in msg.reactions" :key="reaction.emoji"
+                                         time can join the last of them. The reactions taken back
+                                         follow the live ones as one quiet chip, no fill and a
+                                         dashed edge in the time colour: an undo arrow and how many
+                                         went. It is a button: it shows them, each with its count
+                                         and when the archive noticed it gone, and hides them again. -->
+                                    <span v-if="hasReactionRow(msg)" class="message-reactions">
+                                        <span v-for="reaction in (msg.reactions || [])" :key="reaction.emoji"
                                             class="reaction-chip"
                                             :title="reaction.count > 1 ? `${reaction.count} reactions` : '1 reaction'">
                                             <span class="reaction-emoji">{{ formatReactionEmoji(reaction.emoji) }}</span>
                                             <span class="reaction-count">{{ formatCount(reaction.count || 1) }}</span>
+                                        </span>
+                                        <button v-if="removedReactions(msg).length > 0" type="button"
+                                            class="reaction-chip reaction-removed-toggle hit-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
+                                            @click.stop="toggleRemovedReactions(msg)"
+                                            :aria-expanded="isRemovedReactionsOpen(msg) ? 'true' : 'false'"
+                                            :aria-controls="isRemovedReactionsOpen(msg) ? `removed-reactions-${msg.id}` : null"
+                                            :aria-label="removedReactionsLabel(msg)"
+                                            :title="removedReactionsLabel(msg)">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+                                            <span class="reaction-count">{{ formatCount(removedReactionCount(msg)) }}</span>
+                                        </button>
+                                        <span v-if="removedReactions(msg).length > 0 && isRemovedReactionsOpen(msg)"
+                                            :id="`removed-reactions-${msg.id}`" class="reaction-removed-list"
+                                            role="group" aria-label="Reactions taken back">
+                                            <span v-for="removed in removedReactions(msg)" :key="removed.emoji"
+                                                class="reaction-chip reaction-removed"
+                                                :title="removedReactionTitle(removed)">
+                                                <span class="reaction-emoji" aria-hidden="true">{{ formatReactionEmoji(removed.emoji) }}</span>
+                                                <span class="sr-only">{{ removedReactionTitle(removed) }}</span>
+                                                <span class="reaction-count" aria-hidden="true">{{ removedReactionText(msg, removed) }}</span>
+                                            </span>
                                         </span>
                                     </span>
 
@@ -9772,6 +9838,9 @@
                 // "chatId:messageId" keys. A deleted message is folded to one line
                 // until it is opened here, reached by a jump, or found by a search.
                 const openDeletedMessages = ref({})
+                // The messages whose reactions taken back the reader opened, for
+                // this session: "chatId:messageId" keys.
+                const openRemovedReactions = ref({})
                 const loading = ref(false)
                 const loadingChats = ref(true)  // Start as true, loading on init
                 const loadingStats = ref(true)  // Start as true, loading on init
@@ -12657,7 +12726,7 @@
                             }
                             const reactionMsg = messages.value.find(m => m.id === data.message_id)
                             if (reactionMsg) {
-                                reactionMsg.reactions = data.reactions || []
+                                applyLiveReactions(reactionMsg, data.reactions)
                             }
                             break
 
@@ -14105,14 +14174,14 @@
                 const metaRidesTranscript = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (!hasTranscriptButton(msg) || !showTranscriptText(msg)) return false
-                    if (msg.text || msg.raw_data?.webpage || msg.raw_data?.poll || msg.reactions?.length) return false
+                    if (msg.text || msg.raw_data?.webpage || msg.raw_data?.poll || hasReactionRow(msg)) return false
                     if (isBubbleDeleted(msg) || msg.edit_date || Number(msg.version_count) > 0) return false
                     if (transcriptIsRtl(msg)) return false
                     return !(isOwnMessage(msg) && bubbleAccountLabel(msg))
                 }
                 const isCompactAudioBubble = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
-                    if (msg.text || msg.raw_data?.webpage || msg.reactions?.length) return false
+                    if (msg.text || msg.raw_data?.webpage || hasReactionRow(msg)) return false
                     if (msg.is_deleted || msg.edit_date || Number(msg.version_count) > 0) return false
                     if (hasTranscriptButton(msg) && (showTranscriptText(msg) || transcriptStatus(msg) === 'error')) return false
                     // The time column holds a bare time; an account name needs the meta row.
@@ -14120,8 +14189,10 @@
                 }
 
                 // Cheap checks first; the album caption lookup runs last. A row that
-                // shows a sender name or account chip, or an edited marker, keeps its
-                // frame: those have nowhere else to sit. A deleted picture does not:
+                // shows a sender name or account chip, an edited marker or a reactions
+                // row keeps its frame: those have nowhere else to sit. That holds for a
+                // row that only has the chip for reactions taken back: the picture is
+                // framed the way it was while the reaction stood. A deleted picture does not:
                 // its trash rides the time pill over the corner. So does a clip that
                 // failed to load or shows its transcript: text needs the padding. A
                 // sticker and a round video are the exception for the name: they
@@ -14135,7 +14206,7 @@
                     if (!VISUAL_MEDIA_TYPES.includes(msg.media.type)) return false
                     if (!rendersAsPicture(msg)) return false
                     if (msg.reply_to_msg_id || msg.raw_data?.webpage) return false
-                    if (msg.reactions && msg.reactions.length > 0) return false
+                    if (hasReactionRow(msg)) return false
                     if (msg.edit_date || Number(msg.version_count) > 0) return false
                     if (msg.text && msg.text.trim() !== '') return false
                     if (hasForwardHeader(msg)) return false
@@ -15648,17 +15719,23 @@
                     if (msg.raw_data?.grouped_id && isAlbumPicture(msg) && (getAlbumForMessage(msg) || []).length > 1) return 'Deleted album'
                     return DELETED_KIND[msg.media?.type] || 'Deleted message'
                 }
-                // When the archive noticed the deletion (deleted_at): "21:59" the
-                // day the message was sent, "Sep 29, 21:59" on a later day, with the
-                // year when that differs too. Empty when the row has no time.
+                // When the archive noticed a change to a message (a deletion, a
+                // reaction taken back): "21:59" the day the message was sent, "Sep
+                // 29, 21:59" on a later day, with the year when that differs too.
+                // Empty when there is no time.
+                const noticedStamp = (sentIso, noticedIso) => {
+                    if (!noticedIso) return ''
+                    const noticed = moment.utc(noticedIso).tz(viewerTimezone.value)
+                    if (!noticed.isValid()) return ''
+                    const sent = moment.utc(sentIso).tz(viewerTimezone.value)
+                    if (noticed.isSame(sent, 'day')) return noticed.format('HH:mm')
+                    return noticed.format(noticed.isSame(sent, 'year') ? 'MMM D, HH:mm' : 'MMM D, YYYY, HH:mm')
+                }
+                // When the archive noticed the deletion (deleted_at).
                 const deletedStamp = (msg) => {
                     const member = deletedAlbumMember(msg)
                     if (!member?.deleted_at) return ''
-                    const noticed = moment.utc(member.deleted_at).tz(viewerTimezone.value)
-                    if (!noticed.isValid()) return ''
-                    const sent = moment.utc(msg.date).tz(viewerTimezone.value)
-                    if (noticed.isSame(sent, 'day')) return noticed.format('HH:mm')
-                    return noticed.format(noticed.isSame(sent, 'year') ? 'MMM D, HH:mm' : 'MMM D, YYYY, HH:mm')
+                    return noticedStamp(msg.date, member.deleted_at)
                 }
                 // The header of an opened deleted bubble: "Deleted · 21:59", or for an
                 // album with some pictures gone, "Picture deleted · 21:59".
@@ -16296,6 +16373,64 @@
                 watch(() => (editPeek.value
                     ? `${messageVersionsKey(editPeek.value.msg)}|${isMessageVersionsLoading(editPeek.value.msg)}|${getMessageVersions(editPeek.value.msg).length}`
                     : ''), (key) => { if (key) nextTick(placeEditPeek) })
+
+                // Reactions taken back (removed_reactions, newest first): the emojis
+                // Telegram no longer shows on the message, each with the count it
+                // had and removed_at, when the archive noticed it gone. Telegram
+                // does not say who reacted, so neither does the archive.
+                const removedReactions = (msg) => (Array.isArray(msg?.removed_reactions) ? msg.removed_reactions : [])
+                // Whether the bubble draws a reactions row: live chips, the chip for
+                // the ones taken back, or both.
+                const hasReactionRow = (msg) => (msg?.reactions?.length || 0) > 0 || removedReactions(msg).length > 0
+                const removedReactionCount = (msg) => removedReactions(msg).reduce((sum, r) => sum + (Number(r.count) || 1), 0)
+                // "2 reactions taken back": the toggle's name and tooltip. Its
+                // aria-expanded says whether the list is open.
+                const removedReactionsLabel = (msg) => {
+                    const count = removedReactionCount(msg)
+                    return count === 1 ? '1 reaction taken back' : `${formatCount(count)} reactions taken back`
+                }
+                // The reader opens the list per message, for this session, the way a
+                // deleted message stays open: "chatId:messageId" keys.
+                const removedReactionsKey = (msg) => `${msg.chat_id ?? selectedChat.value?.id}:${msg.id}`
+                const isRemovedReactionsOpen = (msg) => !!openRemovedReactions.value[removedReactionsKey(msg)]
+                const toggleRemovedReactions = (msg) => {
+                    const key = removedReactionsKey(msg)
+                    const next = { ...openRemovedReactions.value }
+                    if (next[key]) delete next[key]
+                    else next[key] = true
+                    openRemovedReactions.value = next
+                }
+                // One chip of the open list: "3 · 21:59", the count it had and when
+                // the archive noticed it gone.
+                const removedReactionText = (msg, removed) => {
+                    const count = formatCount(Number(removed.count) || 1)
+                    const stamp = noticedStamp(msg.date, removed.removed_at)
+                    return stamp ? `${count} · ${stamp}` : count
+                }
+                // Its tooltip and spoken name: "😮 1, taken back. The archive noticed
+                // on September 29, 2026 at 21:59."
+                const removedReactionTitle = (removed) => {
+                    const count = Number(removed.count) || 1
+                    const noticed = removed.removed_at ? ` The archive noticed on ${formatStamp(removed.removed_at)}.` : ''
+                    return `${formatReactionEmoji(removed.emoji)} ${formatCount(count)}, taken back.${noticed}`
+                }
+                // A live reaction frame carries the new live set. An emoji that left
+                // it was taken back: it joins the list with the count it had, noticed
+                // now, as reconcile_reactions stores it. One that came back leaves the
+                // list, as the server revives its row. The next page read replaces
+                // both with the stored rows.
+                const applyLiveReactions = (msg, reactions) => {
+                    const live = Array.isArray(reactions) ? reactions : []
+                    const liveEmoji = new Set(live.map(r => r.emoji))
+                    const noticed = new Date().toISOString()
+                    const gone = (msg.reactions || [])
+                        .filter(r => !liveEmoji.has(r.emoji))
+                        .map(r => ({ emoji: r.emoji, count: Number(r.count) || 1, removed_at: noticed }))
+                    const goneEmoji = new Set(gone.map(r => r.emoji))
+                    const kept = removedReactions(msg).filter(r => !liveEmoji.has(r.emoji) && !goneEmoji.has(r.emoji))
+                    msg.reactions = live
+                    msg.removed_reactions = [...gone, ...kept]
+                }
 
                 const formatReactionEmoji = (emoji) => {
                     // Handle custom emojis (stored as custom_documentId)
@@ -18911,6 +19046,14 @@
                     reloadMessageVersions,
                     versionEntries,
                     formatReactionEmoji,
+                    removedReactions,
+                    hasReactionRow,
+                    removedReactionCount,
+                    removedReactionsLabel,
+                    isRemovedReactionsOpen,
+                    toggleRemovedReactions,
+                    removedReactionText,
+                    removedReactionTitle,
                     getMediaUrl,
                     isVideoMedia,
                     getMediaDisplayName,

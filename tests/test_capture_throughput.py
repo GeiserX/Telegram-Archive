@@ -82,6 +82,30 @@ class TestCommitBatchReactionProbe(unittest.TestCase):
         self.backup.db.get_message_ids_with_reaction_rows.assert_not_awaited()
         self.backup.db.reconcile_reactions.assert_awaited_once()
 
+    def test_min_snapshot_is_stored_for_a_message_without_rows(self):
+        """A min snapshot of a message with no stored reactions can only add
+        rows, so it is kept rather than dropped."""
+        batch = [{"id": 4, "reactions": [{"emoji": "👍", "count": 3}], "_reactions_min": True}]
+        self._run(self.backup._commit_batch(batch, -100500))
+
+        self.backup.db.get_message_ids_with_reaction_rows.assert_awaited_once_with(-100500, [4], account_id=1)
+        self.backup.db.reconcile_reactions.assert_awaited_once_with(
+            4, -100500, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1
+        )
+
+    def test_min_snapshot_never_reconciles_over_stored_rows(self):
+        """A min snapshot may leave out this account's own reaction: with rows
+        stored it could mark that reaction as taken back, so it waits."""
+        self.backup.db.get_message_ids_with_reaction_rows.return_value = {4}
+        batch = [
+            {"id": 4, "reactions": [{"emoji": "👍", "count": 3}], "_reactions_min": True},
+            {"id": 5, "reactions": [], "_reactions_min": True},
+        ]
+        self._run(self.backup._commit_batch(batch, -100500))
+
+        self.backup.db.get_message_ids_with_reaction_rows.assert_awaited_once_with(-100500, [4], account_id=1)
+        self.backup.db.reconcile_reactions.assert_not_awaited()
+
 
 class TestSaveSenderMemo(unittest.TestCase):
     def setUp(self):
