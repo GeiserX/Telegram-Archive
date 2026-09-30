@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -21,6 +22,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
@@ -31,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import Config
@@ -44,8 +47,8 @@ from ..db.adapter import (
     parse_account_chat_stats_key,
     parse_entitlement_column,
 )
-from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
-from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
+from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_STATUSES, account_metadata_key
+from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name, utcnow_naive
 from ..realtime import RealtimeListener, resolve_internal_push_secret
 from ..status import collect_status
 from ..transcription_contract import (
@@ -523,6 +526,7 @@ async def session_cleanup_task():
             stale_ips = [ip for ip, ts in _login_attempts.items() if all(now - t > _LOGIN_RATE_WINDOW for t in ts)]
             for ip in stale_ips:
                 _login_attempts.pop(ip, None)
+            _sweep_transcript_asks(now)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -851,6 +855,20 @@ class SessionData:
 
 _sessions: dict[str, SessionData] = {}
 _login_attempts: dict[str, list[float]] = {}  # ip -> list of timestamps
+# Transcript button presses: client key -> timestamps inside the window.
+# TRANSCRIPTION_ASK_RATE_LIMIT is presses per client per this many seconds.
+_transcript_asks: dict[str, list[float]] = {}
+_TRANSCRIPT_ASK_WINDOW = 600
+# What a press refused for TRANSCRIPTION_ASK_MAX_OPEN says to wait. The
+# waiting rows leave the count only when a backup run picks them up, and the
+# viewer does not know the backup's SCHEDULE, so this is a polling hint.
+_TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 3600
+# An ask older than this stops counting toward TRANSCRIPTION_ASK_MAX_OPEN, so
+# asks no backup run picks up cannot hold the cap full for good.
+_TRANSCRIPT_ASK_WAIT_WINDOW = timedelta(hours=24)
+# Holds the count and the insert of a capped press together, so presses
+# arriving at once cannot all pass the same count.
+_transcript_ask_lock = asyncio.Lock()
 
 
 def _grants_from_row(row: dict) -> tuple[set[int] | None, set[str] | None]:
@@ -1751,18 +1769,103 @@ async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
     return row
 
 
-def _avatar_file_response(avatar_path: str):
-    """Serve an avatars/ file with the containment and caching avatars always had."""
-    checked = _checked_media_path(avatar_path)
+# Every archive file the viewer serves (originals, thumbnails, avatars) sits
+# behind a permission check, but its URL names the chat and the media, not the
+# session. A browser allowed to reuse its copy for a while could show it again
+# after a logout, or after the viewer lost access to the chat, without asking.
+# "no-cache" lets the browser keep the copy but makes it ask the server before
+# every reuse. That conditional request runs the same checks as the first one:
+# a live, entitled session gets a 304 and shows its copy, anyone else gets the
+# 401, 403 or 404 the route answers. "private" keeps shared caches out.
+GATED_MEDIA_CACHE_CONTROL = "private, no-cache"
+
+
+def _is_not_modified(request_headers: Headers, response_headers: Headers) -> bool:
+    """Whether the request's validators still match the file (RFC 9110, 13.2.2).
+
+    If-None-Match wins when present (weak comparison, ``*`` matches any file);
+    If-Modified-Since is read only without it. An unparseable date is "modified".
+    """
+    if_none_match = request_headers.get("if-none-match")
+    if if_none_match is not None:
+        tags = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+        return "*" in tags or response_headers["etag"] in tags
+    if_modified_since = request_headers.get("if-modified-since")
+    if if_modified_since is None:
+        return False
     try:
-        resolved = (_media_root / checked).resolve(strict=True)
+        since = parsedate_to_datetime(if_modified_since)
+    except TypeError, ValueError:
+        return False
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    return parsedate_to_datetime(response_headers["last-modified"]) <= since
+
+
+class _NotModified(Exception):
+    """Raised inside the send wrapper once the 304 is out, so the file is never read."""
+
+
+class GatedFileResponse(FileResponse):
+    """A FileResponse for access-controlled archive files that answers 304.
+
+    Starlette's FileResponse sends ETag and Last-Modified but always answers
+    200 with the whole file; only StaticFiles evaluates the conditional
+    headers. With ``no-cache`` every reuse is a conditional request, so without
+    a 304 each one would move the whole file again. The routes build this
+    response only after their permission checks passed, so a 304 is only ever
+    sent to a request that passed them.
+
+    The file is stat'ed and read by Starlette alone: this class only watches
+    the response start it sends. When the request's validators still match the
+    ETag and Last-Modified in that start, a 304 goes out in its place and the
+    file read is cut short. Touching the path here would put a second
+    filesystem call on a value the routes derive from the request, which the
+    containment checks in the routes already bound.
+    """
+
+    def __init__(self, path: str | os.PathLike[str], media_type: str | None = None) -> None:
+        super().__init__(path, media_type=media_type, headers={"Cache-Control": GATED_MEDIA_CACHE_CONTROL})
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        conditional = scope.get("method", "") in ("GET", "HEAD")
+        request_headers = Headers(scope=scope)
+
+        async def gate(message: Message) -> None:
+            if conditional and message["type"] == "http.response.start" and message["status"] == 200:
+                response_headers = Headers(raw=message["headers"])
+                if _is_not_modified(request_headers, response_headers):
+                    not_modified = Response(
+                        status_code=304,
+                        headers={"Cache-Control": response_headers["cache-control"], "ETag": response_headers["etag"]},
+                    )
+                    await not_modified(scope, receive, send)
+                    raise _NotModified
+            await send(message)
+
+        try:
+            await super().__call__(scope, receive, gate)
+        except _NotModified:
+            return
+
+
+def _avatar_file_response(avatar_path: str):
+    """Serve an avatars/ file with the containment avatars always had."""
+    checked = _checked_media_path(avatar_path)
+    # Containment twice over: the lexical check first (normpath + prefix, the
+    # form static analysis reads as a path sanitizer), then the resolved one
+    # that also bounds a symlink.
+    root = str(_media_root)
+    normalized = os.path.normpath(os.path.join(root, checked))
+    if not normalized.startswith(root + os.sep):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        resolved = Path(normalized).resolve(strict=True)
     except OSError, ValueError:
         raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root) or not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely; keep
-    # the long private TTL so avatar URLs are not refetched on every page.
-    return FileResponse(resolved, headers={"Cache-Control": "private, max-age=86400"})
+    return GatedFileResponse(resolved)
 
 
 # Sender resolution for /media/avatar/{chat_ref}/{message_id}: one indexed
@@ -1821,9 +1924,7 @@ async def serve_thumbnail(
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
     thumb_path, _resolved_folder = result
-    # Access-controlled bytes: private, so a shared proxy cache can never hand
-    # one viewer's thumbnail to another.
-    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+    return GatedFileResponse(thumb_path, media_type="image/webp")
 
 
 @app.get("/media/avatar/{chat_ref}/{message_id}")
@@ -1959,15 +2060,15 @@ async def serve_media(
     # string — every header-dangerous byte (CR, LF, ", ;, space) is escaped by that
     # quote(), so only unreserved characters survive verbatim. This mirrors
     # Starlette's own FileResponse header construction; it is written out here
-    # rather than passed as filename= so the FileResponse call keeps the plain
-    # FileResponse(resolved) shape. Passing a user-derived filename= makes CodeQL
+    # rather than passed as filename= so the response call keeps the plain
+    # GatedFileResponse(resolved) shape. Passing a user-derived filename= makes CodeQL
     # model the call as a filesystem sink and raise py/path-injection on
     # `resolved`, which is a false positive: containment is already enforced above
     # (reject ../absolute, resolve(strict=True), is_relative_to(_media_root)).
     # Default (no download param) stays inline for the types the viewer renders
     # inline; everything else is handed over as a download (see _inline_media_type).
     inline_type = _inline_media_type(resolved.name)
-    response = FileResponse(resolved, media_type=inline_type or "application/octet-stream")
+    response = GatedFileResponse(resolved, media_type=inline_type or "application/octet-stream")
     if download or inline_type is None:
         download_name = media_display_filename(row.get("file_name") or resolved.name)
         quoted = quote(download_name)
@@ -1976,9 +2077,6 @@ async def serve_media(
             if quoted != download_name
             else f'attachment; filename="{download_name}"'
         )
-    # Every byte this route serves is access-controlled, so no shared cache may
-    # store it — never a proxy that skips the entitlement.
-    response.headers["Cache-Control"] = "private"
     return response
 
 
@@ -2351,6 +2449,12 @@ async def check_auth(request: Request, auth_cookie: str | None = Cookie(default=
             }
         return {"authenticated": False, "auth_required": True, "setup_required": True}
 
+    # Same rule as _resolve_user_context: with proxy auth only, a session
+    # cookie is not a login. Reporting it as one here while every other route
+    # answered 401 made the page reload itself without end.
+    if not AUTH_ENABLED:
+        return {"authenticated": False, "auth_required": True}
+
     if not auth_cookie:
         return {"authenticated": False, "auth_required": True}
 
@@ -2498,6 +2602,16 @@ async def login(request: Request):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
+# Sent when this browser's session ends, so the copies of archive files it
+# kept are dropped at once rather than waiting to be refused on their next
+# revalidation. "cache" empties the HTTP cache only: the service worker, its
+# push registration, cookies and localStorage stay (those are "storage" and
+# "cookies"), and the service worker keeps nothing in Cache Storage. The only
+# cost is that the static assets download again on the next visit. Browsers
+# apply it over HTTPS only; GATED_MEDIA_CACHE_CONTROL is what holds everywhere.
+LOGOUT_CLEAR_SITE_DATA = '"cache"'
+
+
 @app.post("/api/logout")
 async def logout(
     request: Request,
@@ -2535,6 +2649,11 @@ async def logout(
 
     response = JSONResponse({"success": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
+    if auth_cookie:
+        # Only a logout that carried a session cookie empties the cache. The
+        # cookie is SameSite=Lax, so another site's POST arrives without it
+        # and cannot wipe the viewer's cache on demand.
+        response.headers["Clear-Site-Data"] = LOGOUT_CLEAR_SITE_DATA
     return response
 
 
@@ -3462,24 +3581,113 @@ async def get_transcription_status(user: UserContext = Depends(require_auth)):
     }
 
 
-async def _ask_transcript(media: dict | None, account_id: int) -> dict:
+def _transcript_ask_client(request: Request, user: UserContext, auth_cookie: str | None) -> str:
+    """The key a transcript press counts against: the session, else the proxy user, else the address.
+
+    With ALLOW_ANONYMOUS_VIEWER every caller is the same "anonymous", so the
+    client address is the key, found the way the login rate limit finds it
+    (proxy headers only with TRUST_PROXY_HEADERS). A cookie that is not this
+    principal's session (proxy auth won over a stale cookie) is ignored.
+    """
+    if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
+        return f"ip:{_get_client_ip(request)}"
+    session = _sessions.get(auth_cookie) if auth_cookie else None
+    if session is not None and session.username == user.username:
+        return f"session:{auth_cookie}"
+    return f"user:{user.username}"
+
+
+def _transcript_ask_wait(client: str) -> int:
+    """Seconds before ``client`` may press again, or 0 and the press is recorded.
+
+    TRANSCRIPTION_ASK_RATE_LIMIT presses per ``_TRANSCRIPT_ASK_WINDOW``
+    seconds; 0 is no limit. The check and the record run with no await
+    between them, so presses sent at once cannot all pass the same count.
+    """
+    limit = getattr(config, "transcription_ask_rate_limit", 0)
+    if not isinstance(limit, int) or limit <= 0:
+        return 0
+    now = time.time()
+    presses = [t for t in _transcript_asks.get(client, []) if now - t < _TRANSCRIPT_ASK_WINDOW]
+    if len(presses) >= limit:
+        _transcript_asks[client] = presses
+        return max(1, math.ceil(_TRANSCRIPT_ASK_WINDOW - (now - presses[0])))
+    presses.append(now)
+    _transcript_asks[client] = presses
+    return 0
+
+
+def _forget_transcript_ask(client: str) -> None:
+    """Take back the press ``_transcript_ask_wait`` just recorded, for a press the cap refused."""
+    presses = _transcript_asks.get(client)
+    if presses:
+        presses.pop()
+
+
+def _sweep_transcript_asks(now: float) -> None:
+    """Drop the clients whose presses are all older than the window, so the dict stays bounded."""
+    stale = [key for key, ts in _transcript_asks.items() if all(now - t >= _TRANSCRIPT_ASK_WINDOW for t in ts)]
+    for key in stale:
+        _transcript_asks.pop(key, None)
+
+
+def _too_many_asks(detail: str, retry_after: int) -> HTTPException:
+    return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
+
+
+async def _ask_transcript(media: dict | None, account_id: int, user: UserContext, client: str) -> dict:
     """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
 
-    ``force`` because a user click may add a row after a done one, which the
-    drain never does. No preset: the viewer does not read it, and a queued
+    ``force`` because a login's click may add a row after a done one, which
+    the drain never does. An open viewer (ALLOW_ANONYMOUS_VIEWER) gets no
+    ``force``: a press on a file whose newest row is ``done`` or ``skipped``
+    returns that row and writes nothing, so an anonymous caller cannot send a
+    finished file to the transcription server again. No preset: the viewer does not read it, and a queued
     row without one is what the drain query sends first. No outbound request.
     A media the drain would never send is a 409 and no row: one with no
     sound (``is_transcribable``, whatever TRANSCRIPTION_TYPES says, since the
     drain query lets an ask-now row through the type filter), or a file not
     downloaded yet, whose queued row would never move.
+
+    Two limits answer 429 with Retry-After, for everyone but the master, who
+    can change every setting anyway: TRANSCRIPTION_ASK_RATE_LIMIT presses per
+    client, and TRANSCRIPTION_ASK_MAX_OPEN ask-now rows waiting for the
+    backup across the archive. A press that writes nothing (an open newest
+    row, or a finished one in an open viewer) returns that row before either
+    limit and costs no press; a press the cap refuses costs none either.
     """
     if not media or not is_transcribable(media.get("type"), media.get("mime_type")):
         raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
     if not media.get("downloaded"):
         raise HTTPException(status_code=409, detail="Not downloaded yet")
-    row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
+    anonymous = not AUTH_ENABLED and not _PROXY_AUTH_ENABLED
+    newest = await db.get_newest_media_transcript(media["id"], account_id=account_id)
+    if newest is not None and newest["status"] in TRANSCRIPT_OPEN_STATUSES:
+        return newest
+    if anonymous and newest is not None and newest["status"] in ("done", "skipped"):
+        return newest
+    force = not anonymous
+    wait = 0 if user.role == "master" else _transcript_ask_wait(client)
+    if wait:
+        minutes = math.ceil(wait / 60)
+        unit = "minute" if minutes == 1 else "minutes"
+        raise _too_many_asks(f"Too many transcript requests. Try again in {minutes} {unit}.", wait)
+    cap = getattr(config, "transcription_ask_max_open", 0)
+    if user.role == "master" or not isinstance(cap, int) or cap <= 0:
+        row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=force)
+    else:
+        async with _transcript_ask_lock:
+            since = utcnow_naive() - _TRANSCRIPT_ASK_WAIT_WINDOW
+            if await db.count_waiting_transcript_asks(since=since) >= cap:
+                _forget_transcript_ask(client)
+                raise _too_many_asks(
+                    "Many transcripts are waiting for the next backup run. Try again later.",
+                    _TRANSCRIPT_ASK_FULL_RETRY_SECONDS,
+                )
+            row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=force)
     if row is None:
-        # Only when a racing insert won and its row vanished before the re-read.
+        # Only when a racing insert won and its row vanished before the re-read,
+        # or, without ``force``, the file finished since the read above.
         raise HTTPException(status_code=503, detail="Try again")
     return row
 
@@ -3492,13 +3700,19 @@ def _raise_for_transcript_error(e: Exception, action: str) -> None:
 
 
 @app.post("/api/media/{media_id}/transcripts")
-async def ask_media_transcript(media_id: str, user: UserContext = Depends(require_auth)):
+async def ask_media_transcript(
+    media_id: str,
+    request: Request,
+    user: UserContext = Depends(require_auth),
+    auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
+):
     """Ask for a transcript now: insert-only, same scoping as the GET beside it.
 
     Inserts a ``queued`` row with ``job_id`` NULL unless the newest row is
     already open, in which case that row comes back and nothing is written.
     The next drain in the backup sends it first. The viewer makes no request
-    to the transcription server. An id the caller may not see is a 404.
+    to the transcription server. An id the caller may not see is a 404, and
+    a press past the ask limits is a 429 (``_ask_transcript``).
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3515,7 +3729,8 @@ async def ask_media_transcript(media_id: str, user: UserContext = Depends(requir
                 break
         if account_id is None:
             raise HTTPException(status_code=404, detail="Media not found")
-        row = await _ask_transcript(await db.get_media_by_id(media_id, account_id=account_id), account_id)
+        media = await db.get_media_by_id(media_id, account_id=account_id)
+        row = await _ask_transcript(media, account_id, user, _transcript_ask_client(request, user, auth_cookie))
     except HTTPException:
         raise
     except Exception as e:
@@ -3544,7 +3759,11 @@ async def get_chat_media_transcripts(
 
 @app.post("/api/chats/{chat_ref}/media/{media_key}/transcripts")
 async def ask_chat_media_transcript(
-    media_key: str, chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)
+    media_key: str,
+    request: Request,
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+    auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
 ):
     """The bubble's ask-now, the same insert-only rule as ``POST /api/media/{media_id}/transcripts``."""
     if user.no_download:
@@ -3553,7 +3772,7 @@ async def ask_chat_media_transcript(
         raise HTTPException(status_code=409, detail="Transcription is off")
     media = await _entitled_media_row(chat, media_key)
     try:
-        row = await _ask_transcript(media, chat.account_id)
+        row = await _ask_transcript(media, chat.account_id, user, _transcript_ask_client(request, user, auth_cookie))
     except HTTPException:
         raise
     except Exception as e:
@@ -4446,7 +4665,11 @@ async def export_chat(
         return StreamingResponse(
             iter_json(),
             media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                # A whole chat: no browser or proxy may keep it for a later request.
+                "Cache-Control": "private, no-store",
+            },
         )
     except HTTPException:
         raise
@@ -4952,6 +5175,7 @@ async def end_all_sessions(
     response = JSONResponse({"success": True, "ended": len(ended), "current_session_ended": current_session_ended})
     if current_session_ended:
         response.delete_cookie(AUTH_COOKIE_NAME)
+        response.headers["Clear-Site-Data"] = LOGOUT_CLEAR_SITE_DATA
     return response
 
 

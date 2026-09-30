@@ -236,7 +236,7 @@ Numeric chat and sender ids stay visible to every login. See [What logged-in use
 
 `ALLOW_ANONYMOUS_VIEWER=true` opens the viewer to anyone who can reach it. The value must be `true`, in any letter case. Other values such as `1` or `yes` leave it off. It takes effect only when neither the master login nor proxy identity is configured.
 
-Every visitor is logged in as a read-only user named `anonymous` without master rights. It can read every chat allowed by `DISPLAY_CHAT_IDS` and download files. It can also subscribe to push notifications and ask for a voice transcript, which queues a transcription.
+Every visitor is logged in as a read-only user named `anonymous` without master rights. It can read every chat allowed by `DISPLAY_CHAT_IDS` and download files. It can also subscribe to push notifications and ask for a voice transcript, which queues a transcription. Transcript asks are limited per client IP by `TRANSCRIPTION_ASK_RATE_LIMIT`, and `TRANSCRIPTION_ASK_MAX_OPEN` caps how many asked files may wait at once. A file that was already transcribed or skipped is not queued again. See [Voice transcription](../configuration/transcription.md#the-button).
 
 ## Identity from a reverse proxy
 

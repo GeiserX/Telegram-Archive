@@ -6942,6 +6942,42 @@ class DatabaseAdapter:
             await session.refresh(row)
             return self._transcript_to_dict(row)
 
+    async def get_newest_media_transcript(self, media_id: str, *, account_id: int) -> dict[str, Any] | None:
+        """The newest transcript row of one media, whatever its status, or None when it has none."""
+        async with self.db_manager.async_session_factory() as session:
+            newest = await self._newest_transcript(session, media_id, account_id)
+        return self._transcript_to_dict(newest) if newest is not None else None
+
+    async def count_waiting_transcript_asks(self, *, since: datetime) -> int:
+        """How many viewer ask-now rows still wait for the backup, across every account.
+
+        An ask-now row is ``queued`` with no ``job_id`` and no ``preset``: the
+        drain fills the preset when it picks the row up, so a row stops
+        counting once the backup has taken it. The viewer refuses a new ask
+        past TRANSCRIPTION_ASK_MAX_OPEN of these.
+
+        Only rows the drain can still take count: the file must be downloaded
+        (the drain query skips the rest), and the ask must be newer than
+        ``since``. A row no drain picks up (an account no backup runs for, a
+        backup with transcription off) ages out of the count after that
+        instead of holding the cap full for good. The row itself stays.
+        """
+        stmt = (
+            select(func.count(MediaTranscript.id))
+            .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+            .where(
+                and_(
+                    MediaTranscript.status == "queued",
+                    MediaTranscript.job_id.is_(None),
+                    MediaTranscript.preset.is_(None),
+                    MediaTranscript.requested_at >= since,
+                    Media.downloaded == 1,
+                )
+            )
+        )
+        async with self.db_manager.async_session_factory() as session:
+            return int((await session.execute(stmt)).scalar() or 0)
+
     @retry_on_locked()
     async def fill_media_transcript(
         self, transcript_id: int, *, status: str, account_id: int | None = None, **columns: Any

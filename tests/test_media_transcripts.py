@@ -61,6 +61,53 @@ async def _age(adapter, transcript_id: int, minutes: int) -> None:
         await session.commit()
 
 
+class TestWaitingAsks:
+    async def test_counts_only_asks_the_backup_has_not_picked_up_in_every_account(self, real_adapter):
+        for n in range(1, 6):
+            await _media(real_adapter, f"m_{n}_voice")
+        await _media(real_adapter, "m_6_voice", account_id=2)
+        # Viewer asks carry no preset: two wait, in two accounts.
+        await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        await real_adapter.enqueue_media_transcript("m_6_voice", account_id=2, force=True)
+        # A drain row carries its preset; a submitted ask its job; a failed ask is closed.
+        await real_adapter.enqueue_media_transcript("m_2_voice", account_id=1, preset="auto")
+        submitted = await real_adapter.enqueue_media_transcript("m_3_voice", account_id=1, force=True)
+        await real_adapter.fill_media_transcript(submitted["id"], status="running", job_id="job-test-1")
+        failed = await real_adapter.enqueue_media_transcript("m_4_voice", account_id=1, force=True)
+        await real_adapter.fill_media_transcript(failed["id"], status="failed", error="submit_failed")
+        since = utcnow_naive() - timedelta(hours=24)
+        assert await real_adapter.count_waiting_transcript_asks(since=since) == 2
+
+    async def test_asks_no_drain_can_take_stop_counting_and_stay(self, real_adapter):
+        """An old ask, or one on a file no longer downloaded, never moves: it must not hold the cap full."""
+        await _media(real_adapter, "m_1_voice")
+        await _media(real_adapter, "m_2_voice")
+        await _media(real_adapter, "m_3_voice", downloaded=False)
+        fresh = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        old = await real_adapter.enqueue_media_transcript("m_2_voice", account_id=1, force=True)
+        await _age(real_adapter, old["id"], minutes=25 * 60)
+        await real_adapter.enqueue_media_transcript("m_3_voice", account_id=1, force=True)
+        since = utcnow_naive() - timedelta(hours=24)
+        assert await real_adapter.count_waiting_transcript_asks(since=since) == 1
+        # Nothing is deleted: the stranded rows stay queued as they were.
+        assert (await real_adapter.get_media_transcript(old["id"]))["status"] == "queued"
+        assert len(await real_adapter.list_media_transcripts("m_3_voice", account_id=1)) == 1
+        assert (await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1))["id"] == fresh["id"]
+
+    async def test_the_newest_row_is_read_whatever_its_status_in_its_own_account(self, real_adapter):
+        await _media(real_adapter, "m_1_voice")
+        assert await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1) is None
+        row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        newest = await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1)
+        assert (newest["id"], newest["status"]) == (row["id"], "queued")
+        assert await real_adapter.get_newest_media_transcript("m_1_voice", account_id=2) is None
+        await real_adapter.fill_media_transcript(row["id"], status="done", text="hola")
+        newest = await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1)
+        assert (newest["id"], newest["status"]) == (row["id"], "done")
+        again = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        assert (await real_adapter.get_newest_media_transcript("m_1_voice", account_id=1))["id"] == again["id"]
+
+
 class TestEnqueue:
     async def test_first_enqueue_inserts_a_queued_row(self, real_adapter):
         await _media(real_adapter, "m_1_voice")

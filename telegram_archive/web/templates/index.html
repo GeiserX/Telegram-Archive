@@ -13336,8 +13336,9 @@
                     try {
                         const res = await fetch(transcriptsUrl(msg), { method: 'POST', credentials: 'include' })
                         if (res.ok) row = await res.json()
-                        // 409: the server names why it will not ask (not downloaded yet, say).
-                        else if (res.status === 409) refusal = String((await res.json().catch(() => null))?.detail || '')
+                        // 409 and 429: the server names why it will not ask (not downloaded
+                        // yet, or too many presses for now) and the toast says it.
+                        else if (res.status === 409 || res.status === 429) refusal = String((await res.json().catch(() => null))?.detail || '')
                     } catch (e) {
                         row = null
                     }
@@ -13463,6 +13464,30 @@
                     }
                 })
 
+                // A session that ends in this tab (logout, ending every session,
+                // or any request answered 401) reloads the page instead of only
+                // showing the login form. The form sits beside the main view, so
+                // the open chat, its messages and the media the document already
+                // decoded stayed in memory, and the next login on this tab, as
+                // anyone, showed them again without asking the server. The reload
+                // keeps the address, so the chat ref in it survives; the server
+                // checks it again on the next login. It runs at most once per
+                // SESSION_END_RELOAD_GUARD_MS: if the server calls a session live
+                // on load and then refuses it, the page stays on the login form
+                // instead of reloading without end.
+                const SESSION_END_RELOAD_KEY = 'session_end_reload_at'
+                const SESSION_END_RELOAD_GUARD_MS = 10000
+                const reloadWhenSessionEnds = (now, before) => {
+                    if (!before || now) return
+                    try {
+                        const last = Number(sessionStorage.getItem(SESSION_END_RELOAD_KEY) || 0)
+                        if (Date.now() - last < SESSION_END_RELOAD_GUARD_MS) return
+                        sessionStorage.setItem(SESSION_END_RELOAD_KEY, String(Date.now()))
+                    } catch (e) { /* no storage: reload anyway */ }
+                    window.location.reload()
+                }
+                watch(isAuthenticated, reloadWhenSessionEnds)
+
                 const performLogin = async () => {
                     loginError.value = ''
                     loadingAuth.value = true
@@ -13537,6 +13562,7 @@
                     try {
                         await fetch('/api/logout', { method: 'POST', credentials: 'include' })
                     } catch (e) { /* ignore */ }
+                    // Reloads the page: see the isAuthenticated watch.
                     isAuthenticated.value = false
                     userRole.value = ''
                     currentUsername.value = ''
@@ -18802,6 +18828,7 @@
                                 await unsubscribeFromPush()
                             } catch (e) { /* ignore */ }
                             localStorage.removeItem('push_enabled')
+                            // Reloads the page: see the isAuthenticated watch.
                             isAuthenticated.value = false
                             userRole.value = ''
                             currentUsername.value = ''

@@ -193,6 +193,8 @@ class TestEndAllSessionsRoute:
         assert response.status_code == 200
         assert response.json() == {"success": True, "ended": 3, "current_session_ended": True}
         assert _clears_cookie(response)
+        # This browser's session ended like a logout, so its cached media goes too.
+        assert response.headers["clear-site-data"] == '"cache"'
         assert await _stored_tokens(adapter) == set()
         assert web_main._sessions == {}
         assert _closed_keys(close_for) == {master, viewer, token}
@@ -224,6 +226,7 @@ class TestEndAllSessionsRoute:
         assert response.status_code == 200
         assert response.json() == {"success": True, "ended": 3, "current_session_ended": False}
         assert not _clears_cookie(response)
+        assert "clear-site-data" not in response.headers
         assert await _stored_tokens(adapter) == {master}
         assert set(web_main._sessions) == {master}
         assert _closed_keys(close_for) == {viewer, token, other_master}
@@ -624,6 +627,50 @@ assert.equal(userRole.value, '');
 """
         )
     )
+
+
+def test_a_session_that_ends_in_the_tab_reloads_the_page():
+    """Logout, end-all and every 401 flip isAuthenticated; the flip must reload.
+
+    Showing only the login form kept the open chat, its messages and the
+    decoded media in memory, so the next login on the tab saw them again.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "watch(isAuthenticated, reloadWhenSessionEnds)" in html
+    function = _extract_const_arrow_function(html, "reloadWhenSessionEnds", asynchronous=False)
+    _run_node(
+        "\n".join(
+            [
+                '"use strict";',
+                "const assert = require('node:assert/strict');",
+                "let reloads = 0;",
+                "const window = { location: { reload: () => { reloads += 1 } } };",
+                "const store = new Map();",
+                "const sessionStorage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };",
+                "const SESSION_END_RELOAD_KEY = 'session_end_reload_at';",
+                "const SESSION_END_RELOAD_GUARD_MS = 10000;",
+                "let clock = 1000000;",
+                "Date.now = () => clock;",
+                function,
+                "reloadWhenSessionEnds(true, false);",
+                "reloadWhenSessionEnds(false, false);",
+                "assert.equal(reloads, 0);",
+                # A plain reload keeps the address, so the chat ref in it survives.
+                "reloadWhenSessionEnds(false, true);",
+                "assert.equal(reloads, 1);",
+                # The server called the session live on load and then refused it:
+                # a second flip right after the reload stays put.
+                "clock += 2000;",
+                "reloadWhenSessionEnds(false, true);",
+                "assert.equal(reloads, 1);",
+                "clock += 10000;",
+                "reloadWhenSessionEnds(false, true);",
+                "assert.equal(reloads, 2);",
+            ]
+        )
+    )
+    assert "const SESSION_END_RELOAD_KEY = 'session_end_reload_at'" in html
+    assert "const SESSION_END_RELOAD_GUARD_MS = 10000" in html
 
 
 def test_keeping_this_session_reports_the_count_and_stays():
