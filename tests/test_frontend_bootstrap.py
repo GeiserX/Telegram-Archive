@@ -352,12 +352,17 @@ def test_message_versions_ignore_stale_load_responses():
 
 
 def test_realtime_edits_increment_visible_version_count():
-    """Realtime text edits should keep the edited count in sync without loading versions."""
+    """Realtime edits keep the edited count in sync without loading versions.
+
+    Every edit frame is an applied edit that kept a version, a formatting-only
+    edit with the same text too, so the count moves on every frame (executed in
+    test_edited_messages_frontend.TestTheLiveEditFrame).
+    """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert "const previousText = editMsg.text" in html
-    assert "if (previousText !== data.new_text)" in html
-    assert "editMsg.version_count = (Number(editMsg.version_count) || 0) + 1" in html
+    edit_case = html[html.index("case 'edit':") : html.index("case 'reaction':")]
+    assert "previousText" not in edit_case
+    assert "editMsg.version_count = (Number(editMsg.version_count) || 0) + 1" in edit_case
 
 
 def test_message_status_badges_show_timestamps_on_hover():

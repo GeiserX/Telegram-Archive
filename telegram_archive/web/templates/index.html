@@ -12547,13 +12547,21 @@
                             // above already matched the frame's chat_ref against it.
                             const editMsg = messages.value.find(m => m.id === data.message_id)
                             if (editMsg) {
-                                const previousText = editMsg.text
                                 editMsg.text = data.new_text
                                 editMsg.edit_date = data.edit_date
                                 editMsg.edit_hide = data.edit_hide ? 1 : 0
-                                if (previousText !== data.new_text) {
-                                    editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
+                                // An edit of the formatting only keeps the text; the frame
+                                // carries the new entities (none when the text was cut).
+                                if ('entities' in data) {
+                                    const raw = (editMsg.raw_data && typeof editMsg.raw_data === 'object') ? editMsg.raw_data : {}
+                                    const next = { ...raw }
+                                    if (Array.isArray(data.entities) && data.entities.length) next.entities = data.entities
+                                    else delete next.entities
+                                    editMsg.raw_data = next
                                 }
+                                // Every edit frame is an applied edit, and every applied
+                                // edit keeps the version it replaced.
+                                editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
                                 clearMessageVersionsCache(editMsg)
                                 // An open history or peek reads the new versions at once.
                                 if (isVersionsPanelOpenFor(editMsg) || isEditPeekFor(editMsg)) {
@@ -15862,17 +15870,17 @@
                 // What the archive can say about how many edits there were. Only the
                 // listener sees each edit; the sync, a backup and an import read the
                 // text current at that moment, so edits between two reads leave no
-                // version. A message whose oldest kept version is newer than its
-                // send time was first archived already edited. Either way the count
-                // is a lower bound. Versions from before the archive named its paths
-                // have no source and change nothing.
+                // version. Versions from before the archive named its paths have no
+                // source, which is unknown, so they count the same way. A message
+                // whose oldest kept version is newer than its send time was first
+                // archived already edited. Either way the count is a lower bound.
                 const VERSIONS_LIMIT = 100
                 const versionHistoryShape = (msg, kept) => {
                     const truncated = kept.length >= VERSIONS_LIMIT
                     const oldest = kept.length ? kept[kept.length - 1] : null
                     const firstSeenEdited = !truncated && !!oldest && !!oldest.date && !!msg.date
                         && moment.utc(oldest.date).valueOf() > moment.utc(msg.date).valueOf()
-                    const missedSome = kept.some(entry => entry.source && entry.source !== 'listener')
+                    const missedSome = kept.some(entry => entry.source !== 'listener')
                     return {
                         truncated,
                         firstSeenEdited,

@@ -273,10 +273,14 @@ class MessageVersion(Base):
 
     ``entities`` is the version's formatting as a JSON list, the same shape as
     ``raw_data["entities"]`` (035; NULL for rows from before it and for a text
-    with no formatting). ``source`` is the path that wrote the row (035):
-    ``listener``, ``sync``, ``backup`` or ``import``; NULL for older rows. Only
-    the listener sees each edit as it happens; the other paths read the text
-    current at that moment, so edits between two reads leave no row.
+    with no formatting). ``rich_message`` is a Rich Text Editor message's block
+    tree as JSON, the shape of ``raw_data["rich_message"]`` (035; NULL when the
+    version had none). ``source`` is the path that wrote the row (035):
+    ``listener``, ``sync``, ``backup`` or ``import``; NULL for older rows, which
+    is unknown. Only the listener sees each edit as it happens, and only while
+    it is connected: after it was away, Telegram hands it the latest state
+    only. The other paths read the text current at that moment, so edits
+    between two reads leave no row.
     """
 
     __tablename__ = "message_versions"
@@ -291,6 +295,7 @@ class MessageVersion(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     entities: Mapped[str | None] = mapped_column(Text)  # JSON string
     source: Mapped[str | None] = mapped_column(String(16))
+    rich_message: Mapped[str | None] = mapped_column(Text)  # JSON string
 
     message: Mapped[Message] = relationship(
         "Message",

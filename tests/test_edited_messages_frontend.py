@@ -78,10 +78,10 @@ _MSG = {
     "version_count": 2,
     "text": "The north lot. It fills up by 8, so get there early.",
 }
-# Newest first, as the versions endpoint returns them.
+# Newest first, as the versions endpoint returns them. The listener saw both edits.
 _KEPT = [
-    {"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00"},
-    {"text": "The north lot.", "date": _SENT},
+    {"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00", "source": "listener"},
+    {"text": "The north lot.", "date": _SENT, "source": "listener"},
 ]
 
 
@@ -320,16 +320,27 @@ messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
         self.assertIn("&lt;b&gt;now&lt;/b&gt;", out[1]["html"])
 
     def test_versions_from_the_sync_make_the_count_a_lower_bound(self) -> None:
-        """5kr: the sync reads only the current text, so edits between two runs
-        leave no version; the labels drop their numbers."""
-        kept = [{**_KEPT[0], "source": "sync"}, {**_KEPT[1], "source": "listener"}]
-        out = self._entries(_MSG, kept)
-        self.assertEqual([e["what"] for e in out], ["Sent", "Edit", "Current"])
-        # Versions from the listener, or from before the archive named its paths, keep the numbers.
-        for source in ("listener", None):
-            kept = [{**entry, "source": source} for entry in _KEPT]
-            out = self._entries(_MSG, kept)
-            self.assertEqual([e["what"] for e in out], ["Sent", "Edit 1", "Edit 2, current"])
+        """5kr: the sync, a backup and an import read only the current text, so
+        edits between two reads leave no version; the labels drop their numbers.
+        A version from before the archive named its paths (no source) is
+        unknown and counts the same way."""
+        for source in ("sync", "backup", "import", None):
+            with self.subTest(source=source):
+                # The oldest version is the sent text, so only the source says edits may be missing.
+                kept = [{**_KEPT[0], "source": source}, {**_KEPT[1], "source": "listener"}]
+                out = self._entries(_MSG, kept)
+                self.assertEqual([e["what"] for e in out], ["Sent", "Edit", "Current"])
+        # Versions all from the listener keep the numbers.
+        out = self._entries(_MSG, _KEPT)
+        self.assertEqual([e["what"] for e in out], ["Sent", "Edit 1", "Edit 2, current"])
+
+    def test_one_edit_seen_by_the_listener_is_edit_1(self) -> None:
+        """A message first archived with a reaction's hidden edit date, then edited
+        once: its version is dated at the send time, so it reads Sent / Edit 1."""
+        msg = {**_MSG, "version_count": 1}
+        kept = [{"text": "The north lot.", "date": _SENT, "source": "listener"}]
+        out = self._entries(msg, kept)
+        self.assertEqual([e["what"] for e in out], ["Sent", "Edit 1, current"])
 
     def test_a_message_first_seen_already_edited_says_so(self) -> None:
         kept = [{"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00", "source": "backup"}]
@@ -349,13 +360,68 @@ messageVersionsByMessage.value = {{ '7:5': {json.dumps(kept)} }}
             )
 
         self.assertEqual(subtitle(_KEPT), "Sent September 30 at 08:52 · 2 earlier versions")
-        self.assertEqual(
-            subtitle([{**_KEPT[0], "source": "sync"}, _KEPT[1]]), "Sent September 30 at 08:52 · at least 2 edits"
-        )
+        for source in ("sync", "backup", "import", None):
+            self.assertEqual(
+                subtitle([{**_KEPT[0], "source": source}, _KEPT[1]]), "Sent September 30 at 08:52 · at least 2 edits"
+            )
         # First seen already edited: the oldest kept text was itself an edit.
         self.assertEqual(
             subtitle([{**_KEPT[0], "source": "listener"}]), "Sent September 30 at 08:52 · at least 2 edits"
         )
+
+
+@unittest.skipUnless(NODE, "node is required to execute the handler")
+class TestTheLiveEditFrame(unittest.TestCase):
+    """An "edit" frame updates the open chat at once, a formatting-only edit too."""
+
+    def _handle(self, msg: dict, frame: dict) -> dict:
+        prelude = f"""
+const messages = {{ value: [{json.dumps(msg)}] }}
+const clearMessageVersionsCache = () => {{}}
+const isVersionsPanelOpenFor = () => false
+const isEditPeekFor = () => false
+const loadMessageVersions = () => {{}}
+const handle = (data) => {{
+    switch (data.type) {{
+        {_block("case 'edit':", "case 'reaction':")}
+    }}
+}}
+handle({json.dumps(frame)})
+"""
+        return _run("messages.value[0]", (), prelude)
+
+    def test_a_formatting_only_edit_takes_the_new_entities_and_counts_a_version(self) -> None:
+        bold = [{"type": "bold", "offset": 0, "length": 4}]
+        italic = [{"type": "italic", "offset": 8, "length": 4}]
+        msg = {
+            "id": 5,
+            "text": "Meet at nine",
+            "edit_date": None,
+            "version_count": 0,
+            "raw_data": {"entities": bold, "webpage": {"url": "https://keep.example"}},
+        }
+        frame = {
+            "type": "edit",
+            "chat_ref": "r7",
+            "message_id": 5,
+            "new_text": "Meet at nine",
+            "edit_date": "2026-09-30T08:54:00",
+            "edit_hide": 0,
+            "entities": italic,
+        }
+        out = self._handle(msg, frame)
+        self.assertEqual(out["raw_data"], {"entities": italic, "webpage": {"url": "https://keep.example"}})
+        self.assertEqual(out["version_count"], 1)
+        self.assertEqual(out["edit_date"], "2026-09-30T08:54:00")
+
+        # Formatting removed: the entities go, the rest stays.
+        out = self._handle(msg, {**frame, "entities": None})
+        self.assertEqual(out["raw_data"], {"webpage": {"url": "https://keep.example"}})
+        # A frame without entities (the text was cut to fit) keeps the formatting it had.
+        frame_without = {key: value for key, value in frame.items() if key != "entities"}
+        out = self._handle(msg, frame_without)
+        self.assertEqual(out["raw_data"]["entities"], bold)
+        self.assertEqual(out["version_count"], 1)
 
 
 class TestThePanelAndTheSheet(unittest.TestCase):

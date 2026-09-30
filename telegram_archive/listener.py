@@ -1118,6 +1118,7 @@ class TelegramListener:
                 # Apply the edit immediately; count and broadcast only when the
                 # archive actually changed, so stats stay honest and the viewer
                 # never displays text the archive rejected as stale.
+                entities = message_entities(message)
                 outcome, prior = await self.db.update_message_text(
                     chat_id=chat_id,
                     message_id=message.id,
@@ -1125,7 +1126,7 @@ class TelegramListener:
                     edit_date=edit_date,
                     account_id=self.account_id,
                     edit_hide=edit_hide,
-                    entities=message_entities(message),
+                    entities=entities,
                     update_entities=True,
                     rich_message=message_rich_payload(message),
                     source="listener",
@@ -1159,6 +1160,8 @@ class TelegramListener:
                         "new_text": new_text,
                         "edit_date": edit_date.isoformat() if edit_date else None,
                         "edit_hide": edit_hide,
+                        # The edit may have changed only the formatting.
+                        "entities": entities,
                     },
                 )
 

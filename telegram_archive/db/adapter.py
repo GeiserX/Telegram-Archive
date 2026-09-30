@@ -487,6 +487,30 @@ def _formatting_of(raw_data: Any) -> list | None:
     return entities if isinstance(entities, list) and entities else None
 
 
+def _rich_message_of(raw_data: Any) -> dict | None:
+    """The Rich Text Editor block tree in ``raw_data`` (#470), or None when it has none."""
+    raw = _raw_data_dict(raw_data)
+    rich = raw.get("rich_message") if raw else None
+    return rich if isinstance(rich, dict) and rich else None
+
+
+def _formatting_state(raw_data: Any) -> tuple[list | None, dict | None]:
+    """Everything in ``raw_data`` that describes the text's formatting: entities and block tree."""
+    return _formatting_of(raw_data), _rich_message_of(raw_data)
+
+
+def _version_date(date: datetime | None, edit_date: datetime | None, edit_hide: Any) -> datetime | None:
+    """When a text became current: its visible edit, or the send time.
+
+    An ``edit_date`` Telegram hides (``edit_hide``, a reaction, #219) is not
+    an edit of the text, so a text carrying one has been current since it
+    was sent.
+    """
+    if edit_hide:
+        return _strip_tz(date)
+    return _strip_tz(edit_date) or _strip_tz(date)
+
+
 # The keys of raw_data that describe a text's formatting. An edit moves them
 # into the version it supersedes; nothing else may replace them.
 _FORMATTING_KEYS = ("entities", "rich_message")
@@ -515,9 +539,9 @@ def _keep_archived_formatting(archived_raw_data: Any, incoming_raw_data: str) ->
 def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
     """The archived ``raw_data`` with its formatting keys taken from the incoming one.
 
-    For a formatting edit read with no other extras (``"{}"``): the old
-    formatting has gone into the version it supersedes, and the rest of the
-    archived payload stays as it was.
+    For an edit read with no other extras (``"{}"``), of the text or of the
+    formatting only: the old formatting has gone into the version it
+    supersedes, and the rest of the archived payload stays as it was.
     """
     archived = _raw_data_dict(archived_raw_data)
     incoming = _raw_data_dict(incoming_raw_data)
@@ -729,11 +753,13 @@ class DatabaseAdapter:
         date: datetime,
         entities: list | None = None,
         source: str | None = None,
+        rich_message: dict | None = None,
     ) -> bool:
         """Best-effort capture of a superseded version into message_versions.
 
         A version is the text, its formatting (``entities``, the list that was
-        in ``raw_data["entities"]``) and the path that saw it (``source``:
+        in ``raw_data["entities"]``, and ``rich_message``, the block tree of a
+        Rich Text Editor message) and the path that saw it (``source``:
         listener, sync, backup or import). The formatting is not part of the
         dedup hash, whose payload is frozen: a version is identified by its
         text and the time it became current, and a formatting-only edit still
@@ -765,6 +791,7 @@ class DatabaseAdapter:
             "captured_at": utcnow_naive(),
             "entities": json.dumps(entities) if entities else None,
             "source": source,
+            "rich_message": json.dumps(rich_message) if rich_message else None,
         }
         try:
             async with session.begin_nested():
@@ -775,7 +802,7 @@ class DatabaseAdapter:
         return bool(result.rowcount)
 
     def _message_version_date(self, message: Message) -> datetime:
-        return _strip_tz(message.edit_date) or _strip_tz(message.date)
+        return _version_date(message.date, message.edit_date, message.edit_hide)
 
     def _should_apply_upsert_text(self, existing: Message, values: dict[str, Any]) -> bool:
         """Decide whether a re-scanned/imported message may replace archived text.
@@ -823,6 +850,7 @@ class DatabaseAdapter:
         new_text: str,
         edit_date: datetime | None,
         formatting_changed: bool = False,
+        same_date_applies: bool = False,
     ) -> bool:
         """Decide whether a live edit event (listener/sync) may replace archived text.
 
@@ -833,8 +861,12 @@ class DatabaseAdapter:
 
         ``formatting_changed`` says the event's formatting differs from the
         archived one in an edit Telegram shows. Such an edit with the same text
-        applies only with a strictly newer ``edit_date``: every edit moves the
-        date, and the same date means the archive already holds this edit.
+        applies with a newer ``edit_date``: every edit moves the date.
+        ``same_date_applies`` lets it apply with the same ``edit_date`` too:
+        the date has one-second resolution and a bot can edit twice within one
+        second, so a live event with other entities at the same date is the
+        newer edit. For any other caller the same date means the archive
+        already holds this edit.
         """
         old_edit_date = _strip_tz(existing.edit_date)
         edit_date = _strip_tz(edit_date)
@@ -848,7 +880,9 @@ class DatabaseAdapter:
                 return False
             if edit_date is None:
                 return False
-            return old_edit_date is None or edit_date > old_edit_date
+            if old_edit_date is None or edit_date > old_edit_date:
+                return True
+            return same_date_applies and edit_date == old_edit_date
         if edit_date is None:
             return old_edit_date is None
         if old_edit_date is None:
@@ -950,7 +984,7 @@ class DatabaseAdapter:
             return False
         if _raw_data_dict(values.get("raw_data")) is None or _raw_data_dict(existing.raw_data) is None:
             return False
-        return _formatting_of(values.get("raw_data")) != _formatting_of(existing.raw_data)
+        return _formatting_state(values.get("raw_data")) != _formatting_state(existing.raw_data)
 
     def _pending_update_values(
         self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
@@ -1001,12 +1035,22 @@ class DatabaseAdapter:
         # Formatting belongs to the text it came with. An edit moves the old
         # formatting into the version it supersedes and writes the new one; any
         # other write keeps the archived formatting and only fills a missing key.
+        # A read with no extras ("{}") still says the new text has no
+        # formatting: the archived extras stay and the old formatting goes.
         if formatting_edit:
             if _has_raw_payload(values.get("raw_data")):
                 update_values["raw_data"] = values["raw_data"]
             else:
                 update_values["raw_data"] = _with_formatting_of(existing.raw_data, values["raw_data"])
-        elif not text_applied and "raw_data" in update_values:
+        elif text_applied:
+            archived_raw_data = getattr(existing, "raw_data", None)
+            if (
+                not _has_raw_payload(values.get("raw_data"))
+                and _has_raw_payload(archived_raw_data)
+                and _raw_data_dict(archived_raw_data) is not None
+            ):
+                update_values["raw_data"] = _with_formatting_of(archived_raw_data, "{}")
+        elif "raw_data" in update_values:
             update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
 
         changed = {}
@@ -1051,8 +1095,9 @@ class DatabaseAdapter:
                 chat_id=existing.chat_id,
                 message_id=existing.id,
                 text=values["text"],
-                date=_strip_tz(values.get("edit_date")) or _strip_tz(values["date"]),
+                date=_version_date(values["date"], values.get("edit_date"), values.get("edit_hide")),
                 entities=_formatting_of(values.get("raw_data")),
+                rich_message=_rich_message_of(values.get("raw_data")),
                 source=source,
             )
 
@@ -1071,6 +1116,7 @@ class DatabaseAdapter:
                 text=existing.text,
                 date=self._message_version_date(existing),
                 entities=_formatting_of(existing.raw_data),
+                rich_message=_rich_message_of(existing.raw_data),
                 source=source,
             )
         await session.execute(
@@ -2234,9 +2280,11 @@ class DatabaseAdapter:
         caller's path (``listener`` or ``sync``) on the version it writes.
 
         An edit writes the version it supersedes first: the old text, its
-        formatting and its date. With ``update_entities`` an edit that changed
-        only the formatting is an edit too, when Telegram shows it and its
-        ``edit_date`` is newer: it gets a version and moves ``edit_date``.
+        formatting (entities and block tree) and its date. With
+        ``update_entities`` an edit that changed only the formatting is an edit
+        too, when Telegram shows it and its ``edit_date`` is newer (or, from
+        the listener, the same with other entities): it gets a version and
+        moves ``edit_date``.
 
         Returns ``(outcome, prior)`` so callers can keep honest counters and
         only broadcast edits that actually changed the archive. ``outcome`` is
@@ -2258,14 +2306,17 @@ class DatabaseAdapter:
                 logger.debug("Edit no-op: message not found in archive")
                 return "not_found", None
 
-            archived_entities = _formatting_of(message.raw_data)
-            formatting_changed = (
-                update_entities
-                and not edit_hide
-                and _raw_data_dict(message.raw_data) is not None
-                and (entities or None) != archived_entities
+            archived_entities, archived_rich_message = _formatting_state(message.raw_data)
+            formatting_known = update_entities and not edit_hide and _raw_data_dict(message.raw_data) is not None
+            entities_changed = formatting_known and (entities or None) != archived_entities
+            formatting_changed = entities_changed or (
+                formatting_known and (rich_message or None) != archived_rich_message
             )
-            if not self._should_apply_edit_text(message, new_text, edit_date, formatting_changed):
+            # The same edit_date applies only to a live event with other
+            # entities. A block tree also carries file references, which
+            # Telegram refreshes, so a tree alone never counts at the same date.
+            same_date_applies = source == "listener" and entities_changed
+            if not self._should_apply_edit_text(message, new_text, edit_date, formatting_changed, same_date_applies):
                 # Not an edit: the same text and formatting (a reaction moves
                 # edit_date, #219), an edit Telegram hides, or older evidence.
                 # The archived formatting stays; a key the row never had is
@@ -2301,6 +2352,7 @@ class DatabaseAdapter:
                 text=message.text,
                 date=self._message_version_date(message),
                 entities=archived_entities,
+                rich_message=archived_rich_message,
                 source=source,
             )
             await session.execute(
@@ -2462,6 +2514,7 @@ class DatabaseAdapter:
 
     def _message_version_to_dict(self, row: MessageVersion) -> dict[str, Any]:
         entities = _formatting_of({"entities": _json_or_none(row.entities)})
+        rich_message = _rich_message_of({"rich_message": _json_or_none(row.rich_message)})
         return {
             "chat_id": row.chat_id,
             "message_id": row.message_id,
@@ -2470,6 +2523,7 @@ class DatabaseAdapter:
             "captured_at": row.captured_at,
             "source": row.source,
             "entities": entities,
+            "rich_message": rich_message,
         }
 
     async def get_message_versions(

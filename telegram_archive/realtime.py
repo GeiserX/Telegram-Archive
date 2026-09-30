@@ -169,11 +169,13 @@ def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:
             data["message"]["text"] = msg["text"][:max_text] + "…"
             truncated = True
 
-    # edit path: data["new_text"]
+    # edit path: data["new_text"]. Its entities describe the whole text, so a
+    # cut text goes without them and the viewer keeps the formatting it has.
     if "new_text" in data and data.get("new_text") and len(data["new_text"]) > max_text:
         if not truncated:
             data = data.copy()
         data["new_text"] = data["new_text"][:max_text] + "…"
+        data.pop("entities", None)
 
     return data
 

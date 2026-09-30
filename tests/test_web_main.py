@@ -964,7 +964,12 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
                 {
                     "type": "edit",
                     "chat_id": 10,
-                    "data": {"message_id": 5, "new_text": "edited", "edit_hide": 1},
+                    "data": {
+                        "message_id": 5,
+                        "new_text": "edited",
+                        "edit_hide": 1,
+                        "entities": [{"type": "bold", "offset": 0, "length": 6}],
+                    },
                 }
             )
         mock_bc.assert_awaited_once()
@@ -972,6 +977,16 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_bc.call_args[0][1]["chat_ref"], "refRealtime00000000010")
         # Telegram's flag reaches the viewer, which keeps the pencil off a hidden edit.
         self.assertEqual(mock_bc.call_args[0][1]["edit_hide"], 1)
+        # So do the new entities: the edit may have changed only the formatting.
+        self.assertEqual(mock_bc.call_args[0][1]["entities"], [{"type": "bold", "offset": 0, "length": 6}])
+
+    async def test_an_edit_frame_without_entities_says_nothing_about_them(self):
+        """A frame whose text was cut to fit carries no entities; the relay adds none."""
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "edit", "chat_id": 10, "data": {"message_id": 5, "new_text": "edited…"}}
+            )
+        self.assertNotIn("entities", mock_bc.call_args[0][1])
 
     async def test_broadcasts_delete_event(self):
         """handle_realtime_notification broadcasts delete events."""

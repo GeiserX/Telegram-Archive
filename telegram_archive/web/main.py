@@ -443,6 +443,7 @@ async def handle_realtime_notification(payload: dict):
                 "new_text": data.get("new_text"),
                 "edit_date": data.get("edit_date"),
                 "edit_hide": data.get("edit_hide"),
+                **({"entities": data["entities"]} if "entities" in data else {}),
             },
         )
     elif notification_type == "delete":
@@ -5096,22 +5097,31 @@ async def broadcast_new_message(chat_id: int, message: dict, account_id: int | N
 
 
 async def broadcast_message_edit(
-    chat_id: int, message_id: int, new_text: str, edit_date: str, account_id: int | None = None
+    chat_id: int,
+    message_id: int,
+    new_text: str,
+    edit_date: str,
+    account_id: int | None = None,
+    entities: list | None = None,
 ) -> None:
-    """Broadcast a message edit to subscribed clients (frames are ref-addressed)."""
+    """Broadcast a message edit to subscribed clients (frames are ref-addressed).
+
+    ``entities`` is the new text's formatting ([] for none); None leaves it out
+    of the frame, and the viewer keeps the formatting it has.
+    """
     chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
-    await ws_manager.broadcast_to_chat(
-        chat,
-        {
-            "type": "edit",
-            "chat_ref": chat["ref"],
-            "message_id": message_id,
-            "new_text": new_text,
-            "edit_date": edit_date,
-        },
-    )
+    frame = {
+        "type": "edit",
+        "chat_ref": chat["ref"],
+        "message_id": message_id,
+        "new_text": new_text,
+        "edit_date": edit_date,
+    }
+    if entities is not None:
+        frame["entities"] = entities
+    await ws_manager.broadcast_to_chat(chat, frame)
 
 
 async def broadcast_message_delete(

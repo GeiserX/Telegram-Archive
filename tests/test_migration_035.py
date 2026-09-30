@@ -1,9 +1,9 @@
-"""Migration 035: ``message_versions.entities`` and ``message_versions.source``.
+"""Migration 035: ``message_versions.entities``, ``.source`` and ``.rich_message``.
 
-Both columns are nullable and guarded by the inspector. The upgrade path runs
+All three columns are nullable and guarded by the inspector. The upgrade path runs
 from 033, the release before the edits work, through 034 to head on SQLite and
 on PostgreSQL, with a version row from before: it keeps its text and reads back
-with no formatting and no source, never a guess.
+with no formatting, no block tree and no source, never a guess.
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
 
 _VERSIONS = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
-_COLUMNS = {"entities", "source"}
+_COLUMNS = {"entities", "source", "rich_message"}
 SENT = datetime(2026, 1, 1, 9, 0, 0)
 
 
@@ -111,8 +111,8 @@ def test_upgrade_from_033_keeps_old_versions_and_is_idempotent(database_urls):
 
         with engine.begin() as conn:
             assert _columns(conn) >= _COLUMNS
-            rows = conn.execute(sa.text("SELECT text, entities, source FROM message_versions")).all()
-            assert [tuple(row) for row in rows] == [("Meet at nine", None, None)]
+            rows = conn.execute(sa.text("SELECT text, entities, source, rich_message FROM message_versions")).all()
+            assert [tuple(row) for row in rows] == [("Meet at nine", None, None, None)]
             # A re-run, or a create_all() database that already has the columns, changes nothing.
             _run(conn, migration_035.upgrade)
             assert _columns(conn) >= _COLUMNS
@@ -120,8 +120,8 @@ def test_upgrade_from_033_keeps_old_versions_and_is_idempotent(database_urls):
         engine.dispose()
 
     versions = asyncio.run(_read_versions(async_url))
-    assert [(v["text"], v["entities"], v["source"], v["captured_at"]) for v in versions] == [
-        ("Meet at nine", None, None, SENT)
+    assert [(v["text"], v["entities"], v["source"], v["rich_message"], v["captured_at"]) for v in versions] == [
+        ("Meet at nine", None, None, None, SENT)
     ]
 
     engine = sa.create_engine(sync_url)

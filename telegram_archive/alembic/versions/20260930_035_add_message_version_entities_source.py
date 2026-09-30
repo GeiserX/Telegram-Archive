@@ -4,13 +4,16 @@
 edit replaced the old formatting in ``raw_data`` and an edit that changed only
 the formatting left nothing behind. ``entities`` keeps the version's
 formatting as a JSON list, in the shape of ``raw_data["entities"]``.
+``rich_message`` keeps a Rich Text Editor message's block tree (#470) as JSON,
+in the shape of ``raw_data["rich_message"]``: the rest of the version's
+formatting, which ``entities`` flattens.
 
 ``source`` names the path that wrote the row: ``listener``, ``sync``,
 ``backup`` or ``import``. The listener sees each edit; the other paths read
 the text current at that moment, so several edits between two reads arrive as
 one. The viewer uses it to say when the count of edits is a lower bound.
 
-Both columns are nullable and rows from before this migration keep NULL:
+All three columns are nullable and rows from before this migration keep NULL:
 unknown, never a guess.
 
 Idempotent: the entrypoint stamping ladder is frozen at 018, a create_all()
@@ -38,6 +41,7 @@ def _columns() -> tuple[sa.Column, ...]:
     return (
         sa.Column("entities", sa.Text(), nullable=True),
         sa.Column("source", sa.String(length=16), nullable=True),
+        sa.Column("rich_message", sa.Text(), nullable=True),
     )
 
 

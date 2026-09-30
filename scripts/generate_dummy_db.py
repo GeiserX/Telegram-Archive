@@ -254,7 +254,7 @@ class ChatScript:
         pinned: bool = False,
         topic: int | None = None,
         edited_from: str | list[str | tuple[str, list | None]] | None = None,
-        edit_source: str | None = None,
+        edit_source: str | None = "listener",
         react: dict[str, int] | None = None,
         forward: tuple[int, int, str] | None = None,
         deleted_after: timedelta | None = None,
@@ -291,6 +291,8 @@ class ChatScript:
             # edited_after moves the edits later, a day on for an edit made the
             # next day.
             # An earlier version is its text, or (text, formatting entities).
+            # The listener saw it unless edit_source says otherwise; a version
+            # with no source is unknown and the history says "at least".
             earlier = [edited_from] if isinstance(edited_from, str) else list(edited_from)
             shift = edited_after or timedelta(0)
             for step, old in enumerate(earlier):

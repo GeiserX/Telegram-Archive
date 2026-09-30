@@ -1098,6 +1098,23 @@ class TestEventHandlers:
         assert kind == "edit"
         assert payload["edit_hide"] == 1
 
+    def test_on_message_edited_broadcasts_the_new_entities(self, listener_with_handlers):
+        """An edit may change only the formatting, so the live frame carries the
+        new entities and the open viewer draws them without a reload."""
+        from telethon.tl.types import MessageEntityBold
+
+        listener, handlers = listener_with_handlers
+        listener._notify_update = AsyncMock()
+        event = self._edit_event()
+        event.message.entities = [MessageEntityBold(offset=0, length=6)]
+
+        asyncio.run(handlers[events.MessageEdited](event))
+
+        kind, payload = listener._notify_update.await_args.args
+        assert kind == "edit"
+        assert payload["entities"] == [{"type": "bold", "offset": 0, "length": 6}]
+        assert listener.db.update_message_text.await_args.kwargs["entities"] == payload["entities"]
+
     def test_on_new_message_keeps_telegrams_edit_hide(self, listener_with_handlers):
         """A message first seen after Telegram bumped its edit_date for a reaction
         carries edit_hide, and the archive keeps it beside the date."""
