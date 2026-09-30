@@ -95,16 +95,18 @@ The listener can miss some reaction changes. Telegram does not reliably push rea
 
 ## Mass-operation protection
 
-A burst of edits or deletions, such as someone clearing a whole chat, could overwrite or remove large parts of the archive. The listener guards against this with a rate limiter.
+A burst of deletions, such as someone clearing a whole chat, could remove large parts of the archive. The listener guards against this with a rate limiter on deletions.
+
+Edits are not limited. An edit removes nothing, because the listener keeps the earlier text as a version. Telegram also sends many reaction changes as edit events, so a limit on edits would let a burst of reactions block real edits.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `MASS_OPERATION_THRESHOLD` | `10` | Most edits plus deletions the listener applies per chat within one window. |
+| `MASS_OPERATION_THRESHOLD` | `10` | Most deletions the listener applies per chat within one window. |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | Length of the sliding window. It is also how long a chat stays blocked once it goes over the limit. |
 
-Each chat has one sliding window, shared by edits and deletions. With the defaults, the first 10 operations inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's edits and deletions for one more window.
+Each chat has one sliding window. With the defaults, the first 10 deletions inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's deletions for one more window. Edits in that chat are still applied.
 
-The listener drops blocked operations. It does not queue them, update the viewer or fire a webhook. It keeps every operation it applied before the chat went over the limit. The counters live in memory and reset when the process restarts.
+The listener drops blocked deletions. It does not queue them, update the viewer or fire a webhook. It keeps every deletion it applied before the chat went over the limit. The counters live in memory and reset when the process restarts.
 
 The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the scheduled backup has no such limit.
 

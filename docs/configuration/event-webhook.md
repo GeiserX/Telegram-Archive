@@ -14,7 +14,7 @@ There are two events:
 The webhook never fires for:
 
 - new messages, reactions, pins or chat actions such as joins and title changes
-- edits and deletions that the listener skipped, or that its [mass-operation protection](listener.md) blocked because too many arrived at once
+- edits and deletions that the listener skipped, and deletions that its [mass-operation protection](listener.md#mass-operation-protection) blocked because too many arrived at once
 - an edit that only changes formatting
 - changes found by the scheduled `SYNC_DELETIONS_EDITS` sweep
 

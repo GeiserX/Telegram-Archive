@@ -5,9 +5,10 @@ Catches events as they happen and updates the local database immediately.
 Safety features:
 - LISTEN_EDITS: Apply text edits (default: true, safe)
 - LISTEN_DELETIONS: Delete messages (default: false, opt-in mirror mode)
-- Mass operation detection: Blocks bulk edits/deletions to protect data
+- Mass operation detection: Blocks bulk deletions to protect data
 
-Mass operation protection is rate limiting, not buffering. Operations under
+Mass operation protection is rate limiting, not buffering, and covers
+deletions only; an edit keeps the earlier text as a version. Deletions under
 the threshold are applied immediately; disable LISTEN_DELETIONS to guarantee
 Telegram deletions never remove archived messages.
 """
@@ -73,16 +74,19 @@ logger = logging.getLogger(__name__)
 
 class MassOperationProtector:
     """
-    Rate-limiting protection against mass deletions/edits.
+    Rate-limiting protection against mass deletions.
+
+    Only deletions pass through it. An edit never removes anything, because
+    the earlier text is kept as a version, so edits are never rate limited.
 
     HOW IT WORKS:
-    - Uses a sliding time window to count operations per chat
+    - Uses a sliding time window to count deletions per chat
     - Operations are applied IMMEDIATELY if under threshold
     - Once threshold exceeded, chat is blocked for remainder of window
 
     PARAMETERS:
-    - THRESHOLD (default 10): Max operations allowed in the time window
-    - WINDOW_SECONDS (default 30): Sliding time window for counting operations
+    - THRESHOLD (default 10): Max deletions allowed in the time window
+    - WINDOW_SECONDS (default 30): Sliding time window for counting deletions
 
     EXAMPLE:
     - User deletes 2 messages → both applied immediately ✓
@@ -126,7 +130,7 @@ class MassOperationProtector:
     def start(self):
         """Start the protector."""
         self._running = True
-        logger.info(f"🛡️ Rate limiter active: max {self.threshold} ops per {self.window_seconds}s per chat")
+        logger.info(f"🛡️ Rate limiter active: max {self.threshold} deletions per {self.window_seconds}s per chat")
 
     async def stop(self):
         """Stop the protector."""
@@ -238,7 +242,8 @@ class TelegramListener:
     Designed to run alongside the scheduled backup process.
 
     RATE LIMITING PROTECTION:
-    Uses a sliding window to limit operations per chat. Normal usage (deleting
+    Uses a sliding window to limit deletions per chat. Edits are not limited,
+    since an edit keeps the earlier text as a version. Normal usage (deleting
     a few messages) works instantly. Mass operations (deleting 50+ messages)
     are blocked after the threshold, protecting most of your backup.
 
@@ -378,7 +383,7 @@ class TelegramListener:
             total = sum(len(t) for t in config.skip_topic_ids.values())
             logger.info(f"  SKIP_TOPIC_IDS: {total} topic(s) excluded across {len(config.skip_topic_ids)} chat(s)")
         logger.info(
-            f"  Mass-op rate limit: first {config.mass_operation_threshold} ops per chat per "
+            f"  Mass-deletion rate limit: first {config.mass_operation_threshold} deletions per chat per "
             f"{config.mass_operation_window_seconds}s window are applied, the rest blocked"
         )
         logger.info("=" * 70)
@@ -1038,9 +1043,10 @@ class TelegramListener:
             """
             Handle message edit events.
 
-            Operations are QUEUED, not applied immediately.
-            The background processor applies them after the buffer delay,
-            allowing burst detection BEFORE any data is modified.
+            Edits are applied at once and never pass through the mass-deletion
+            guard: an edit keeps the earlier text as a version, so it removes
+            nothing, and a reaction-only edit event must not use up a budget
+            that would then drop real text edits.
             """
             # Check if edits are enabled
             if not self.config.listen_edits:
@@ -1061,22 +1067,14 @@ class TelegramListener:
                 # changes as genuine UpdateEditMessage events (Telethon #4635), which
                 # our text-outcome early return below would otherwise discard. Harvest
                 # them into the same debounce buffer as the live reaction handler,
-                # BEFORE the rate-limit check and the text early return, so a
-                # reaction-only edit still reconciles and an edit rate limit can't
-                # suppress it. Capture and write are synchronous here, so arrival
+                # BEFORE the text early return, so a reaction-only edit still
+                # reconciles. Capture and write are synchronous here, so arrival
                 # order is preserved and overwriting is correct.
                 self._buffer_reaction_snapshot(chat_id, message)
 
                 self.stats["edits_received"] += 1
                 new_text = message_plain_text(message)
                 edit_date = message.edit_date
-
-                # Check rate limit before applying
-                allowed, reason = self._protector.check_operation(chat_id, "edit")
-
-                if not allowed:
-                    self.stats["operations_discarded"] += 1
-                    return
 
                 # Apply the edit immediately; count and broadcast only when the
                 # archive actually changed, so stats stay honest and the viewer
@@ -1786,8 +1784,8 @@ class TelegramListener:
 
         logger.info("=" * 70)
         logger.info("🎧 Real-time listener started with RATE LIMITING")
-        logger.info(f"   Max {self._protector.threshold} ops per {self._protector.window_seconds}s per chat")
-        logger.info("   Normal usage works instantly, mass operations blocked")
+        logger.info(f"   Max {self._protector.threshold} deletions per {self._protector.window_seconds}s per chat")
+        logger.info("   Normal usage works instantly, mass deletions blocked")
         logger.info("=" * 70)
 
         try:
@@ -1932,7 +1930,7 @@ class TelegramListener:
                 logger.warning("")
                 logger.warning(f"   🚫 Currently blocked chats: {len(blocked)}")
                 for _chat_id, (reason, discarded) in blocked.items():
-                    logger.warning(f"      {discarded} ops discarded - {reason}")
+                    logger.warning(f"      {discarded} deletions discarded - {reason}")
 
             logger.info("=" * 70)
 

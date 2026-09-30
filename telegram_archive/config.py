@@ -1257,7 +1257,7 @@ class Config:
             if self.listen_chat_actions:
                 logger.info("  LISTEN_CHAT_ACTIONS: true - Chat metadata changes tracked!")
             logger.info(
-                f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s"
+                f"  Mass deletion protection: block if >{self.mass_operation_threshold} deletions in {self.mass_operation_window_seconds}s"
             )
         if self.event_webhook_enabled:
             # Never log the URL, at any level: Slack/Discord/ntfy URLs are

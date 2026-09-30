@@ -202,7 +202,7 @@ Feature page: [Real-time listener](../configuration/listener.md).
 | <span id="listen_chat_actions"></span>`LISTEN_CHAT_ACTIONS` | `true` | backup | Save service messages such as joins and leaves, and refresh chat titles and photos. |
 | <span id="listen_reactions"></span>`LISTEN_REACTIONS` | `false` | backup | Capture per-emoji reaction counts as they change. |
 | <span id="reaction_debounce_seconds"></span>`REACTION_DEBOUNCE_SECONDS` | `1.5` | backup | How often buffered reaction changes are written. Floored at 0.1. |
-| <span id="mass_operation_threshold"></span>`MASS_OPERATION_THRESHOLD` | `10` | backup | The most edits and deletions the listener applies to one chat in one window. The listener drops any beyond that, and the chat stays blocked for one window length. Below 1 stops startup, even with the listener off. |
+| <span id="mass_operation_threshold"></span>`MASS_OPERATION_THRESHOLD` | `10` | backup | The most deletions the listener applies to one chat in one window. The listener drops any beyond that, and the chat's deletions stay blocked for one window length. Edits are never limited. Below 1 stops startup, even with the listener off. |
 | <span id="mass_operation_window_seconds"></span>`MASS_OPERATION_WINDOW_SECONDS` | `30` | backup | Length of that sliding window, and how long a chat stays blocked after it trips. Below 1 stops startup. |
 | <span id="mass_operation_buffer_delay"></span>`MASS_OPERATION_BUFFER_DELAY` | `2.0` | backup | Deprecated and unused. It is still parsed, so a non-number stops startup. |
 

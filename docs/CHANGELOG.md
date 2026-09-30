@@ -32,6 +32,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
     - **Notifications** have a switch in the main menu instead of banners, and a one-time row at the top of the chat list asks first.
 - **A second viewer drops ended sessions within 60 seconds.** A viewer checks each session it holds in memory against the database again once a minute. A session ended on one viewer, by the end-all action, by editing an account or by revoking a token, stops working on a second viewer on the same database within that minute. It used to keep working there until a restart or until `AUTH_SESSION_DAYS` ran out. A browser there that only holds a live connection is closed by the sweep every 900 seconds. ([#501](https://github.com/GeiserX/Telegram-Archive/pull/501))
 
+### Fixed
+- **A burst of reactions no longer drops real edits.** Telegram sends many reaction changes as edit events. The listener's mass-operation protection counted them together with edits and deletions, so a burst of reactions could use up a chat's budget and the next text edits in that chat were dropped for 30 seconds. Edits are no longer rate limited, since an edit keeps the earlier text as a version. Deletions are limited exactly as before, and `MASS_OPERATION_THRESHOLD` now counts deletions only. See [Mass-operation protection](configuration/listener.md#mass-operation-protection).
+
 ## [8.17.0] - 2026-09-29
 
 Telegram Archive is on PyPI, transcription works with any provider, and the documentation moved to [its own site](https://geiserx.github.io/Telegram-Archive/). Upgrading runs migration 033 automatically. Docker deployments need no changes, and the old `python -m src` name keeps working.

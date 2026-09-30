@@ -68,7 +68,7 @@ Events the backup sends to the viewer so an open chat changes without a reload a
 
 ## Mass-operation protection
 
-A per-chat rate limit on edits and deletions applied by the real-time listener. When a chat goes over it, the listener discards that chat's edits and deletions for one more window. It does not cover the sync pass. See [Mass-operation protection](../configuration/listener.md#mass-operation-protection).
+A per-chat rate limit on deletions applied by the real-time listener. Edits are not limited, because an edit keeps the earlier text as a version. When a chat goes over the limit, the listener discards that chat's deletions for one more window. It does not cover the sync pass. See [Mass-operation protection](../configuration/listener.md#mass-operation-protection).
 
 ## Master login
 

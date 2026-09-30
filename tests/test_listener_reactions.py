@@ -230,14 +230,17 @@ class TestEditVectorReactions:
         asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("👍", 2)))))
         assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "👍", "count": 2}]
 
-    def test_rate_limited_edit_still_harvests_reactions(self):
-        # The harvest sits BEFORE the protector check, so an edit rate limit
-        # cannot suppress reaction capture (PR claim, now locked by a test).
+    def test_edit_bypasses_the_deletion_guard(self):
+        # Only deletions pass through the mass-operation guard. An edit in a
+        # chat the guard has blocked is still applied and its reactions are
+        # still harvested, and the edit never spends the guard's budget.
         listener, handlers, db = _build_all()
         listener._protector.check_operation = MagicMock(return_value=(False, "rate limited"))
         asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("👍", 2)))))
         assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "👍", "count": 2}]
-        db.update_message_text.assert_not_awaited()
+        db.update_message_text.assert_awaited_once()
+        listener._protector.check_operation.assert_not_called()
+        assert listener.stats["operations_discarded"] == 0
 
     def test_min_payload_not_buffered(self):
         listener, handlers, _db = _build_all()

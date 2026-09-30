@@ -1307,7 +1307,7 @@ class TestMassOperationProtector:
         """Test that operations under the threshold are allowed."""
         protector = MassOperationProtector(threshold=5, window_seconds=30)
         for _ in range(5):
-            allowed, reason = protector.check_operation(-100, "edit")
+            allowed, reason = protector.check_operation(-100, "deletion")
             assert allowed is True
             assert reason == "allowed"
 
@@ -1327,9 +1327,9 @@ class TestMassOperationProtector:
     def test_get_stats_returns_counts(self):
         """Test get_stats returns meaningful statistics."""
         protector = MassOperationProtector(threshold=2, window_seconds=30)
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")  # triggers rate limit
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")  # triggers rate limit
 
         stats = protector.get_stats()
         assert stats["operations_applied"] >= 2
@@ -1341,12 +1341,12 @@ class TestMassOperationProtector:
         protector = MassOperationProtector(threshold=2, window_seconds=30)
 
         # Fill up chat A
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")  # May trigger block for -100
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")  # May trigger block for -100
 
         # Chat B should still be allowed
-        allowed, _ = protector.check_operation(-200, "edit")
+        allowed, _ = protector.check_operation(-200, "deletion")
         assert allowed is True
 
 
