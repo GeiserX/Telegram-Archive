@@ -964,12 +964,14 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
                 {
                     "type": "edit",
                     "chat_id": 10,
-                    "data": {"message_id": 5, "new_text": "edited"},
+                    "data": {"message_id": 5, "new_text": "edited", "edit_hide": 1},
                 }
             )
         mock_bc.assert_awaited_once()
         self.assertEqual(mock_bc.call_args[0][1]["type"], "edit")
         self.assertEqual(mock_bc.call_args[0][1]["chat_ref"], "refRealtime00000000010")
+        # Telegram's flag reaches the viewer, which keeps the pencil off a hidden edit.
+        self.assertEqual(mock_bc.call_args[0][1]["edit_hide"], 1)
 
     async def test_broadcasts_delete_event(self):
         """handle_realtime_notification broadcasts delete events."""

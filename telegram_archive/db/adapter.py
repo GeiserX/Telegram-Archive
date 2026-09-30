@@ -771,6 +771,60 @@ class DatabaseAdapter:
         result = await session.execute(stmt.execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
+    @staticmethod
+    def _fills_unknown_edit_hide(existing: Message, edit_date: datetime | None, edit_hide: int | None) -> bool:
+        """True when ``edit_hide`` fills a flag the archive never knew.
+
+        Rows archived before migration 034 have ``edit_date`` and a NULL flag,
+        and NULL reads as shown, so a reaction Telegram hid still shows a
+        pencil. A later read of the same edit (same ``edit_date``) that carries
+        the flag fills it. That writes an unknown value beside the same date
+        and overwrites nothing the archive captured.
+        """
+        if edit_hide is None or existing.edit_hide is not None:
+            return False
+        edit_date = _strip_tz(edit_date)
+        return edit_date is not None and edit_date == _strip_tz(existing.edit_date)
+
+    def _should_write_edit_hide(self, existing: Message, values: dict[str, Any], update_values: dict[str, Any]) -> bool:
+        """edit_hide is Telegram's flag for the edit_date it came with.
+
+        It is written when that date is written and differs from the stored
+        one (a source with no flag, an import, writes NULL there: unknown, not
+        "shown"), or when it fills an unknown flag for the same date. A known
+        flag is never replaced beside an unchanged date.
+        """
+        if "edit_date" in update_values and _strip_tz(update_values["edit_date"]) != _strip_tz(existing.edit_date):
+            return True
+        return self._fills_unknown_edit_hide(existing, values.get("edit_date"), values.get("edit_hide"))
+
+    def _older_read_text_to_keep(self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]) -> bool:
+        """True when a read from Telegram saw text the archive already replaced.
+
+        The backup reads a message, then processes the rest of its batch
+        before writing. An edit in that window reaches the listener, which
+        stores the newer text with its edit_date first. The batch then brings
+        the older text with no edit_date (or an older one), and the upsert
+        rightly keeps the newer text. That older text is still something the
+        archive read from Telegram, so it is kept as a version.
+
+        Only writers that set ``keeps_older_text`` (the backup's own reads)
+        qualify: an import renders text its own way, and a rendering
+        difference must never become a version.
+        """
+        if not message_data.get("keeps_older_text"):
+            return False
+        new_text = values.get("text")
+        if new_text is None or new_text == existing.text:
+            return False
+        if self._should_apply_upsert_text(existing, values):
+            return False
+        old_edit_date = _strip_tz(existing.edit_date)
+        if old_edit_date is None:
+            return False
+        new_edit_date = _strip_tz(values.get("edit_date"))
+        return new_edit_date is None or new_edit_date < old_edit_date
+
     def _pending_update_values(
         self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
     ) -> dict[str, Any]:
@@ -792,10 +846,7 @@ class DatabaseAdapter:
         else:
             update_values.pop("text", None)
             update_values.pop("edit_date", None)
-        if "edit_date" not in update_values:
-            # edit_hide is Telegram's flag for the edit_date it came with, so it
-            # changes only when that date is written. A source with no flag (an
-            # import) writes NULL beside its date: unknown, not "shown".
+        if not self._should_write_edit_hide(existing, values, update_values):
             update_values.pop("edit_hide", None)
 
         # Sender names are capture-time snapshots. A missing/blank snapshot may
@@ -838,13 +889,25 @@ class DatabaseAdapter:
         if snapshot is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
-        if not self._pending_update_values(snapshot, message_data, values):
+        if not self._pending_update_values(snapshot, message_data, values) and not self._older_read_text_to_keep(
+            snapshot, message_data, values
+        ):
             return
 
         existing = await self._load_message_for_update(session, values["account_id"], values["chat_id"], values["id"])
         if existing is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
+
+        if self._older_read_text_to_keep(existing, message_data, values):
+            await self._record_message_version(
+                session=session,
+                account_id=existing.account_id,
+                chat_id=existing.chat_id,
+                message_id=existing.id,
+                text=values["text"],
+                date=_strip_tz(values.get("edit_date")) or _strip_tz(values["date"]),
+            )
 
         update_values = self._pending_update_values(existing, message_data, values)
         if not update_values:
@@ -1657,6 +1720,56 @@ class DatabaseAdapter:
             )
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
+
+    async def get_unflagged_edit_ids(self, chat_id: int, *, account_id: int) -> set[int]:
+        """IDs of a chat's messages with ``edit_date`` set and no ``edit_hide`` flag.
+
+        These rows were archived before migration 034 kept the flag. The sync
+        pass fills the flag for them from the message it already fetched when
+        the edit_date matches, so a reaction Telegram hid stops showing as an
+        edit. The set shrinks to nothing as the flags are filled.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message.id).where(
+                and_(
+                    Message.account_id == account_id,
+                    Message.chat_id == chat_id,
+                    Message.edit_date.isnot(None),
+                    Message.edit_hide.is_(None),
+                    or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
+                )
+            )
+            result = await session.execute(stmt)
+            return {row.id for row in result}
+
+    @retry_on_locked()
+    async def fill_edit_hide(
+        self, chat_id: int, message_id: int, edit_date: datetime, edit_hide: int, *, account_id: int
+    ) -> bool:
+        """Fill an unknown ``edit_hide`` for the ``edit_date`` the archive holds.
+
+        Writes only when the stored flag is NULL and the stored edit_date is
+        this one, so it fills an unknown value beside the same date and
+        overwrites nothing. Text, edit_date and versions are left alone.
+        Returns True when a row changed.
+        """
+        edit_date = _strip_tz(edit_date)
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Message)
+                .where(
+                    and_(
+                        Message.account_id == account_id,
+                        Message.chat_id == chat_id,
+                        Message.id == message_id,
+                        Message.edit_date == edit_date,
+                        Message.edit_hide.is_(None),
+                    )
+                )
+                .values(edit_hide=edit_hide)
+            )
+            await session.commit()
+            return bool(result.rowcount)
 
     async def get_message_ids_since(self, chat_id: int, cutoff: datetime, limit: int, *, account_id: int) -> list[int]:
         """Return the newest message IDs in a chat dated at or after ``cutoff`` (#221).

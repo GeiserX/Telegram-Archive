@@ -1164,6 +1164,48 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
 
         self.backup.db.update_message_text.assert_awaited_once()
 
+    def test_edited_message_passes_telegrams_edit_hide(self):
+        """The flag Telegram sends with the fetched message reaches the adapter."""
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 1, 1)})
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
+        remote = self._remote(1, edit_date=datetime(2024, 6, 15), text="updated text")
+        remote.edit_hide = True
+        self.backup.client.get_messages = AsyncMock(return_value=[remote])
+
+        _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        assert self.backup.db.update_message_text.await_args.kwargs["edit_hide"] == 1
+
+    def test_same_edit_date_fills_an_unknown_edit_hide_only(self):
+        """A row archived before the flag was kept (edit_date set, flag NULL) gets
+        the flag from the fetched message when the date matches. Nothing else is
+        written: the text path is not taken for an unchanged date."""
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 6, 15, 12, 0)})
+        self.backup.db.get_unflagged_edit_ids = AsyncMock(return_value={1})
+        self.backup.db.fill_edit_hide = AsyncMock(return_value=True)
+        remote = self._remote(1, edit_date=datetime(2024, 6, 15, 12, 0, tzinfo=UTC), text="reacted to")
+        remote.edit_hide = True
+        self.backup.client.get_messages = AsyncMock(return_value=[remote])
+
+        _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        self.backup.db.fill_edit_hide.assert_awaited_once_with(100, 1, datetime(2024, 6, 15, 12, 0), 1, account_id=1)
+        self.backup.db.update_message_text.assert_not_awaited()
+
+    def test_same_edit_date_with_a_known_flag_writes_nothing(self):
+        """A row whose flag is known is not in the unflagged set: no write at all."""
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 6, 15, 12, 0)})
+        self.backup.db.get_unflagged_edit_ids = AsyncMock(return_value=set())
+        self.backup.db.fill_edit_hide = AsyncMock(return_value=True)
+        remote = self._remote(1, edit_date=datetime(2024, 6, 15, 12, 0), text="reacted to")
+        remote.edit_hide = True
+        self.backup.client.get_messages = AsyncMock(return_value=[remote])
+
+        _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        self.backup.db.fill_edit_hide.assert_not_awaited()
+        self.backup.db.update_message_text.assert_not_awaited()
+
     def test_same_edit_date_aware_vs_naive_not_updated(self):
         """A tz-aware remote edit_date equal to the archived naive one is a no-op.
 

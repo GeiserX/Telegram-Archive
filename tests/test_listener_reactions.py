@@ -185,7 +185,8 @@ def _build_all(listen_reactions=True, listen_edits=True, listen_new_messages=Tru
 
 def _edit_event(msg_id=42, text="hi", reactions=None):
     message = SimpleNamespace(id=msg_id, text=text, edit_date=None, reactions=reactions, reply_to=None)
-    return SimpleNamespace(chat_id=TRACKED, message=message)
+    # A MessageEdited event carries its chat type like a NewMessage event does.
+    return SimpleNamespace(chat_id=TRACKED, message=message, is_private=False, is_group=True, is_channel=True)
 
 
 class TestEditVectorReactions:

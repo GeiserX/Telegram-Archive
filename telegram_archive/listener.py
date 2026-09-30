@@ -740,6 +740,34 @@ class TelegramListener:
                 media_type=prior.get("media_type"),
             )
 
+    @staticmethod
+    def _event_chat_type_hints(event: events.NewMessage.Event) -> tuple[bool | None, bool | None, bool | None]:
+        """The (is_user, is_group, is_channel) hints for _should_process_chat.
+
+        NewMessage and MessageEdited events carry their peer type
+        (PeerUser/PeerChat/PeerChannel) synchronously via _chat_peer, with no
+        entity fetch, so a chat never backed up before can be matched against
+        CHAT_TYPES right now instead of being dropped until the next scheduled
+        backup adds it to _tracked_chat_ids.
+
+        Telethon's event.is_channel is True for BOTH broadcast channels and
+        megagroups (any PeerChannel), while event.is_group is True for
+        megagroups too, so a megagroup would otherwise set both flags and could
+        match a channels-only CHAT_TYPES filter it should be excluded from.
+        _get_chat_type() already treats a megagroup as "group", never
+        "channel"; this mirrors that.
+        """
+        is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
+        if is_channel and is_group is None:
+            # Telethon's is_group is None for a PeerChannel whose broadcast flag
+            # it can't see (chat entity absent from the update). Megagroup vs
+            # broadcast is unknowable here, so don't guess: drop the hints and
+            # take the conservative no-hint path.
+            return None, None, None
+        if is_channel and is_group:
+            is_channel = False
+        return is_user, is_group, is_channel
+
     def _should_process_chat(
         self,
         chat_id: int,
@@ -1062,7 +1090,11 @@ class TelegramListener:
             try:
                 chat_id = self._get_marked_id(event.chat_id)
 
-                if not self._should_process_chat(chat_id):
+                # Same type hints as a new message: an edit is often the first
+                # event of a chat never backed up yet (its message arrived while
+                # the listener was away), and the not_found path below stores it.
+                is_user, is_group, is_channel = self._event_chat_type_hints(event)
+                if not self._should_process_chat(chat_id, is_user=is_user, is_group=is_group, is_channel=is_channel):
                     return
 
                 # Skip edits in excluded forum topics
@@ -1104,9 +1136,11 @@ class TelegramListener:
                     # Dropping the edit would lose the newest text, so store the
                     # message now through the new-message path, with its current
                     # text and edit_date. That path makes its own scope checks.
+                    # backfill=True stores it quietly: the message is not new, and
+                    # a reaction to an old message arrives as an edit too.
                     self.stats["edits_skipped"] += 1
                     logger.debug("📝 Edit of a message not archived yet, storing it")
-                    await on_new_message(event)
+                    await on_new_message(event, backfill=True)
                     return
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
@@ -1217,7 +1251,7 @@ class TelegramListener:
                 self.stats["errors"] += 1
                 logger.error(f"Error processing deletion event: {e}", exc_info=True)
 
-        async def on_new_message(event: events.NewMessage.Event) -> None:
+        async def on_new_message(event: events.NewMessage.Event, *, backfill: bool = False) -> None:
             """
             Handle new messages.
 
@@ -1225,37 +1259,18 @@ class TelegramListener:
             Otherwise, just tracks chat IDs for edits/deletions.
 
             on_message_edited also calls it, with its MessageEdited event (a
-            NewMessage event subclass), for an edit of a message the archive
-            has not stored yet. It is registered below the definition, not by a
-            decorator, so the name always holds this function.
+            NewMessage event subclass) and ``backfill=True``, for an edit of a
+            message the archive has not stored yet. A back-fill stores the
+            message exactly the same way but announces nothing: no NEW_MESSAGE
+            notification (so no viewer row, Web Push or desktop alert for an old
+            message) and no new_messages_* counts. It is registered below the
+            definition, not by a decorator, so the name always holds this
+            function.
             """
             try:
                 chat_id = self._get_marked_id(event.chat_id)
 
-                # NewMessage carries its peer type (PeerUser/PeerChat/PeerChannel)
-                # synchronously via _chat_peer - no entity fetch needed - so a chat
-                # we've never backed up before can be matched against CHAT_TYPES
-                # right now instead of being dropped until the next scheduled
-                # backup adds it to _tracked_chat_ids. Otherwise a first message
-                # from someone we've never chatted with is invisible to the
-                # listener (see _should_process_chat).
-                #
-                # Telethon's event.is_channel is True for BOTH broadcast channels
-                # and megagroups (any PeerChannel), while event.is_group is True
-                # for megagroups too - so a megagroup would otherwise set both
-                # flags and could match a channels-only CHAT_TYPES filter it
-                # should be excluded from. _get_chat_type() already treats a
-                # megagroup as "group", never "channel"; mirror that here.
-                is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
-                if is_channel and is_group is None:
-                    # Telethon's is_group is None for a PeerChannel whose
-                    # broadcast flag it can't see (chat entity absent from
-                    # the update). Megagroup vs broadcast is unknowable
-                    # here, so don't guess: drop the hints and take the
-                    # conservative no-hint path for this message.
-                    is_user = is_group = is_channel = None
-                elif is_channel and is_group:
-                    is_channel = False
+                is_user, is_group, is_channel = self._event_chat_type_hints(event)
 
                 # Add to tracked chats if we should be backing up this chat
                 if chat_id not in self._tracked_chat_ids:
@@ -1279,7 +1294,8 @@ class TelegramListener:
                     logger.debug("⏭️ Skipping message in excluded topic")
                     return
 
-                self.stats["new_messages_received"] += 1
+                if not backfill:
+                    self.stats["new_messages_received"] += 1
 
                 # If LISTEN_NEW_MESSAGES is disabled, just track for edits/deletions
                 if not self.config.listen_new_messages:
@@ -1395,7 +1411,8 @@ class TelegramListener:
 
                 # Insert the message FIRST (required for FK constraint on media table)
                 await self.db.insert_message(message_data, account_id=self.account_id)
-                self.stats["new_messages_saved"] += 1
+                if not backfill:
+                    self.stats["new_messages_saved"] += 1
 
                 # New messages can arrive already carrying reactions (fast reactors,
                 # forwarded content). Buffer them now that the row exists (#221).
@@ -1485,7 +1502,7 @@ class TelegramListener:
                 # viewer can render sender name + media immediately instead of a bare row
                 # until the next poll: flat user fields + nested media dict). message_data
                 # itself is left untouched since it was already passed to db.insert_message.
-                if self._notifier:
+                if self._notifier and not backfill:
                     ws_message = {
                         **message_data,
                         "first_name": sender_user["first_name"] if sender_user else None,
@@ -1499,7 +1516,10 @@ class TelegramListener:
 
                 # Log the new message (no chat_id/msg_id/text — PII)
                 media_indicator = f" [{media_type}]" if media_type else ""
-                logger.info(f"📩 New message saved{media_indicator}")
+                if backfill:
+                    logger.info(f"📩 Message stored from an edit{media_indicator}")
+                else:
+                    logger.info(f"📩 New message saved{media_indicator}")
 
             except Exception as e:
                 self.stats["errors"] += 1

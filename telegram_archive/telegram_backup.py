@@ -2685,6 +2685,9 @@ class TelegramBackup:
             return
 
         local_ids = list(local_messages.keys())
+        # Edited rows archived before the edit_hide flag was kept: the flag is
+        # filled below from the message fetched anyway, when the date matches.
+        unflagged_ids = await self.db.get_unflagged_edit_ids(chat_id, account_id=self.account_id)
         total_checked = 0
         total_deleted = 0
         total_updated = 0
@@ -2747,7 +2750,17 @@ class TelegramBackup:
                         remote_edit_date = remote_edit_date.replace(tzinfo=None)
                     local_edit_date = local_messages[msg_id]
 
-                    if remote_edit_date and remote_edit_date != local_edit_date:
+                    if remote_edit_date and remote_edit_date == local_edit_date and msg_id in unflagged_ids:
+                        # Same edit, archived before the flag was kept: fill the
+                        # flag only. Text, edit_date and versions stay as they are.
+                        await self.db.fill_edit_hide(
+                            chat_id,
+                            msg_id,
+                            remote_edit_date,
+                            message_edit_hide(remote_msg),
+                            account_id=self.account_id,
+                        )
+                    elif remote_edit_date and remote_edit_date != local_edit_date:
                         # Update text and edit_date; count only edits the archive
                         # actually accepted (the adapter re-checks under lock).
                         outcome, _ = await self.db.update_message_text(
@@ -3293,6 +3306,9 @@ class TelegramBackup:
             "raw_data": {},
             "is_outgoing": 1 if message.out else 0,
             "is_pinned": 1 if getattr(message, "pinned", False) else 0,
+            # A read from Telegram: when the listener stored a newer edit while
+            # this batch was pending, the upsert keeps this text as a version.
+            "keeps_older_text": True,
         }
 
         # Capture-time web preview (mf7): Telegram resolved it when the

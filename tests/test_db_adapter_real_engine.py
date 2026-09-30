@@ -197,6 +197,100 @@ class TestEditHideRealEngine:
         assert rows[6]["edit_hide"] == 1
         assert rows[6]["edit_date"] == edited_at
 
+    async def test_a_later_read_of_the_same_edit_fills_an_unknown_flag(self, real_adapter):
+        """A row archived before 034 has edit_date and no flag, so a reaction
+        Telegram hid still counts as an edit. A backup read of the same edit
+        (same edit_date) fills the flag; it replaces no known flag and no text."""
+        chat = 900051
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        def legacy(message_id: int, text: str) -> dict:
+            row = _message(chat, message_id, text=text, offset_minutes=message_id)
+            row["edit_date"] = edited_at
+            return row
+
+        # 1: legacy row; a re-scan or gap fill reads the same edit with the flag.
+        await real_adapter.insert_message(legacy(1, "reacted"), account_id=1)
+        await real_adapter.insert_message({**legacy(1, "reacted"), "edit_hide": 1}, account_id=1)
+        # 2: legacy row; the sync pass fills it through fill_edit_hide.
+        await real_adapter.insert_message(legacy(2, "reacted too"), account_id=1)
+        assert await real_adapter.get_unflagged_edit_ids(chat, account_id=1) == {2}
+        assert await real_adapter.fill_edit_hide(chat, 2, edited_at, 1, account_id=1) is True
+        # 3: known flag; neither path replaces it beside the same date, and an
+        # import (no flag) that fills an empty text does not blank it either.
+        await real_adapter.insert_message({**legacy(3, ""), "edit_hide": 1}, account_id=1)
+        await real_adapter.insert_message({**legacy(3, "filled")}, account_id=1)
+        await real_adapter.insert_message({**legacy(3, "filled"), "edit_hide": 0}, account_id=1)
+        assert await real_adapter.fill_edit_hide(chat, 3, edited_at, 0, account_id=1) is False
+        # 4: legacy row; a read of ANOTHER edit_date is not the same edit: no fill.
+        await real_adapter.insert_message(legacy(4, "kept"), account_id=1)
+        assert await real_adapter.fill_edit_hide(chat, 4, edited_at + timedelta(minutes=1), 1, account_id=1) is False
+
+        assert await real_adapter.get_unflagged_edit_ids(chat, account_id=1) == {4}
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        assert (rows[1]["edit_hide"], rows[1]["text"], rows[1]["edit_date"]) == (1, "reacted", edited_at)
+        assert (rows[2]["edit_hide"], rows[2]["text"], rows[2]["edit_date"]) == (1, "reacted too", edited_at)
+        assert (rows[3]["edit_hide"], rows[3]["text"]) == (1, "filled")
+        assert rows[4]["edit_hide"] is None
+        stats = await real_adapter.get_chat_stats(chat, account_id=1, with_kept_changes=True)
+        # 3 (a filled empty text keeps a version) and 4 (still unknown) are edited.
+        assert stats["edited_messages"] == 2
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+        assert await real_adapter.get_message_versions(chat, 2, account_id=1) == []
+
+
+class TestOlderReadTextRealEngine:
+    """The backup reads a message, and before its batch is written an edit
+    reaches the listener, which stores the newer text first. The batch's older
+    text must not be thrown away: it is kept as a version."""
+
+    async def test_backup_batch_after_a_listener_edit_keeps_the_older_text(self, real_adapter):
+        chat = 900052
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        listener_row = _message(chat, 1, text="second text")
+        listener_row["edit_date"] = edited_at
+        await real_adapter.insert_message(listener_row, account_id=1)
+        backup_row = {**_message(chat, 1, text="first text"), "edit_date": None, "keeps_older_text": True}
+        await real_adapter.insert_messages_batch([backup_row], account_id=1)
+        # The same read written twice records one version (change_hash).
+        await real_adapter.insert_messages_batch([backup_row], account_id=1)
+
+        rows = await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)
+        assert (rows[0]["text"], rows[0]["edit_date"]) == ("second text", edited_at)
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["text"], v["date"]) for v in versions] == [("first text", BASE_DATE)]
+
+    async def test_an_import_does_not_turn_its_older_text_into_a_version(self, real_adapter):
+        """An import renders text its own way, so a differing older text from it
+        is refused and recorded nowhere, as before."""
+        chat = 900053
+        await _seed_chat(real_adapter, chat)
+
+        stored = _message(chat, 1, text="second text")
+        stored["edit_date"] = BASE_DATE + timedelta(minutes=5)
+        await real_adapter.insert_message(stored, account_id=1)
+        await real_adapter.insert_message(_message(chat, 1, text="first **text**"), account_id=1)
+
+        rows = await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)
+        assert rows[0]["text"] == "second text"
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+
+    async def test_a_read_as_new_as_the_archive_keeps_no_extra_version(self, real_adapter):
+        """Never-edited rows re-read with a differing text (both without an edit
+        date) are not a race: the archive has no evidence of a newer edit."""
+        chat = 900054
+        await _seed_chat(real_adapter, chat)
+
+        await real_adapter.insert_message(_message(chat, 1, text="as stored"), account_id=1)
+        await real_adapter.insert_messages_batch(
+            [{**_message(chat, 1, text="as rendered now"), "keeps_older_text": True}], account_id=1
+        )
+
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+
 
 class TestPaginationRealEngine:
     """get_messages_paginated against a real planner and a real collation."""
