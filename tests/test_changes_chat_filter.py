@@ -53,6 +53,8 @@ ONLY_ACCOUNT_1 = ChatScope.build(accounts={1})
 # Two groups of account 1, distinctive so a failure names itself.
 GROUP_A = -1004300001
 GROUP_B = -1004300002
+# A private chat of account 1 whose id account 2 holds as an imported chat.
+IMPORTED_PRIVATE = 420000003
 
 
 async def seed_two_groups(adapter, *, messages: int = 3) -> None:
@@ -192,6 +194,43 @@ class TestAdapterChatFilter:
             ("transcript", 30),
         ]
         assert [(c["kind"], c["message_id"]) for c in copy_2] == [("deleted", 22)]
+
+    async def test_a_private_ref_ignores_another_account_s_copy_typed_otherwise(self, real_adapter):
+        """The ref's type decides, not each row's.
+
+        An HTML-export import sends no chat type, so account 2's copy of the
+        id account 1 holds as a private chat is stored as "unknown". It is
+        still another conversation, and the chat list shows it as another
+        chat: account 1's private feed must not list its deletion.
+        """
+        await real_adapter.upsert_chat({"id": IMPORTED_PRIVATE, "type": "private", "title": "a person"}, account_id=1)
+        await real_adapter.upsert_chat({"id": IMPORTED_PRIVATE, "title": "an imported chat"}, account_id=2)
+        for account_id in (1, 2):
+            await real_adapter.insert_message(
+                {
+                    "id": 33,
+                    "chat_id": IMPORTED_PRIVATE,
+                    "sender_id": OUTSIDER,
+                    "date": BASE,
+                    "text": "original text",
+                    "raw_data": {},
+                },
+                account_id=account_id,
+            )
+        await mark_deleted(real_adapter, account_id=1, chat_id=IMPORTED_PRIVATE, message_id=33, at=BASE)
+        await mark_deleted(
+            real_adapter, account_id=2, chat_id=IMPORTED_PRIVATE, message_id=33, at=BASE + timedelta(seconds=1)
+        )
+
+        private = await real_adapter.get_recent_changes(
+            scope=UNRESTRICTED, limit=50, chat_id=IMPORTED_PRIVATE, account_id=1
+        )
+        imported = await real_adapter.get_recent_changes(
+            scope=UNRESTRICTED, limit=50, chat_id=IMPORTED_PRIVATE, account_id=2
+        )
+
+        assert [(c["kind"], c["chat"]["type"]) for c in private] == [("deleted", "private")]
+        assert [(c["kind"], c["chat"]["type"]) for c in imported] == [("deleted", "unknown")]
 
     async def test_the_filter_never_widens_the_scope(self, real_adapter):
         await seed_shared_chats(real_adapter)
@@ -395,7 +434,13 @@ const ref = (value) => ({ value })
 const nextTick = (fn) => Promise.resolve().then(fn)
 const URLS = []
 const CALLS = []
-const fetch = async (url) => { URLS.push(url); return { ok: true, status: 200, json: async () => ({ changes: [], next_before: null }) } }
+// What the feed held when each request went out: the cards under the chip.
+const FEED_AT_FETCH = []
+const fetch = async (url) => {
+    FEED_AT_FETCH.push({ cards: changesFeed.value.length, next: changesNextBefore.value })
+    URLS.push(url)
+    return { ok: true, status: 200, json: async () => ({ changes: [], next_before: null }) }
+}
 globalThis.HTMLElement = class {}
 const document = { activeElement: null, addEventListener: () => {}, removeEventListener: () => {} }
 const showChangesFeed = ref(false)
@@ -428,6 +473,13 @@ const closeInfoPanel = () => { showInfoPanel.value = false; CALLS.push('closeInf
 const getChatName = (chat) => chat.title
 const infoPanelToggleBtn = ref(null)
 const chatMenuButton = ref(null)
+const setupMessagesScrollObserver = () => {}
+// A focusable stand-in for a button, connected to the page or not.
+const fakeButton = (name, isConnected = true) => Object.assign(new HTMLElement(), {
+    isConnected,
+    focus: () => CALLS.push(`focus:${name}`),
+})
+const settle = () => new Promise(r => setTimeout(r, 0))
 """
 
 
@@ -438,7 +490,10 @@ class TestViewerOpensTheFeedForOneChat(unittest.TestCase):
             HTML,
             (
                 "const fetchChanges = async (before) =>",
+                "let changesFeedChatRef = null",
+                "const setChangesChat = (chat) =>",
                 "const openChangesFeed = (fromMenu = false, chat = null, returnFocus = null) =>",
+                "const closeChangesFeed = (restoreFocus = true) =>",
                 "const openChangesFeedForChat = (from) =>",
                 "const widenChangesFeed = () =>",
             ),
@@ -486,6 +541,64 @@ class TestViewerOpensTheFeedForOneChat(unittest.TestCase):
         self.assertNotIn("chat_ref", out["sidebar"]["url"])
         self.assertIsNone(out["sidebar"]["chat"])
 
+    def test_another_chat_s_cards_never_sit_under_the_chip_while_it_loads(self) -> None:
+        """The kind filter never looks at the chat, so stale cards would show until the answer."""
+        out = self._run(
+            """(async () => {
+    const card = { kind: 'deleted', chat: { ref: 'fakeRefOtherChat0001' }, message_id: 1 }
+    // The feed of every chat is loaded; the chat menu narrows it.
+    changesFeed.value = [card]
+    changesNextBefore.value = '2026-01-01T00:00:00'
+    openChangesFeedForChat('menu')
+    await settle()
+    // Closed and opened again for the same chat, its cards stay while it reloads.
+    changesFeed.value = [card]
+    closeChangesFeed(false)
+    openChangesFeedForChat('menu')
+    await settle()
+    // The chip's cross widens it back to every chat.
+    widenChangesFeed()
+    await settle()
+    // Narrowed again, closed, then the sidebar button opens every chat.
+    openChangesFeedForChat('info')
+    await settle()
+    changesFeed.value = [card]
+    closeChangesFeed(false)
+    openChangesFeed({ type: 'click' })
+    await settle()
+    console.log(JSON.stringify(FEED_AT_FETCH))
+})();"""
+        )
+        self.assertEqual(
+            [(at["cards"], at["next"]) for at in out],
+            [(0, None), (1, None), (0, None), (0, None), (0, None)],
+        )
+
+    def _close_focus(self, opened_from: str, *, connected_trigger: bool = False) -> list[str]:
+        out = self._run(
+            f"""(async () => {{
+    mainMenuButton.value = fakeButton('main menu')
+    chatMenuButton.value = fakeButton('chat menu')
+    infoPanelToggleBtn.value = fakeButton('info button')
+    document.activeElement = fakeButton('trigger', {str(connected_trigger).lower()})
+    openChangesFeedForChat('{opened_from}')
+    await settle()
+    CALLS.splice(0)
+    closeChangesFeed()
+    await settle()
+    console.log(JSON.stringify(CALLS.filter(c => c.startsWith('focus:'))))
+}})();"""
+        )
+        return out
+
+    def test_closing_the_chat_s_feed_puts_focus_back_on_the_button_that_opened_it(self) -> None:
+        # The menu's item and the info panel are gone once the feed opens, so
+        # focus goes to the button that shows them again, not the main menu.
+        self.assertEqual(self._close_focus("menu"), ["focus:chat menu"])
+        self.assertEqual(self._close_focus("info"), ["focus:info button"])
+        # An element that opened it and is still on the page takes it first.
+        self.assertEqual(self._close_focus("menu", connected_trigger=True), ["focus:trigger"])
+
 
 class TestViewerTemplate(unittest.TestCase):
     def test_the_chat_menu_entry_sits_under_edited_messages(self) -> None:
@@ -494,6 +607,10 @@ class TestViewerTemplate(unittest.TestCase):
         self.assertIn("What changed in this chat", menu)
         self.assertLess(menu.index("openEditedOnly"), menu.index("openChangesFeedForChat('menu')"))
         self.assertLess(menu.index("openChangesFeedForChat('menu')"), menu.index("exportChat()"))
+
+    def test_the_chat_menu_button_is_where_focus_returns(self) -> None:
+        start = HTML.index('<button ref="chatMenuButton" type="button" @click="chatMenuOpen = !chatMenuOpen"')
+        self.assertLess(start, HTML.index("openChangesFeedForChat('menu')"))
 
     def test_the_info_panel_row_opens_the_feed_and_the_counts_keep_their_modes(self) -> None:
         # A deliberate choice, written down in the viewer docs: the counts open

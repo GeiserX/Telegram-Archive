@@ -2273,9 +2273,10 @@ class DatabaseAdapter:
         when it happened, so narrowing to the ref's own copy would drop the
         events only another account captured, which the feed of every chat
         lists. Each event is still listed once, under the lowest entitled copy
-        that holds it. A private chat narrows to the ref's own account, since
-        its id is the other party's user id and names a different
-        conversation in each account. It narrows, never widens: ``scope``
+        that holds it. A ref to a private chat narrows to the ref's own
+        account, since its id is the other party's user id and names a
+        different conversation in each account, whatever type another
+        account's copy of that id carries. It narrows, never widens: ``scope``
         still applies, and the caller resolves the ref under the same scope
         first.
         """
@@ -2362,18 +2363,25 @@ class DatabaseAdapter:
                 deleted_stmt = deleted_stmt.where(Message.chat_id == chat_id)
                 edited_stmt = edited_stmt.where(MessageVersion.chat_id == chat_id)
                 transcript_stmt = transcript_stmt.where(Message.chat_id == chat_id)
-            if account_id is not None:
+            if chat_id is not None and account_id is not None:
                 # Only a private chat's id collides across accounts, so only
-                # there does the ref's account pick the conversation. Every
-                # copy of a channel or group stays in, and the deduplication
-                # below lists each of its events once.
-                deleted_stmt = deleted_stmt.where(or_(Chat.type != PRIVATE_CHAT_TYPE, Message.account_id == account_id))
-                edited_stmt = edited_stmt.where(
-                    or_(Chat.type != PRIVATE_CHAT_TYPE, MessageVersion.account_id == account_id)
+                # there does the ref's account pick the conversation. The
+                # REF's type decides, not each row's: another account's copy
+                # of the same id may be typed otherwise (an HTML-export import
+                # stores "unknown"), and it is still another conversation.
+                ref_type = await session.scalar(
+                    select(Chat.type).where(Chat.account_id == account_id, Chat.id == chat_id)
                 )
-                transcript_stmt = transcript_stmt.where(
-                    or_(Chat.type != PRIVATE_CHAT_TYPE, Message.account_id == account_id)
-                )
+                if ref_type == PRIVATE_CHAT_TYPE:
+                    deleted_stmt = deleted_stmt.where(Message.account_id == account_id)
+                    edited_stmt = edited_stmt.where(MessageVersion.account_id == account_id)
+                    transcript_stmt = transcript_stmt.where(Message.account_id == account_id)
+                else:
+                    # Every non-private copy of a channel or group stays in,
+                    # and the deduplication below lists each event once.
+                    deleted_stmt = deleted_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    edited_stmt = edited_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    transcript_stmt = transcript_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both

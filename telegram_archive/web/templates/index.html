@@ -11203,11 +11203,24 @@
                     event.preventDefault()
                     closeChangesFeed()
                 }
+                // Which chat the loaded cards belong to (null: every chat). The kind
+                // filter never looks at the chat, so cards of another chat would
+                // sit under the new chip until its first page came back: they go
+                // when the chat changes, and the feed shows its loading state.
+                let changesFeedChatRef = null
+                const setChangesChat = (chat) => {
+                    changesChat.value = chat
+                    const chatRef = chat?.ref ?? null
+                    if (chatRef === changesFeedChatRef) return
+                    changesFeedChatRef = chatRef
+                    changesFeed.value = []
+                    changesNextBefore.value = null
+                }
                 // With a chat ({ ref, title }) the feed opens narrowed to it, from the
                 // chat's menu or info panel; without one it shows every chat. The
                 // sidebar button passes its click event, which is no chat.
                 const openChangesFeed = (fromMenu = false, chat = null, returnFocus = null) => {
-                    changesChat.value = chat && chat.ref ? { ref: chat.ref, title: chat.title || 'Unnamed chat' } : null
+                    setChangesChat(chat && chat.ref ? { ref: chat.ref, title: chat.title || 'Unnamed chat' } : null)
                     if (!changesChat.value) markChangesSeen()
                     if (!showChangesFeed.value) {
                         // From the main menu, the row is gone as soon as the menu
@@ -11273,7 +11286,7 @@
                 // The chip's cross: back to every chat, in the same period and kinds.
                 const widenChangesFeed = () => {
                     if (!changesChat.value) return
-                    changesChat.value = null
+                    setChangesChat(null)
                     fetchChanges(null)
                     nextTick(() => changesTitle.value?.focus())
                 }
