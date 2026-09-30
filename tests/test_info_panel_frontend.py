@@ -386,7 +386,7 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert '@click="selectMessage(msg, $event)"' in html
     assert 'class="message-row flex items-end"' in html, "the keyboard walk selects on this class"
     assert "querySelectorAll('.message-row[data-msg-id]')" in html
-    assert "isSelectedMessage(msg) ? 'message-info-selected' : ''" in html
+    assert "isSelectedMessage(msg) || isVersionsPanelOpenFor(msg) ? 'message-info-selected' : ''" in html
     assert 'aria-controls="info-panel"' in html
 
     reset_start = html.index("const resetMessagePagination = () => {")

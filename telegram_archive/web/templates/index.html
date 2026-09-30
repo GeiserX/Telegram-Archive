@@ -2221,11 +2221,33 @@
             height: 12px;
             flex-shrink: 0;
         }
-        /* The history mark before "edited": 11px, only when earlier versions
-           can be opened. */
-        .message-meta .meta-edited svg {
-            width: 11px;
-            height: 11px;
+        /* The pencil and the number of earlier versions kept, in the time
+           colour: 12px, 2px apart. A long press on it peeks, so the system's
+           own long-press menu and text selection stay off it. */
+        .message-meta .meta-edited {
+            gap: 2px;
+            font-variant-numeric: tabular-nums;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        @media (hover: hover) {
+            .message-meta .meta-edited:hover .meta-edited-count {
+                text-decoration: underline;
+            }
+        }
+        /* "Edited · 08:57" at the head of a bubble in the "Edited only" list,
+           in the time colour, where a deleted one says "Deleted · 21:59". */
+        .edited-head {
+            font-weight: 500;
+            color: rgb(var(--tg-meta));
+        }
+        .edited-head svg {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 4px;
+            vertical-align: -1.5px;
         }
         /* "deleted" in the side's calm deleted colour, never the danger one:
            a deletion is a fact the archive kept, not an error. Over a picture
@@ -3172,53 +3194,169 @@
             }
         }
 
-        /* The edit history: the versions as bubbles on the chat wallpaper,
-           oldest first, each under a small label on the pane's pill. */
-        /* The edit history: a 440px drawer on a wide screen, a page on a phone. */
+        /* The edit history. A phone: a bottom sheet over the dimmed chat, as
+           tall as its content up to 85% of the screen, with a handle. A wide
+           screen: a column beside the chat (300px to 380px), which narrows to
+           make room; from 768px to 1023px, where a column would crush the
+           chat, it lies over the chat's right edge with a shadow instead.
+           Never a scrim there: the chat stays readable. */
+        .versions-panel {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 50;
+            max-height: 85%;
+            border-radius: 16px 16px 0 0;
+            box-shadow: var(--tg-shadow-popup);
+            overflow: hidden;
+        }
+        .versions-panel .versions-header {
+            position: relative;
+            padding-top: 10px;
+            background: rgb(var(--tg-sidebar));
+        }
+        .versions-panel .versions-header::before {
+            content: "";
+            position: absolute;
+            top: 6px;
+            left: 50%;
+            width: 36px;
+            height: 4px;
+            margin-left: -18px;
+            border-radius: 2px;
+            background: rgb(var(--tg-border-strong));
+        }
+        .versions-panel .versions-body {
+            flex: 0 1 auto;
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+        }
         @media (min-width: 768px) {
-            .versions-drawer {
-                max-width: 440px;
+            .versions-panel {
+                left: auto;
+                top: 0;
+                width: clamp(300px, 34vw, 380px);
+                max-height: none;
+                border-radius: 0;
+                border-left: 1px solid rgb(var(--tg-border));
+            }
+            .versions-panel .versions-header {
+                padding-top: 0;
+                background: rgb(var(--tg-header));
+            }
+            .versions-panel .versions-header::before {
+                display: none;
+            }
+            .versions-panel .versions-body {
+                flex: 1 1 auto;
             }
         }
-        /* A bubble-shaped placeholder while the versions load. */
+        @media (min-width: 1024px) {
+            .versions-panel {
+                position: relative;
+                z-index: auto;
+                flex-shrink: 0;
+                box-shadow: none;
+            }
+        }
+        /* A card-shaped placeholder while the versions load. */
         .version-skeleton {
             display: block;
             height: 38px;
-            border-radius: var(--tg-radius);
-            background: rgb(var(--tg-other) / 0.7);
+            border-radius: 12px;
+            background: rgb(var(--tg-field));
         }
+        /* The timeline: a rail down the left, a dot per version (the current
+           one filled with the accent), and under each "08:54 Edit 1 · 2 min
+           later" the text on a card: the field grey for an earlier version,
+           the accent's light tint for the current one. */
         .version-list {
             margin: 0;
-            padding: 12px;
+            padding: 16px 16px 24px;
             list-style: none;
-            border-radius: 12px;
             display: flex;
             flex-direction: column;
-            gap: 12px;
         }
-        .version-list li {
+        .version-item {
+            position: relative;
             display: flex;
             flex-direction: column;
+            align-items: flex-start;
             gap: 4px;
+            padding: 0 0 18px 26px;
+        }
+        .version-item::before {
+            content: "";
+            position: absolute;
+            left: 5px;
+            top: 5px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgb(var(--tg-sidebar));
+            border: 2px solid rgb(var(--tg-muted));
+            z-index: 1;
+        }
+        .version-item.is-current::before {
+            background: rgb(var(--tg-accent-strong));
+            border-color: rgb(var(--tg-accent-strong));
+        }
+        .version-item::after {
+            content: "";
+            position: absolute;
+            left: 11px;
+            top: 12px;
+            bottom: -6px;
+            width: 2px;
+            background: rgb(var(--tg-border-strong));
+        }
+        .version-item:last-child::after {
+            display: none;
         }
         .version-label {
-            font-size: 0.75rem;
-            line-height: 1rem;
-            padding: 2px 8px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            column-gap: 8px;
+            margin: 0;
+            font-size: 13px;
+            line-height: 20px;
+            color: rgb(var(--tg-muted));
+        }
+        .version-when {
+            color: rgb(var(--tg-ink));
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+        .version-empty {
+            font-size: 14px;
+            color: rgb(var(--tg-muted));
         }
         .version-bubble {
-            max-width: 90%;
+            max-width: 100%;
+            padding: 6px 12px;
+            border-radius: 12px;
+            font-size: var(--tg-text-size, 0.9375rem);
+            line-height: 1.35;
+            color: rgb(var(--tg-ink));
+            background: rgb(var(--tg-field));
             white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .version-bubble.is-current {
+            background: rgb(var(--tg-accent-dim));
         }
         /* What an edit changed, in the colours a diff uses and nothing else
            here does (the quote tint already means a link or a search hit):
-           added words keep the text colour on a green tint, removed words take
-           the time colour, struck through in red on a faint red tint. Both
-           pairs are measured on each bubble. A highlight that wraps keeps its
-           round ends on every line (box-decoration-break). The current version
-           needs no ring: its label says "Current". */
+           added words keep the text colour on a green tint and are
+           underlined, removed words are struck through in red on a faint red
+           tint, in the darker neutral (n300): the time colour falls under
+           4.5:1 on the tinted cards. Every pair is measured on both cards and
+           on the panel. A highlight that wraps keeps its round ends on every
+           line (box-decoration-break). */
         .version-bubble .diff-ins,
-        .version-bubble .diff-del {
+        .version-bubble .diff-del,
+        .edit-peek .diff-del {
             border-radius: 3px;
             padding: 0 2px;
             -webkit-box-decoration-break: clone;
@@ -3233,7 +3371,7 @@
             text-underline-offset: 2px;
         }
         .version-bubble .diff-del {
-            color: rgb(var(--tg-meta));
+            color: rgb(var(--tg-n300));
             background: var(--tg-diff-del-bg);
             text-decoration: line-through;
             text-decoration-color: rgb(var(--tg-diff-del-line));
@@ -3252,9 +3390,77 @@
             text-underline-offset: 2px;
         }
         .version-key .diff-del {
+            color: rgb(var(--tg-n300));
             background: var(--tg-diff-del-bg);
             text-decoration: line-through;
             text-decoration-color: rgb(var(--tg-diff-del-line));
+        }
+        /* The peek: a popup on the panel colour over the pencil, 320px at most
+           and never wider than the screen. Hidden until it is placed, so it
+           never flashes in the corner. The removed words are struck through
+           on the red tint, in the darker neutral, as in the history. */
+        .edit-peek {
+            position: fixed;
+            z-index: 60;
+            width: max-content;
+            min-width: 200px;
+            max-width: min(320px, calc(100vw - 16px));
+            padding: 8px 12px 4px;
+            border-radius: 12px;
+            background: rgb(var(--tg-sidebar));
+            color: rgb(var(--tg-ink));
+            box-shadow: var(--tg-shadow-popup);
+            text-align: left;
+            visibility: hidden;
+        }
+        .edit-peek.is-placed {
+            visibility: visible;
+        }
+        .edit-peek p {
+            margin: 0;
+        }
+        .edit-peek-head {
+            font-size: 13px;
+            line-height: 18px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+        .edit-peek-label {
+            margin-top: 6px !important;
+            font-size: 12px;
+            line-height: 16px;
+            color: rgb(var(--tg-muted));
+            font-variant-numeric: tabular-nums;
+        }
+        .edit-peek-text {
+            margin-top: 2px !important;
+            font-size: var(--tg-text-size, 0.9375rem);
+            line-height: 1.35;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            display: -webkit-box;
+            -webkit-line-clamp: 6;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .edit-peek .diff-del {
+            color: rgb(var(--tg-n300));
+            background: var(--tg-diff-del-bg);
+            text-decoration: line-through;
+            text-decoration-color: rgb(var(--tg-diff-del-line));
+            text-decoration-thickness: 1.5px;
+        }
+        .edit-peek-all {
+            display: block;
+            margin-top: 2px;
+            padding: 6px 0;
+            font-size: 13px;
+            line-height: 18px;
+            font-weight: 600;
+            color: rgb(var(--tg-accent-soft));
+        }
+        .edit-peek-all:hover {
+            text-decoration: underline;
         }
 
         /* The chat's numeric id: the UI font with tabular figures, not a code
@@ -6776,7 +6982,7 @@
                                  it too. -->
                             <button v-show="!chatSearchOpen" ref="chatSearchButton" type="button" @click="openChatSearch"
                                 class="chat-header-btn"
-                                :class="{ 'is-on': messageSearchQuery || deletedOnly }"
+                                :class="{ 'is-on': messageSearchQuery || deletedOnly || editedOnly }"
                                 aria-label="Search in this chat" title="Search in this chat">
                                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -6787,8 +6993,8 @@
                                 @focusout="onChatSearchFocusOut">
                                 <div class="relative flex-1 min-w-0">
                                 <input ref="chatSearchInput" v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
-                                    :placeholder="deletedOnly ? 'Search deleted' : 'Search in chat'"
-                                    :aria-label="deletedOnly ? 'Search the deleted messages of this chat' : 'Search in this chat'"
+                                    :placeholder="deletedOnly ? 'Search deleted' : editedOnly ? 'Search edited' : 'Search in chat'"
+                                    :aria-label="deletedOnly ? 'Search the deleted messages of this chat' : editedOnly ? 'Search the edited messages of this chat' : 'Search in this chat'"
                                     @keydown.escape="closeChatSearch"
                                     class="search-pill w-full h-10 sm:h-9 bg-tg-field text-tg-ink placeholder-tg-muted rounded-full pl-9 pr-3 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-focus">
                                 <svg class="chat-search-icon text-tg-n400 pointer-events-none" fill="none"
@@ -6821,15 +7027,16 @@
                                 </svg>
                             </button>
 
-                            <!-- The occasional actions (the deleted messages, export, expand
-                                 every transcript) sit behind one "More" button, as Telegram
-                                 Desktop keeps its bar to search, media and info. On a phone
-                                 they live in the info panel instead. Escape closes the menu
-                                 and focus goes back to the button (handlePopoverKeydown).
+                            <!-- The occasional actions (the deleted and the edited messages,
+                                 export, expand every transcript) sit behind one "More" button,
+                                 as Telegram Desktop keeps its bar to search, media and info. On
+                                 a phone they live in the info panel instead. Escape closes the
+                                 menu and focus goes back to the button (handlePopoverKeydown).
                                  Export and the transcripts need downloads (the transcript API
                                  answers 403 without them), so a login that may not download
-                                 gets the button only when the chat has deleted messages. -->
-                            <div v-if="!noDownload || chatDeletedCount > 0" class="relative phone-hide">
+                                 gets the button only when the chat has deleted or edited
+                                 messages. -->
+                            <div v-if="!noDownload || chatDeletedCount > 0 || chatEditedCount > 0" class="relative phone-hide">
                                 <button type="button" @click="chatMenuOpen = !chatMenuOpen"
                                     class="chat-header-btn"
                                     :class="{ 'is-on': chatMenuOpen }"
@@ -6850,6 +7057,14 @@
                                         <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                                         <span class="flex-1 text-left">Deleted messages</span>
                                         <span v-if="chatDeletedCount" class="info-action-count">{{ formatCount(chatDeletedCount) }}</span>
+                                    </button>
+                                    <!-- The chat's edited messages, the same way: the chat search
+                                         in its "Edited only" mode, under "Deleted messages". -->
+                                    <button v-if="chatEditedCount !== 0" type="button" @click="openEditedOnly"
+                                        class="info-action">
+                                        <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                                        <span class="flex-1 text-left">Edited messages</span>
+                                        <span v-if="chatEditedCount" class="info-action-count">{{ formatCount(chatEditedCount) }}</span>
                                     </button>
                                     <button v-if="!noDownload" type="button" @click="chatMenuOpen = false; exportChat()"
                                         class="info-action">
@@ -6898,6 +7113,17 @@
                         </button>
                         <span v-if="chatDeletedCount != null && !messageSearchQuery && !selectedPaneTopic" class="deleted-filter-count">{{ formatCount(chatDeletedCount) }} {{ chatDeletedCount === 1 ? 'deleted message' : 'deleted messages' }}</span>
                     </div>
+                    <!-- The "Edited only" mode, the same line: the pressed chip removes
+                         the filter, the count is the chat's edited messages. -->
+                    <div v-if="editedOnly && !showMediaGallery" class="deleted-filter-bar edited-filter-bar" role="group" aria-label="Search filter">
+                        <button type="button" class="deleted-filter-chip" aria-pressed="true" @click="closeEditedOnly"
+                            aria-label="Edited only. Remove this filter" title="Show all messages">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                            <span>Edited only</span>
+                            <svg class="deleted-filter-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                        </button>
+                        <span v-if="chatEditedCount != null && !messageSearchQuery && !selectedPaneTopic" class="deleted-filter-count">{{ formatCount(chatEditedCount) }} {{ chatEditedCount === 1 ? 'edited message' : 'edited messages' }}</span>
+                    </div>
 
                     <!-- Group ↔ supergroup migration banner (#228). Display-only pointer;
                          rendered only when the loaded messages carry the marker. It takes
@@ -6935,7 +7161,7 @@
                          on the left marks it, as in the Telegram apps. Hidden on a phone
                          while the in-chat search is open, so the results get the room, and
                          while Shared Media is open, which has its own header. -->
-                    <div v-if="pinnedMessage && !showPinnedOnly && !showMediaGallery && !deletedOnly"
+                    <div v-if="pinnedMessage && !showPinnedOnly && !showMediaGallery && !deletedOnly && !editedOnly"
                         class="pinned-bar px-4 py-1.5 min-h-[52px] md:min-h-[48px] bg-tg-header border-b border-tg-border flex items-center gap-3"
                         :class="{ 'max-md:hidden': chatSearchOpen }">
                         <!-- The segmented line of Telegram's pinned bar: one segment per
@@ -7146,7 +7372,7 @@
                         </div>
                         <div v-else-if="!loading && !hasMore && sortedMessages.length === 0" role="status"
                             class="m-auto text-center py-8 text-sm">
-                            <span class="pane-note">{{ deletedOnly ? (messageSearchQuery ? 'No deleted messages match this search' : 'No deleted messages in this chat') : messageSearchQuery ? 'No messages match this search' : 'No messages to show in this chat' }}</span>
+                            <span class="pane-note">{{ deletedOnly ? (messageSearchQuery ? 'No deleted messages match this search' : 'No deleted messages in this chat') : editedOnly ? (messageSearchQuery ? 'No edited messages match this search' : 'No edited messages in this chat') : messageSearchQuery ? 'No messages match this search' : 'No messages to show in this chat' }}</span>
                         </div>
 
                         <!-- In flex-col-reverse the first children are the visual bottom (newer edge). -->
@@ -7198,7 +7424,7 @@
                                     isOwnMessage(msg) ? 'justify-end' : 'justify-start',
                                     getRunClasses(index),
                                     isSenderBreak(index) ? 'message-run-break' : 'message-run-continue',
-                                    isSelectedMessage(msg) ? 'message-info-selected' : ''
+                                    isSelectedMessage(msg) || isVersionsPanelOpenFor(msg) ? 'message-info-selected' : ''
                                 ]">
                                 <!-- Sender avatar gutter (#229): group + non-own only.
                                      The circle sits on the run's LAST bubble, beside the
@@ -7276,7 +7502,7 @@
                                              message in the chat instead. -->
                                         <template v-if="isBubbleDeleted(msg)"><span class="deleted-head-group">
                                             <span class="deleted-head" :title="deletedNoticedTitle(msg)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>{{ deletedHeadText(msg) }}</span><span class="sr-only">. {{ deletedNoticedTitle(msg) }}</span></span>
-                                            <template v-if="deletedOnly">
+                                            <template v-if="deletedOnly || editedOnly">
                                                 <span class="deleted-head-dot" aria-hidden="true">·</span>
                                                 <button type="button" class="deleted-hide" @click.stop="showDeletedInChat(msg)">Show in chat</button>
                                             </template>
@@ -7285,13 +7511,20 @@
                                                 <button type="button" class="deleted-hide" aria-expanded="true" @click.stop="foldDeletedMessage(msg)">Hide</button>
                                             </template>
                                         </span></template>
+                                        <!-- In the "Edited only" list: "Edited · 08:57", when the last
+                                             edit was, and the way to the message in the chat. -->
+                                        <template v-else-if="editedOnly"><span class="deleted-head-group">
+                                            <span class="edited-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>{{ editedHeadText(msg) }}</span></span>
+                                            <span class="deleted-head-dot" aria-hidden="true">·</span>
+                                            <button type="button" class="deleted-hide edited-show" @click.stop="showDeletedInChat(msg)">Show in chat</button>
+                                        </span></template>
                                     </div>
                                     <!-- No name line (an outgoing message, a private chat, the middle
                                          of a run): the header takes a top line of its own. -->
                                     <div v-else-if="isBubbleDeleted(msg)" class="deleted-head-row">
                                         <span class="deleted-head-group">
                                             <span class="deleted-head" :title="deletedNoticedTitle(msg)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>{{ deletedHeadText(msg) }}</span><span class="sr-only">. {{ deletedNoticedTitle(msg) }}</span></span>
-                                            <template v-if="deletedOnly">
+                                            <template v-if="deletedOnly || editedOnly">
                                                 <span class="deleted-head-dot" aria-hidden="true">·</span>
                                                 <button type="button" class="deleted-hide" @click.stop="showDeletedInChat(msg)">Show in chat</button>
                                             </template>
@@ -7299,6 +7532,13 @@
                                                 <span class="deleted-head-dot" aria-hidden="true">·</span>
                                                 <button type="button" class="deleted-hide" aria-expanded="true" @click.stop="foldDeletedMessage(msg)">Hide</button>
                                             </template>
+                                        </span>
+                                    </div>
+                                    <div v-else-if="editedOnly" class="deleted-head-row">
+                                        <span class="deleted-head-group">
+                                            <span class="edited-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>{{ editedHeadText(msg) }}</span></span>
+                                            <span class="deleted-head-dot" aria-hidden="true">·</span>
+                                            <button type="button" class="deleted-hide edited-show" @click.stop="showDeletedInChat(msg)">Show in chat</button>
                                         </span>
                                     </div>
 
@@ -7853,32 +8093,42 @@
 
                                     <!-- Metadata -->
                                     <!-- The archive's own facts about a message sit beside its time:
-                                         "edited" with a history icon, a button that opens the edit
-                                         history when the archive kept earlier versions, with their
-                                         count in its tooltip. A deletion is marked at the head of the
-                                         bubble instead, with its own time, so the time here is always
-                                         the send time. The time's tooltip carries the full date and
-                                         both events. dir="ltr" keeps it out of the body's direction
-                                         guess. -->
+                                         an edit is a pencil with the number of earlier versions
+                                         the archive kept (none when Telegram marks it edited and no
+                                         earlier text was seen). It is a button: hover, focus or a
+                                         long press peeks at the text before the last edit, and a
+                                         click opens the edit history. Its name and the peek say
+                                         when the last edit was, so the time beside it reads as the
+                                         send time it is. A deletion is marked at the head of the
+                                         bubble instead, with its own time. The time's tooltip
+                                         carries the full date and both events. dir="ltr" keeps it
+                                         out of the body's direction guess. -->
                                     <span class="message-meta" dir="ltr">
                                         <!-- Marks first, then the time, in Telegram's order:
-                                             "edited", then for an outgoing message of a chat several
+                                             the pencil, then for an outgoing message of a chat several
                                              accounts share, the account that sent it, like a channel
                                              signature. On a touch screen or a narrow pane the time is
                                              a button that opens the info panel on this message
                                              (metaOpensInfo): a tooltip cannot show there. -->
-                                        <button v-if="Number(msg.version_count) > 0"
+                                        <button v-if="isEditedMessage(msg)"
                                             type="button"
-                                            @click.stop="toggleMessageVersions(msg)"
-                                            class="meta-edited hit-40 order-2 inline-flex items-center gap-1 rounded hover:underline focus:outline-none focus-visible:underline focus-visible:ring-2 focus-visible:ring-tg-focus"
-                                            :aria-expanded="isVersionsPanelOpenFor(msg)"
-                                            :aria-label="`Edited, ${msg.version_count} earlier ${Number(msg.version_count) === 1 ? 'version' : 'versions'} kept. Open edit history`"
-                                            :title="editedTitle(msg)">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>edited
+                                            @click.stop="onEditMarkClick(msg)"
+                                            @pointerenter="onEditMarkPointerEnter(msg, $event)"
+                                            @pointerleave="onEditMarkPointerLeave($event)"
+                                            @pointerdown="onEditMarkPointerDown(msg, $event)"
+                                            @pointermove="onEditMarkPointerMove($event)"
+                                            @pointerup="cancelEditLongPress"
+                                            @pointercancel="cancelEditLongPress"
+                                            @contextmenu="onEditMarkContextMenu($event)"
+                                            @focus="onEditMarkFocus(msg, $event)"
+                                            @blur="onEditMarkBlur($event)"
+                                            class="meta-edited hit-40 order-2 inline-flex items-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus"
+                                            :aria-label="editedLabel(msg)"
+                                            aria-haspopup="dialog"
+                                            :aria-expanded="isVersionsPanelOpenFor(msg) ? 'true' : 'false'"
+                                            :aria-describedby="isEditPeekFor(msg) ? 'edit-peek-desc' : null">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span v-if="editedCount(msg) > 0" class="meta-edited-count">{{ formatCount(editedCount(msg)) }}</span>
                                         </button>
-                                        <span v-else-if="msg.edit_date"
-                                            class="order-2"
-                                            :title="editedTitle(msg)">edited</span>
                                         <span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2">{{ bubbleAccountLabel(msg) }}</span>
                                         <button v-if="metaOpensInfo" type="button"
                                             @click.stop="openMessageInfo(msg)"
@@ -7915,10 +8165,10 @@
                              when that was. -->
                         <div v-if="!hasMore && messages.length > 0" class="flex flex-col items-center gap-1 py-3 text-xs text-center">
                             <span class="pane-note">Nothing older in the archive</span>
-                            <span v-if="chatStats?.first_message_date && !messageSearchQuery && !deletedOnly && !showPinnedOnly && !selectedPaneTopic" class="pane-note">First message {{ formatDateFull(chatStats.first_message_date) }}</span>
+                            <span v-if="chatStats?.first_message_date && !messageFilterOn() && !showPinnedOnly && !selectedPaneTopic" class="pane-note">First message {{ formatDateFull(chatStats.first_message_date) }}</span>
                             <!-- In a topic the chat's first date is the forum's; the oldest
                                  row loaded is the topic's own first message. -->
-                            <span v-else-if="selectedPaneTopic && sortedMessages.length && !messageSearchQuery && !deletedOnly && !showPinnedOnly" class="pane-note">First message {{ formatDateFull(sortedMessages[sortedMessages.length - 1].date) }}</span>
+                            <span v-else-if="selectedPaneTopic && sortedMessages.length && !messageFilterOn() && !showPinnedOnly" class="pane-note">First message {{ formatDateFull(sortedMessages[sortedMessages.length - 1].date) }}</span>
                         </div>
 
                         <div ref="scrollAnchor"></div>
@@ -7956,6 +8206,73 @@
                     </template>
                 </template>
             </div>
+
+            <!-- Message Versions Drawer -->
+            <!-- The edit history. On a wide screen a column beside the chat, with no
+                 scrim: the chat stays readable and the message it is about is
+                 highlighted there (message-info-selected). Below 1024px it lies
+                 over the chat's right edge instead, still without a scrim. On a
+                 phone it is a bottom sheet over a dimmed chat, a modal dialog.
+                 The versions run down a timeline, oldest first: "08:52 Sent",
+                 "08:54 Edit 1 · 2 min later", "08:57 Edit 2, current", each text
+                 on a card with what its edit added underlined and what it
+                 removed struck through. Focus moves to Close on open, and back to
+                 the control that opened it on close; Escape closes. -->
+            <div v-if="versionsMessage && versionsSheet" class="versions-scrim fixed inset-0 z-50 bg-tg-scrim/40"
+                @click="closeVersionsPanel()" aria-hidden="true"></div>
+            <aside v-if="versionsMessage" ref="versionsDialog" id="versions-panel" role="dialog"
+                :aria-modal="versionsSheet ? 'true' : null" aria-labelledby="versions-title"
+                class="versions-panel bg-tg-sidebar flex flex-col">
+                <header class="chat-header versions-header shrink-0 bg-tg-header border-b border-tg-border flex items-center gap-2">
+                    <button ref="versionsCloseBtn" @click="closeVersionsPanel()" type="button"
+                        class="tg-icon-btn -ml-2" aria-label="Close the edit history" title="Close">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                    <div class="min-w-0 flex-1">
+                        <h3 id="versions-title" class="chat-header-title truncate">Edit history</h3>
+                        <p class="chat-header-status truncate text-tg-muted">{{ versionsSubtitle }}</p>
+                    </div>
+                    <button v-if="versionsFromFeed" type="button" class="tg-text-btn shrink-0" @click="showVersionsInChat">Show in chat</button>
+                </header>
+                <!-- The key to the marks, once, under the header. -->
+                <p v-if="versionEntries.some(entry => entry.parts && entry.parts.some(part => part.kind === 'ins' || part.kind === 'del'))"
+                    class="version-key shrink-0 px-4 py-2 text-[13px] leading-[18px] text-tg-muted border-b border-tg-border">
+                    <span class="diff-ins text-tg-ink">Underlined</span> was added, <span class="diff-del">struck through</span> was removed.
+                </p>
+
+                <div class="versions-body flex-1 overflow-y-auto">
+                    <div v-if="isMessageVersionsLoading(versionsMessage)" role="status" aria-label="Loading the edit history" class="version-list">
+                        <div v-for="i in 3" :key="i" class="version-item">
+                            <span class="version-skeleton" :style="{ width: (40 + i * 15) + '%' }"></span>
+                        </div>
+                    </div>
+
+                    <div v-else-if="getMessageVersionsError(versionsMessage)" role="status" class="flex flex-col items-center gap-2 py-8 px-4 text-center">
+                        <span class="pane-note is-error"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>{{ getMessageVersionsError(versionsMessage) }}</span>
+                        <button type="button" @click="reloadMessageVersions(versionsMessage)" class="pane-note pane-note-btn">Retry</button>
+                    </div>
+
+                    <div v-else-if="getMessageVersions(versionsMessage).length === 0" class="flex justify-center py-8 px-4 text-center">
+                        <span class="version-empty">The archive did not see an earlier version.</span>
+                    </div>
+
+                    <ol v-else class="version-list">
+                        <li v-if="getMessageVersions(versionsMessage).length >= 100" class="version-item">
+                            <span class="version-label">Showing the latest 100</span>
+                        </li>
+                        <li v-for="entry in versionEntries" :key="entry.key"
+                            class="version-item" :class="{ 'is-current': entry.current }">
+                            <p class="version-label"><span v-if="entry.when" class="version-when">{{ entry.when }}</span><span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template><template v-if="entry.parts === null"> · changes not marked, long text</template></span></p>
+                            <div class="version-bubble" :class="{ 'is-current': entry.current }" dir="auto">
+                                <template v-if="entry.parts"><span v-for="(part, i) in entry.parts" :key="i"
+                                    :class="part.kind === 'ins' ? 'diff-ins' : part.kind === 'del' ? 'diff-del' : null">{{ part.text }}</span></template>
+                                <template v-else-if="entry.text">{{ entry.text }}</template>
+                                <span v-else class="version-empty">No text</span>
+                            </div>
+                        </li>
+                    </ol>
+                </div>
+            </aside>
 
             <!-- Info panel (#433): the apps' right-hand "Chat Info" column. A resizable
                  column on desktop; on a phone it takes the whole screen, like the apps'
@@ -8076,7 +8393,8 @@
                             <!-- It opens the chat search in its "Deleted only" mode, as the
                                  chat menu's item does; on a phone this is the way there. -->
                             <button v-if="chatStats.deleted_messages > 0" type="button" class="tg-row" @click="openDeletedOnlyFromInfo" title="Show the deleted messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="tg-row-label">Deleted messages</span><span class="tg-row-value">{{ formatCount(chatStats.deleted_messages) }}</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
-                            <div v-if="chatStats.edited_messages > 0" class="tg-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="tg-row-label">Edited messages</span><span class="tg-row-value">{{ formatCount(chatStats.edited_messages) }}</span></div>
+                            <!-- Edited messages open the "Edited only" mode the same way. -->
+                            <button v-if="chatStats.edited_messages > 0" type="button" class="tg-row" @click="openEditedOnlyFromInfo" title="Show the edited messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span class="tg-row-label">Edited messages</span><span class="tg-row-value">{{ formatCount(chatStats.edited_messages) }}</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
                             <!-- The oldest message opens: the calendar's "First message". -->
                             <button v-if="chatStats.first_message_date" type="button" class="tg-row" @click="jumpToFirstMessage"
                                 :title="formatStamp(chatStats.first_message_date)">
@@ -8475,71 +8793,30 @@
             </section>
         </div>
 
-        <!-- Message Versions Drawer -->
-        <!-- The edit history: a 440px drawer on the right of a wide screen, a
-             full page with a back arrow on a phone. The versions are bubbles on
-             the chat's wallpaper, oldest first, each under a small label with its
-             time (and its day when that is not the day it was sent), every later
-             one marking what its edit inserted and removed. -->
-        <div v-if="versionsMessage"
-            class="versions-scrim fixed inset-0 z-50 bg-tg-scrim/50 flex justify-end"
-            @click.self="closeVersionsPanel">
-            <aside ref="versionsDialog" role="dialog" aria-modal="true" aria-labelledby="versions-title"
-                class="versions-drawer h-full w-full bg-tg-sidebar shadow-popup flex flex-col">
-                <header class="chat-header shrink-0 bg-tg-header border-b border-tg-border flex items-center gap-2">
-                    <!-- A back arrow where the drawer is a page (phones), a cross
-                         where it is a drawer, as the info panel does. -->
-                    <button ref="versionsCloseBtn" @click="closeVersionsPanel" type="button"
-                        class="tg-icon-btn -ml-2" aria-label="Close the edit history" title="Close">
-                        <svg class="md:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
-                        <svg class="hidden md:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                    </button>
-                    <div class="min-w-0 flex-1">
-                        <h3 id="versions-title" class="chat-header-title truncate">Edit history</h3>
-                        <p class="chat-header-status truncate text-tg-muted">{{ versionsSubtitle }}</p>
-                    </div>
-                    <button v-if="versionsFromFeed" type="button" class="tg-text-btn shrink-0" @click="showVersionsInChat">Show in chat</button>
-                </header>
-                <!-- The key to the marks, once, under the header. -->
-                <p v-if="versionEntries.some(entry => entry.parts && entry.parts.some(part => part.kind === 'ins' || part.kind === 'del'))"
-                    class="version-key shrink-0 px-4 py-2 text-[13px] leading-[18px] text-tg-muted border-b border-tg-border">
-                    <span class="diff-ins text-tg-ink">Underlined</span> was added, <span class="diff-del">struck through</span> was removed.
-                </p>
-
-                <div class="chat-wallpaper flex-1 overflow-y-auto">
-                    <div v-if="isMessageVersionsLoading(versionsMessage)" role="status" aria-label="Loading the edit history" class="version-list">
-                        <div v-for="i in 3" :key="i" :class="isOwnMessage(versionsMessage) ? 'items-end' : 'items-start'" class="flex flex-col gap-1">
-                            <span class="version-skeleton" :style="{ width: (40 + i * 15) + '%' }"></span>
-                        </div>
-                    </div>
-
-                    <div v-else-if="getMessageVersionsError(versionsMessage)" role="status" class="flex flex-col items-center gap-2 py-8 px-4 text-center">
-                        <span class="pane-note is-error"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>{{ getMessageVersionsError(versionsMessage) }}</span>
-                        <button type="button" @click="reloadMessageVersions(versionsMessage)" class="pane-note pane-note-btn">Retry</button>
-                    </div>
-
-                    <div v-else-if="getMessageVersions(versionsMessage).length === 0" class="flex justify-center py-8 px-4 text-center">
-                        <span class="pane-note">The archive did not see an earlier version.</span>
-                    </div>
-
-                    <ol v-else class="version-list">
-                        <li v-if="getMessageVersions(versionsMessage).length >= 100" class="items-center">
-                            <span class="pane-note version-label">Showing the latest 100</span>
-                        </li>
-                        <li v-for="entry in versionEntries" :key="entry.key"
-                            :class="isOwnMessage(versionsMessage) ? 'items-end' : 'items-start'">
-                            <span class="pane-note version-label">{{ entry.label }}<template v-if="entry.parts === null"> · changes not marked, long text</template></span>
-                            <div class="message-bubble version-bubble"
-                                :class="[isOwnMessage(versionsMessage) ? 'bubble-out' : 'bubble-in', entry.current ? 'is-current' : '']"
-                                :style="getSenderStyle(versionsMessage)" dir="auto">
-                                <template v-if="entry.parts"><span v-for="(part, i) in entry.parts" :key="i"
-                                    :class="part.kind === 'ins' ? 'diff-ins' : part.kind === 'del' ? 'diff-del' : null">{{ part.text }}</span></template>
-                                <template v-else>{{ entry.text }}</template>
-                            </div>
-                        </li>
-                    </ol>
-                </div>
-            </aside>
+        <!-- The peek (hover, focus or a long press on the pencil in a bubble):
+             when the last edit was, the text before it with what that edit
+             removed struck through, and "See all N versions". Fixed to the
+             viewport, placed above the pencil (below it when there is no room)
+             and kept inside the screen. It never takes focus: a keyboard opens
+             the history from the pencil itself. -->
+        <div v-if="editPeek" ref="editPeekEl" class="edit-peek" role="tooltip" id="edit-peek"
+            :class="{ 'is-below': editPeekPos.below, 'is-placed': editPeekPos.placed }"
+            :style="{ top: editPeekPos.top + 'px', left: editPeekPos.left + 'px' }"
+            @pointerenter="cancelEditPeekClose" @pointerleave="onEditPeekPointerLeave($event)">
+            <div id="edit-peek-desc">
+                <p class="edit-peek-head">{{ editedLabel(editPeek.msg) }}</p>
+                <template v-if="editedCount(editPeek.msg) > 0">
+                    <p v-if="isMessageVersionsLoading(editPeek.msg)" class="edit-peek-label">Loading the earlier text</p>
+                    <p v-else-if="getMessageVersionsError(editPeek.msg)" class="edit-peek-label">Could not load the earlier text</p>
+                    <template v-else-if="editPeekBefore">
+                        <p class="edit-peek-label">{{ editPeekBefore.label }}</p>
+                        <p class="edit-peek-text" dir="auto"><template v-if="editPeekBefore.parts"><span v-for="(part, i) in editPeekBefore.parts" :key="i"
+                            :class="part.kind === 'del' ? 'diff-del' : null">{{ part.text }}</span></template><template v-else-if="editPeekBefore.text">{{ editPeekBefore.text }}</template><span v-else class="edit-peek-label">No text</span></p>
+                    </template>
+                </template>
+            </div>
+            <button v-if="editedCount(editPeek.msg) > 0" type="button" tabindex="-1" class="edit-peek-all"
+                @click.stop="openVersionsFromPeek">See all {{ editPeekVersionCount }} versions</button>
         </div>
 
         <!-- Lightbox Modal for Images -->
@@ -9068,6 +9345,11 @@
                 const versionsCloseBtn = ref(null)
                 const versionsDialog = ref(null)
                 let versionsTrigger = null
+                // A phone gets the history as a modal bottom sheet; a wider screen as
+                // a panel beside the chat.
+                const versionsSheetQuery = window.matchMedia ? window.matchMedia('(max-width: 767px)') : null
+                const versionsSheet = ref(!!(versionsSheetQuery && versionsSheetQuery.matches))
+                versionsSheetQuery?.addEventListener?.('change', (e) => { versionsSheet.value = e.matches })
                 const senderInfoDialog = ref(null)
                 const senderInfoCloseBtn = ref(null)
                 let senderInfoTrigger = null
@@ -9444,9 +9726,12 @@
                 // the list holds only the chat's kept deletions, newest first, and
                 // the search text, when there is one, narrows them.
                 const deletedOnly = ref(false)
-                // Whether the list shows a filtered set (a search, or the deleted
-                // messages only) rather than the chat's timeline.
-                const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
+                // Its "Edited only" twin: the chat's edited messages, the same way.
+                // The two modes never hold at once.
+                const editedOnly = ref(false)
+                // Whether the list shows a filtered set (a search, or the deleted or
+                // the edited messages only) rather than the chat's timeline.
+                const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value || editedOnly.value
                 // The deleted messages the reader opened with Show, for this session:
                 // "chatId:messageId" keys. A deleted message is folded to one line
                 // until it is opened here, reached by a jump, or found by a search.
@@ -11223,6 +11508,7 @@
                     resetMessagePagination()
                     messageSearchQuery.value = ''
                     deletedOnly.value = false
+                    editedOnly.value = false
                     chatStats.value = null
                     pinnedMessages.value = []
                     currentPinnedIndex.value = 0
@@ -12269,7 +12555,8 @@
                                     editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
                                 }
                                 clearMessageVersionsCache(editMsg)
-                                if (isVersionsPanelOpenFor(editMsg)) {
+                                // An open history or peek reads the new versions at once.
+                                if (isVersionsPanelOpenFor(editMsg) || isEditPeekFor(editMsg)) {
                                     loadMessageVersions(editMsg)
                                 }
                             }
@@ -13971,6 +14258,7 @@
                     resetMessagePagination()
                     messageSearchQuery.value = ''
                     deletedOnly.value = false
+                    editedOnly.value = false
                     chatStats.value = null  // Reset stats when changing chat
                     pinnedMessages.value = []  // Reset pinned messages when changing chat
                     currentPinnedIndex.value = 0
@@ -14154,6 +14442,8 @@
                             if (messageSearchQuery.value) url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
                             // "Deleted only": the chat's kept deletions, with or without text.
                             if (deletedOnly.value) url += '&deleted_only=true'
+                            // "Edited only": the chat's edited messages, the same way.
+                            if (editedOnly.value) url += '&edited_only=true'
                             // Also pass topic_id for search within a topic
                             if (topicId != null) {
                                 url += `&topic_id=${topicId}`
@@ -14344,9 +14634,10 @@
                 // button disappear, and focus must not fall to the page.
                 const closeChatSearch = async () => {
                     chatSearchOpen.value = false
-                    if (messageSearchQuery.value || deletedOnly.value) {
+                    if (messageSearchQuery.value || deletedOnly.value || editedOnly.value) {
                         messageSearchQuery.value = ''
                         deletedOnly.value = false
+                        editedOnly.value = false
                         onMessageSearchInput()
                     }
                     await nextTick()
@@ -15333,6 +15624,7 @@
                         messageSearchDebounceTimer = null
                     }
                     closePinnedView()
+                    editedOnly.value = false
                     deletedOnly.value = true
                     await searchMessages()
                     await openChatSearch()
@@ -15350,25 +15642,85 @@
                     await nextTick()
                     chatSearchInput.value?.focus()
                 }
-                // "Show in chat" on a message of the list: out of the mode, to the
-                // message in the chat around it, which opens as the jump lands.
+                // The chat menu's "Edited messages": the chat search in its "Edited
+                // only" mode, newest first, the count from the chat's figures.
+                const chatEditedCount = computed(() => {
+                    const count = chatStats.value?.edited_messages
+                    return count == null ? null : Number(count) || 0
+                })
+                const openEditedOnly = async () => {
+                    chatMenuOpen.value = false
+                    if (messageSearchDebounceTimer) {
+                        clearTimeout(messageSearchDebounceTimer)
+                        messageSearchDebounceTimer = null
+                    }
+                    closePinnedView()
+                    deletedOnly.value = false
+                    editedOnly.value = true
+                    await searchMessages()
+                    await openChatSearch()
+                }
+                const openEditedOnlyFromInfo = () => {
+                    if (window.matchMedia?.('(max-width: 767px)').matches) closeInfoPanel()
+                    openEditedOnly()
+                }
+                const closeEditedOnly = async () => {
+                    editedOnly.value = false
+                    await searchMessages()
+                    await nextTick()
+                    chatSearchInput.value?.focus()
+                }
+                // "Show in chat" on a message of the "Deleted only" or "Edited only"
+                // list: out of the mode, to the message in the chat around it, which
+                // opens as the jump lands.
                 const showDeletedInChat = async (msg) => {
                     if (messageSearchDebounceTimer) {
                         clearTimeout(messageSearchDebounceTimer)
                         messageSearchDebounceTimer = null
                     }
                     deletedOnly.value = false
+                    editedOnly.value = false
                     messageSearchQuery.value = ''
                     chatSearchOpen.value = false
                     await loadMessagesAroundId(msg.id)
                 }
-                // "edited": with earlier versions the word opens them and says so;
-                // without, the tooltip says why there is no history to open.
-                const editedTitle = (msg) => {
-                    const stamp = msg.edit_date ? `Edited ${formatStamp(msg.edit_date)}.` : 'Edited.'
-                    const versions = Number(msg.version_count) || 0
-                    if (versions > 0) return `${stamp} ${versions} earlier ${versions === 1 ? 'version' : 'versions'} kept. Click to see them.`
-                    return `${stamp} The archive did not see the earlier text.`
+                // The pencil in the meta row. A message counts as edited when Telegram
+                // marks it (edit_date) or the archive kept an earlier version, the
+                // same rule as the server's edited_only filter and the chat's count.
+                const editedCount = (msg) => Number(msg?.version_count) || 0
+                const isEditedMessage = (msg) => !!msg?.edit_date || editedCount(msg) > 0
+                // When the last edit was, by Telegram's clock: "at 08:57" on the day
+                // the message was sent, "on Sep 30 at 08:57" later, with the year
+                // when that differs too. Empty when Telegram gave no time.
+                const editedMoment = (msg) => {
+                    if (!msg?.edit_date) return null
+                    const at = moment.utc(msg.edit_date).tz(viewerTimezone.value)
+                    if (!at.isValid()) return null
+                    const sent = moment.utc(msg.date).tz(viewerTimezone.value)
+                    return { at, sameDay: at.isSame(sent, 'day'), sameYear: at.isSame(sent, 'year') }
+                }
+                const editedWhen = (msg) => {
+                    const edit = editedMoment(msg)
+                    if (!edit) return ''
+                    if (edit.sameDay) return `at ${edit.at.format('HH:mm')}`
+                    return `on ${edit.at.format(edit.sameYear ? 'MMM D' : 'MMM D, YYYY')} at ${edit.at.format('HH:mm')}`
+                }
+                // Its name, and the first line of its peek: "Edited at 08:57, 2 earlier
+                // versions kept", so the time beside it reads as the send time it is.
+                const editedLabel = (msg) => {
+                    const when = editedWhen(msg)
+                    const head = when ? `Edited ${when}` : 'Edited'
+                    const kept = editedCount(msg)
+                    if (kept > 0) return `${head}, ${kept} earlier ${kept === 1 ? 'version' : 'versions'} kept`
+                    return `${head}. The archive did not see the earlier text`
+                }
+                // "Edited · 08:57", "Edited · Sep 30, 08:57" on a later day, at the head
+                // of a bubble in the "Edited only" list.
+                const editedHeadText = (msg) => {
+                    const edit = editedMoment(msg)
+                    if (!edit) return 'Edited'
+                    if (edit.sameDay) return `Edited · ${edit.at.format('HH:mm')}`
+                    return `Edited · ${edit.at.format(edit.sameYear ? 'MMM D, HH:mm' : 'MMM D, YYYY, HH:mm')}`
                 }
 
                 // The tooltip on a bubble's time: the full date, then what the archive
@@ -15436,37 +15788,61 @@
                     return parts
                 }
 
-                // The edit history as the chat would have shown it, oldest first:
-                // "Original", "Edit 1", ... and "Now". Each later text carries its
-                // word diff against the one before. When the archive returned its
-                // limit of versions the oldest shown may not be the original, so the
-                // labels drop the numbers.
+                // A version's time on the timeline: "08:54" on the day the message was
+                // sent, "Sep 30, 08:54" on another day.
+                const versionWhen = (msg, dateStr) => {
+                    if (!dateStr) return ''
+                    const at = moment.utc(dateStr).tz(viewerTimezone.value)
+                    if (!at.isValid()) return ''
+                    const sent = moment.utc(msg.date).tz(viewerTimezone.value)
+                    return at.isSame(sent, 'day') ? at.format('HH:mm') : at.format('MMM D, HH:mm')
+                }
+                // How long after the version before: "2 min later", "3 h later",
+                // "2 days later". Empty for no gap or no time.
+                const versionGap = (fromStr, toStr) => {
+                    if (!fromStr || !toStr) return ''
+                    const minutes = Math.round((moment.utc(toStr).valueOf() - moment.utc(fromStr).valueOf()) / 60000)
+                    if (!Number.isFinite(minutes) || minutes <= 0) return ''
+                    if (minutes < 60) return `${minutes} min later`
+                    const hours = Math.round(minutes / 60)
+                    if (hours < 48) return `${hours} h later`
+                    return `${Math.round(hours / 24)} days later`
+                }
+
+                // The edit history as a timeline, oldest first: "Sent", "Edit 1", ...
+                // and "Edit N, current", each with its time and how long after the one
+                // before. A version's date is when that text became current (the send
+                // time for the original, Telegram's edit time for each later one), and
+                // the current text's is the message's edit_date. Each later text
+                // carries its word diff against the one before. When the archive
+                // returned its limit of versions the oldest shown may not be the
+                // original, so the labels drop the numbers.
                 const VERSIONS_LIMIT = 100
                 const versionEntries = computed(() => {
                     const msg = versionsMessage.value
                     if (!msg) return []
                     const kept = getMessageVersions(msg)
                     const truncated = kept.length >= VERSIONS_LIMIT
-                    const sentDay = msg.date ? moment.utc(msg.date).tz(viewerTimezone.value).format('YYYY-MM-DD') : ''
-                    const when = (dateStr) => {
-                        if (!dateStr) return ''
-                        const at = moment.utc(dateStr).tz(viewerTimezone.value)
-                        return at.format('YYYY-MM-DD') === sentDay ? at.format('HH:mm') : at.format('MMM D, HH:mm')
-                    }
                     const oldestFirst = [...kept].reverse()
-                    const entries = oldestFirst.map((entry, index) => {
-                        let label = truncated ? 'Earlier version' : (index === 0 ? 'Original' : `Edit ${index}`)
-                        if (entry.date) label += ` · ${when(entry.date)}`
-                        return { key: `${entry.date || ''}:${index}`, label, text: entry.text || '', current: false }
-                    })
+                    const entries = oldestFirst.map((entry, index) => ({
+                        key: `${entry.date || ''}:${index}`,
+                        date: entry.date || null,
+                        what: truncated ? 'Earlier version' : (index === 0 ? 'Sent' : `Edit ${index}`),
+                        text: entry.text || '',
+                        current: false,
+                    }))
                     entries.push({
                         key: 'current',
-                        label: msg.edit_date ? `Now · edited ${when(msg.edit_date)}` : 'Now',
+                        date: msg.edit_date || null,
+                        what: truncated || !kept.length ? 'Current' : `Edit ${kept.length}, current`,
                         text: msg.text || '',
                         current: true,
                     })
-                    for (let index = 1; index < entries.length; index++) {
-                        entries[index].parts = diffWords(entries[index - 1].text, entries[index].text)
+                    for (let index = 0; index < entries.length; index++) {
+                        const entry = entries[index]
+                        entry.when = versionWhen(msg, entry.date)
+                        entry.gap = index > 0 ? versionGap(entries[index - 1].date, entry.date) : ''
+                        if (index > 0) entry.parts = diffWords(entries[index - 1].text, entry.text)
                     }
                     return entries
                 })
@@ -15550,24 +15926,37 @@
                         return
                     }
 
+                    closeEditPeek()
+                    // Another message's history, open already, hands over its trigger.
+                    if (!versionsMessage.value) {
+                        versionsTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+                        document.addEventListener('keydown', handleVersionsKeydown)
+                    }
                     versionsMessage.value = msg
-                    versionsTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
-                    document.addEventListener('keydown', handleVersionsKeydown)
-                    nextTick(() => versionsCloseBtn.value?.focus())
+                    versionsFromFeed.value = false
+                    nextTick(() => {
+                        versionsCloseBtn.value?.focus()
+                        // The message stays in view beside the panel, or above the sheet
+                        // with a little wallpaper over it.
+                        const row = messagesContainer.value?.querySelector(`.message-row[data-msg-id="${msg.id}"]`)
+                        row?.scrollIntoView?.({ block: versionsSheet.value ? 'start' : 'nearest' })
+                        if (row && versionsSheet.value) row.closest('.messages-scroll')?.scrollBy(0, -12)
+                    })
                     if (!messageVersionsByMessage.value[key] && !messageVersionsLoading.value[key]) {
                         await loadMessageVersions(msg)
                     }
                 }
 
                 // Focus goes back to the control that opened the history (the
-                // bubble's "edited", the info panel's "N versions").
-                const closeVersionsPanel = () => {
+                // bubble's pencil, the info panel's "N versions"), unless the panel
+                // closes because the chat changed under it.
+                const closeVersionsPanel = (restoreFocus = true) => {
                     versionsMessage.value = null
                     versionsFromFeed.value = false
                     document.removeEventListener('keydown', handleVersionsKeydown)
                     const trigger = versionsTrigger
                     versionsTrigger = null
-                    nextTick(() => { if (trigger?.isConnected) trigger.focus() })
+                    if (restoreFocus) nextTick(() => { if (trigger?.isConnected) trigger.focus() })
                 }
 
                 // Opened from What changed, the drawer offers the way to the message.
@@ -15592,14 +15981,235 @@
                     await loadMessageVersions(msg)
                 }
 
+                // Escape closes the history. Beside the chat it is not modal, so Tab
+                // may leave it, and Escape in a field of the chat (its search) is
+                // that field's own. As a sheet on a phone it is modal: Tab stays in.
                 const handleVersionsKeydown = (e) => {
                     if (!versionsMessage.value) return
                     if (e.key === 'Escape') {
+                        const inField = e.target?.closest?.('input, textarea, select')
+                        if (inField && !versionsSheet.value && !versionsDialog.value?.contains(e.target)) return
                         closeVersionsPanel()
                         return
                     }
-                    cycleTabWithin(versionsDialog.value, e)
+                    if (versionsSheet.value) cycleTabWithin(versionsDialog.value, e)
                 }
+
+                // Another chat under a panel that stays open beside it: the history
+                // and the peek belong to a message of the chat that was left.
+                watch(() => selectedChat.value?.ref || null, () => {
+                    if (versionsMessage.value && !versionsFromFeed.value) closeVersionsPanel(false)
+                    closeEditPeek()
+                })
+
+                // ---- The peek on the pencil (hover, focus, long press) ----
+                // One peek at a time, for editPeek.msg, anchored to the pencil that
+                // opened it. A pointer opens it after a short rest on the pencil and
+                // may move onto it (to press "See all") within a grace time, so it
+                // neither flickers nor closes under the pointer on its way.
+                const editPeek = ref(null)
+                const editPeekEl = ref(null)
+                const editPeekPos = ref({ top: 0, left: 0, below: false, placed: false })
+                const EDIT_PEEK_DELAY = 400
+                const EDIT_PEEK_GRACE = 250
+                const EDIT_PEEK_LONG_PRESS = 500
+                let editPeekAnchor = null
+                let editPeekOpenTimer = null
+                let editPeekCloseTimer = null
+                let editLongPressTimer = null
+                let editLongPressStart = null
+                let editPeekSuppressClickUntil = 0
+                const isEditPeekFor = (msg) => !!editPeek.value && messageVersionsKey(editPeek.value.msg) === messageVersionsKey(msg)
+                // The text the last edit replaced: the newest kept version, with the
+                // words that edit removed marked, and when that text was current.
+                const editPeekBefore = computed(() => {
+                    const msg = editPeek.value?.msg
+                    if (!msg) return null
+                    const kept = getMessageVersions(msg)
+                    if (!kept.length) return null
+                    const before = kept[0]
+                    const parts = diffWords(before.text || '', msg.text || '')
+                    const when = versionWhen(msg, before.date)
+                    const what = kept.length === 1 && kept.length < VERSIONS_LIMIT ? 'sent' : 'edited'
+                    return {
+                        label: when ? `Before the last edit · ${what} ${when}` : 'Before the last edit',
+                        text: before.text || '',
+                        parts: parts && before.text ? parts.filter(part => part.kind !== 'ins') : null,
+                    }
+                })
+                // Every text of the message: the kept ones and the current one.
+                const editPeekVersionCount = computed(() => {
+                    const msg = editPeek.value?.msg
+                    if (!msg) return 0
+                    return Math.max(getMessageVersions(msg).length, editedCount(msg)) + 1
+                })
+                const clearEditPeekTimers = () => {
+                    clearTimeout(editPeekOpenTimer)
+                    clearTimeout(editPeekCloseTimer)
+                    editPeekOpenTimer = null
+                    editPeekCloseTimer = null
+                }
+                // Above the pencil, its right edge on the pencil's, inside the screen
+                // with 8px to spare; below the pencil when there is no room above.
+                const placeEditPeek = () => {
+                    const peek = editPeekEl.value
+                    const anchor = editPeekAnchor
+                    if (!editPeek.value || !peek) return
+                    if (!anchor?.isConnected) {
+                        closeEditPeek()
+                        return
+                    }
+                    const margin = 8
+                    const gap = 6
+                    const a = anchor.getBoundingClientRect()
+                    const width = peek.offsetWidth
+                    const height = peek.offsetHeight
+                    const viewportWidth = document.documentElement.clientWidth || window.innerWidth
+                    const viewportHeight = window.innerHeight
+                    const left = Math.max(margin, Math.min(a.right - width, viewportWidth - margin - width))
+                    let top = a.top - gap - height
+                    let below = false
+                    if (top < margin) {
+                        top = a.bottom + gap
+                        below = true
+                    }
+                    top = Math.max(margin, Math.min(top, viewportHeight - margin - height))
+                    editPeekPos.value = { top: Math.round(top), left: Math.round(left), below, placed: true }
+                }
+                const openEditPeek = (msg, anchor) => {
+                    clearEditPeekTimers()
+                    if (versionsMessage.value && messageVersionsKey(versionsMessage.value) === messageVersionsKey(msg)) return
+                    const already = editPeek.value && editPeekAnchor === anchor
+                    editPeekAnchor = anchor
+                    if (!already) {
+                        editPeekPos.value = { top: 0, left: 0, below: false, placed: false }
+                        editPeek.value = { msg }
+                    }
+                    const key = messageVersionsKey(msg)
+                    if (editedCount(msg) > 0 && !messageVersionsByMessage.value[key] && !messageVersionsLoading.value[key]) {
+                        loadMessageVersions(msg)
+                    }
+                    document.addEventListener('keydown', handleEditPeekKeydown, true)
+                    document.addEventListener('pointerdown', handleEditPeekOutside, true)
+                    window.addEventListener('scroll', placeEditPeekSoon, true)
+                    window.addEventListener('resize', placeEditPeekSoon)
+                    nextTick(placeEditPeek)
+                }
+                const closeEditPeek = () => {
+                    clearEditPeekTimers()
+                    if (!editPeek.value) return
+                    editPeek.value = null
+                    editPeekAnchor = null
+                    document.removeEventListener('keydown', handleEditPeekKeydown, true)
+                    document.removeEventListener('pointerdown', handleEditPeekOutside, true)
+                    window.removeEventListener('scroll', placeEditPeekSoon, true)
+                    window.removeEventListener('resize', placeEditPeekSoon)
+                }
+                let editPeekFrame = 0
+                const placeEditPeekSoon = () => {
+                    if (editPeekFrame) return
+                    editPeekFrame = requestAnimationFrame(() => {
+                        editPeekFrame = 0
+                        placeEditPeek()
+                    })
+                }
+                const scheduleEditPeekClose = () => {
+                    clearTimeout(editPeekOpenTimer)
+                    editPeekOpenTimer = null
+                    if (!editPeek.value || editPeekCloseTimer) return
+                    editPeekCloseTimer = setTimeout(() => {
+                        editPeekCloseTimer = null
+                        // Focus still on the pencil keeps it open.
+                        if (editPeekAnchor && document.activeElement === editPeekAnchor && editPeekAnchor.matches(':focus-visible')) return
+                        closeEditPeek()
+                    }, EDIT_PEEK_GRACE)
+                }
+                const cancelEditPeekClose = () => {
+                    clearTimeout(editPeekCloseTimer)
+                    editPeekCloseTimer = null
+                }
+                // Escape closes the peek first, and only the peek.
+                const handleEditPeekKeydown = (e) => {
+                    if (e.key !== 'Escape' || !editPeek.value) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    closeEditPeek()
+                }
+                // A tap or a click anywhere else closes it.
+                const handleEditPeekOutside = (e) => {
+                    if (!editPeek.value) return
+                    if (editPeekEl.value?.contains(e.target) || editPeekAnchor?.contains(e.target)) return
+                    closeEditPeek()
+                }
+                const onEditMarkPointerEnter = (msg, e) => {
+                    if (e.pointerType === 'touch') return
+                    cancelEditPeekClose()
+                    if (editPeek.value && editPeekAnchor === e.currentTarget) return
+                    clearTimeout(editPeekOpenTimer)
+                    const anchor = e.currentTarget
+                    editPeekOpenTimer = setTimeout(() => openEditPeek(msg, anchor), editPeek.value ? 0 : EDIT_PEEK_DELAY)
+                }
+                const onEditMarkPointerLeave = (e) => {
+                    if (e.pointerType === 'touch') return
+                    scheduleEditPeekClose()
+                }
+                const onEditPeekPointerLeave = (e) => {
+                    if (e.pointerType === 'touch') return
+                    scheduleEditPeekClose()
+                }
+                // A keyboard focus peeks at once; a pointer's click focus does not
+                // (the click opens the history).
+                const onEditMarkFocus = (msg, e) => {
+                    if (e.currentTarget.matches?.(':focus-visible')) openEditPeek(msg, e.currentTarget)
+                }
+                const onEditMarkBlur = (e) => {
+                    if (editPeekEl.value?.contains(e.relatedTarget)) return
+                    if (editPeekAnchor === e.currentTarget) closeEditPeek()
+                }
+                // A long press on a touch screen peeks, and the tap that ends it does
+                // not open the history.
+                const onEditMarkPointerDown = (msg, e) => {
+                    if (e.pointerType !== 'touch') return
+                    cancelEditLongPress()
+                    const anchor = e.currentTarget
+                    editLongPressStart = { x: e.clientX, y: e.clientY }
+                    editLongPressTimer = setTimeout(() => {
+                        editLongPressTimer = null
+                        editPeekSuppressClickUntil = Date.now() + 1000
+                        openEditPeek(msg, anchor)
+                    }, EDIT_PEEK_LONG_PRESS)
+                }
+                const onEditMarkPointerMove = (e) => {
+                    if (!editLongPressTimer || !editLongPressStart) return
+                    if (Math.hypot(e.clientX - editLongPressStart.x, e.clientY - editLongPressStart.y) > 10) cancelEditLongPress()
+                }
+                const cancelEditLongPress = () => {
+                    clearTimeout(editLongPressTimer)
+                    editLongPressTimer = null
+                    editLongPressStart = null
+                }
+                // The system menu a long press would open gives way to the peek.
+                const onEditMarkContextMenu = (e) => {
+                    if (editLongPressTimer || Date.now() < editPeekSuppressClickUntil) e.preventDefault()
+                }
+                const onEditMarkClick = (msg) => {
+                    if (Date.now() < editPeekSuppressClickUntil) return
+                    closeEditPeek()
+                    toggleMessageVersions(msg)
+                }
+                const openVersionsFromPeek = () => {
+                    const msg = editPeek.value?.msg
+                    const anchor = editPeekAnchor
+                    closeEditPeek()
+                    if (!msg) return
+                    // The pencil is where focus returns when the history closes.
+                    anchor?.focus?.({ preventScroll: true })
+                    toggleMessageVersions(msg)
+                }
+                // The peek grows when the earlier text arrives: place it again.
+                watch(() => (editPeek.value
+                    ? `${messageVersionsKey(editPeek.value.msg)}|${isMessageVersionsLoading(editPeek.value.msg)}|${getMessageVersions(editPeek.value.msg).length}`
+                    : ''), (key) => { if (key) nextTick(placeEditPeek) })
 
                 const formatReactionEmoji = (emoji) => {
                     // Handle custom emojis (stored as custom_documentId)
@@ -15883,6 +16493,7 @@
                         }
                         messageSearchQuery.value = ''
                         deletedOnly.value = false
+                        editedOnly.value = false
                         chatSearchOpen.value = false
                         await loadMessagesAroundId(messageId)
                     } else {
@@ -18081,7 +18692,35 @@
                     openDeletedOnlyFromInfo,
                     closeDeletedOnly,
                     showDeletedInChat,
-                    editedTitle,
+                    editedOnly,
+                    chatEditedCount,
+                    openEditedOnly,
+                    openEditedOnlyFromInfo,
+                    closeEditedOnly,
+                    editedCount,
+                    isEditedMessage,
+                    editedLabel,
+                    editedHeadText,
+                    messageFilterOn,
+                    versionsSheet,
+                    editPeek,
+                    editPeekEl,
+                    editPeekPos,
+                    editPeekBefore,
+                    editPeekVersionCount,
+                    isEditPeekFor,
+                    cancelEditPeekClose,
+                    onEditPeekPointerLeave,
+                    onEditMarkPointerEnter,
+                    onEditMarkPointerLeave,
+                    onEditMarkPointerDown,
+                    onEditMarkPointerMove,
+                    cancelEditLongPress,
+                    onEditMarkContextMenu,
+                    onEditMarkFocus,
+                    onEditMarkBlur,
+                    onEditMarkClick,
+                    openVersionsFromPeek,
                     formatLightboxDate,
                     messageSearchQuery,
                     loading,

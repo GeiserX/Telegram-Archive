@@ -1,0 +1,58 @@
+/* D. Inline diff: the bubble's text as the diff of its last edit. */
+.message-bubble.ev-diff-on .message-text {
+    display: none;
+}
+.message-bubble:not(.ev-diff-on) .ev-diff-text,
+.message-bubble:not(.ev-diff-on) .ev-diff-head {
+    display: none;
+}
+/* The mark is a toggle: pressed, it takes the side's quote colour and tint. */
+.message-meta .meta-edited[aria-pressed="true"] {
+    color: rgb(var(--tg-quote));
+    background: var(--tg-quote-bg);
+    border-radius: 6px;
+    padding: 0 4px;
+    margin: 0 -2px;
+}
+.ev-diff-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 2px 0 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--tg-quote-bg);
+    color: rgb(var(--tg-meta));
+    font-size: 12px;
+    line-height: 16px;
+}
+.ev-diff-head span {
+    flex: 1;
+}
+.ev-diff-head .ev-diff-all {
+    color: rgb(var(--tg-quote));
+    font-weight: 600;
+    font-size: 12px;
+}
+.ev-diff-head .ev-diff-all:hover {
+    text-decoration: underline;
+}
+/* The history's own marks (index.html .version-bubble .diff-ins/.diff-del). */
+.ev-diff-text .ev-ins,
+.ev-diff-text .ev-del {
+    border-radius: 3px;
+    padding: 0 2px;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+.ev-diff-text .ev-ins {
+    background: var(--tg-diff-ins-bg);
+    text-decoration: underline;
+    text-decoration-color: rgb(var(--tg-diff-ins-line));
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
+}
+.ev-diff-text .ev-del {
+    color: rgb(var(--tg-meta));
+    background: var(--tg-diff-del-bg);
+    text-decoration: line-through;
+}

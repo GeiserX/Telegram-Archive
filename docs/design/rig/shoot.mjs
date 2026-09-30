@@ -8,8 +8,12 @@
 // joined in order, so one mockup can build on another.
 //
 // Usage:
-//   node docs/design/rig/shoot.mjs --css <file[,file]|none> --out <dir> --port <n>
+//   node docs/design/rig/shoot.mjs --css <file[,file]|none> --out <dir> (--port <n> | --base <url>)
 //        [--js <file[,file]>] [--theme <id>] [--scheme light|dark] [--only 02,08]
+//
+// --port reaches a viewer on 127.0.0.1; --base takes a whole address instead
+// (http://host:port), and VIEWER_BASE_URL or VIEWER_PORT stand in for both, so
+// the rig does not care which port a viewer runs on.
 //
 // --theme passes any id through ?theme= unchanged, so a theme the app does not
 // know yet still reaches it. --scheme sets the colour scheme the page sees
@@ -35,14 +39,16 @@ const PLAYWRIGHT = process.env.PLAYWRIGHT_PATH || 'playwright'
 const { chromium } = require(PLAYWRIGHT)
 
 function parseArgs(argv) {
-    const args = { css: 'none', js: null, out: null, port: null, theme: null, scheme: null, only: null }
+    const args = { css: 'none', js: null, out: null, port: null, base: null, theme: null, scheme: null, only: null }
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i].replace(/^--/, '')
         if (!(key in args)) throw new Error(`unknown option ${argv[i]}`)
         args[key] = argv[++i]
     }
-    if (!args.out || !args.port) {
-        throw new Error('usage: shoot.mjs --css <file[,file]|none> --out <dir> --port <n> [--js <file[,file]>] [--theme <id>] [--scheme light|dark] [--only 02,08]')
+    args.base = args.base || process.env.VIEWER_BASE_URL || null
+    args.port = args.port || process.env.VIEWER_PORT || null
+    if (!args.out || (!args.port && !args.base)) {
+        throw new Error('usage: shoot.mjs --css <file[,file]|none> --out <dir> (--port <n> | --base <url>) [--js <file[,file]>] [--theme <id>] [--scheme light|dark] [--only 02,08]')
     }
     if (args.scheme && !['light', 'dark'].includes(args.scheme)) {
         throw new Error(`--scheme must be light or dark, got ${args.scheme}`)
@@ -51,7 +57,7 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2))
-const BASE = `http://127.0.0.1:${args.port}`
+const BASE = (args.base || `http://127.0.0.1:${args.port}`).replace(/\/+$/, '')
 const OUT = resolve(args.out)
 const readList = (list, glue) => list.split(',').map((f) => readFileSync(resolve(f.trim()), 'utf8')).join(glue)
 const CSS = args.css && args.css !== 'none' ? readList(args.css, '\n') : null
@@ -89,8 +95,9 @@ async function rowAcrossPane(page, text) {
 
 async function injectCss(page) {
     if (CSS) {
-        const present = await page.evaluate(() => !!document.getElementById('mockup-override')).catch(() => false)
-        if (!present) await page.addStyleTag({ content: CSS }).then((h) => h.evaluate((el) => { el.id = 'mockup-override' }))
+        if (await claim(page, 'mockupCss')) {
+            await page.addStyleTag({ content: CSS }).then((h) => h.evaluate((el) => { el.id = 'mockup-override' }))
+        }
     }
     await injectJs(page)
 }
@@ -98,8 +105,21 @@ async function injectCss(page) {
 // The script runs once per document: a marker on the page stops a second run.
 async function injectJs(page) {
     if (!JS) return
-    const present = await page.evaluate(() => !!document.getElementById('mockup-script')).catch(() => false)
-    if (!present) await page.addScriptTag({ content: JS }).then((h) => h.evaluate((el) => { el.id = 'mockup-script' }))
+    if (await claim(page, 'mockupScript')) {
+        await page.addScriptTag({ content: JS }).then((h) => h.evaluate((el) => { el.id = 'mockup-script' }))
+    }
+}
+
+// Two injections can overlap (one after domcontentloaded, one after goto). The
+// page's own JavaScript is single-threaded, so checking and setting the marker
+// in one evaluate lets exactly one of them win for each document.
+async function claim(page, key) {
+    return page.evaluate((k) => {
+        const root = document.documentElement
+        if (root.dataset[k]) return false
+        root.dataset[k] = '1'
+        return true
+    }, key).catch(() => false)
 }
 
 async function settle(page) {
@@ -136,12 +156,18 @@ async function parkPointer(page) {
     await page.mouse.move(0, 0)
 }
 
-async function shot(page, name, clip) {
+// A view may return what to keep of the page: a rectangle (a clip box such as
+// LEFT_PANEL), or a function run in the page just before the picture,
+// after any mockupBeforeShot, that returns the rectangle (a crop that follows
+// the layout, as editedFrame).
+async function shot(page, name, clip = null) {
     if (JS) await page.evaluate(() => window.mockupBeforeShot?.())
-    await parkPointer(page)
+    // A view that pictures a hover (the edit peek) keeps the pointer where it is.
+    if (!page.keepPointer) await parkPointer(page)
     await settle(page)
     const file = join(OUT, `${name}.png`)
-    await page.screenshot({ path: file, animations: 'disabled', caret: 'hide', ...(clip ? { clip } : {}) })
+    const box = typeof clip === 'function' ? await page.evaluate(clip) : clip
+    await page.screenshot({ path: file, animations: 'disabled', caret: 'hide', ...(box ? { clip: box } : {}) })
     console.log(`wrote ${file}`)
 }
 
@@ -381,16 +407,42 @@ async function openTranscripts(page) {
     await frameTopEdge(page)
 }
 
+// The edit history of the demo's edited message: a panel beside the chat on a
+// wide screen, a bottom sheet on a phone. The chat narrows when the panel opens,
+// so its top edge is framed again after.
 async function openEditHistory(page) {
     await open(page)
     await openGroup(page)
-    const edited = page.locator('.message-meta button[aria-expanded]').first()
+    const edited = page.locator('.message-row').filter({ hasText: EDITED_TEXT }).last().locator('.meta-edited')
     await edited.waitFor({ state: 'attached', timeout: 15000 })
     await edited.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
     await frameTopEdge(page)
     await edited.click()
     await page.locator('#versions-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.locator('#versions-panel .version-list').waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(400)
+    await frameTopEdge(page)
+}
+
+// The peek: the pointer resting on the pencil of the demo's edited message.
+// The picture is cropped to the message column around it (peekFrame).
+async function openEditPeek(page) {
+    await openEdited(page)
+    const mark = page.locator('[data-mockup-anchor] .meta-edited')
+    await mark.hover()
+    await page.locator('.edit-peek.is-placed').waitFor({ state: 'visible', timeout: 10000 })
+    await page.locator('.edit-peek .edit-peek-text').waitFor({ state: 'visible', timeout: 10000 })
+    page.keepPointer = true
+}
+
+// The chat's "More actions" menu with "Deleted messages" and "Edited messages",
+// each with its count, over the edited message.
+async function openEditedMenu(page) {
+    await openEdited(page)
+    await page.getByRole('button', { name: 'More actions' }).click()
+    await page.locator('.popover-sheet').filter({ hasText: 'Edited messages' }).waitFor({ state: 'visible', timeout: 10000 })
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(300)
 }
 
 async function openAvatarHistory(page) {
@@ -496,6 +548,76 @@ async function openDatePicker(page) {
     await page.waitForTimeout(400)
 }
 
+// The edited message in its chat: the reply with two earlier versions,
+// in the middle of the list. The row is marked data-mockup-anchor, so a
+// mockup script can find it and the desktop frame can crop around it.
+const EDITED_TEXT = 'It fills up by 8'
+
+async function openEdited(page) {
+    await open(page)
+    await openGroup(page)
+    await centerOn(page, EDITED_TEXT)
+    await frameTopEdge(page)
+    await page.locator('.message-row').filter({ hasText: EDITED_TEXT }).last()
+        .evaluate((el) => { el.dataset.mockupAnchor = '1' })
+}
+
+// The message column around the anchored row: from 16px left of the avatars
+// to the pane's right edge, where outgoing bubbles end, and at least 180px
+// above and below the row. It grows to take in anything a mockup marks with
+// data-mockup-frame (a popover, a menu, a search bar).
+function editedFrame() {
+    const list = document.querySelector('.messages-scroll')
+    const row = document.querySelector('[data-mockup-anchor]') || list
+    const pane = list.getBoundingClientRect()
+    const r = row.getBoundingClientRect()
+    let top = r.top - 180
+    let bottom = r.bottom + 180
+    const gutter = row.querySelector('.message-avatar-gutter, .message-bubble')
+    let left = (gutter ? gutter.getBoundingClientRect().left : pane.left) - 16
+    let right = pane.right
+    for (const el of document.querySelectorAll('[data-mockup-frame]')) {
+        const f = el.getBoundingClientRect()
+        if (!f.width || !f.height) continue
+        top = Math.min(top, f.top - 16)
+        bottom = Math.max(bottom, f.bottom + 16)
+        left = Math.min(left, f.left - 16)
+        right = Math.max(right, f.right + 16)
+    }
+    // Never past the chat column: the sidebar is not part of the picture.
+    top = Math.max(0, top)
+    bottom = Math.min(window.innerHeight, bottom)
+    left = Math.max(pane.left, left)
+    right = Math.min(window.innerWidth, right)
+    return { x: Math.round(left), y: Math.round(top), width: Math.round(right - left), height: Math.round(bottom - top) }
+}
+
+// The peek's picture: the message column from the peek down to the row after
+// the edited one, with both edges on whole elements (8px of wallpaper beyond a
+// bubble or a day separator), never on half a bubble.
+function peekFrame() {
+    const list = document.querySelector('.messages-scroll')
+    const pane = list.getBoundingClientRect()
+    const row = document.querySelector('[data-mockup-anchor]')
+    const peek = document.querySelector('.edit-peek')
+    const r = row.getBoundingClientRect()
+    const p = peek.getBoundingClientRect()
+    const items = [...list.querySelectorAll(':scope > .message-row, :scope > .date-separator')]
+        .map((el) => el.getBoundingClientRect())
+        .filter((b) => b.height > 0)
+    let top = Math.min(r.top, p.top) - 16
+    let bottom = r.bottom + 8
+    const next = items.filter((b) => b.top >= r.bottom - 1).sort((a, b) => a.top - b.top)[0]
+    if (next) bottom = next.bottom + 8
+    const crossingTop = items.find((b) => b.top < top && b.bottom > top)
+    if (crossingTop) top = crossingTop.top - 8
+    top = Math.max(pane.top, top)
+    bottom = Math.min(pane.bottom, bottom)
+    const gutter = row.querySelector('.message-avatar-gutter, .message-bubble')
+    const left = Math.max(pane.left, (gutter ? gutter.getBoundingClientRect().left : pane.left) - 16)
+    return { x: Math.round(left), y: Math.round(top), width: Math.round(pane.right - left), height: Math.round(bottom - top) }
+}
+
 // --- views -----------------------------------------------------------------
 
 const desktopViews = {
@@ -565,6 +687,15 @@ const desktopViews = {
         await frameTopEdge(page)
         return rowAcrossPane(page, 'A few shots from the ridge loop')
     },
+    '31-edited': async (page) => {
+        await openEdited(page)
+        return editedFrame
+    },
+    '32-edit-peek': async (page) => {
+        await openEditPeek(page)
+        return peekFrame
+    },
+    '33-edited-menu': (page) => openEditedMenu(page),
 }
 
 const mobileViews = {
@@ -589,6 +720,7 @@ const mobileViews = {
     '19-main-menu-mobile': (page) => openMainMenu(page),
     '20-media-missing-mobile': (page) => openMediaMissing(page),
     '25-avatar-lightbox-mobile': (page) => openAvatarLightbox(page),
+    '31-edited-mobile': (page) => openEdited(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the

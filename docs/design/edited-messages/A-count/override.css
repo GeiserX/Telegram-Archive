@@ -1,0 +1,58 @@
+/* A. Count: a pencil and the number of edits seen, in the meta row. The word
+   "edited" and the history arrow give way to it. */
+.message-meta .ev-count-host {
+    font-size: 0;
+    gap: 0;
+    position: relative;
+}
+.message-meta .ev-count-host > svg:not(.ev-count svg) {
+    display: none;
+}
+.message-meta .ev-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: var(--tg-meta-size);
+    line-height: var(--tg-meta-line-height);
+    margin-right: 1px;
+}
+.message-meta .ev-count svg {
+    width: 12px;
+    height: 12px;
+}
+.message-meta .ev-count-host.ev-hovered {
+    text-decoration: underline;
+}
+/* The tooltip: the popup surface, above the mark, arrow down. */
+.message-meta .ev-tip {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: -8px;
+    z-index: 30;
+    width: max-content;
+    max-width: 260px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgb(var(--tg-sidebar));
+    color: rgb(var(--tg-text));
+    box-shadow: var(--tg-shadow-popup);
+    font-size: 13px;
+    line-height: 18px;
+    text-align: left;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.message-meta .ev-tip b {
+    font-weight: 600;
+}
+.message-meta .ev-tip .ev-tip-hint {
+    color: rgb(var(--tg-muted));
+}
+.message-meta .ev-tip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    right: 14px;
+    border: 6px solid transparent;
+    border-top-color: rgb(var(--tg-sidebar));
+}
