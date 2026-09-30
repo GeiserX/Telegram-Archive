@@ -635,11 +635,12 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         forward=(HARBOR, 3015, "Harbor Town Weekly"),
         media={"type": "photo", "seed": 31},
     )
-    s.add(t + timedelta(minutes=14), ORSON, "Worth checking before we book.")
+    q = s.add(t + timedelta(minutes=14), ORSON, "Worth checking before we book.")
     # Media the viewer cannot show, one of each reason: too large for the
     # download limit, filtered out, not downloaded yet, and a file the row
     # claims that is missing from the disk.
     later = t + timedelta(hours=3)
+    s.add(later - timedelta(minutes=5), OWNER_PERSONAL, "Good call. Send the rest when you can.", reply=q)
     s.add(
         later,
         ORSON,
