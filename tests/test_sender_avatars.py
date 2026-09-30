@@ -335,6 +335,56 @@ class TestPeerColourContrast(unittest.TestCase):
                         name, f"text-{side} on the reaction tint", _triplet(tokens[f"--tg-text-{side}"]), reaction
                     )
 
+    def test_the_folded_line_and_the_header_read_on_the_wash(self):
+        """A folded deleted message is a line in the bubble's fill under the same
+        wash: its sender name in the peer colour, the trash and "Deleted photo" in
+        the side's deleted colour, the time and the dots in the time colour, and
+        "Show" in the link colour. Opened, the header ("Deleted · 21:59", Hide,
+        Show in chat) uses the same pairs on the washed bubble."""
+        for name, tokens in self.palettes.items():
+            wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
+            for side in ("in", "out"):
+                for fill in self._fills(tokens, side):
+                    washed = _over(wash, wash_alpha, fill)
+                    pairs = [
+                        ("deleted label", f"--tg-deleted-fg-{side}"),
+                        ("time and dots", f"--tg-meta-{side}"),
+                        ("Show, Hide and Show in chat", f"--tg-quote-{side}"),
+                    ]
+                    if side == "in":
+                        pairs += [(f"name peer-{index}", f"--tg-peer-{index}") for index in range(7)]
+                    for label, token in pairs:
+                        self._check(name, f"{label} on the washed {side} line", _triplet(tokens[token]), washed)
+
+    def test_the_deleted_only_controls_read(self):
+        """The chat menu's count, and the "Deleted only" line under the header: the
+        pressed chip in on-accent on the accent (and its hover), the count muted."""
+        for name, tokens in self.palettes.items():
+            muted = _triplet(tokens["--tg-muted"])
+            sidebar = _triplet(tokens["--tg-sidebar"])
+            hovered = _over(_triplet(tokens["--tg-accent"]), 0.08, sidebar)
+            self._check(name, "menu count on the menu", muted, sidebar)
+            self._check(name, "menu count on a hovered item", muted, hovered)
+            on_accent = _triplet(tokens["--tg-on-accent"])
+            self._check(name, "chip on the accent", on_accent, _triplet(tokens["--tg-accent-strong"]))
+            self._check(name, "chip on the hovered accent", on_accent, _triplet(tokens["--tg-accent-hover"]))
+            self._check(name, "count on the header", muted, _triplet(tokens["--tg-header"]))
+            # The chip's focus ring sits outside it, on the header.
+            self._check(
+                name, "chip focus on the header", _triplet(tokens["--tg-focus"]), _triplet(tokens["--tg-header"]), 3.0
+            )
+
+    def test_the_brick_wash_at_the_new_strength_would_break_the_time(self):
+        # Positive control: the first wash colour, brick red, raised to 11% puts
+        # Telegram Day's time under 4.5:1; the brighter red at 11% keeps it.
+        tokens = self.palettes["telegram"]
+        fill = _triplet(tokens["--tg-other"])
+        meta = _triplet(tokens["--tg-meta-in"])
+        self.assertLess(_contrast(meta, _over((163, 58, 47), 0.11, fill)), 4.5)
+        wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
+        self.assertEqual((wash, wash_alpha), ((255, 80, 72), 0.11))
+        self.assertGreaterEqual(_contrast(meta, _over(wash, wash_alpha, fill)), 4.5)
+
     def test_the_wash_would_break_a_boxed_pair(self):
         # Positive control: Telegram Day's incoming quote colour on its quote tint
         # passes on the plain fill and fails once the deleted wash sits under it,

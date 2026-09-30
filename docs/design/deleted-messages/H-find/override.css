@@ -1,0 +1,144 @@
+/* H. Find: not a bubble style but a way to reach the deleted messages. It is
+   drawn on top of C (the header and the hatch), and would work on any of the
+   others.
+
+   1. A chip in the chat header, before the search icon: the trash, "2
+      deleted" and two arrows. The label or the down arrow goes to the next
+      deleted message, the up arrow to the one before; the count then reads
+      "1 of 2 deleted" and the message flashes once. Wide screens only: on a
+      phone it would cut the chat's name to a few letters.
+   2. In the chat search, a line of filter chips under the header with
+      "Deleted only": pressed, the chat shows only its deleted messages. */
+
+/* 1. The header chip: the header's field grey, 32px, the icons in the bar's
+   icon colour and the count in the ink colour. */
+.dv-find {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    margin-right: 6px;
+    padding: 0 2px 0 0;
+    border-radius: 16px;
+    background: rgb(var(--tg-field));
+    color: rgb(var(--tg-ink));
+    font-size: 13px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.dv-find[hidden] {
+    display: none;
+}
+.dv-find button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    border-radius: 16px;
+    color: inherit;
+    font: inherit;
+}
+.dv-find button:hover {
+    background: rgb(var(--tg-ink) / 0.06);
+}
+.dv-find button:focus-visible {
+    outline: 2px solid rgb(var(--tg-focus));
+    outline-offset: -2px;
+}
+.dv-find-label {
+    gap: 6px;
+    padding: 0 6px 0 11px;
+}
+.dv-find-label svg {
+    width: 15px;
+    height: 15px;
+    color: rgb(var(--tg-deleted-fg));
+}
+.dv-find-step {
+    width: 28px;
+    color: rgb(var(--tg-bar-icon)) !important;
+}
+.dv-find-step svg {
+    width: 16px;
+    height: 16px;
+}
+/* A phone's header has no room left: the chip would cut the chat's name to
+   a few letters. There the chat search's "Deleted only" chip does the job. */
+@media (max-width: 767px) {
+    .dv-find {
+        display: none;
+    }
+}
+/* The message a step lands on flashes once, in the selection colour. */
+.message-row.dv-found > .message-bubble {
+    animation: dv-found 1.6s ease-out;
+}
+@keyframes dv-found {
+    0%, 40% { box-shadow: 0 0 0 3px rgb(var(--tg-focus-pane) / 0.55); }
+    100% { box-shadow: var(--tg-bubble-shadow); }
+}
+
+/* 2. The filter line under the header, in the header's colour. The chip is
+   outlined when off and filled with the accent when on, with a check, so the
+   state never rests on colour alone. */
+.dv-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 16px;
+    background: rgb(var(--tg-header));
+    border-bottom: 1px solid rgb(var(--tg-border));
+    position: relative;
+    z-index: 9;
+}
+.dv-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 12px 0 10px;
+    border-radius: 15px;
+    border: 1px solid rgb(var(--tg-border-strong));
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgb(var(--tg-ink));
+    background: transparent;
+}
+.dv-filter-chip svg {
+    width: 14px;
+    height: 14px;
+}
+.dv-filter-chip svg:first-child {
+    display: none;
+}
+.dv-filter-chip[aria-pressed="true"] {
+    border-color: rgb(var(--tg-accent-strong));
+    background: rgb(var(--tg-accent-strong));
+    color: rgb(var(--tg-on-accent));
+}
+.dv-filter-chip[aria-pressed="true"] svg:first-child {
+    display: block;
+}
+.dv-filter-chip[aria-pressed="true"] svg:nth-child(2) {
+    display: none;
+}
+.dv-filter-chip:focus-visible {
+    outline: 2px solid rgb(var(--tg-focus));
+    outline-offset: 2px;
+}
+.dv-filter-count {
+    margin-left: auto;
+    font-size: 13px;
+    color: rgb(var(--tg-muted));
+    font-variant-numeric: tabular-nums;
+}
+/* Narrowed: the other messages, the service lines and the days with no
+   deleted message leave the list. The floating day follows the kept lines. */
+.dv-deleted-only .messages-scroll [data-msg-id]:not(:has(.message-bubble.is-deleted)),
+.dv-deleted-only .date-separator:not(.dv-keep),
+.dv-deleted-only .floating-date-pill,
+.dv-deleted-only .pane-note + .pane-note {
+    display: none !important;
+}

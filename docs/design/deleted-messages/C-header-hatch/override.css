@@ -1,0 +1,9 @@
+/* C. Header and hatch: A and B together. The pictures load A's stylesheet and
+   script, B's stylesheet, then this file:
+
+     --css A-header/override.css,B-hatch/override.css,C-header-hatch/override.css
+     --js  A-header/override.js
+
+   The header names the state in words, so the hatch no longer has to carry
+   it alone and stays at B's strength. The header's colour is measured on a
+   stripe: 5.7:1 on Day and 6.7:1 on Night, incoming side. */

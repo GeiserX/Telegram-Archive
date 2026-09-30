@@ -107,7 +107,19 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
             session.add(Chat(account_id=1, id=CHAT_A_ID, type="private", first_name="Alpha", username="matrix_alpha"))
             session.add(Chat(account_id=1, id=CHAT_B_ID, type="private", first_name="Beta", username="matrix_beta"))
             start = datetime(2026, 4, 1, 9, 0, 0)
-            session.add(Message(account_id=1, id=1, chat_id=CHAT_A_ID, date=start, text="alpha hello"))
+            # One kept deletion per chat, under the same message id, so a list
+            # that leaked across chats could not hide behind the id alone.
+            session.add(
+                Message(
+                    account_id=1,
+                    id=1,
+                    chat_id=CHAT_A_ID,
+                    date=start,
+                    text="alpha hello",
+                    is_deleted=1,
+                    deleted_at=start + timedelta(days=1),
+                )
+            )
             session.add(
                 Message(
                     account_id=1,
@@ -121,7 +133,17 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
             session.add(
                 Message(account_id=1, id=3, chat_id=CHAT_A_ID, date=start + timedelta(minutes=2), text="alpha clip")
             )
-            session.add(Message(account_id=1, id=1, chat_id=CHAT_B_ID, date=start + timedelta(hours=1), text="beta"))
+            session.add(
+                Message(
+                    account_id=1,
+                    id=1,
+                    chat_id=CHAT_B_ID,
+                    date=start + timedelta(hours=1),
+                    text="beta",
+                    is_deleted=1,
+                    deleted_at=start + timedelta(hours=2),
+                )
+            )
             session.add(
                 Media(
                     account_id=1,
@@ -359,6 +381,48 @@ async def test_ref_grant_sees_only_that_ref_and_denials_are_uniform(viewer_app):
         status, body = outcomes.pop()
         assert status == 404
         assert json.loads(body) == UNIFORM_404
+
+
+# ============================================================================
+# (b2) The "Deleted only" list stays inside the resolved chat
+# ============================================================================
+
+
+async def test_deleted_only_lists_the_chats_own_deletions(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter)
+        resp = await client.get(f"/api/chats/{archive.ref_a}/messages?limit=50&offset=0&deleted_only=true")
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        assert [(row["id"], row["text"], row["is_deleted"]) for row in rows] == [(1, "alpha hello", 1)]
+        assert rows[0]["deleted_at"] is not None
+        # Off by default: the plain list still holds every row.
+        plain = await client.get(f"/api/chats/{archive.ref_a}/messages")
+        assert [row["id"] for row in plain.json()] == [3, 2, 1]
+        # A text query narrows the list; one that matches only live rows empties it.
+        hit = await client.get(f"/api/chats/{archive.ref_a}/messages?search=hello&deleted_only=true")
+        assert [row["text"] for row in hit.json()] == ["alpha hello"]
+        miss = await client.get(f"/api/chats/{archive.ref_a}/messages?search=photo&deleted_only=true")
+        assert miss.status_code == 200, miss.text
+        assert miss.json() == []
+
+
+async def test_a_restricted_viewer_never_sees_another_chats_deletions(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a]))
+        own = await client.get(f"/api/chats/{archive.ref_a}/messages?deleted_only=true")
+        assert own.status_code == 200, own.text
+        # Chat B's deletion carries the same message id: only chat A's text comes back.
+        assert [row["text"] for row in own.json()] == ["alpha hello"]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages?deleted_only=true")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_accounts=json.dumps([2]))
+        for ref in (archive.ref_a, archive.ref_b):
+            resp = await client.get(f"/api/chats/{ref}/messages?deleted_only=true")
+            assert (resp.status_code, resp.json()) == (404, UNIFORM_404)
 
 
 # ============================================================================

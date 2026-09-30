@@ -5019,6 +5019,7 @@ class DatabaseAdapter:
         *,
         account_id: int | None = None,
         with_transcripts: bool = True,
+        deleted_only: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
@@ -5047,6 +5048,9 @@ class DatabaseAdapter:
                 precedence over the other cursors; used for jump-to-message
                 after-context). Response stays newest-first like every other mode.
             topic_id: Optional forum topic ID to filter messages by thread
+            deleted_only: Keep only the rows deleted in Telegram that the
+                archive kept (``is_deleted=1``). Combines with every other
+                filter and cursor; a read-only narrowing of the same query.
 
         Returns:
             List of message dictionaries with user and media info. A row that is a
@@ -5082,6 +5086,10 @@ class DatabaseAdapter:
             # Mirrored by messageBelongsToCurrentTopic in the viewer (GENERAL_TOPIC_ID).
             if topic_id is not None:
                 stmt = stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
+
+            # The viewer's "Deleted only" list: the kept deletions of this chat.
+            if deleted_only:
+                stmt = stmt.where(Message.is_deleted == 1)
 
             # Chat search, like global search, is the UNION of two indexed key
             # sets: the message index and the transcript index reached through

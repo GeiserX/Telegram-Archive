@@ -527,6 +527,23 @@ class TestMessagesEndpoint(_WebTestBase):
         self.assertIsNone(first["after_id"])
         self.assertEqual(second["after_id"], 500)
 
+    async def test_passes_the_deleted_only_filter(self):
+        """deleted_only reaches the adapter as a bool, off unless asked for, with or
+        without a text query (the viewer's "Deleted only" list sends none)."""
+        self.mock_db.get_messages_paginated = AsyncMock(return_value=[])
+        async with self._client() as client:
+            plain = await client.get("/api/chats/1/messages?limit=50")
+            listed = await client.get("/api/chats/1/messages?limit=50&offset=0&deleted_only=true")
+            narrowed = await client.get("/api/chats/1/messages?limit=50&search=north&deleted_only=true")
+        for resp in (plain, listed, narrowed):
+            self.assertEqual(resp.status_code, 200)
+        calls = [call.kwargs for call in self.mock_db.get_messages_paginated.call_args_list]
+        self.assertIs(calls[0]["deleted_only"], False)
+        self.assertIs(calls[1]["deleted_only"], True)
+        self.assertIsNone(calls[1]["search"])
+        self.assertIs(calls[2]["deleted_only"], True)
+        self.assertEqual(calls[2]["search"], "north")
+
     async def test_invalid_before_date_returns_400(self):
         """get_messages returns 400 for invalid before_date format."""
         async with self._client() as client:
