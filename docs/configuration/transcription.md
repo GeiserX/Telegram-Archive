@@ -230,7 +230,7 @@ The button has five states:
 | None | A server is configured, but this file has no transcript yet. Pressing queues it. |
 | Unconfigured | No server is set. Pressing opens the banner instead. |
 
-Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets anyone press. One client may press `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, 30 by default. A client is a login session, or the client IP in an open viewer. Separately, once `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50 by default) wait for the backup, presses from anyone but the master are refused until the next backup run picks some up. A refused press leaves the button as it was and a short message says when to try again.
+Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets anyone press. One client may press `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, 30 by default. A client is its login session, the proxy user name, or, in an open viewer, the client IP. Separately, once `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50 by default) wait for the backup, presses from anyone but the master are refused until the next backup run picks some up. Only asks from the last 24 hours on downloaded files count, so asks no backup run will pick up, such as those in an account no backup runs for, stop counting after a day. They stay in the archive. Pressing a file that is already queued returns that request and counts against neither limit. A refused press leaves the button as it was and a short message says why.
 
 ### Error texts
 

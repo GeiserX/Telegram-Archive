@@ -6716,19 +6716,39 @@ class DatabaseAdapter:
             await session.refresh(row)
             return self._transcript_to_dict(row)
 
-    async def count_waiting_transcript_asks(self) -> int:
-        """How many viewer ask-now rows wait for the backup, across every account.
+    async def get_open_media_transcript(self, media_id: str, *, account_id: int) -> dict[str, Any] | None:
+        """The newest transcript row of one media when it is open (``queued`` or ``running``), else None."""
+        async with self.db_manager.async_session_factory() as session:
+            newest = await self._newest_transcript(session, media_id, account_id)
+        if newest is None or newest.status not in TRANSCRIPT_OPEN_STATUSES:
+            return None
+        return self._transcript_to_dict(newest)
+
+    async def count_waiting_transcript_asks(self, *, since: datetime) -> int:
+        """How many viewer ask-now rows still wait for the backup, across every account.
 
         An ask-now row is ``queued`` with no ``job_id`` and no ``preset``: the
         drain fills the preset when it picks the row up, so a row stops
         counting once the backup has taken it. The viewer refuses a new ask
         past TRANSCRIPTION_ASK_MAX_OPEN of these.
+
+        Only rows the drain can still take count: the file must be downloaded
+        (the drain query skips the rest), and the ask must be newer than
+        ``since``. A row no drain picks up (an account no backup runs for, a
+        backup with transcription off) ages out of the count after that
+        instead of holding the cap full for good. The row itself stays.
         """
-        stmt = select(func.count(MediaTranscript.id)).where(
-            and_(
-                MediaTranscript.status == "queued",
-                MediaTranscript.job_id.is_(None),
-                MediaTranscript.preset.is_(None),
+        stmt = (
+            select(func.count(MediaTranscript.id))
+            .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+            .where(
+                and_(
+                    MediaTranscript.status == "queued",
+                    MediaTranscript.job_id.is_(None),
+                    MediaTranscript.preset.is_(None),
+                    MediaTranscript.requested_at >= since,
+                    Media.downloaded == 1,
+                )
             )
         )
         async with self.db_manager.async_session_factory() as session:

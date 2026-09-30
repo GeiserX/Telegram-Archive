@@ -75,7 +75,33 @@ class TestWaitingAsks:
         await real_adapter.fill_media_transcript(submitted["id"], status="running", job_id="job-test-1")
         failed = await real_adapter.enqueue_media_transcript("m_4_voice", account_id=1, force=True)
         await real_adapter.fill_media_transcript(failed["id"], status="failed", error="submit_failed")
-        assert await real_adapter.count_waiting_transcript_asks() == 2
+        since = utcnow_naive() - timedelta(hours=24)
+        assert await real_adapter.count_waiting_transcript_asks(since=since) == 2
+
+    async def test_asks_no_drain_can_take_stop_counting_and_stay(self, real_adapter):
+        """An old ask, or one on a file no longer downloaded, never moves: it must not hold the cap full."""
+        await _media(real_adapter, "m_1_voice")
+        await _media(real_adapter, "m_2_voice")
+        await _media(real_adapter, "m_3_voice", downloaded=False)
+        fresh = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        old = await real_adapter.enqueue_media_transcript("m_2_voice", account_id=1, force=True)
+        await _age(real_adapter, old["id"], minutes=25 * 60)
+        await real_adapter.enqueue_media_transcript("m_3_voice", account_id=1, force=True)
+        since = utcnow_naive() - timedelta(hours=24)
+        assert await real_adapter.count_waiting_transcript_asks(since=since) == 1
+        # Nothing is deleted: the stranded rows stay queued as they were.
+        assert (await real_adapter.get_media_transcript(old["id"]))["status"] == "queued"
+        assert len(await real_adapter.list_media_transcripts("m_3_voice", account_id=1)) == 1
+        assert (await real_adapter.get_open_media_transcript("m_1_voice", account_id=1))["id"] == fresh["id"]
+
+    async def test_the_open_row_is_only_the_newest_while_open(self, real_adapter):
+        await _media(real_adapter, "m_1_voice")
+        assert await real_adapter.get_open_media_transcript("m_1_voice", account_id=1) is None
+        row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        assert (await real_adapter.get_open_media_transcript("m_1_voice", account_id=1))["id"] == row["id"]
+        assert await real_adapter.get_open_media_transcript("m_1_voice", account_id=2) is None
+        await real_adapter.fill_media_transcript(row["id"], status="done", text="hola")
+        assert await real_adapter.get_open_media_transcript("m_1_voice", account_id=1) is None
 
 
 class TestEnqueue:

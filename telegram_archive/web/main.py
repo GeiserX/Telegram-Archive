@@ -48,7 +48,7 @@ from ..db.adapter import (
     parse_entitlement_column,
 )
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
-from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
+from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name, utcnow_naive
 from ..realtime import RealtimeListener, resolve_internal_push_secret
 from ..status import collect_status
 from ..transcription_contract import (
@@ -526,11 +526,7 @@ async def session_cleanup_task():
             stale_ips = [ip for ip, ts in _login_attempts.items() if all(now - t > _LOGIN_RATE_WINDOW for t in ts)]
             for ip in stale_ips:
                 _login_attempts.pop(ip, None)
-            stale_askers = [
-                key for key, ts in _transcript_asks.items() if all(now - t >= _TRANSCRIPT_ASK_WINDOW for t in ts)
-            ]
-            for key in stale_askers:
-                _transcript_asks.pop(key, None)
+            _sweep_transcript_asks(now)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -863,9 +859,13 @@ _login_attempts: dict[str, list[float]] = {}  # ip -> list of timestamps
 # TRANSCRIPTION_ASK_RATE_LIMIT is presses per client per this many seconds.
 _transcript_asks: dict[str, list[float]] = {}
 _TRANSCRIPT_ASK_WINDOW = 600
-# What a press refused for TRANSCRIPTION_ASK_MAX_OPEN says to wait: the
-# waiting rows leave the count only when the backup picks them up.
-_TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 300
+# What a press refused for TRANSCRIPTION_ASK_MAX_OPEN says to wait. The
+# waiting rows leave the count only when a backup run picks them up, and the
+# viewer does not know the backup's SCHEDULE, so this is a polling hint.
+_TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 3600
+# An ask older than this stops counting toward TRANSCRIPTION_ASK_MAX_OPEN, so
+# asks no backup run picks up cannot hold the cap full for good.
+_TRANSCRIPT_ASK_WAIT_WINDOW = timedelta(hours=24)
 # Holds the count and the insert of a capped press together, so presses
 # arriving at once cannot all pass the same count.
 _transcript_ask_lock = asyncio.Lock()
@@ -3580,6 +3580,20 @@ def _transcript_ask_wait(client: str) -> int:
     return 0
 
 
+def _forget_transcript_ask(client: str) -> None:
+    """Take back the press ``_transcript_ask_wait`` just recorded, for a press the cap refused."""
+    presses = _transcript_asks.get(client)
+    if presses:
+        presses.pop()
+
+
+def _sweep_transcript_asks(now: float) -> None:
+    """Drop the clients whose presses are all older than the window, so the dict stays bounded."""
+    stale = [key for key, ts in _transcript_asks.items() if all(now - t >= _TRANSCRIPT_ASK_WINDOW for t in ts)]
+    for key in stale:
+        _transcript_asks.pop(key, None)
+
+
 def _too_many_asks(detail: str, retry_after: int) -> HTTPException:
     return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
@@ -3599,12 +3613,17 @@ async def _ask_transcript(media: dict | None, account_id: int, user: UserContext
     can open the viewer (ALLOW_ANONYMOUS_VIEWER) queue the same file again
     and again: TRANSCRIPTION_ASK_RATE_LIMIT presses per client, and, for
     everyone but the master, TRANSCRIPTION_ASK_MAX_OPEN ask-now rows waiting
-    for the backup across the archive.
+    for the backup across the archive. A press on a file whose newest row is
+    already open writes nothing, so it returns that row before either limit
+    and costs no press; a press the cap refuses costs none either.
     """
     if not media or not is_transcribable(media.get("type"), media.get("mime_type")):
         raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
     if not media.get("downloaded"):
         raise HTTPException(status_code=409, detail="Not downloaded yet")
+    open_row = await db.get_open_media_transcript(media["id"], account_id=account_id)
+    if open_row is not None:
+        return open_row
     wait = _transcript_ask_wait(client)
     if wait:
         minutes = math.ceil(wait / 60)
@@ -3615,9 +3634,11 @@ async def _ask_transcript(media: dict | None, account_id: int, user: UserContext
         row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
     else:
         async with _transcript_ask_lock:
-            if await db.count_waiting_transcript_asks() >= cap:
+            since = utcnow_naive() - _TRANSCRIPT_ASK_WAIT_WINDOW
+            if await db.count_waiting_transcript_asks(since=since) >= cap:
+                _forget_transcript_ask(client)
                 raise _too_many_asks(
-                    "Many transcripts are already waiting. Try again in a few minutes.",
+                    "Many transcripts are waiting for the next backup run. Try again later.",
                     _TRANSCRIPT_ASK_FULL_RETRY_SECONDS,
                 )
             row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)

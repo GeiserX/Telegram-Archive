@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -650,7 +651,7 @@ pytest.importorskip("fastapi")
 
 import httpx  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from test_media_transcripts import CHAT, _drain, _media  # noqa: E402
+from test_media_transcripts import CHAT, _age, _drain, _media  # noqa: E402
 from test_web_routes import web_main  # noqa: E402
 
 
@@ -849,6 +850,10 @@ class TestAskNowRoute:
         assert await _drain(real_adapter, per_run=1) == ["m_1_voice"]
 
 
+async def _waiting(adapter) -> int:
+    return await adapter.count_waiting_transcript_asks(since=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1))
+
+
 def _ask_limits(rate: int, max_open: int):
     return (
         patch.object(web_main.config, "transcription_ask_rate_limit", rate),
@@ -908,7 +913,7 @@ class TestAskLimits:
         assert (proxied.status_code, elsewhere.status_code) == (200, 200)
         refused = next(resp for resp in at_once if resp.status_code == 429)
         assert "retry-after" in refused.headers
-        assert await real_adapter.count_waiting_transcript_asks() == 4
+        assert await _waiting(real_adapter) == 4
 
     async def test_waiting_asks_past_the_cap_are_a_429_except_for_the_master(self, real_adapter, viewer):
         for n in range(1, 5):
@@ -935,8 +940,9 @@ class TestAskLimits:
                 room = await client.post("/api/media/m_4_voice/transcripts")
         assert (first.status_code, second.status_code, master.status_code, room.status_code) == (200, 200, 200, 200)
         assert [resp.status_code for resp in [*full, still_full]] == [429, 429, 429]
-        assert {resp.headers["retry-after"] for resp in full} == {"300"}
-        assert full[0].json()["detail"] == "Many transcripts are already waiting. Try again in a few minutes."
+        # Only a backup run frees room, and the viewer does not know its schedule: an hour, said plainly.
+        assert {resp.headers["retry-after"] for resp in full} == {"3600"}
+        assert full[0].json()["detail"] == "Many transcripts are waiting for the next backup run. Try again later."
         assert await real_adapter.list_media_transcripts("m_3_voice", account_id=1) != []
         assert len(await real_adapter.list_media_transcripts("m_4_voice", account_id=1)) == 1
 
@@ -950,7 +956,66 @@ class TestAskLimits:
                     *(client.post(f"/api/media/m_{n}_voice/transcripts") for n in range(1, 7))
                 )
         assert sorted(resp.status_code for resp in answers) == [200, 200, 429, 429, 429, 429]
-        assert await real_adapter.count_waiting_transcript_asks() == 2
+        assert await _waiting(real_adapter) == 2
+
+    async def test_asks_no_backup_picks_up_age_out_of_the_cap(self, real_adapter, viewer):
+        """Asks in an account no backup drains stay queued; after a day they no longer hold the cap full."""
+        for n in range(1, 4):
+            await _media(real_adapter, f"m_{n}_voice", account_id=2)
+        await _media(real_adapter, "m_4_voice")
+        for n in range(1, 4):
+            row = await real_adapter.enqueue_media_transcript(f"m_{n}_voice", account_id=2, force=True)
+            await _age(real_adapter, row["id"], minutes=25 * 60)
+        rate, cap = _ask_limits(0, 3)
+        with rate, cap:
+            async with _client() as client:
+                resp = await client.post("/api/media/m_4_voice/transcripts")
+        assert resp.status_code == 200
+        # The stranded asks are kept, not cleaned up.
+        assert len(await real_adapter.list_media_transcripts("m_1_voice", account_id=2)) == 1
+
+    async def test_a_press_on_an_open_file_returns_it_past_both_limits_and_costs_nothing(self, real_adapter, viewer):
+        for n in range(1, 4):
+            await _media(real_adapter, f"m_{n}_voice")
+        ref = await _chat_ref(real_adapter)
+        rate, cap = _ask_limits(2, 1)
+        with rate, cap:
+            async with _client() as client:
+                first = await client.post("/api/media/m_1_voice/transcripts")
+                # The cap is full: another file is refused, and that refusal spends no press.
+                full = await client.post("/api/media/m_2_voice/transcripts")
+                full_again = await client.post("/api/media/m_2_voice/transcripts")
+                # The file already queued comes back, on both routes, however often it is pressed.
+                again = [await client.post("/api/media/m_1_voice/transcripts") for _ in range(3)]
+                again.append(await client.post(f"/api/chats/{ref}/media/1_voice/transcripts"))
+                await real_adapter.fill_media_transcript(first.json()["id"], status="queued", preset="auto")
+                # Room again, and the client still holds its second press.
+                room = await client.post("/api/media/m_3_voice/transcripts")
+        assert first.status_code == 200
+        assert (full.status_code, full_again.status_code) == (429, 429)
+        assert [resp.status_code for resp in again] == [200, 200, 200, 200]
+        assert {resp.json()["id"] for resp in again[:3]} == {first.json()["id"]}
+        assert room.status_code == 200
+        assert len(await real_adapter.list_media_transcripts("m_1_voice", account_id=1)) == 1
+
+    async def test_the_window_slides_and_the_wait_counts_down(self, real_adapter, viewer):
+        await _media(real_adapter, "m_1_voice")
+        await _media(real_adapter, "m_2_voice")
+        clock = [1_000_000.0]
+        rate, cap = _ask_limits(1, 0)
+        with rate, cap, patch.object(web_main.time, "time", lambda: clock[0]):
+            async with _client() as client:
+                first = await client.post("/api/media/m_1_voice/transcripts")
+                await real_adapter.fill_media_transcript(first.json()["id"], status="done", text="hola")
+                clock[0] += 300
+                halfway = await client.post("/api/media/m_2_voice/transcripts")
+                clock[0] += 301
+                later = await client.post("/api/media/m_2_voice/transcripts")
+        assert first.status_code == 200
+        assert halfway.status_code == 429
+        assert halfway.headers["retry-after"] == "300"
+        assert halfway.json()["detail"] == "Too many transcript requests. Try again in 5 minutes."
+        assert later.status_code == 200
 
     async def test_limits_off_leave_the_button_as_it_was(self, real_adapter, viewer):
         for n in range(1, 5):
@@ -960,6 +1025,18 @@ class TestAskLimits:
             async with _client() as client:
                 answers = [await client.post(f"/api/media/m_{n}_voice/transcripts") for n in range(1, 5)]
         assert [resp.status_code for resp in answers] == [200, 200, 200, 200]
+
+
+def test_the_sweep_drops_only_clients_whose_presses_all_left_the_window():
+    now = 1_000_000.0
+    window = web_main._TRANSCRIPT_ASK_WINDOW
+    with patch.dict(
+        web_main._transcript_asks,
+        {"ip:stale": [now - window - 5, now - window], "ip:mixed": [now - window - 5, now - 10], "ip:fresh": [now]},
+        clear=True,
+    ):
+        web_main._sweep_transcript_asks(now)
+        assert sorted(web_main._transcript_asks) == ["ip:fresh", "ip:mixed"]
 
 
 class TestAskClientKey:
