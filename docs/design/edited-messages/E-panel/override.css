@@ -1,0 +1,151 @@
+/* E. Panel: the edit history beside the chat, or a bottom sheet on a phone,
+   with the versions on a timeline. */
+
+/* The versions on the panel's own surface, as cards on a timeline. */
+.versions-drawer .chat-wallpaper {
+    background: rgb(var(--tg-sidebar));
+}
+.versions-drawer .chat-wallpaper::before,
+.versions-drawer .chat-wallpaper::after {
+    display: none;
+}
+.versions-drawer .version-list {
+    padding: 16px 16px 24px 16px;
+    gap: 0;
+}
+.versions-drawer .version-list li {
+    position: relative;
+    align-items: stretch;
+    padding: 0 0 18px 26px;
+    gap: 4px;
+}
+/* The rail and its dots. */
+.versions-drawer .version-list li::before {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 5px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgb(var(--tg-sidebar));
+    border: 2px solid rgb(var(--tg-muted));
+    z-index: 1;
+}
+.versions-drawer .version-list li.ev-now::before {
+    background: rgb(var(--tg-accent-strong));
+    border-color: rgb(var(--tg-accent-strong));
+}
+.versions-drawer .version-list li::after {
+    content: "";
+    position: absolute;
+    left: 11px;
+    top: 12px;
+    bottom: -6px;
+    width: 2px;
+    background: rgb(var(--tg-border-strong));
+}
+.versions-drawer .version-list li.ev-now::after {
+    display: none;
+}
+.versions-drawer .version-label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    max-width: none;
+    padding: 0;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    color: rgb(var(--tg-muted));
+    font-size: 13px;
+    line-height: 20px;
+}
+.versions-drawer .version-label .ev-when {
+    color: rgb(var(--tg-text));
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.versions-drawer .version-bubble {
+    max-width: 100%;
+    align-self: flex-start;
+    background: rgb(var(--tg-field)) !important;
+    box-shadow: none;
+    border-radius: 12px;
+}
+.versions-drawer li.ev-now .version-bubble {
+    background: rgb(var(--tg-accent-dim)) !important;
+}
+.versions-drawer .version-bubble::after {
+    display: none;
+}
+
+/* Wide screens: a side panel. No scrim, the chat stays readable and moves
+   over to make room, and the message the panel is about is highlighted. */
+@media (min-width: 768px) {
+    .versions-scrim {
+        background: transparent !important;
+        pointer-events: none;
+    }
+    .versions-drawer {
+        pointer-events: auto;
+        max-width: 400px;
+        box-shadow: none;
+        border-left: 1px solid rgb(var(--tg-border));
+    }
+    #app div.flex-1.flex.flex-col:has(> div > .messages-scroll) {
+        margin-right: 400px;
+    }
+    body:not(:has(.versions-drawer)) #app div.flex-1.flex.flex-col:has(> div > .messages-scroll) {
+        margin-right: 0;
+    }
+}
+.message-row.ev-source {
+    background: rgb(var(--tg-accent) / 0.16);
+    box-shadow: 0 0 0 4px rgb(var(--tg-accent) / 0.16);
+}
+
+/* Phones: a bottom sheet over two thirds of the screen, with a handle. */
+@media (max-width: 767px) {
+    .versions-scrim {
+        align-items: flex-end;
+        background: rgb(var(--tg-scrim) / 0.35) !important;
+    }
+    .versions-drawer {
+        height: auto;
+        max-height: 80%;
+        border-radius: 16px 16px 0 0;
+        overflow: hidden;
+    }
+    .versions-drawer .chat-wallpaper {
+        flex: 0 1 auto;
+    }
+    /* A sheet closes with a cross, not a back arrow. */
+    .versions-drawer > header button svg.md\:hidden {
+        display: none;
+    }
+    .versions-drawer > header button svg.hidden {
+        display: block;
+    }
+    .versions-drawer > header {
+        position: relative;
+        padding-top: 14px;
+        border-bottom: 0;
+    }
+    .versions-drawer > header::before {
+        content: "";
+        position: absolute;
+        top: 6px;
+        left: 50%;
+        width: 36px;
+        height: 4px;
+        margin-left: -18px;
+        border-radius: 2px;
+        background: rgb(var(--tg-border-strong));
+    }
+}
+/* Removed words on the grey card: the time colour drops to 4.2:1 there, so
+   they take the darker neutral (4.7:1 on Day, 4.8:1 on Night). */
+.versions-drawer .version-bubble .diff-del {
+    color: rgb(var(--tg-n400));
+}

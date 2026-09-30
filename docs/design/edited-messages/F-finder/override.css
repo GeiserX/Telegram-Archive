@@ -1,0 +1,76 @@
+/* F. Finder: menu rows, the phone's info row, and the "Edited only" mode. */
+.popover-sheet .ev-divider {
+    height: 1px;
+    margin: 6px 8px;
+    background: rgb(var(--tg-border));
+}
+.popover-sheet .ev-find-count,
+#info-panel .ev-info-find .tg-row-value {
+    margin-left: auto;
+    color: rgb(var(--tg-muted));
+    font-variant-numeric: tabular-nums;
+}
+#info-panel .ev-info-find {
+    cursor: pointer;
+}
+.ev-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 16px;
+    background: rgb(var(--tg-header));
+    border-bottom: 1px solid rgb(var(--tg-border));
+    position: relative;
+    z-index: 9;
+}
+.ev-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 15px;
+    border: 1px solid rgb(var(--tg-border-strong));
+    font-size: 13px;
+    font-weight: 500;
+    color: rgb(var(--tg-ink));
+    background: transparent;
+}
+.ev-chip svg {
+    width: 14px;
+    height: 14px;
+    display: none;
+}
+.ev-chip[aria-pressed="true"] {
+    padding-left: 10px;
+    border-color: rgb(var(--tg-accent-strong));
+    background: rgb(var(--tg-accent-strong));
+    color: rgb(var(--tg-on-accent));
+}
+.ev-chip[aria-pressed="true"] svg {
+    display: block;
+}
+.ev-chip:focus-visible {
+    outline: 2px solid rgb(var(--tg-focus));
+    outline-offset: 2px;
+}
+.ev-filter-count {
+    margin-left: auto;
+    font-size: 13px;
+    color: rgb(var(--tg-muted));
+    font-variant-numeric: tabular-nums;
+}
+/* Narrowed: only edited messages and the days that hold one. */
+.ev-edited-only .messages-scroll [data-msg-id]:not(.ev-edited-row),
+.ev-edited-only .messages-scroll .date-separator:not(.ev-keep),
+.ev-edited-only .messages-scroll .pane-note:not(.date-separator *),
+.ev-edited-only .floating-date-pill,
+.ev-edited-only .pinned-bar,
+.ev-edited-only .archive-bar {
+    display: none !important;
+}
+/* The narrowed list reads from the top, as search results do. */
+.ev-edited-only .messages-scroll {
+    justify-content: flex-end;
+}
