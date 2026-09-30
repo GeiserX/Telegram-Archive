@@ -1,0 +1,87 @@
+/* F. Collapsed: a deleted message folds into a one-line pill in the bubble's
+   place, in the bubble's own fill and shape, so the chat keeps its rhythm and
+   the deletion takes one line. The content stays one click away: Show opens
+   the bubble as it is today (the wash and the meta label), and Hide folds it.
+
+   The pill is a button: the trash and "Deleted message" in the side's time
+   colour, the deletion time, and "Show" in the side's link colour. */
+.message-row > .dv-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 12px 0 10px;
+    border-radius: 15px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: var(--tg-shadow-in);
+    background-color: rgb(var(--tg-other));
+    background-image: linear-gradient(var(--tg-deleted-wash), var(--tg-deleted-wash));
+    color: rgb(var(--tg-meta-in));
+    --dv-link: var(--tg-quote-in);
+    --dv-deleted: var(--tg-deleted-fg-in);
+}
+.message-row > .dv-pill.bubble-out {
+    box-shadow: var(--tg-shadow-out);
+    background-color: rgb(var(--tg-own));
+    color: rgb(var(--tg-meta-out));
+    --dv-link: var(--tg-quote-out);
+    --dv-deleted: var(--tg-deleted-fg-out);
+}
+.dv-pill svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: rgb(var(--dv-deleted));
+}
+.dv-pill-what {
+    color: rgb(var(--dv-deleted));
+    font-weight: 500;
+}
+.dv-pill-show {
+    color: rgb(var(--dv-link));
+    font-weight: 600;
+}
+.dv-pill:hover .dv-pill-show {
+    text-decoration: underline;
+}
+.dv-pill:focus-visible {
+    outline: 2px solid rgb(var(--tg-focus-pane));
+    outline-offset: 2px;
+}
+/* Folded, the bubble is gone and the avatar sits beside the pill. The fold
+   is html.dv-fold, which the script sets once the rig has framed the view. */
+.message-row > .dv-pill,
+.dv-fold .message-row:not(.dv-open) > .message-bubble.is-deleted,
+.message-row:not(.dv-open) > .message-bubble.is-deleted .dv-hide {
+    display: none;
+}
+.dv-fold .message-row:not(.dv-open) > .dv-pill {
+    display: inline-flex;
+}
+/* Hide, on the opened bubble: the side's link colour at the far end of the
+   first line. */
+.dv-hide {
+    margin-left: auto;
+    padding-left: 12px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 600;
+    color: rgb(var(--tg-quote));
+    cursor: pointer;
+}
+.dv-hide:hover {
+    text-decoration: underline;
+}
+.sender-account + .dv-hide {
+    padding-left: 8px;
+}
+.dv-hide-row {
+    display: flex;
+    margin-bottom: 2px;
+}

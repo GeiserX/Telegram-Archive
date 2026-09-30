@@ -151,11 +151,17 @@ An edited message shows "edited" before its time, as Telegram does. When the arc
 
 ### Deleted messages
 
-A deleted message stays in place with its text in full. A faint wash of a calm red marks the bubble, and before its time the meta line reads "deleted" with a trash mark. The tooltip says when Telegram deleted it; the time beside it is still the time it was sent. On a photo with nothing else, the trash rides the time over the corner. An album carries one mark on its caption bubble when any of its pictures was deleted. The info panel shows the deletion as a fact, "Deleted in Telegram" with its date. The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
+A deleted message stays in the chat, folded to one line in its place. The line holds a trash, what was deleted, the time and **Show**. What was deleted reads "Deleted message", "Deleted photo", "Deleted video", "Deleted voice message", "Deleted sticker" or "Deleted file". The line sits on the message's side and takes a red tint, so a deletion stands out while you scroll. In a group it names the sender at the start of a run; on a phone the avatar beside it does.
+
+**Show** opens the message with its text in full. The bubble keeps the red tint, and the head of the bubble reads "Deleted · 21:59", at the end of the sender's line or on a line of its own. **Hide** folds it again. The time in the corner of the bubble is still the time it was sent. The viewer remembers what you opened until you reload the page. A message you reach by a jump opens by itself, whether the jump came from a reply quote, **Go to message**, a search hit, a link to the message or **Show in chat**. While the chat search is on, every message it finds shows open.
+
+The deletion time is when the archive noticed the deletion. Telegram does not say when a message was deleted, and the tooltip says so. The listener notices within seconds; the backup's check notices at its next run, so the time can be days later. When it falls on another day than the message, the date shows too: "Deleted · Sep 29, 21:59".
+
+On a photo with nothing else, the header rides the top corner of the picture. An album with some pictures deleted keeps its live pictures in view and reads "Picture deleted" at its head; it folds only when all of it was deleted. A reply to a deleted message keeps its quote, with a small trash after the name. The info panel shows the deletion as a fact, "Deleted in Telegram" with its date.
 
 === "Telegram Day"
 
-    ![A deleted text and a deleted photo, each with its calm deleted mark](../images/screenshots/chat-deleted.png)
+    ![A folded deleted message above an opened deleted photo that reads "Deleted · 10:38" at its head](../images/screenshots/chat-deleted.png)
 
 === "Telegram Night"
 
@@ -164,6 +170,18 @@ A deleted message stays in place with its text in full. A faint wash of a calm r
 === "Phone"
 
     ![The deleted messages on a phone](../images/screenshots/chat-deleted-mobile.png){ width="300" }
+
+To see every deletion of a chat, open **More actions**, the three dots in the chat header, and choose **Deleted messages**. The item shows the chat's count and is hidden when the chat has none. It opens the chat search in a **Deleted only** mode: the chat shows only its deleted messages, open, with their days, and the search field narrows them further. Each one has **Show in chat**, which leaves the mode and goes to the message in the chat around it. The pressed **Deleted only** chip under the header removes the filter; the search's close button and <kbd>Esc</kbd> leave too. On a phone, the **Deleted messages** row of the chat's info panel does the same.
+
+=== "The menu"
+
+    ![More actions with Deleted messages and its count](../images/screenshots/deleted-menu.png)
+
+=== "Deleted only"
+
+    ![The chat search in its Deleted only mode, listing the chat's two deleted messages](../images/screenshots/deleted-only.png)
+
+The archive only learns about deletions when the listener runs with `LISTEN_DELETIONS=true` or the backup runs with `SYNC_DELETIONS_EDITS=true`. Both are off by default. With `DELETION_MODE=soft`, the default, the row is kept and marked. With `hard` it is removed.
 
 ### Service messages
 

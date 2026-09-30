@@ -1,0 +1,76 @@
+/* A. Header: the deleted mark moves from the meta row to the head of the
+   bubble, where the sender's name sits: a trash and "Deleted · 08:38" in the
+   side's deleted colour, with the time the archive noticed the deletion. The
+   meta row goes back to the plain send time. The faint wash stays. */
+
+/* The meta row: only the time. The old mark stays for screen readers until
+   the template moves it (visually hidden, never display: none). */
+.message-bubble.is-deleted .message-meta .meta-deleted {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* The header: 12px like the meta row, medium weight, in the side's deleted
+   colour, on the sender's line at its far end. */
+/* A block, not a flex box, so the name line can align it on its text
+   baseline: a flex box would take the icon's bottom edge as its baseline. */
+.dv-deleted-head {
+    display: block;
+    margin-left: auto;
+    padding-left: 12px;
+    flex-shrink: 0;
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: rgb(var(--tg-deleted-fg));
+}
+.dv-deleted-head svg {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 4px;
+    vertical-align: -1.5px;
+}
+/* With the account label on the same line, the mark comes first. */
+.sender-account + .dv-deleted-head {
+    padding-left: 8px;
+}
+.message-bubble.is-deleted > div.flex.items-baseline > .sender-account {
+    margin-left: 0;
+}
+/* A bubble with no name line (a private chat, an outgoing message, the middle
+   of a run): the header is a line of its own. */
+.dv-deleted-head-row {
+    display: flex;
+    margin-bottom: 2px;
+}
+.dv-deleted-head-row > .dv-deleted-head {
+    margin-left: 0;
+    padding-left: 0;
+}
+/* A picture with nothing else: the header rides the top corner as a pill,
+   white on the dark backing, like the time pill at the bottom. */
+.message-bubble.bubble-media-only > .dv-deleted-head-row {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 2;
+    margin: 0;
+}
+.message-bubble.bubble-media-only > .dv-deleted-head-row > .dv-deleted-head {
+    height: 20px;
+    line-height: 20px;
+    padding: 0 7px;
+    border-radius: 10px;
+    color: var(--tg-media-meta-fg);
+    background: var(--tg-media-meta-bg);
+}
