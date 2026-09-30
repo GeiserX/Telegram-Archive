@@ -237,6 +237,22 @@ class TestProxyAuthNoHeader:
         resp = client.get("/api/chats")
         assert resp.status_code == 401
 
+    def test_a_session_cookie_without_the_header_is_no_login_on_any_route(self, proxy_env):
+        """Proxy-only mode: auth/check and the data routes must agree about a bare cookie.
+
+        A share-token link or an old password session leaves a cookie behind.
+        auth/check once called it a login while every data route answered 401,
+        and the page reloaded itself on that disagreement without end.
+        """
+        client, main_mod, _ = _get_client()
+        main_mod._sessions["fake-session-cookie"] = main_mod.SessionData(username="token:1", role="token")
+        client.cookies.set(main_mod.AUTH_COOKIE_NAME, "fake-session-cookie")
+        check = client.get("/api/auth/check")
+        chats = client.get("/api/chats")
+        assert check.status_code == 200
+        assert check.json()["authenticated"] is False
+        assert chats.status_code == 401
+
 
 class TestProxyAuthCombinedWithBasic:
     """Tests when both proxy auth and basic auth are enabled together."""
