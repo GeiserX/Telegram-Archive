@@ -3,14 +3,23 @@
 // Logs in to a running viewer seeded with scripts/generate_dummy_db.py, opens
 // the same views every time and saves one PNG per view. A CSS file, when given,
 // is injected on every page so a mockup can restyle the app without touching it.
+// A script file, when given, runs on every page after it loads, for a mockup
+// that needs an element the app does not draw. Both take a comma-separated list,
+// joined in order, so one mockup can build on another.
 //
 // Usage:
-//   node docs/design/rig/shoot.mjs --css <file|none> --out <dir> --port <n>
-//        [--theme <id>] [--scheme light|dark] [--only 02,08]
+//   node docs/design/rig/shoot.mjs --css <file[,file]|none> --out <dir> --port <n>
+//        [--js <file[,file]>] [--theme <id>] [--scheme light|dark] [--only 02,08]
 //
 // --theme passes any id through ?theme= unchanged, so a theme the app does not
 // know yet still reaches it. --scheme sets the colour scheme the page sees
-// (prefers-color-scheme) before every navigation.
+// (prefers-color-scheme) before every navigation. --js runs its file once per
+// page, after the CSS, when the page has loaded; the file sees the finished app
+// and may watch it for changes (a MutationObserver) to follow later renders. A
+// script that changes the layout (folds rows, filters the list) can do it in a
+// window.mockupBeforeShot function instead: the rig calls it, and waits for the
+// promise it returns, after the view has scrolled and just before the picture,
+// so the view is framed on the app's own layout.
 //
 // Credentials come from VIEWER_USERNAME and VIEWER_PASSWORD, with the demo
 // defaults admin and demo-not-a-secret. The share-link view opens the demo's
@@ -26,14 +35,14 @@ const PLAYWRIGHT = process.env.PLAYWRIGHT_PATH || 'playwright'
 const { chromium } = require(PLAYWRIGHT)
 
 function parseArgs(argv) {
-    const args = { css: 'none', out: null, port: null, theme: null, scheme: null, only: null }
+    const args = { css: 'none', js: null, out: null, port: null, theme: null, scheme: null, only: null }
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i].replace(/^--/, '')
         if (!(key in args)) throw new Error(`unknown option ${argv[i]}`)
         args[key] = argv[++i]
     }
     if (!args.out || !args.port) {
-        throw new Error('usage: shoot.mjs --css <file|none> --out <dir> --port <n> [--theme <id>] [--scheme light|dark] [--only 02,08]')
+        throw new Error('usage: shoot.mjs --css <file[,file]|none> --out <dir> --port <n> [--js <file[,file]>] [--theme <id>] [--scheme light|dark] [--only 02,08]')
     }
     if (args.scheme && !['light', 'dark'].includes(args.scheme)) {
         throw new Error(`--scheme must be light or dark, got ${args.scheme}`)
@@ -44,7 +53,9 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2))
 const BASE = `http://127.0.0.1:${args.port}`
 const OUT = resolve(args.out)
-const CSS = args.css && args.css !== 'none' ? readFileSync(resolve(args.css), 'utf8') : null
+const readList = (list, glue) => list.split(',').map((f) => readFileSync(resolve(f.trim()), 'utf8')).join(glue)
+const CSS = args.css && args.css !== 'none' ? readList(args.css, '\n') : null
+const JS = args.js ? readList(args.js, ';\n') : null
 const ONLY = args.only ? new Set(args.only.split(',').map((s) => s.trim().padStart(2, '0'))) : null
 const USER = process.env.VIEWER_USERNAME || 'admin'
 const PASS = process.env.VIEWER_PASSWORD || 'demo-not-a-secret'
@@ -77,9 +88,18 @@ async function rowAcrossPane(page, text) {
 // --- page helpers ----------------------------------------------------------
 
 async function injectCss(page) {
-    if (!CSS) return
-    const present = await page.evaluate(() => !!document.getElementById('mockup-override')).catch(() => false)
-    if (!present) await page.addStyleTag({ content: CSS }).then((h) => h.evaluate((el) => { el.id = 'mockup-override' }))
+    if (CSS) {
+        const present = await page.evaluate(() => !!document.getElementById('mockup-override')).catch(() => false)
+        if (!present) await page.addStyleTag({ content: CSS }).then((h) => h.evaluate((el) => { el.id = 'mockup-override' }))
+    }
+    await injectJs(page)
+}
+
+// The script runs once per document: a marker on the page stops a second run.
+async function injectJs(page) {
+    if (!JS) return
+    const present = await page.evaluate(() => !!document.getElementById('mockup-script')).catch(() => false)
+    if (!present) await page.addScriptTag({ content: JS }).then((h) => h.evaluate((el) => { el.id = 'mockup-script' }))
 }
 
 async function settle(page) {
@@ -117,6 +137,7 @@ async function parkPointer(page) {
 }
 
 async function shot(page, name, clip) {
+    if (JS) await page.evaluate(() => window.mockupBeforeShot?.())
     await parkPointer(page)
     await settle(page)
     const file = join(OUT, `${name}.png`)
@@ -408,13 +429,50 @@ async function openExportDialog(page, mobile) {
     await page.waitForTimeout(300)
 }
 
-// Both kept deletions in view: the deleted text near the top, the deleted
-// photo under it.
+// Both kept deletions in view, at the end of the chat. A deleted message is
+// folded to one line until it is opened: the deleted photo is opened (Show)
+// and the deleted text above it stays folded, so the picture has one of each.
 async function openDeleted(page) {
     await open(page)
     await openGroup(page)
-    await centerOn(page, 'Parking at the north lot', 'start')
+    const pill = page.locator('.deleted-pill').filter({ hasText: 'Deleted photo' }).first()
+    await pill.waitFor({ state: 'attached', timeout: 15000 })
+    if (CSS || JS) {
+        // A design mockup styles the open bubble, so every native fold is
+        // opened first; a mockup that folds (F) does it again in its hook.
+        for (let guard = 0; guard < 20; guard++) {
+            const next = page.locator('.deleted-pill').first()
+            if (!(await next.count())) break
+            await next.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+            await next.click()
+        }
+    } else {
+        await pill.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        await pill.click()
+    }
+    await page.evaluate(() => document.activeElement?.blur())
+    await page.locator('.messages-scroll').first().evaluate((el) => { el.scrollTop = 0 })
+    await page.waitForTimeout(1400)
     await frameTopEdge(page)
+}
+
+// The chat's "More actions" menu, with "Deleted messages" and its count, over
+// the same end of the chat as the deletion picture.
+async function openDeletedMenu(page) {
+    await openDeleted(page)
+    await page.getByRole('button', { name: 'More actions' }).click()
+    await page.locator('.popover-sheet').filter({ hasText: 'Deleted messages' }).waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(300)
+}
+
+// The chat search in its "Deleted only" mode, opened from that menu item.
+async function openDeletedOnly(page) {
+    await openDeletedMenu(page)
+    await page.locator('.popover-sheet .info-action').filter({ hasText: 'Deleted messages' }).click()
+    await page.locator('.deleted-filter-bar').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(1400)
 }
 
 async function openArchivedChats(page) {
@@ -498,7 +556,9 @@ const desktopViews = {
     '22-admin': (page) => openAdmin(page),
     '24-transcripts': (page) => openTranscripts(page),
     '25-avatar-lightbox': (page) => openAvatarLightbox(page),
-    '26-chat-album': async (page) => {
+    '26-deleted-menu': (page) => openDeletedMenu(page),
+    '27-deleted-only': (page) => openDeletedOnly(page),
+    '28-chat-album': async (page) => {
         await open(page)
         await openGroup(page)
         await centerOn(page, 'A few shots from the ridge loop', 'center')

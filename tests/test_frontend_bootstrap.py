@@ -361,14 +361,13 @@ def test_message_status_badges_show_timestamps_on_hover():
     """Edited/deleted status badges should expose their event timestamps on hover."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    # One helper per mark: the deletion's own time (never the send time the
-    # time beside it shows), and for an edit whether earlier versions exist.
+    # An edit keeps its mark beside the time. A deletion moved to the head of
+    # the bubble, with its own time: the meta row carries the send time only.
     edited_title = ':title="editedTitle(msg)"'
-    deleted_title = ':title="deletedTitle(msg)"'
     assert edited_title in html
-    assert deleted_title in html
-    assert html.index(deleted_title) < html.index(edited_title)
-    assert '<span v-else-if="isBubbleDeleted(msg)" class="meta-deleted order-1 inline-flex items-center gap-1"' in html
+    assert "isBubbleDeleted(msg) && metaOpensInfo" not in html
+    assert '<span v-else-if="isBubbleDeleted(msg)" class="meta-deleted' not in html
+    assert '<span class="deleted-head" :title="deletedNoticedTitle(msg)">' in html
     deleted = html[html.index("const deletedTitle = (msg) =>") :]
     deleted = deleted[: deleted.index("\n                }\n")]
     assert "formatStamp(member.deleted_at)" in deleted
@@ -382,7 +381,7 @@ def test_message_status_badges_show_timestamps_on_hover():
     start = html.index("const messageTimeTitle = (msg) =>")
     body = html[start : html.index("\n                }\n", start)]
     assert "formatMetadataTimestampTitle('Edited', msg.edit_date)" in body
-    assert "formatMetadataTimestampTitle('Deleted', msg.deleted_at)" in body
+    assert "formatMetadataTimestampTitle('Deletion noticed', msg.deleted_at)" in body
     assert "earlier ${versions === 1 ? 'version' : 'versions'} kept" in body
     assert "const formatMetadataTimestampTitle = (label, dateStr) =>" in html
     assert "`${label} ${formatStamp(dateStr)}`" in html
@@ -489,7 +488,7 @@ def test_history_cursor_is_not_advanced_by_realtime_refresh():
     assert "updateOldestMessageCursor(newMessages)" in load_body
     assert "updateOldestMessageCursor" not in refresh_body
     assert "reduce((oldest, msg)" not in load_body
-    assert "if (chatVersion !== myVersion || messageSearchQuery.value) return" in refresh_body
+    assert "if (chatVersion !== myVersion || messageFilterOn()) return" in refresh_body
     assert load_body.count("chatVersion !== myVersion") >= 2
 
 
@@ -612,7 +611,7 @@ def test_websocket_new_message_respects_pinned_window_and_search():
     ws_start = html.index("case 'new_message':")
     ws_body = html[ws_start : html.index("case 'edit':", ws_start)]
 
-    assert "if (viewingPinnedWindow.value || messageSearchQuery.value)" in ws_body
+    assert "if (viewingPinnedWindow.value || messageFilterOn())" in ws_body
     # The guard must run before the upsert/autoscroll path.
     assert ws_body.index("viewingPinnedWindow.value") < ws_body.index("upsertMessages([data.message]")
     # Desktop notifications still fire while pinned (the guard must not break out early).
@@ -642,7 +641,9 @@ def test_realtime_polling_skips_search_results():
     search_start = html.index("const searchMessages = async () =>")
     search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
 
-    assert "isRefreshing || messageSearchQuery.value" in refresh_body
+    assert "isRefreshing || messageFilterOn()" in refresh_body
+    # The "Deleted only" list is a filtered view too: the same guards cover it.
+    assert "const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value" in html
     assert "chatVersion++" in search_body
     # The version bump makes an invalidated in-flight load skip its own loading=false
     # (finally sees a version mismatch), so search must reset the gate itself or a
@@ -2118,6 +2119,8 @@ const selectedChat = { value: null }
 const selectedPaneTopic = { value: null }
 const messages = { value: [] }
 const messageSearchQuery = { value: '' }
+const deletedOnly = { value: false }
+const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
 const chatStats = { value: null }
 const pinnedMessages = { value: [] }
 const currentPinnedIndex = { value: 0 }
@@ -2705,6 +2708,8 @@ const previewFallback = { value: {} }
 const messageWindowIsContiguous = { value: false }
 const isAuthenticated = { value: true }
 const messageSearchQuery = { value: '' }
+const deletedOnly = { value: false }
+const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
 const selectedChat = { value: { id: 7, ref: 'r7', title: 'chat' } }
 let oldestMessageCursor = null
 let loadFailureStreak = 0
@@ -3475,6 +3480,8 @@ const selectedMessage = ref(null)
 const previewFallback = ref({})
 const isAuthenticated = ref(true)
 const messageSearchQuery = ref('')
+const deletedOnly = ref(false)
+const messageFilterOn = () => !!messageSearchQuery.value || deletedOnly.value
 const selectedChat = ref({ id: 7, ref: 'r7', title: 'chat' })
 const selectedPaneTopic = ref(null)
 const pinnedMessages = ref([])
@@ -5224,7 +5231,7 @@ def test_reply_quote_is_reachable_from_the_keyboard():
 
 
 def test_deleted_text_stays_readable():
-    """A deleted message keeps its text colour; a faint wash of the deleted colour and the meta row mark it.
+    """An opened deleted message keeps its text colour; a wash of the deleted colour and its header mark it.
 
     No ring round the whole bubble (it read as an error or a selection) and no
     bar down its start edge (it curled into the corner and cut the tail off).
@@ -5244,13 +5251,18 @@ def test_deleted_text_stays_readable():
     # error or a selection. A dark palette takes a stronger wash instead.
     assert "--tg-deleted-edge" not in html
     assert "box-shadow" not in rule
-    # The wash is the calm deleted colour, not the danger one, 6% on the light
-    # palettes. A pale wash lifted a dark bubble, so a deleted message stood out more
-    # than a live one: the dark palettes take a dark, saturated red that keeps
-    # the fill's lightness (a stronger one over AMOLED's near-black).
-    assert html.count("--tg-deleted-wash: rgb(122 46 46 / 0.16);") == 6
-    assert html.count("--tg-deleted-wash: rgb(90 30 30 / 0.3);") == 1
-    assert html.count("--tg-deleted-wash: rgb(163 58 47 / 0.06);") == 4
+    # Stronger than the first 6% and 16%, which read as no mark at all. On the
+    # light palettes a bright red at 11%: bright enough that the time and links
+    # keep 4.5:1 on it (the brick red at 11% would not, see test_sender_avatars).
+    # A pale wash lifts a dark bubble, so the dark palettes take a dark,
+    # saturated red that keeps the fill's lightness: 22%, 20% on Slate, whose
+    # palest name colour sets the limit, and a stronger one over AMOLED's black.
+    assert html.count("--tg-deleted-wash: rgb(122 46 46 / 0.22);") == 5
+    assert html.count("--tg-deleted-wash: rgb(122 46 46 / 0.2);") == 1
+    assert html.count("--tg-deleted-wash: rgb(90 30 30 / 0.38);") == 1
+    assert html.count("--tg-deleted-wash: rgb(255 80 72 / 0.11);") == 4
+    assert "rgb(163 58 47 / 0.06)" not in html
+    assert "rgb(122 46 46 / 0.16)" not in html
     assert "--tg-deleted-wash: rgb(255 154 143" not in html
     assert "inset 0 0 0 1.5px" not in html
     assert "--tg-deleted-bar" not in html
@@ -5366,7 +5378,12 @@ def test_archive_figures_use_one_icon_set_not_emoji():
     stats = stats[: stats.index("</template>")]
     assert stats.count('<div class="tg-row"><svg') == 2
     assert stats.count('class="tg-row"><svg') == 4
-    assert html.count('<div v-if="chatStats.deleted_messages > 0" class="tg-row">') == 1
+    assert (
+        html.count(
+            '<button v-if="chatStats.deleted_messages > 0" type="button" class="tg-row" @click="openDeletedOnlyFromInfo"'
+        )
+        == 1
+    )
     assert ".info-row" not in html
     assert 'aria-labelledby="info-archive-title"' in html
     assert ">In the archive</h4>" in html
@@ -5466,7 +5483,11 @@ def test_a_failed_load_does_not_look_like_loading():
 
 def test_the_info_panel_counts_what_the_archive_kept():
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert '<div v-if="chatStats.deleted_messages > 0" class="tg-row">' in html
+    # The deleted count opens the chat's "Deleted only" list; the edited one is a figure.
+    assert (
+        '<button v-if="chatStats.deleted_messages > 0" type="button" class="tg-row" @click="openDeletedOnlyFromInfo"'
+        in html
+    )
     assert '<div v-if="chatStats.edited_messages > 0" class="tg-row">' in html
     # The message's deletion is a fact in the calm deleted colour, never a red pill.
     status = html[html.index('<div v-if="infoPanelMessage.is_deleted" class="tg-fact">') :]

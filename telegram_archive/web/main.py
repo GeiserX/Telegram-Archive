@@ -3054,6 +3054,7 @@ async def get_messages(
     before_id: int | None = None,
     after_id: int | None = None,
     topic_id: int | None = None,
+    deleted_only: bool = False,
 ):
     """
     Get messages for a specific chat with user and media info.
@@ -3065,6 +3066,12 @@ async def get_messages(
       and ?after_id=N returns rows with id > N (jump-to-message after-context).
 
     v6.2.0: Added topic_id filter for forum topic messages.
+
+    ``deleted_only=true`` keeps only the messages deleted in Telegram that the
+    archive kept (``is_deleted=1``), newest first like every other mode. It
+    reads, never writes, and stays inside the chat the route already resolved
+    for this viewer, so it cannot widen what a viewer sees. With no ``search``
+    it lists every deletion of the chat; with one it narrows the search.
 
     Cursor-based pagination is preferred for infinite scroll.
     """
@@ -3091,6 +3098,7 @@ async def get_messages(
             topic_id=topic_id,
             account_id=chat.account_id,
             with_transcripts=not user.no_download,
+            deleted_only=deleted_only,
         )
         # get_messages_paginated returns a list of message dicts; guard so an
         # unexpected shape can never turn a read into a 500.

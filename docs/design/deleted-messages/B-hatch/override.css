@@ -1,0 +1,58 @@
+/* B. Hatch: the deleted wash becomes a faint diagonal hatch in the deleted
+   colour, so a kept deletion reads as a different material, in colour and in
+   grayscale. The meta label ("deleted" and the time) stays as it is.
+
+   The stripes are as strong as the text allows: at 9% on Telegram Day the
+   time and the sender names still hold 4.5:1 on a stripe, at 11% they do
+   not. Night takes 7% of its light deleted colour: at 8% the palest sender
+   name drops to 4.5:1 exactly. They are wide rather than strong, so the
+   texture shows without taking contrast from the text.
+
+   The hatch is an 8px tile of two stripes, anchored at the bubble's
+   bottom corner on the tail's side. The tail draws the same tile, anchored
+   0.5px past its own edge, so the stripes run on from the bubble into the
+   tail without a seam. */
+:root,
+:root[data-theme] {
+    --dv-hatch-size: 8px;
+}
+:root,
+:root[data-theme="telegram"],
+:root[data-theme="day"],
+:root[data-theme="paper"],
+:root[data-theme="minimal"] {
+    --dv-hatch-ink: rgb(163 58 47 / 0.09);
+}
+:root[data-theme="night"],
+:root[data-theme="iosnight"],
+:root[data-theme="slate"],
+:root[data-theme="graphite"],
+:root[data-theme="amoled"],
+:root[data-theme="forest"],
+:root[data-theme="aubergine"] {
+    --dv-hatch-ink: rgb(255 154 143 / 0.07);
+}
+.message-bubble.is-deleted {
+    --dv-hatch: linear-gradient(135deg,
+        var(--dv-hatch-ink) 0 18%, transparent 18% 50%,
+        var(--dv-hatch-ink) 50% 68%, transparent 68% 100%);
+    background-image: var(--dv-hatch), var(--tg-bubble-image, none);
+    background-size: var(--dv-hatch-size) var(--dv-hatch-size), auto;
+    background-repeat: repeat, no-repeat;
+}
+.message-bubble.is-deleted.bubble-in {
+    background-position: left bottom, 0 0;
+}
+.message-bubble.is-deleted.bubble-out {
+    background-position: right bottom, 0 0;
+}
+.message-row.run-end > .message-bubble.is-deleted::after {
+    background: var(--dv-hatch), rgb(var(--tg-bubble-tail));
+    background-size: var(--dv-hatch-size) var(--dv-hatch-size), auto;
+}
+.message-row.run-end > .message-bubble.is-deleted.bubble-in::after {
+    background-position: 0.5px bottom, 0 0;
+}
+.message-row.run-end > .message-bubble.is-deleted.bubble-out::after {
+    background-position: right 0.5px bottom, 0 0;
+}
