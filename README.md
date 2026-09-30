@@ -7,7 +7,7 @@
   <a href="https://github.com/GeiserX/Telegram-Archive/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/GeiserX/Telegram-Archive/tests.yml?style=flat-square&label=tests" alt="Tests"></a>
   <a href="https://github.com/GeiserX/Telegram-Archive/blob/main/LICENSE"><img src="https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square" alt="License"></a>
   <a href="https://hub.docker.com/r/drumsergio/telegram-archive"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker" alt="Docker Pulls"></a>
-  <a href="https://codecov.io/gh/GeiserX/Telegram-Archive"><img src="https://img.shields.io/codecov/c/github/GeiserX/Telegram-Archive?style=flat-square" alt="Coverage"></a>
+  <a href="https://codecov.io/gh/GeiserX/Telegram-Archive"><img src="https://codecov.io/gh/GeiserX/Telegram-Archive/graph/badge.svg" alt="Coverage"></a>
 </p>
 
 Telegram Archive backs up one or more Telegram accounts to a machine you host. It runs in Docker or from `pip`, and saves messages, media, edits and deletions to SQLite or PostgreSQL on your own disk. A web viewer, which never talks to Telegram, lets you read and search what it saved.
