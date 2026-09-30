@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Security
+- **urllib3 2.8.0.** The lockfile, and so the images and the wheel's pinned install, move urllib3 from 2.7.0 to 2.8.0, which closes three advisories: an HTTPS proxy TLS configuration that could be ignored (GHSA-8988-9cw3-xx77), an unbounded chunk-size line read into memory (GHSA-vxq7-64xx-v4gw) and an infinite loop in chunked deflate streaming (GHSA-gh4c-6fx4-qh6g). The archive only reaches urllib3 through `requests`, in the transcription provider adapters.
+
 ## [8.18.0] - 2026-09-30
 
 The viewer looks like Telegram. It follows the system light or dark setting by default, offers twelve themes, folds deleted messages into one line, counts edits and opens their history beside the chat. The archive gets `status` and `merge` commands, a way to end every session, and its own name in Telegram's device list. No migration runs. Docker deployments only need the new pins.
