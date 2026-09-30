@@ -109,18 +109,18 @@ extra:
       link: https://github.com/GeiserX/Telegram-Archive
     - icon: fontawesome/brands/docker
       link: https://hub.docker.com/r/drumsergio/telegram-archive
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/telegram-archive/
 
 extra_css:
   - stylesheets/theme.css
 
 # Files under docs/ that must not be published as pages.
 #
-# MkDocs builds every Markdown file in docs_dir, listed in nav or not. A file
-# left out of nav still gets a public URL. `mkdocs build --strict` does not
-# catch this by default, because validation.nav.omitted_files defaults to
-# `info`. Setting it to `warn` makes the strict build fail on any page left
-# out of nav (files listed below are exempt). This list is what keeps these
-# files off the site.
+# MkDocs builds every Markdown file in docs_dir, listed in nav or not, and
+# validation.nav.omitted_files above fails the strict build on any page
+# that is not in nav. This list is the exemption: these files are neither
+# built nor reported.
 exclude_docs: |
   # Any name with a capital letter is a repo-facing note, never a page. The
   # named lines below say why each known note is one; this pattern catches the
@@ -152,7 +152,6 @@ exclude_docs: |
 
 nav:
   - Home: index.md
-  - Roadmap: roadmap/index.md
   - Get started:
       - Run with Docker: getting-started/docker.md
       - Log in to Telegram: getting-started/telegram-login.md
@@ -183,4 +182,6 @@ nav:
       - Environment variables: reference/environment-variables.md
       - Command line and Python API: reference/cli.md
       - HTTP API: reference/api.md
-  - Development: development.md
+  - Development:
+      - Development: development.md
+      - Roadmap: roadmap/index.md
