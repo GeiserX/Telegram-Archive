@@ -466,6 +466,13 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(export["chat"]["ref"], self.ref_a)
             self.assertEqual(len(export["messages"]), 30)
             self.assertEqual(export["message_versions"], [])
+            # Each message says whether it was deleted or edited, with its
+            # kept versions: archive state, not a copy of the live chat.
+            first = export["messages"][0]
+            self.assertEqual(
+                (first["is_deleted"], first["deleted_at"], first["edit_date"], first["versions"]),
+                (False, None, None, []),
+            )
             # An unwindowed export carries no filters block: the file IS the
             # full history and must not suggest otherwise.
             self.assertNotIn("filters", export)

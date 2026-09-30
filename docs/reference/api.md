@@ -308,7 +308,20 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 }
 ```
 
-`filters` appears only when `from` or `to` was given. `message_versions` holds the earlier versions of edited messages in the same window.
+`filters` appears only when `from` or `to` was given. The window picks messages by their send date.
+
+Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoing` and `reply_to`, and these fields that say what the archive kept:
+
+| Field | Content |
+|-------|---------|
+| `is_deleted` | `true` when the message was deleted in Telegram. The archive keeps it, so the export includes it. |
+| `deleted_at` | When the archive noticed the deletion, ISO 8601 UTC, or `null`. |
+| `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
+| `versions` | Every earlier text the archive kept of the message, oldest first, whatever its date. Each has `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced). An empty list means the archive kept no earlier text. |
+
+A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions with `chat_id`, `message_id`, `text` and `date`, picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
+
+The messages and their `versions` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
 
 ## Transcripts
 

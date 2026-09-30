@@ -8747,8 +8747,9 @@
                     </div>
                     <p class="tg-note">Both days are included.</p>
                     <!-- What the file holds that a Telegram export would not, as the
-                         export writes it today (get_messages_for_export). -->
-                    <p class="tg-note">Messages deleted in Telegram are included, without a mark. Earlier versions of edited messages and transcripts are included too.</p>
+                         export writes it (get_messages_for_export): is_deleted and
+                         deleted_at, edit_date and versions on every message. -->
+                    <p class="tg-note">Messages deleted in Telegram are included and marked as deleted. Edited messages carry every earlier version kept, and transcripts are included too.</p>
                     <!-- A range that runs backwards says so as soon as it is picked,
                          and Export waits until it is fixed. -->
                     <p v-if="exportRangeInvalid" id="export-range-error" role="alert" class="tg-note text-tg-danger-fg">The From day is after the To day.</p>
