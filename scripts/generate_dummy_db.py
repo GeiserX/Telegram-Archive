@@ -237,6 +237,8 @@ class ChatScript:
         # (message id, text, date, formatting entities, the path that saw it)
         self.versions: list[tuple[int, str, datetime, list | None, str | None]] = []
         self.transcripts: list[tuple[str, str, int]] = []
+        # Photos an edit replaced: kept as media versions beside the text of the time.
+        self.media_versions: list[dict] = []
         # (message id, emoji, when it was removed): reactions the archive keeps
         # as tombstones after they were taken back.
         self.removed_reactions: list[tuple[int, str, datetime]] = []
@@ -525,12 +527,15 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         },
     )
     s.add(t + timedelta(minutes=70), HUGO, "", media={"type": "sticker"}, raw={"sticker": {"emoji": "☀️"}})
+    # Sent with another photo, which Kofi replaced three minutes later with
+    # the caption unchanged: the archive keeps the first one as a media version.
     view = s.add(
         t + timedelta(minutes=83),
         KOFI,
         "Found this view on the way back",
-        media={"type": "photo", "seed": 24},
+        media={"type": "photo", "seed": 24, "replaced_seed": 27},
         react={"❤️": 5, "🔥": 1},
+        edited_from="Found this view on the way back",
     )
     # Someone took their 😮 back: the archive keeps it as a tombstone, and the
     # viewer leaves it out (it reads live reactions only).
@@ -1029,6 +1034,25 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
                 name = f"{file_id}_photo.jpg"
                 w, h = draw_landscape(folder / name, m.pop("seed"))
                 m.update(file_name=name, mime_type="image/jpeg", width=w, height=h)
+                replaced_seed = m.pop("replaced_seed", None)
+                if replaced_seed is not None:
+                    earlier = f"{file_id + 1}_photo.jpg"
+                    ew, eh = draw_landscape(folder / earlier, replaced_seed)
+                    earlier_path = folder / earlier
+                    s.media_versions.append(
+                        {
+                            "message_id": m["message_id"],
+                            "media_id": f"{m['id']}_replaced",
+                            "type": "photo",
+                            "file_name": earlier,
+                            "file_path": f"{s.chat_id}/{earlier}",
+                            "file_size": earlier_path.stat().st_size,
+                            "mime_type": "image/jpeg",
+                            "width": ew,
+                            "height": eh,
+                            "content_hash": hashlib.sha256(earlier_path.read_bytes()).hexdigest(),
+                        }
+                    )
             elif kind == "sticker":
                 name = f"{file_id}_sticker.webp"
                 folder.mkdir(parents=True, exist_ok=True)
@@ -1071,7 +1095,7 @@ async def seed(data_dir: Path) -> None:
     from sqlalchemy import insert, update
 
     from telegram_archive.db import close_adapter, create_adapter
-    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MessageVersion, Reaction
+    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MediaVersion, MessageVersion, Reaction
 
     backup = data_dir / "backups"
     media_root = backup / "media"
@@ -1196,6 +1220,22 @@ async def seed(data_dir: Path) -> None:
                             change_hash=digest,
                             entities=json.dumps(old_entities) if old_entities else None,
                             source=source,
+                        )
+                    )
+                # The replaced photo, dated like the text it was sent with, as
+                # the archive pairs them in the edit history.
+                for earlier in s.media_versions:
+                    sent_msg = s.by_id[earlier["message_id"]]
+                    await session.execute(
+                        insert(MediaVersion).values(
+                            account_id=account,
+                            chat_id=s.chat_id,
+                            downloaded=1,
+                            download_date=sent_msg["date"],
+                            date=sent_msg["date"],
+                            captured_at=sent_msg["edit_date"],
+                            source="listener",
+                            **earlier,
                         )
                     )
                 await session.commit()

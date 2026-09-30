@@ -275,7 +275,9 @@ class TestSweepAdoptionHook(unittest.TestCase):
         result = self._run(backup._process_media(self._photo_message(), CHAT_ID))
 
         self.assertIs(result, existing)
-        backup.db.reconcile_media_row.assert_awaited_once_with(CHAT_ID, MSG_ID, "photo", account_id=1)
+        backup.db.reconcile_media_row.assert_awaited_once_with(
+            CHAT_ID, MSG_ID, "photo", account_id=1, telegram_file_id="42", source="backup"
+        )
         backup._download_media_to_path.assert_not_awaited()
 
     def test_a_row_whose_file_is_gone_is_downloaded_again(self):

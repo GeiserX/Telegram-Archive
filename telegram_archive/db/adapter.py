@@ -29,6 +29,7 @@ from sqlalchemy import (
     exists,
     false,
     func,
+    insert,
     literal,
     literal_column,
     not_,
@@ -51,6 +52,7 @@ from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     compute_directory_size,
     resolve_sender_display_name,
+    stored_media_file_id,
     utcnow_naive,
 )
 from ..transcription_contract import TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES, TRANSCRIBABLE_TYPES
@@ -77,6 +79,7 @@ from .models import (
     ForumTopic,
     Media,
     MediaTranscript,
+    MediaVersion,
     Message,
     MessageVersion,
     Metadata,
@@ -2120,6 +2123,24 @@ class DatabaseAdapter:
             )
         )
 
+    @staticmethod
+    async def _delete_media_versions_of(session, version_predicate, *, account_id: int) -> None:
+        """Delete the ``media_versions`` rows ``version_predicate`` selects, and their transcripts.
+
+        The flag-gated removal paths that delete a message's or a chat's media
+        delete its earlier media with it, in the same transaction. A kept
+        version's transcripts still point at the id the media row had then.
+        """
+        await session.execute(
+            delete(MediaTranscript).where(
+                and_(
+                    MediaTranscript.account_id == account_id,
+                    MediaTranscript.media_id.in_(select(MediaVersion.media_id).where(version_predicate)),
+                )
+            )
+        )
+        await session.execute(delete(MediaVersion).where(version_predicate))
+
     @retry_on_locked()
     async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> dict | None:
         """Delete a specific message and its media.
@@ -2141,6 +2162,16 @@ class DatabaseAdapter:
                         MessageVersion.message_id == message_id,
                     )
                 )
+            )
+            # Delete the earlier media an edit replaced, with their transcripts
+            await self._delete_media_versions_of(
+                session,
+                and_(
+                    MediaVersion.account_id == account_id,
+                    MediaVersion.chat_id == chat_id,
+                    MediaVersion.message_id == message_id,
+                ),
+                account_id=account_id,
             )
             # Delete the transcripts of the media below, then the media
             await session.execute(
@@ -2272,6 +2303,7 @@ class DatabaseAdapter:
         update_entities: bool = False,
         rich_message: dict | None = None,
         source: str | None = None,
+        media_changed: bool = False,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
@@ -2298,6 +2330,11 @@ class DatabaseAdapter:
         (#470): ``rich_message`` replaces the stored block tree, None drops it,
         so an edit that rewrote a Rich Text Editor message never leaves the
         old tree beside the new text.
+
+        ``media_changed`` says the same edit replaced the message's photo or
+        file (``reconcile_media_row`` kept the old one): it is an edit even when
+        the caption stayed the same, so it moves ``edit_date`` like a
+        formatting-only edit does.
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
@@ -2316,7 +2353,9 @@ class DatabaseAdapter:
             # entities. A block tree also carries file references, which
             # Telegram refreshes, so a tree alone never counts at the same date.
             same_date_applies = source == "listener" and entities_changed
-            if not self._should_apply_edit_text(message, new_text, edit_date, formatting_changed, same_date_applies):
+            if not self._should_apply_edit_text(
+                message, new_text, edit_date, formatting_changed or media_changed, same_date_applies
+            ):
                 # Not an edit: the same text and formatting (a reaction moves
                 # edit_date, #219), an edit Telegram hides, or older evidence.
                 # The archived formatting stays; a key the row never had is
@@ -2529,7 +2568,15 @@ class DatabaseAdapter:
     async def get_message_versions(
         self, chat_id: int, message_id: int, limit: int = 100, *, account_id: int | None = None
     ) -> list[dict[str, Any]]:
-        """Get preserved previous text versions for a message (None account_id = unscoped until phase 4)."""
+        """Get preserved previous versions for a message (None account_id = unscoped until phase 4).
+
+        A version whose media an edit replaced carries it as ``media``, a list
+        of ``_media_version_to_dict`` rows: the media kept in ``media_versions``
+        with the same ``date``, which is when that text and that media became
+        current together. Earlier media with no text version of its date (the
+        text version could not be written) is listed as its own version, with
+        ``text`` None and ``media_only`` True, so no kept file goes unlisted.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(MessageVersion)
@@ -2540,7 +2587,99 @@ class DatabaseAdapter:
             if account_id is not None:
                 stmt = stmt.where(MessageVersion.account_id == account_id)
             result = await session.execute(stmt)
-            return [self._message_version_to_dict(row) for row in result.scalars()]
+            versions = [self._message_version_to_dict(row) for row in result.scalars()]
+
+            media_stmt = (
+                select(MediaVersion)
+                .where(and_(MediaVersion.chat_id == chat_id, MediaVersion.message_id == message_id))
+                .order_by(MediaVersion.date.desc(), MediaVersion.id.desc())
+                .limit(limit)
+            )
+            if account_id is not None:
+                media_stmt = media_stmt.where(MediaVersion.account_id == account_id)
+            media_rows = (await session.execute(media_stmt)).scalars().all()
+
+        if not media_rows:
+            return versions
+        by_date: dict[datetime, dict[str, Any]] = {}
+        for version in versions:
+            by_date.setdefault(version["date"], version)
+        for media_row in media_rows:
+            media = self._media_version_to_dict(media_row)
+            version = by_date.get(media_row.date)
+            if version is None:
+                version = {
+                    "chat_id": media_row.chat_id,
+                    "message_id": media_row.message_id,
+                    "text": None,
+                    "date": media_row.date,
+                    "captured_at": media_row.captured_at,
+                    "source": media_row.source,
+                    "entities": None,
+                    "rich_message": None,
+                    "media_only": True,
+                }
+                by_date[media_row.date] = version
+                versions.append(version)
+            version.setdefault("media", []).append(media)
+        versions.sort(key=lambda version: version["date"], reverse=True)
+        return versions[:limit]
+
+    @staticmethod
+    def _media_version_to_dict(row: MediaVersion) -> dict[str, Any]:
+        """An earlier media for the edit history. ``file_path`` is for the web
+        layer, which turns it into a URL and never sends it."""
+        return {
+            "id": row.id,
+            "type": row.type,
+            "file_name": row.file_name,
+            "file_path": row.file_path,
+            "file_size": row.file_size,
+            "mime_type": row.mime_type,
+            "width": row.width,
+            "height": row.height,
+            "duration": row.duration,
+            "downloaded": bool(row.downloaded),
+            "date": row.date,
+            "captured_at": row.captured_at,
+            "source": row.source,
+        }
+
+    async def get_media_version(
+        self, chat_id: int, message_id: int, version_id: int, *, account_id: int
+    ) -> dict[str, Any] | None:
+        """One earlier media of one message in one chat, for the bytes routes.
+
+        Chat- and account-bound in SQL like ``get_media_for_message``: a
+        version id from another chat or account finds nothing.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(MediaVersion).where(
+                        and_(
+                            MediaVersion.id == version_id,
+                            MediaVersion.account_id == account_id,
+                            MediaVersion.chat_id == chat_id,
+                            MediaVersion.message_id == message_id,
+                        )
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "id": row.media_id,
+                "account_id": row.account_id,
+                "message_id": row.message_id,
+                "chat_id": row.chat_id,
+                "type": row.type,
+                "file_path": row.file_path,
+                "file_name": row.file_name,
+                "file_size": row.file_size,
+                "mime_type": row.mime_type,
+                "downloaded": row.downloaded,
+            }
 
     def _message_versions_query(
         self,
@@ -3033,6 +3172,7 @@ class DatabaseAdapter:
                 "downloaded": 1 if media_data.get("downloaded") else 0,
                 "skip_reason": media_data.get("skip_reason"),
                 "download_date": media_data.get("download_date"),
+                "telegram_file_id": media_data.get("telegram_file_id"),
             }
 
             stmt = sqlite_insert(Media).values(**values) if self._is_sqlite else pg_insert(Media).values(**values)
@@ -3061,6 +3201,7 @@ class DatabaseAdapter:
                 "duration",
                 "content_hash",
                 "download_date",
+                "telegram_file_id",
             ):
                 update_values[column] = func.coalesce(getattr(stmt.excluded, column), getattr(Media, column))
             # ``downloaded`` is a flag, not a value: 0 is a real value, so COALESCE
@@ -3124,7 +3265,9 @@ class DatabaseAdapter:
         Get all media records for one account's copy of a chat.
 
         Feeds the chat-cleanup path that deletes files from disk, so it must
-        never surface another account's rows.
+        never surface another account's rows. The earlier media edits replaced
+        (``media_versions``) are listed too, with ``"version": True``:
+        ``delete_media_for_chat`` removes their rows as well.
 
         Args:
             chat_id: Chat identifier
@@ -3136,8 +3279,12 @@ class DatabaseAdapter:
             stmt = select(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id))
             result = await session.execute(stmt)
             media_records = result.scalars().all()
+            version_stmt = select(MediaVersion).where(
+                and_(MediaVersion.account_id == account_id, MediaVersion.chat_id == chat_id)
+            )
+            version_records = (await session.execute(version_stmt)).scalars().all()
 
-            return [
+            records = [
                 {
                     "id": m.id,
                     "message_id": m.message_id,
@@ -3149,6 +3296,20 @@ class DatabaseAdapter:
                 }
                 for m in media_records
             ]
+            records += [
+                {
+                    "id": v.media_id,
+                    "message_id": v.message_id,
+                    "chat_id": v.chat_id,
+                    "type": v.type,
+                    "file_path": v.file_path,
+                    "file_size": v.file_size,
+                    "downloaded": v.downloaded,
+                    "version": True,
+                }
+                for v in version_records
+            ]
+            return records
 
     async def get_media_paginated(
         self,
@@ -3484,6 +3645,11 @@ class DatabaseAdapter:
             Number of media records deleted
         """
         async with self.db_manager.async_session_factory() as session:
+            await self._delete_media_versions_of(
+                session,
+                and_(MediaVersion.account_id == account_id, MediaVersion.chat_id == chat_id),
+                account_id=account_id,
+            )
             chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
             await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
             result = await session.execute(delete(Media).where(chat_media))
@@ -3848,10 +4014,24 @@ class DatabaseAdapter:
         return moved
 
     async def reconcile_media_row(
-        self, chat_id: int, message_id: int, media_type: str, *, account_id: int
+        self,
+        chat_id: int,
+        message_id: int,
+        media_type: str,
+        *,
+        account_id: int,
+        telegram_file_id: str | None = None,
+        source: str | None = None,
     ) -> dict[str, Any] | None:
         """The media row this message already has, re-typed to the current
         judgement, or None when the message has no media row yet.
+
+        ``telegram_file_id`` is the id of the photo or document the message
+        carries now (``media_file_id``). When the row holds a different known
+        id, an edit replaced the media: the row is kept as a ``media_versions``
+        row and comes back empty under a new id, with ``"replaced": True``, so
+        the caller downloads the new file into it (``_replace_media_row``).
+        ``source`` names the caller's path on the versions that writes.
 
         ``Media.id`` used to be minted fresh on every capture from
         ``{chat}_{msg}_{type}`` -- so it cached a JUDGEMENT (what kind of thing
@@ -3896,6 +4076,24 @@ class DatabaseAdapter:
             )
             if row is None:
                 return None
+            if telegram_file_id is not None:
+                stored = stored_media_file_id(row.telegram_file_id, row.file_name, row.message_id, row.type)
+                if stored is not None and stored != str(telegram_file_id):
+                    row_id = row.id
+                    await session.rollback()
+                    replaced = await self._replace_media_row(
+                        chat_id,
+                        message_id,
+                        row_id,
+                        media_type,
+                        str(telegram_file_id),
+                        account_id=account_id,
+                        source=source,
+                    )
+                    if replaced is not None:
+                        return replaced
+                    # Another writer replaced it first: return the row as it is now.
+                    return await self.reconcile_media_row(chat_id, message_id, media_type, account_id=account_id)
             if media_type and row.type != media_type:
                 await session.execute(
                     update(Media)
@@ -3918,6 +4116,153 @@ class DatabaseAdapter:
                 "content_hash": row.content_hash,
                 "downloaded": bool(row.downloaded),
                 "download_date": row.download_date,
+                "telegram_file_id": row.telegram_file_id,
+            }
+
+    @retry_on_locked()
+    async def _replace_media_row(
+        self,
+        chat_id: int,
+        message_id: int,
+        media_id: str,
+        media_type: str | None,
+        telegram_file_id: str,
+        *,
+        account_id: int,
+        source: str | None,
+    ) -> dict[str, Any] | None:
+        """Keep a replaced media row as a version and free the row for the new file.
+
+        One transaction, under the message's row lock, so two paths that see
+        the same edit replace the row once:
+
+        1. the message's text as it was is kept as a ``message_versions`` row
+           (a no-op when that version is already there), dated like the media;
+        2. every value of the media row is copied to ``media_versions``, with
+           the id the row had, so its file and its transcripts stay findable;
+        3. the media row takes a new id and the new file's identity, with every
+           file value cleared and ``downloaded=0``, so no later write can mix
+           the old file into it. The caller downloads the new file into it.
+
+        Returns the row as the caller should use it, or None when the row is
+        gone or already holds this file (another path replaced it first).
+        """
+        async with self.db_manager.async_session_factory() as session:
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
+            if message is None:
+                return None
+            row = (
+                await session.execute(
+                    select(Media)
+                    .where(and_(Media.account_id == account_id, Media.id == media_id))
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            stored = stored_media_file_id(row.telegram_file_id, row.file_name, row.message_id, row.type)
+            if stored is None or stored == telegram_file_id:
+                return None
+
+            date = self._message_version_date(message)
+            entities, rich_message = _formatting_state(message.raw_data)
+            await self._record_message_version(
+                session=session,
+                account_id=account_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message.text,
+                date=date,
+                entities=entities,
+                rich_message=rich_message,
+                source=source,
+            )
+            earlier = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(MediaVersion)
+                    .where(
+                        and_(
+                            MediaVersion.account_id == account_id,
+                            MediaVersion.chat_id == chat_id,
+                            MediaVersion.message_id == message_id,
+                        )
+                    )
+                )
+            ).scalar_one()
+            new_type = media_type or row.type
+            new_id = f"{chat_id}_{message_id}_{new_type}_v{earlier + 1}"
+            try:
+                async with session.begin_nested():
+                    await session.execute(
+                        insert(MediaVersion).values(
+                            account_id=account_id,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            media_id=row.id,
+                            type=row.type,
+                            telegram_file_id=stored,
+                            file_path=row.file_path,
+                            file_name=row.file_name,
+                            file_size=row.file_size,
+                            mime_type=row.mime_type,
+                            width=row.width,
+                            height=row.height,
+                            duration=row.duration,
+                            content_hash=row.content_hash,
+                            downloaded=row.downloaded or 0,
+                            download_date=row.download_date,
+                            date=date,
+                            captured_at=utcnow_naive(),
+                            source=source,
+                        )
+                    )
+                    await session.execute(
+                        update(Media)
+                        .where(and_(Media.account_id == account_id, Media.id == row.id))
+                        .values(
+                            id=new_id,
+                            type=new_type,
+                            telegram_file_id=telegram_file_id,
+                            file_path=None,
+                            file_name=None,
+                            file_size=None,
+                            mime_type=None,
+                            width=None,
+                            height=None,
+                            duration=None,
+                            content_hash=None,
+                            downloaded=0,
+                            download_attempts=0,
+                            skip_reason=None,
+                            download_date=None,
+                        )
+                    )
+            except IntegrityError:
+                # A key already taken: nothing was changed. The caller keeps
+                # the row as it is, and the next read of the message tries again.
+                await session.rollback()
+                logger.warning("Could not keep replaced media as a version; the row is unchanged")
+                return None
+            await session.commit()
+            logger.debug("Kept replaced media as a version")
+            return {
+                "id": new_id,
+                "type": new_type,
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "file_name": None,
+                "file_path": None,
+                "file_size": None,
+                "mime_type": None,
+                "width": None,
+                "height": None,
+                "duration": None,
+                "content_hash": None,
+                "downloaded": False,
+                "download_date": None,
+                "telegram_file_id": telegram_file_id,
+                "replaced": True,
             }
 
     @staticmethod
@@ -4691,6 +5036,12 @@ class DatabaseAdapter:
                 delete(MessageVersion).where(
                     and_(MessageVersion.account_id == account_id, MessageVersion.chat_id == chat_id)
                 )
+            )
+            # Delete the earlier media an edit replaced, with their transcripts
+            await self._delete_media_versions_of(
+                session,
+                and_(MediaVersion.account_id == account_id, MediaVersion.chat_id == chat_id),
+                account_id=account_id,
             )
             # Delete the transcripts of the chat's media, then the media records
             chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)

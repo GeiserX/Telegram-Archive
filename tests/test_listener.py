@@ -875,6 +875,7 @@ class TestEventHandlers:
             update_entities=True,
             rich_message=None,
             source="listener",
+            media_changed=False,
         )
 
     def test_on_message_edited_carries_rich_text_editor_content(self, listener_with_handlers):

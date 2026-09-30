@@ -55,6 +55,7 @@ from .message_utils import (
     finalize_atomic_download,
     is_youtube_preview_video,
     media_download_allowed,
+    media_file_id,
     message_edit_hide,
     message_entities,
     message_plain_text,
@@ -923,6 +924,138 @@ class TelegramListener:
         # identical to the backup module's ingest path for the same inputs.
         return fallback_media_filename(telegram_file_id, media_type, mime_type, message.id)
 
+    def _capturable_media_type(self, message) -> str | None:
+        """The message's media type when the live lane may store its file, else None.
+
+        The video Telegram attaches to a YouTube link preview (#440) is declined
+        exactly as the scheduled sweep declines it in _process_media, and so is
+        media DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES leave out.
+        Dropping the type (rather than refusing inside _download_media) also
+        stops the media ROW being written, so the pending drain never sees it.
+        The message, its text and its raw_data card are stored either way; the
+        scheduled sweep records the metadata-only row on its next run.
+        """
+        if not message.media:
+            return None
+        media_type = self._get_media_type(message.media)
+        if not self.config.download_youtube_videos and is_youtube_preview_video(message.media):
+            return None
+        if media_type and not media_download_allowed(self.config, message.media, media_type):
+            return None
+        return media_type
+
+    async def _store_message_media(self, message, chat_id: int, media_type: str) -> dict | None:
+        """Download a stored message's media and write its row; the WS media dict, or None.
+
+        The message row must exist first (the media table's foreign key). Runs
+        for a new message and for an edit that replaced the media. Returns the
+        nested media dict the viewer's live row uses, or None when nothing was
+        downloaded (LISTEN_NEW_MESSAGES_MEDIA off, SKIP_MEDIA, too large, failed).
+        """
+        if not (self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id)):
+            return None
+        telegram_file_id = media_file_id(message.media)
+        try:
+            # BEFORE the download, not after: if this message already has a row
+            # whose file is on disk (an import, or a replay of a message we have
+            # seen), downloading would fetch a second copy under the listener's
+            # own filename, repoint the row at it and orphan the original. With
+            # the file id, a row holding another file (an edit replaced the
+            # media) is kept as a media version first and comes back empty.
+            existing = await self.db.reconcile_media_row(
+                chat_id,
+                message.id,
+                media_type,
+                account_id=self.account_id,
+                telegram_file_id=telegram_file_id,
+                source="listener",
+            )
+            on_disk = (
+                resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
+                if existing and existing.get("downloaded")
+                else None
+            )
+            if on_disk and os.path.lexists(on_disk):
+                return existing
+            download_result = await self._download_media(message, chat_id)
+            if not download_result:
+                return None
+            media_path, media_file_name, content_hash = download_result
+            # Create media record (FK to messages now satisfied). The row keeps
+            # whatever id it was first filed under: an edit that swaps the
+            # media's kind would otherwise plant a second row, the same way a
+            # reclassified round video did in the sweep.
+            media_id = existing["id"] if existing else f"{chat_id}_{message.id}_{media_type}"
+            # Same metadata the scheduled sweep records (#263) — without it
+            # live-captured voice notes had a NULL duration and rendered
+            # without it while sweep-captured ones showed it.
+            media_attributes = extract_media_attributes(downloadable_media_payload(message.media))
+            try:
+                media_attributes["file_size"] = os.path.getsize(media_path)
+            except OSError:
+                pass  # Keep Telegram's reported size when the path isn't stat-able
+            media_row = {
+                "id": media_id,
+                "message_id": message.id,
+                "chat_id": chat_id,
+                "type": media_type,
+                "file_path": media_path,
+                "file_name": media_file_name,
+                "content_hash": content_hash,
+                "downloaded": True,
+                "download_date": utcnow_naive(),
+                "telegram_file_id": telegram_file_id,
+                **media_attributes,
+            }
+            await self.db.insert_media(media_row, account_id=self.account_id)
+            logger.debug("📎 Downloaded media")
+            # A live voice message gets its transcript within seconds instead
+            # of at the next drain.
+            self._enqueue_transcription(media_row)
+            # Mirror the DB row so the WS row matches what the next poll returns.
+            return {
+                "id": media_id,
+                "type": media_type,
+                "file_path": media_path,
+                "file_name": media_file_name,
+                "file_size": media_row["file_size"],
+                "mime_type": media_row["mime_type"],
+                "width": media_row["width"],
+                "height": media_row["height"],
+                "duration": media_row["duration"],
+            }
+        except Exception as e:
+            logger.warning(f"Failed to download media for message {message.id}: {describe_exception(e)}")
+            return None
+
+    async def _keep_replaced_media(self, message, chat_id: int) -> str | None:
+        """The media type when an edit replaced this message's photo or file, else None.
+
+        Asks ``reconcile_media_row`` with the file id the message carries now.
+        When the archived row holds another file, it is kept as a media version
+        (with the text it was shown beside) and comes back empty under a new id.
+        Runs before the edit's text is applied, so both versions carry the date
+        the old state began. The new file is fetched by _store_message_media.
+        """
+        media = getattr(message, "media", None)
+        if not media:
+            return None
+        media_type = self._get_media_type(media)
+        telegram_file_id = media_file_id(media)
+        if not media_type or telegram_file_id is None:
+            return None
+        row = await self.db.reconcile_media_row(
+            chat_id,
+            message.id,
+            media_type,
+            account_id=self.account_id,
+            telegram_file_id=telegram_file_id,
+            source="listener",
+        )
+        if isinstance(row, dict) and row.get("replaced") is True:
+            return media_type
+        return None
+
     async def _download_media(self, message, chat_id: int) -> tuple[str, str, str | None] | None:
         """
         Download media from a message.
@@ -939,18 +1072,7 @@ class TelegramListener:
             # Get Telegram's file unique ID for deduplication. Webpage previews
             # keep their photo/document one level down — unwrap once.
             payload = downloadable_media_payload(media)
-            # Truthy guards, not hasattr: a WebPage carries BOTH .photo and
-            # .document (one None), so hasattr would pick the empty photo
-            # branch for document-backed previews and lose the file id.
-            telegram_file_id = None
-            if getattr(payload, "photo", None):
-                telegram_file_id = str(getattr(payload.photo, "id", None))
-            elif getattr(payload, "document", None):
-                telegram_file_id = str(getattr(payload.document, "id", None))
-
-            # Guard against inaccessible media producing "None" string IDs
-            if telegram_file_id == "None":
-                telegram_file_id = None
+            telegram_file_id = media_file_id(media)
 
             # Check file size
             file_size = 0
@@ -1115,6 +1237,11 @@ class TelegramListener:
                 edit_date = message.edit_date
                 edit_hide = message_edit_hide(message)
 
+                # An edit can replace the photo or file. The old media is kept as
+                # a version BEFORE the text moves, so the old media and the old
+                # text carry the same date in the edit history.
+                replaced_media_type = await self._keep_replaced_media(message, chat_id)
+
                 # Apply the edit immediately; count and broadcast only when the
                 # archive actually changed, so stats stay honest and the viewer
                 # never displays text the archive rejected as stale.
@@ -1130,7 +1257,14 @@ class TelegramListener:
                     update_entities=True,
                     rich_message=message_rich_payload(message),
                     source="listener",
+                    media_changed=replaced_media_type is not None,
                 )
+                # The new file, beside the kept one, under the same rules as a
+                # new message's media (SKIP_MEDIA, size, type filters).
+                if replaced_media_type is not None:
+                    capturable_type = self._capturable_media_type(message)
+                    if capturable_type is not None:
+                        await self._store_message_media(message, chat_id, capturable_type)
                 if outcome == "not_found":
                     # The archive has not stored this message yet: the backup has
                     # not reached it, or it arrived while the listener was away.
@@ -1393,26 +1527,7 @@ class TelegramListener:
                     message_data["raw_data"]["rich_message"] = rich_payload
 
                 # v6.0.0: Detect media type for logging (download happens after message insert)
-                media_type = None
-                if message.media:
-                    media_type = self._get_media_type(message.media)
-                    # The video Telegram attaches to a YouTube link preview (#440),
-                    # declined exactly as the scheduled sweep declines it in
-                    # _process_media. Dropping the type here (rather than inside
-                    # _download_media) also stops the media ROW being written, so
-                    # the pending drain never sees it. The message, its text and its
-                    # raw_data.webpage card above are stored either way.
-                    if not self.config.download_youtube_videos and is_youtube_preview_video(message.media):
-                        media_type = None
-                    # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: same
-                    # policy, same reason — dropping the type here keeps the
-                    # live lane from downloading filtered media and from
-                    # writing a row the pending drain would have to re-examine.
-                    # The message, its text and its raw_data card above are
-                    # stored either way; the scheduled sweep records the
-                    # metadata-only row on its next run.
-                    if media_type and not media_download_allowed(self.config, message.media, media_type):
-                        media_type = None
+                media_type = self._capturable_media_type(message)
 
                 # Insert the message FIRST (required for FK constraint on media table)
                 await self.db.insert_message(message_data, account_id=self.account_id)
@@ -1430,78 +1545,7 @@ class TelegramListener:
                 # v6.0.0: Handle media - create Media record AFTER message exists
                 # ws_media mirrors the API row's nested media dict for the WS notify payload
                 # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
-                ws_media = None
-                if media_type:
-                    # Download media immediately if enabled
-                    if self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id):
-                        try:
-                            # BEFORE the download, not after: if this message already
-                            # has a row whose file is on disk (an import, or a replay
-                            # of a message we have seen), downloading would fetch a
-                            # second copy under the listener's own filename, repoint
-                            # the row at it and orphan the original.
-                            _existing = await self.db.reconcile_media_row(
-                                chat_id, message.id, media_type, account_id=self.account_id
-                            )
-                            _on_disk = (
-                                resolve_stored_media_path(_existing.get("file_path"), self.config.media_path)
-                                if _existing and _existing.get("downloaded")
-                                else None
-                            )
-                            if _on_disk and os.path.lexists(_on_disk):
-                                ws_media = _existing
-                                download_result = None
-                            else:
-                                download_result = await self._download_media(message, chat_id)
-                            if download_result:
-                                media_path, media_file_name, content_hash = download_result
-                                # Create media record (FK to messages now satisfied).
-                                # The row keeps whatever id it was first filed under: an
-                                # edit that swaps the media's kind would otherwise plant a
-                                # second row, the same way a reclassified round video did
-                                # in the sweep.
-                                media_id = _existing["id"] if _existing else f"{chat_id}_{message.id}_{media_type}"
-                                # Same metadata the scheduled sweep records (#263) — without it
-                                # live-captured voice notes had a NULL duration and rendered
-                                # without it while sweep-captured ones showed it.
-                                media_attributes = extract_media_attributes(downloadable_media_payload(message.media))
-                                try:
-                                    media_attributes["file_size"] = os.path.getsize(media_path)
-                                except OSError:
-                                    pass  # Keep Telegram's reported size when the path isn't stat-able
-                                media_row = {
-                                    "id": media_id,
-                                    "message_id": message.id,
-                                    "chat_id": chat_id,
-                                    "type": media_type,
-                                    "file_path": media_path,
-                                    "file_name": media_file_name,
-                                    "content_hash": content_hash,
-                                    "downloaded": True,
-                                    "download_date": utcnow_naive(),
-                                    **media_attributes,
-                                }
-                                await self.db.insert_media(media_row, account_id=self.account_id)
-                                logger.debug("📎 Downloaded media")
-                                # A live voice message gets its transcript within
-                                # seconds instead of at the next drain.
-                                self._enqueue_transcription(media_row)
-                                # Mirror the DB row so the WS row matches what the next poll returns.
-                                ws_media = {
-                                    "id": media_id,
-                                    "type": media_type,
-                                    "file_path": media_path,
-                                    "file_name": media_file_name,
-                                    "file_size": media_row["file_size"],
-                                    "mime_type": media_row["mime_type"],
-                                    "width": media_row["width"],
-                                    "height": media_row["height"],
-                                    "duration": media_row["duration"],
-                                }
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to download media for message {message.id}: {describe_exception(e)}"
-                            )
+                ws_media = await self._store_message_media(message, chat_id, media_type) if media_type else None
 
                 # Send real-time notification (enriched to mirror the API row shape so the
                 # viewer can render sender name + media immediately instead of a bare row

@@ -191,7 +191,7 @@ All of these need a login that can see the chat.
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
 | `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only` and `edited_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
-| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message, newest first: `[{chat_id, message_id, text, date, captured_at, source, entities, rich_message}]`. See [Message versions](#message-versions) |
+| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message, newest first: `[{chat_id, message_id, text, date, captured_at, source, entities, rich_message}]`, with `media` on a version whose photo or file an edit replaced. See [Message versions](#message-versions) |
 | `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
 | `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
@@ -238,6 +238,8 @@ Each earlier version of an edited message has these fields:
 | `source` | The path that saw it: `listener`, `sync`, `backup` or `import`. Null for a version archived before the archive kept it: unknown. |
 | `entities` | The formatting of that version, in the shape of the message's `raw_data.entities`: `[{type, offset, length, ...}]`. Null when it had none, or for a version archived before the archive kept it. |
 | `rich_message` | The block tree of a Rich Text Editor message, in the shape of the message's `raw_data.rich_message`. Null when that version had none. |
+| `media` | Present only when an edit replaced the message's photo or file: the media this version was shown with, as `[{type, file_name, file_size, mime_type, width, height, duration, downloaded, date, captured_at, source, url}]`. `url` is `/media/{chat_ref}/{message_id}_v{n}`, or null when the file was not downloaded; a login without downloads gets `url` null and `no_download` true. |
+| `media_only` | True on an entry that holds only earlier media, when the text version of that moment could not be written. Its `text` is null. |
 
 Only the listener sees each edit as it happens, and only while it runs: edits made while it was away reach it as one. The sync, a backup and an import read the text current at that moment, so several edits between two reads leave one version. When any version has one of those sources, or no source, the number of versions is a lower bound on the number of edits. The same holds when the oldest version's `date` is later than the message's `date`: the archive first saw the message already edited.
 
@@ -275,7 +277,7 @@ curl -s -b jar.txt 'http://localhost:8000/api/changes?since=2026-09-28T00:00:00Z
 
 ## Media
 
-A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route.
+A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route. An earlier photo or file an edit replaced has the key `{message_id}_v{n}`, from the `url` of its [message version](#message-versions). It works on the file, thumbnail and open routes, and the transcript routes read its transcripts; asking for a new transcript of it answers 404.
 
 | Method and path | Login | Purpose |
 |-----------------|-------|---------|

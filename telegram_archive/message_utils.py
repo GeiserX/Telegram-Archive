@@ -1760,6 +1760,53 @@ def downloadable_media_payload(media: object) -> object:
     return media
 
 
+def media_file_id(media: object) -> str | None:
+    """Telegram's id of the photo or document behind a message's media, as a string.
+
+    The identity of the file itself: an edit that replaces the media gives the
+    message a new photo or document with a new id, while a caption edit keeps
+    it. None when the media carries no file (a poll, a location) or the file is
+    inaccessible. Truthy guards, not hasattr: a WebPage carries BOTH .photo and
+    .document (one None), so hasattr would pick the empty photo branch for a
+    document-backed preview and lose the id.
+    """
+    payload = downloadable_media_payload(media)
+    file_id = None
+    if getattr(payload, "photo", None):
+        file_id = getattr(payload.photo, "id", None)
+    elif getattr(payload, "document", None):
+        file_id = getattr(payload.document, "id", None)
+    if file_id is None:
+        return None
+    return str(file_id)
+
+
+# The Telegram file id a stored file name starts with: ``build_media_filename``
+# writes ``<file_id>_<name>`` and ``fallback_media_filename`` ``<file_id>.<ext>``.
+_STORED_FILE_ID_RE = re.compile(r"^(-?[0-9]+)[._]")
+
+
+def stored_media_file_id(
+    telegram_file_id: str | None, file_name: str | None, message_id: int | None, media_type: str | None
+) -> str | None:
+    """The Telegram file id an archived media row holds, or None when unknown.
+
+    Rows written since migration 036 carry it in ``telegram_file_id``. Older
+    rows written by the sweep or the listener carry it as the first part of
+    their file name, so it is read from there. Unknown stays unknown: an
+    imported row (``import_…``), a row with no file name, and the fallback name
+    ``<message_id>_<type>.<ext>`` given to media without a file id.
+    """
+    if telegram_file_id:
+        return str(telegram_file_id)
+    if not file_name:
+        return None
+    if message_id is not None and media_type and file_name.startswith(f"{message_id}_{media_type}."):
+        return None
+    match = _STORED_FILE_ID_RE.match(file_name)
+    return match.group(1) if match else None
+
+
 def media_download_allowed(config, media: object, media_type: str | None) -> bool:
     """The DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES predicate.
 

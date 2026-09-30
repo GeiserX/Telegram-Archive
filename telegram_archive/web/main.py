@@ -1625,6 +1625,24 @@ def _parse_media_key(media_key: str) -> tuple[int, str] | None:
     return message_id, type_part
 
 
+# The URL key's second part for an earlier media: ``v`` and the media_versions
+# row id. No media type is spelled that way.
+_MEDIA_VERSION_KEY_RE = re.compile(r"^v([0-9]{1,18})$")
+
+
+def _media_version_id(type_part: str) -> int | None:
+    """The media_versions id a URL key's second part names, or None for a media type."""
+    match = _MEDIA_VERSION_KEY_RE.match(type_part)
+    return int(match.group(1)) if match else None
+
+
+def _media_version_key(message_id: object, version_id: object) -> str | None:
+    """The chat-free URL key ``{message_id}_v{id}`` of an earlier media, or None."""
+    if message_id is None or version_id is None:
+        return None
+    return f"{message_id}_v{version_id}"
+
+
 def _url_media_key(message_id: object, media_type: object) -> str | None:
     """The chat-free URL key ``{message_id}_{type}`` for a media row, or None.
 
@@ -1728,7 +1746,7 @@ def _resolve_media_file(relative_path: str):
     return resolved
 
 
-async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
+async def _entitled_media_row(chat: ChatContext, media_key: str, *, earlier_media: bool = True) -> dict:
     """Media row for an already-entitled chat + URL key, or the uniform 404.
 
     The row lookup IS the authorization for the bytes: the chat id comes from
@@ -1742,12 +1760,21 @@ async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
     ``import_{chat}_{msg}`` — the file was on disk and the viewer said "Media
     not found" (#423). Asking by column fixes both: the bound is explicit, and
     the row is found whatever its id spells.
+
+    An earlier media an edit replaced is addressed as ``{message_id}_v{id}``
+    (``_media_version_key``) and found the same way, bound to the same chat.
+    ``earlier_media=False`` refuses such a key, for routes that write.
     """
     parsed = _parse_media_key(media_key)
     row = None
     if parsed is not None:
         message_id, media_type = parsed
-        row = await db.get_media_for_message(chat.chat_id, message_id, media_type, account_id=chat.account_id)
+        version_id = _media_version_id(media_type)
+        if version_id is not None:
+            if earlier_media:
+                row = await db.get_media_version(chat.chat_id, message_id, version_id, account_id=chat.account_id)
+        else:
+            row = await db.get_media_for_message(chat.chat_id, message_id, media_type, account_id=chat.account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
     return row
@@ -3230,13 +3257,32 @@ async def get_recent_changes(
 async def get_message_versions(
     message_id: int,
     chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
     limit: int = Query(100, ge=1, le=500),
 ):
-    """Get preserved previous versions for a message."""
+    """Get preserved previous versions for a message.
+
+    A version whose photo or file an edit replaced carries it as ``media``.
+    Each gets a ref-addressed ``url`` when its file was downloaded; the stored
+    path never leaves the server, and a no-download login gets no URL.
+    """
     try:
-        return await db.get_message_versions(
+        versions = await db.get_message_versions(
             chat_id=chat.chat_id, message_id=message_id, limit=limit, account_id=chat.account_id
         )
+        for version in versions:
+            for media in version.get("media") or ():
+                has_file = bool(media.pop("file_path", None)) and bool(media.get("downloaded"))
+                media_key = _media_version_key(message_id, media.pop("id", None))
+                if user.no_download:
+                    media["url"] = None
+                    media["downloaded"] = False
+                    media["no_download"] = True
+                elif has_file and media_key:
+                    media["url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+                else:
+                    media["url"] = None
+        return versions
     except Exception as e:
         logger.error(f"Error fetching message versions: {type(e).__name__}")
         if _is_db_connection_error(e):
@@ -3545,7 +3591,8 @@ async def ask_chat_media_transcript(
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     if not _transcription_on():
         raise HTTPException(status_code=409, detail="Transcription is off")
-    media = await _entitled_media_row(chat, media_key)
+    # An earlier media is read-only history: no transcript is asked for it.
+    media = await _entitled_media_row(chat, media_key, earlier_media=False)
     try:
         row = await _ask_transcript(media, chat.account_id)
     except HTTPException:

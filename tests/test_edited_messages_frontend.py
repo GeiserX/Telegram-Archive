@@ -63,6 +63,9 @@ _TIMELINE_DECLARATIONS = (
     "const VERSIONS_LIMIT = 100",
     "const versionHistoryShape = (msg, kept) =>",
     "const versionEntries = computed(() =>",
+    "const versionMediaKind = (type) =>",
+    "const versionMediaItems = (list, keyBase, prefix) =>",
+    "const getMediaDisplayName = (media) =>",
     "const messageVersionsKey = (msg) =>",
     "const getMessageVersions = (msg) =>",
     "const isMessageVersionsLoading = (msg) =>",
@@ -368,6 +371,107 @@ messageVersionsByMessage.value = {{ '7:5': {json.dumps(kept)} }}
         self.assertEqual(
             subtitle([{**_KEPT[0], "source": "listener"}]), "Sent September 30 at 08:52 · at least 2 edits"
         )
+
+
+@unittest.skipUnless(NODE, "node is required to execute the helpers")
+class TestEarlierMedia(unittest.TestCase):
+    """b2v: a version whose photo or file an edit replaced shows it, and the current
+    entry shows the current media beside it; a version kept only as media has no
+    card and the diff runs past it."""
+
+    def _entries(self, msg: dict, kept: list[dict]) -> list[dict]:
+        prelude = f"""{_renderer_bundle(HTML)}
+versionsMessage.value = {json.dumps(msg)}
+messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
+"""
+        return _run(
+            "versionEntries.value.map(e => ({ what: e.what, media: e.media, mediaOnly: e.mediaOnly, html: e.html,"
+            " parts: e.parts === undefined ? 'none' : e.parts }))",
+            _TIMELINE_DECLARATIONS,
+            prelude,
+        )
+
+    def test_an_earlier_photo_sits_on_its_version_and_the_current_one_beside_it(self) -> None:
+        msg = {**_MSG, "text": "Look", "media": {"type": "photo", "url": "/media/r7/5_photo"}}
+        kept = [
+            {
+                "text": "Look",
+                "date": _SENT,
+                "source": "listener",
+                "media": [{"type": "photo", "url": "/media/r7/5_v3", "file_name": "111.jpg", "downloaded": True}],
+            }
+        ]
+        out = self._entries(msg, kept)
+        self.assertEqual(
+            out[0]["media"],
+            [
+                {
+                    "key": f"{_SENT}:0:m0",
+                    "url": "/media/r7/5_v3",
+                    "thumbUrl": "/media/thumb/200/r7/5_v3",
+                    "label": "Earlier photo",
+                }
+            ],
+        )
+        self.assertEqual(
+            out[1]["media"],
+            [
+                {
+                    "key": "current:m0",
+                    "url": "/media/r7/5_photo",
+                    "thumbUrl": "/media/thumb/200/r7/5_photo",
+                    "label": "Current photo",
+                }
+            ],
+        )
+
+    def test_without_earlier_media_the_current_entry_shows_none(self) -> None:
+        msg = {**_MSG, "media": {"type": "photo", "url": "/media/r7/5_photo"}}
+        out = self._entries(msg, _KEPT)
+        self.assertEqual([e["media"] for e in out], [[], [], []])
+
+    def test_a_file_is_named_and_a_file_not_downloaded_says_so(self) -> None:
+        kept = [
+            {
+                "text": "The north lot.",
+                "date": _SENT,
+                "media": [
+                    {"type": "document", "url": None, "file_name": "2222_report.pdf", "downloaded": False},
+                    {"type": "video", "url": None, "no_download": True},
+                ],
+            }
+        ]
+        out = self._entries(_MSG, kept)
+        self.assertEqual(
+            [(m["label"], m["url"], m["thumbUrl"]) for m in out[0]["media"]],
+            [("Earlier file · report.pdf · not downloaded", "", ""), ("Earlier video", "", "")],
+        )
+
+    def test_a_version_kept_only_as_media_has_no_card_and_the_diff_runs_past_it(self) -> None:
+        kept = [
+            {
+                "text": None,
+                "media_only": True,
+                "date": "2026-09-30T08:54:00",
+                "media": [{"type": "photo", "url": "/media/r7/5_v1"}],
+            },
+            {"text": "The north lot.", "date": _SENT, "source": "listener"},
+        ]
+        out = self._entries(_MSG, kept)
+        self.assertEqual([(e["what"], e["mediaOnly"]) for e in out[:2]], [("Sent", False), ("Earlier media", True)])
+        self.assertEqual((out[1]["html"], out[1]["parts"]), ("", "none"))
+        self.assertIn({"kind": "ins", "text": " It fills up by 8, so get there early."}, out[2]["parts"])
+
+    def test_the_template_draws_a_thumbnail_a_link_and_no_card_for_media_only(self) -> None:
+        start = HTML.index('<li v-for="entry in versionEntries" :key="entry.key"')
+        item = HTML[start : HTML.index("</li>", start)]
+        self.assertIn('<div v-for="media in entry.media" :key="media.key" class="version-media">', item)
+        self.assertIn('<a v-if="media.thumbUrl" :href="media.url" target="_blank" rel="noopener"', item)
+        self.assertIn('<img :src="media.thumbUrl" :alt="media.label" loading="lazy">', item)
+        self.assertIn('<span v-else class="version-media-caption">{{ media.label }}</span>', item)
+        self.assertIn('<div v-if="!entry.mediaOnly" class="version-bubble"', item)
+        # The label is text, never markup: the card stays the only v-html.
+        self.assertEqual(item.count("v-html"), 1)
 
 
 @unittest.skipUnless(NODE, "node is required to execute the handler")

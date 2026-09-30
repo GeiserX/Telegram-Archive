@@ -3346,6 +3346,39 @@
         .version-bubble.is-current {
             background: rgb(var(--tg-accent-dim));
         }
+        /* The photo or file a version had, when a later edit replaced it: a
+           thumbnail for a photo, a line with the kind and name otherwise. */
+        .version-media {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+        }
+        .version-media-thumb {
+            display: block;
+            max-width: 200px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: rgb(var(--tg-field));
+        }
+        .version-media-thumb img {
+            display: block;
+            max-width: 200px;
+            max-height: 200px;
+            object-fit: cover;
+        }
+        .version-media-caption {
+            font-size: 13px;
+            line-height: 18px;
+            color: rgb(var(--tg-muted));
+            overflow-wrap: anywhere;
+        }
+        .version-media-caption.is-link {
+            color: rgb(var(--tg-quote));
+        }
+        .version-media-caption.is-link:hover {
+            text-decoration: underline;
+        }
         /* What an edit changed, in the colours a diff uses and nothing else
            here does (the quote tint already means a link or a search hit):
            added words keep the text colour on a green tint and are
@@ -8263,8 +8296,17 @@
                         <li v-for="entry in versionEntries" :key="entry.key"
                             class="version-item" :class="{ 'is-current': entry.current }">
                             <p class="version-label"><span v-if="entry.when" class="version-when">{{ entry.when }}</span><span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template><template v-if="entry.formattingOnly"> · formatting only</template><template v-if="entry.parts === null"> · changes not marked, long text</template></span></p>
+                            <!-- The photo or file this version had, when a later edit replaced it,
+                                 and on the current entry the one that replaced it. -->
+                            <div v-for="media in entry.media" :key="media.key" class="version-media">
+                                <a v-if="media.thumbUrl" :href="media.url" target="_blank" rel="noopener" class="version-media-thumb">
+                                    <img :src="media.thumbUrl" :alt="media.label" loading="lazy">
+                                </a>
+                                <a v-if="media.url" :href="media.url" target="_blank" rel="noopener" class="version-media-caption is-link">{{ media.label }}</a>
+                                <span v-else class="version-media-caption">{{ media.label }}</span>
+                            </div>
                             <!-- entry.html comes from versionHtml: the bubble's renderer, escape-first. -->
-                            <div class="version-bubble" :class="{ 'is-current': entry.current }" dir="auto">
+                            <div v-if="!entry.mediaOnly" class="version-bubble" :class="{ 'is-current': entry.current }" dir="auto">
                                 <span v-if="entry.html" v-html="entry.html"></span>
                                 <span v-else class="version-empty">No text</span>
                             </div>
@@ -15909,14 +15951,20 @@
                     const entries = oldestFirst.map((entry, index) => ({
                         key: `${entry.date || ''}:${index}`,
                         date: entry.date || null,
-                        what: shape.truncated ? 'Earlier version'
+                        what: entry.media_only ? 'Earlier media'
+                            : shape.truncated ? 'Earlier version'
                             : index === 0 ? firstLabel
                                 : shape.lowerBound ? 'Edit' : `Edit ${index}`,
                         text: entry.text || '',
                         entities: Array.isArray(entry.entities) ? entry.entities : null,
                         current: false,
+                        mediaOnly: !!entry.media_only,
+                        media: versionMediaItems(entry.media, `${entry.date || ''}:${index}`, 'Earlier'),
                     }))
                     const currentEntities = msg.raw_data?.entities
+                    // With an earlier photo or file in the history, the current one
+                    // shows too, so the two can be compared.
+                    const replacedMedia = entries.some(entry => entry.media.length)
                     entries.push({
                         key: 'current',
                         date: msg.edit_date || null,
@@ -15924,21 +15972,59 @@
                         text: msg.text || '',
                         entities: Array.isArray(currentEntities) ? currentEntities : null,
                         current: true,
+                        mediaOnly: false,
+                        media: replacedMedia && msg.media ? versionMediaItems([msg.media], 'current', 'Current') : [],
                     })
+                    // A version kept only as media has no text to compare: the diff
+                    // runs between the text versions on either side of it.
+                    let textBefore = null
                     for (let index = 0; index < entries.length; index++) {
                         const entry = entries[index]
                         const before = index > 0 ? entries[index - 1] : null
                         entry.when = versionWhen(msg, entry.date)
                         entry.gap = before ? versionGap(before.date, entry.date) : ''
-                        if (before) {
-                            entry.parts = diffWords(before.text, entry.text)
-                            entry.formattingOnly = before.text === entry.text
-                                && JSON.stringify(before.entities || []) !== JSON.stringify(entry.entities || [])
+                        if (entry.mediaOnly) {
+                            entry.html = ''
+                            continue
                         }
-                        entry.html = versionHtml(entry, before)
+                        const previous = textBefore
+                        textBefore = entry
+                        if (previous) {
+                            entry.parts = diffWords(previous.text, entry.text)
+                            entry.formattingOnly = previous.text === entry.text
+                                && JSON.stringify(previous.entities || []) !== JSON.stringify(entry.entities || [])
+                        }
+                        entry.html = versionHtml(entry, previous)
                     }
                     return entries
                 })
+
+                // The photo or file of a version for the history: a thumbnail for a
+                // photo, and a line naming the kind (and the file's name) that opens
+                // it. The URL is the server's ref-addressed one, or none when the
+                // file was not downloaded or this login may not download.
+                const versionMediaKind = (type) => {
+                    const value = String(type || '').toLowerCase()
+                    if (value === 'photo') return 'photo'
+                    if (value === 'video' || value === 'video_note' || value === 'animation') return 'video'
+                    if (value === 'voice' || value === 'audio') return 'audio'
+                    return 'file'
+                }
+                const versionMediaItems = (list, keyBase, prefix) => {
+                    if (!Array.isArray(list)) return []
+                    return list.map((media, index) => {
+                        const kind = versionMediaKind(media?.type)
+                        const url = media?.url || ''
+                        const name = kind === 'file' && media?.file_name ? ` · ${getMediaDisplayName(media)}` : ''
+                        const missing = !url && !media?.no_download ? ' · not downloaded' : ''
+                        return {
+                            key: `${keyBase}:m${index}`,
+                            url,
+                            thumbUrl: url && kind === 'photo' ? url.replace(/^\/media\//, '/media/thumb/200/') : '',
+                            label: `${prefix} ${kind}${name}${missing}`,
+                        }
+                    })
+                }
 
                 const messageVersionsKey = (msg) => {
                     const chatId = msg.chat_id ?? selectedChat.value?.id

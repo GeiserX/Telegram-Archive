@@ -161,10 +161,10 @@ Feature page: [Media downloads](../configuration/media.md).
 | <span id="parallel_download_part_size_kb"></span>`PARALLEL_DOWNLOAD_PART_SIZE_KB` | `512` | backup | Chunk size: 4, 8, 16, 32, 64, 128, 256 or 512. A non-integer becomes 512. Other integers snap down to the largest valid size below them, and anything under 4 becomes 4. Never stops startup. |
 | <span id="deduplicate_media"></span>`DEDUPLICATE_MEDIA` | `true` | backup | Store each file once under `media/_shared` and link to it from every chat folder that holds it. |
 | <span id="skip_media_chat_ids"></span>`SKIP_MEDIA_CHAT_IDS` | empty | backup | Chats whose media is not downloaded. Their messages are still archived. Removing a chat from the list later does not fetch media for messages already archived. |
-| <span id="skip_media_delete_existing"></span>`SKIP_MEDIA_DELETE_EXISTING` | `false` | backup | Also delete the media already archived for `SKIP_MEDIA_CHAT_IDS` chats. Files in `media/_shared` stay. |
+| <span id="skip_media_delete_existing"></span>`SKIP_MEDIA_DELETE_EXISTING` | `false` | backup | Also delete the media already archived for `SKIP_MEDIA_CHAT_IDS` chats, earlier media that edits replaced included. Files in `media/_shared` stay. |
 | <span id="download_youtube_videos"></span>`DOWNLOAD_YOUTUBE_VIDEOS` | `false` | backup | Download the video file of a YouTube link preview. The link, its card and the card thumbnail are archived either way. |
 | <span id="youtube_videos_delete_existing"></span>`YOUTUBE_VIDEOS_DELETE_EXISTING` | `false` | backup | Delete YouTube preview videos already downloaded. Ignored, with a warning, while `DOWNLOAD_YOUTUBE_VIDEOS=true`. |
-| <span id="verify_media"></span>`VERIFY_MEDIA` | `false` | backup | Check every downloaded file each run and download missing, empty or damaged files again. |
+| <span id="verify_media"></span>`VERIFY_MEDIA` | `false` | backup | Check every downloaded file each run and download missing, empty or damaged files again. When an edit replaced the message's media, the old file is kept as it is and the new media is downloaded beside it. |
 | <span id="thumbnail_cache_dir"></span>`THUMBNAIL_CACHE_DIR` | `BACKUP_PATH/media/.thumbs` if writable, else `/tmp/telegram-archive-thumbs` | viewer | Where the viewer caches generated thumbnails. Created if missing. The backup always writes its thumbnails to `media/.thumbs`, so with this set the viewer ignores those and makes its own. The stock compose does not pass it to the viewer. |
 
 ## Backup tuning {#backup-tuning}
@@ -198,7 +198,7 @@ Feature page: [Real-time listener](../configuration/listener.md).
 | <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `false` | backup | Also download the media of new messages at once. Otherwise media waits for the next scheduled backup. |
 | <span id="listen_edits"></span>`LISTEN_EDITS` | `true` | backup | Apply text edits as they happen. The previous text is kept as a version. |
 | <span id="listen_deletions"></span>`LISTEN_DELETIONS` | `false` | backup | Apply deletions as `DELETION_MODE` says. When false, the listener only counts them. |
-| <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, transcripts and reactions. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |
+| <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, earlier media, transcripts and reactions. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |
 | <span id="listen_chat_actions"></span>`LISTEN_CHAT_ACTIONS` | `true` | backup | Save service messages such as joins and leaves, and refresh chat titles and photos. |
 | <span id="listen_reactions"></span>`LISTEN_REACTIONS` | `false` | backup | Capture per-emoji reaction counts as they change. |
 | <span id="reaction_debounce_seconds"></span>`REACTION_DEBOUNCE_SECONDS` | `1.5` | backup | How often buffered reaction changes are written. Floored at 0.1. |

@@ -424,6 +424,22 @@ async function openEditHistory(page) {
     await frameTopEdge(page)
 }
 
+// The edit history of the demo's photo an edit replaced: the earlier photo on
+// the version it was sent with, the current photo on the current entry.
+const REPLACED_TEXT = 'Found this view on the way back'
+async function openReplacedMediaHistory(page) {
+    await open(page)
+    await openGroup(page)
+    const edited = page.locator('.message-row').filter({ hasText: REPLACED_TEXT }).last().locator('.meta-edited')
+    await edited.waitFor({ state: 'attached', timeout: 15000 })
+    await edited.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
+    await frameTopEdge(page)
+    await edited.click()
+    await page.locator('#versions-panel .version-media img').first().waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(600)
+    await frameTopEdge(page)
+}
+
 // The peek: the pointer resting on the pencil of the demo's edited message.
 // The picture is cropped to the message column around it (peekFrame).
 async function openEditPeek(page) {
@@ -696,6 +712,7 @@ const desktopViews = {
         return peekFrame
     },
     '33-edited-menu': (page) => openEditedMenu(page),
+    '34-replaced-media': (page) => openReplacedMediaHistory(page),
 }
 
 const mobileViews = {
@@ -712,6 +729,7 @@ const mobileViews = {
     '10-changes-feed-mobile': (page) => openChangesFeed(page),
     '11-status-panel-mobile': (page) => openStatusPanel(page),
     '12-edit-history-mobile': (page) => openEditHistory(page),
+    '34-replaced-media-mobile': (page) => openReplacedMediaHistory(page),
     '13-avatar-history-mobile': (page) => openAvatarHistory(page),
     '14-export-dialog-mobile': (page) => openExportDialog(page, true),
     '15-deleted-mobile': (page) => openDeleted(page),

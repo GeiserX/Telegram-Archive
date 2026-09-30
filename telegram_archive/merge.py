@@ -42,6 +42,7 @@ from .db.models import (
     ForumTopic,
     Media,
     MediaTranscript,
+    MediaVersion,
     Message,
     MessageVersion,
     Metadata,
@@ -67,6 +68,7 @@ ACCOUNT_TABLES: tuple[tuple[sa.Table, bool], ...] = (
     (ChatFolderMember.__table__, False),
     (Media.__table__, False),
     (MessageVersion.__table__, True),
+    (MediaVersion.__table__, True),
     (Reaction.__table__, True),
     (AvatarHistory.__table__, True),
 )
@@ -818,13 +820,22 @@ def place_avatar(copier: MediaCopier, source_file: str, destination: str) -> Non
 
 
 def copy_media_files(copier: MediaCopier, source: Connection, account_ids: list[int]) -> MediaPlan:
-    """One pass over the merged accounts' media rows and avatars."""
+    """One pass over the merged accounts' media rows, their earlier media, and avatars."""
     stmt = (
         sa.select(Media.file_path, Media.content_hash, Media.downloaded)
         .where(Media.account_id.in_(account_ids), Media.file_path.is_not(None))
         .order_by(Media.account_id, Media.id)
     )
     for batch in stream(source, stmt):
+        for row in batch:
+            place_media_row(copier, row)
+    # The files an edit replaced, kept in media_versions (036).
+    version_stmt = (
+        sa.select(MediaVersion.file_path, MediaVersion.content_hash, MediaVersion.downloaded)
+        .where(MediaVersion.account_id.in_(account_ids), MediaVersion.file_path.is_not(None))
+        .order_by(MediaVersion.account_id, MediaVersion.id)
+    )
+    for batch in stream(source, version_stmt):
         for row in batch:
             place_media_row(copier, row)
     place_avatars(copier, avatar_owner_ids(source, account_ids))
@@ -978,7 +989,7 @@ def copy_rows(
         insert_placeholders(target, step, missing, account_map)
         for table, drop_id in ACCOUNT_TABLES:
             step = table.name
-            transform = rebase_media_row if table is Media.__table__ else None
+            transform = rebase_media_row if table in (Media.__table__, MediaVersion.__table__) else None
             copied[step] = copy_account_table(source, target, table, account_map, drop_id, transform)
             insert_placeholders(target, step, missing, account_map)
         step = MediaTranscript.__tablename__
