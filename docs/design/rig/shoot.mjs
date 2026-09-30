@@ -52,8 +52,27 @@ const SHARE_TOKEN = process.env.SHARE_TOKEN || 'demo-share-link-not-a-secret'
 const GROUP = 'Weekend Hikers'
 mkdirSync(OUT, { recursive: true })
 
-const DESKTOP = { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }
+const DESKTOP = { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 }
 const MOBILE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
+
+// Six site files are not whole frames: the main menu and the pages it opens
+// in place, the top of the sidebar, and the album row across the chat pane.
+// A view that returns one of these boxes is clipped to it. The boxes are in
+// CSS pixels, so at deviceScaleFactor 2 the file has twice the pixels of the
+// hand-cut 1x crops it replaces.
+const LEFT_PANEL = { x: 0, y: 0, width: 720, height: 900 }   // main menu, Theme, Archive status
+const STATS_CARD = { x: 0, y: 0, width: 720, height: 420 }   // Statistics
+const SIDEBAR_TOP = { x: 0, y: 0, width: 560, height: 260 }  // Archived Chats
+
+// The row holding `text`, across the whole chat pane. The same pick as
+// centerOn: a reply quotes its parent, so the row with the most pictures wins.
+async function rowAcrossPane(page, text) {
+    const rows = page.locator('.message-row').filter({ hasText: text })
+    const counts = await rows.evaluateAll((els) => els.map((el) => el.querySelectorAll('img').length))
+    const row = await rows.nth(counts.indexOf(Math.max(...counts))).boundingBox()
+    const pane = await page.locator('.messages-scroll').first().boundingBox()
+    return { x: pane.x, y: row.y, width: pane.width, height: row.height }
+}
 
 // --- page helpers ----------------------------------------------------------
 
@@ -97,11 +116,11 @@ async function parkPointer(page) {
     await page.mouse.move(0, 0)
 }
 
-async function shot(page, name) {
+async function shot(page, name, clip) {
     await parkPointer(page)
     await settle(page)
     const file = join(OUT, `${name}.png`)
-    await page.screenshot({ path: file, animations: 'disabled', caret: 'hide' })
+    await page.screenshot({ path: file, animations: 'disabled', caret: 'hide', ...(clip ? { clip } : {}) })
     console.log(`wrote ${file}`)
 }
 
@@ -463,22 +482,29 @@ const desktopViews = {
         await page.waitForTimeout(400)
         await frameTopEdge(page)
     },
-    '09-theme-picker': (page) => openMainMenu(page, 'Theme'),
+    '09-theme-picker': async (page) => { await openMainMenu(page, 'Theme'); return LEFT_PANEL },
     '10-changes-feed': (page) => openChangesFeed(page),
-    '11-status-panel': (page) => openStatusPanel(page),
+    '11-status-panel': async (page) => { await openStatusPanel(page); return STATS_CARD },
     '12-edit-history': (page) => openEditHistory(page),
     '13-avatar-history': (page) => openAvatarHistory(page),
     '14-export-dialog': (page) => openExportDialog(page, false),
     '15-deleted': (page) => openDeleted(page),
-    '16-archived-chats': (page) => openArchivedChats(page),
+    '16-archived-chats': async (page) => { await openArchivedChats(page); return SIDEBAR_TOP },
     '17-date-picker': (page) => openDatePicker(page),
-    '18-archive-status': (page) => openMainMenu(page, 'Archive status'),
-    '19-main-menu': (page) => openMainMenu(page),
+    '18-archive-status': async (page) => { await openMainMenu(page, 'Archive status'); return LEFT_PANEL },
+    '19-main-menu': async (page) => { await openMainMenu(page); return LEFT_PANEL },
     '20-media-missing': (page) => openMediaMissing(page),
     '21-topics': (page) => openTopics(page),
     '22-admin': (page) => openAdmin(page),
     '24-transcripts': (page) => openTranscripts(page),
     '25-avatar-lightbox': (page) => openAvatarLightbox(page),
+    '26-chat-album': async (page) => {
+        await open(page)
+        await openGroup(page)
+        await centerOn(page, 'A few shots from the ridge loop', 'center')
+        await frameTopEdge(page)
+        return rowAcrossPane(page, 'A few shots from the ridge loop')
+    },
 }
 
 const mobileViews = {
@@ -520,6 +546,17 @@ const shareViews = {
     },
 }
 
+// The sign-in card: what a visitor sees after `docker compose up` and
+// before the first login. Its own context, never signed in.
+const signedOutViews = {
+    '00-login': async (page) => {
+        await page.goto(`${BASE}/?theme=${encodeURIComponent(args.theme || 'telegram')}`, { waitUntil: 'load' })
+        await page.locator('.login-card').waitFor({ state: 'visible', timeout: 20000 })
+        await page.mouse.move(0, 0)
+        await settle(page)
+    },
+}
+
 async function run(browser, profile, views, signIn = true) {
     const wanted = Object.entries(views).filter(([name]) => !ONLY || ONLY.has(name.slice(0, 2)))
     if (!wanted.length) return
@@ -537,8 +574,8 @@ async function run(browser, profile, views, signIn = true) {
         for (const [name, view] of wanted) {
             const page = await newPage(context)
             try {
-                await view(page)
-                await shot(page, name)
+                const clip = await view(page)
+                await shot(page, name, clip)
             } catch (e) {
                 console.error(`FAILED ${name}: ${e.message.split('\n')[0]}`)
                 process.exitCode = 1
@@ -555,6 +592,7 @@ const browser = await chromium.launch({ headless: true })
 try {
     await run(browser, DESKTOP, desktopViews)
     await run(browser, MOBILE, mobileViews)
+    await run(browser, DESKTOP, signedOutViews, false)
     await run(browser, DESKTOP, shareViews, false)
 } finally {
     await browser.close()
