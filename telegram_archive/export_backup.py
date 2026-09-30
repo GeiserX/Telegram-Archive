@@ -75,10 +75,16 @@ class BackupExporter:
         by_message: dict[tuple, list] = {}
         for row in transcripts:
             by_message.setdefault((row.get("account_id"), row["chat_id"], row["message_id"]), []).append(row)
+        # Every earlier text the archive kept, under the message it belongs
+        # to, whatever the version's own date. ``message_versions`` below
+        # stays as it was: windowed by version date, without the account.
+        versions = await self.db.get_versions_of_messages_by_date_range(chat_id, start_dt, end_dt)
         for message in messages:
-            rows = by_message.get((message.get("account_id"), message.get("chat_id"), message.get("id")))
+            key = (message.get("account_id"), message.get("chat_id"), message.get("id"))
+            rows = by_message.get(key)
             if rows:
                 message["transcripts"] = rows
+            message["versions"] = versions.get(key, [])
 
         # Get chats
         chats = await self.db.get_all_chats()
