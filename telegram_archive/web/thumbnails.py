@@ -103,8 +103,9 @@ def _save_webp_atomic(img: Image.Image, dest: Path) -> None:
     Pillow streams straight into whatever path it is given, so writing to the
     cache path directly makes a half-written file visible to any concurrent
     request -- dest.exists() is the only completeness check there is, and the
-    truncated result is then served with a 24h Cache-Control. os.replace() is
-    atomic, so the cache path only ever appears fully written.
+    browser would store the truncated file with its ETag and reuse it on every
+    304 until the file changes. os.replace() is atomic, so the cache path only
+    ever appears fully written.
     """
     # Short fixed prefix: media names are already near the filesystem's
     # per-component byte budget, so embedding one here could overflow it.

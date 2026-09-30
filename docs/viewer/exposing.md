@@ -79,7 +79,7 @@ The rest of the protection is in how the viewer serves files and errors:
 - Every front-end asset is vendored into the image. The page loads nothing from a CDN.
 - The viewer serves media only from inside the media root. It refuses paths with `..`, absolute paths and symlinks that resolve outside the root.
 - Only image, video, audio and PDF files are served inline. Every other type, SVG included, is served as an attachment.
-- Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`. Shared caches do not keep them, and the browser asks the viewer before each reuse of its copy, so a logged-out browser or a login that lost the chat cannot show them again. Logout also sends `Clear-Site-Data: "cache"`. See [Media](../reference/api.md#media).
+- Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`. Shared caches do not keep them, and the browser asks the viewer before each reuse of its copy, so a logged-out browser or a login that lost the chat cannot show them again. Logout also sends `Clear-Site-Data: "cache"`, and the page reloads when its session ends, so the next login on the same tab starts clean. A chat export is sent with `private, no-store`. See [Media](../reference/api.md#media).
 - The viewer addresses every chat by its chat ref. See [Links to a message](using-the-viewer.md#links-to-a-message). An unknown ref and a forbidden ref both return the same 404.
 - Unhandled errors return a generic 500 or 503. The log line shows the route pattern, such as `/api/chats/{chat_ref}/messages`, not the actual URL, so chat ids and file names stay out of the logs.
 

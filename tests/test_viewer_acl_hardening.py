@@ -505,6 +505,8 @@ class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
         (self.root / "-1001" / "77_photo.jpg").write_bytes(b"\xff\xd8\xff fake photo")
         (self.root / "avatars" / "chats").mkdir(parents=True)
         (self.root / "avatars" / "chats" / "-1001_7.jpg").write_bytes(b"\xff\xd8\xff fake avatar")
+        (self.root / "avatars" / "users").mkdir()
+        (self.root / "avatars" / "users" / "555_7.jpg").write_bytes(b"\xff\xd8\xff fake sender avatar")
         self.thumb = self.root / "thumb.webp"
         self.thumb.write_bytes(b"RIFF fake thumbnail")
         self._saved = {
@@ -525,11 +527,13 @@ class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
             return_value={"id": "-1001_77_photo", "file_path": "-1001/77_photo.jpg", "file_name": "77_photo.jpg"}
         )
         web_main.db.get_avatar_photo_id = AsyncMock(return_value=7)
+        web_main.db.get_message_sender_id = AsyncMock(return_value=555)
         self.session = web_main.SessionData(username="fake-viewer", role="viewer", allowed_chat_refs={self.REF})
         web_main._sessions[self.COOKIE] = self.session
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
         web_main._avatar_dir_index.clear()
+        web_main._sender_lookup_cache.clear()
         thumbnail = patch(
             "telegram_archive.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(self.thumb, "-1001"))
         )
@@ -544,6 +548,7 @@ class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
         web_main._avatar_dir_index.clear()
+        web_main._sender_lookup_cache.clear()
         self.tmp.cleanup()
 
     def _urls(self) -> dict[str, str]:
@@ -551,6 +556,8 @@ class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
             "original": f"/media/{self.REF}/77_photo",
             "thumbnail": f"/media/thumb/200/{self.REF}/77_photo",
             "avatar": f"/media/avatar/{self.REF}",
+            "earlier avatar": f"/media/avatar/{self.REF}?photo_id=7",
+            "sender avatar": f"/media/avatar/{self.REF}/42",
         }
 
     async def _get(self, url: str, headers: dict | None = None, cookie: bool = True):
@@ -633,6 +640,15 @@ class TestGatedMediaRevalidates(unittest.IsolatedAsyncioTestCase):
         for kind, etag in etags.items():
             resp = await self._get(urls[kind], headers={"If-None-Match": etag})
             self.assertEqual(403, resp.status_code, kind)
+
+    async def test_avatars_stay_available_to_a_login_whose_downloads_were_turned_off(self):
+        """Avatars are UI chrome, served to no-download logins on purpose."""
+        urls = {kind: url for kind, url in self._urls().items() if "avatar" in kind}
+        etags = {kind: (await self._get(url)).headers["etag"] for kind, url in urls.items()}
+        self.session.no_download = True
+        for kind, url in urls.items():
+            resp = await self._get(url, headers={"If-None-Match": etags[kind]})
+            self.assertEqual(304, resp.status_code, kind)
 
     async def test_static_app_assets_keep_their_own_caching(self):
         """Control: the app's static files are not gated and do not get no-cache."""

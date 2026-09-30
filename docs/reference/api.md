@@ -275,7 +275,7 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 
 The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment.
 
-Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`, an `ETag` and a `Last-Modified`. The browser may keep a copy, but it asks the server before each reuse, and the viewer runs the same login and chat checks on that request. A session that still has access gets `304 Not Modified` and no body, so the file is not sent again. A logged-out browser gets 401, a login that lost the chat gets 404, and a login whose downloads were turned off gets 403, never the kept copy. The files under `/static` are not behind a login and keep their own caching.
+Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`, an `ETag` and a `Last-Modified`. The browser may keep a copy, but it asks the server before each reuse, and the viewer runs the same login and chat checks on that request. A session that still has access gets `304 Not Modified` and no body, so the file is not sent again. A logged-out browser gets 401, never the kept copy. Editing a viewer, or changing a token's chats or downloads, ends its sessions, so that browser gets 401 too. A session that no longer sees the chat gets 404. Originals and thumbnails answer 403 to a login whose downloads are off; avatars stay available to it. When its session ends, the viewer page reloads itself, so the next login on the same tab does not see the chat that was open. The files under `/static` are not behind a login and keep their own caching.
 
 The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`, and the message's `text`, `is_deleted` and `deleted_at`.
 
@@ -283,7 +283,7 @@ The open routes answer `{"ok": true}` on success and 404 `Not configured` when t
 
 ## Export
 
-`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file. It needs a login that can see the chat and answers 403 for no-download logins.
+`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file. It needs a login that can see the chat and answers 403 for no-download logins. It is sent with `Cache-Control: private, no-store`, so neither the browser nor a proxy keeps a copy.
 
 | Parameter | Meaning |
 |-----------|---------|

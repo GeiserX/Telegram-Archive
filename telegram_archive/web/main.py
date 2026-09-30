@@ -4512,7 +4512,11 @@ async def export_chat(
         return StreamingResponse(
             iter_json(),
             media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                # A whole chat: no browser or proxy may keep it for a later request.
+                "Cache-Control": "private, no-store",
+            },
         )
     except HTTPException:
         raise

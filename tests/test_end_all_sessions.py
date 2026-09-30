@@ -629,6 +629,33 @@ assert.equal(userRole.value, '');
     )
 
 
+def test_a_session_that_ends_in_the_tab_reloads_the_page():
+    """Logout, end-all and every 401 flip isAuthenticated; the flip must reload.
+
+    Showing only the login form kept the open chat, its messages and the
+    decoded media in memory, so the next login on the tab saw them again.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "watch(isAuthenticated, reloadWhenSessionEnds)" in html
+    function = _extract_const_arrow_function(html, "reloadWhenSessionEnds", asynchronous=False)
+    _run_node(
+        "\n".join(
+            [
+                '"use strict";',
+                "const assert = require('node:assert/strict');",
+                "const replaced = [];",
+                "const window = { location: { replace: url => replaced.push(url) } };",
+                function,
+                "reloadWhenSessionEnds(true, false);",
+                "reloadWhenSessionEnds(false, false);",
+                "assert.deepEqual(replaced, []);",
+                "reloadWhenSessionEnds(false, true);",
+                "assert.deepEqual(replaced, ['/']);",
+            ]
+        )
+    )
+
+
 def test_keeping_this_session_reports_the_count_and_stays():
     _run_node(
         _end_all_script(

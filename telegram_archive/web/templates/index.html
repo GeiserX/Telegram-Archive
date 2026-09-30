@@ -13308,6 +13308,17 @@
                     }
                 })
 
+                // A session that ends in this tab (logout, ending every session,
+                // or any request answered 401) reloads the page instead of only
+                // showing the login form. The form sits beside the main view, so
+                // the open chat, its messages and the media the document already
+                // decoded stayed in memory, and the next login on this tab, as
+                // anyone, showed them again without asking the server.
+                const reloadWhenSessionEnds = (now, before) => {
+                    if (before && !now) window.location.replace('/')
+                }
+                watch(isAuthenticated, reloadWhenSessionEnds)
+
                 const performLogin = async () => {
                     loginError.value = ''
                     loadingAuth.value = true
@@ -13382,6 +13393,7 @@
                     try {
                         await fetch('/api/logout', { method: 'POST', credentials: 'include' })
                     } catch (e) { /* ignore */ }
+                    // Reloads the page: see the isAuthenticated watch.
                     isAuthenticated.value = false
                     userRole.value = ''
                     currentUsername.value = ''
@@ -18581,6 +18593,7 @@
                                 await unsubscribeFromPush()
                             } catch (e) { /* ignore */ }
                             localStorage.removeItem('push_enabled')
+                            // Reloads the page: see the isAuthenticated watch.
                             isAuthenticated.value = false
                             userRole.value = ''
                             currentUsername.value = ''

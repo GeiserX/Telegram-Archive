@@ -1073,6 +1073,8 @@ class TestExportEndpoint(_WebTestBase):
         async with self._client() as client:
             resp = await client.get("/api/chats/exportChatRef00042AB/export")
         self.assertEqual(resp.status_code, 200)
+        # No validators, so nothing may keep it: not the browser, not a proxy.
+        self.assertEqual("private, no-store", resp.headers["cache-control"])
         data = json.loads(resp.text)
         self.assertEqual(
             data["chat"],
