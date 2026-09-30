@@ -46,7 +46,12 @@
             const head = document.createElement('span')
             head.className = 'dv-deleted-head'
             head.setAttribute('title', title)
-            head.innerHTML = `${TRASH}<span>${text}</span>`
+            // The icon is a fixed string; the label comes from the page, so it
+            // goes in as text, never as markup.
+            head.innerHTML = TRASH
+            const labelText = document.createElement('span')
+            labelText.textContent = text
+            head.appendChild(labelText)
             // The sender's line when the bubble has one: the mark sits at its
             // far end, where Telegram puts "admin". Otherwise a line of its own.
             const nameRow = bubble.querySelector(':scope > div.flex.items-baseline')

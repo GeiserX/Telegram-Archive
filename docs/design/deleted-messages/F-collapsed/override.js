@@ -38,9 +38,23 @@
             pill.setAttribute('aria-expanded', 'false')
             pill.setAttribute('aria-label', `${sender ? sender + ', ' : ''}deleted ${what}${sent ? ', sent ' + sent : ''}${time ? ', deleted ' + time : ''}. Show it`)
             pill.title = title
-            pill.innerHTML = `${TRASH}<span class="dv-pill-what">Deleted ${what}</span>` +
-                (time ? `<span class="dv-pill-dot" aria-hidden="true">·</span><span class="dv-pill-time">${time}</span>` : '') +
-                `<span class="dv-pill-dot" aria-hidden="true">·</span><span class="dv-pill-show">Show</span>`
+            // The icon is a fixed string; the labels come from the page, so they
+            // go in as text, never as markup.
+            const part = (cls, text, hidden) => {
+                const el = document.createElement('span')
+                el.className = cls
+                el.textContent = text
+                if (hidden) el.setAttribute('aria-hidden', 'true')
+                return el
+            }
+            pill.innerHTML = TRASH
+            pill.appendChild(part('dv-pill-what', `Deleted ${what}`))
+            if (time) {
+                pill.appendChild(part('dv-pill-dot', '·', true))
+                pill.appendChild(part('dv-pill-time', time))
+            }
+            pill.appendChild(part('dv-pill-dot', '·', true))
+            pill.appendChild(part('dv-pill-show', 'Show'))
             pill.addEventListener('click', (e) => { e.stopPropagation(); setOpen(row, true) })
             row.insertBefore(pill, bubble)
 
