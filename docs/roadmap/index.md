@@ -17,7 +17,7 @@ This page lists what Telegram Archive does not do yet, written as what you will 
 - **Swipe gestures on phones.** For example, a swipe takes you back to the chat list. Today the [phone layout](../viewer/using-the-viewer.md#on-a-phone) uses a back button.
 - **Withdrawn reactions.** A reaction someone took back stays under the message as a faint dashed chip marked "Removed". Today the archive keeps the removal, and the viewer shows only the reactions that remain.
 - **Archive counts in Statistics.** Statistics also counts the messages deleted in Telegram, edited and transcribed, and each count opens What changed for that kind. Today those counts are per chat, in the chat's info panel.
-- **What changed for one chat.** The deleted and edited counts in a chat's info panel open What changed for that chat only. Today What changed covers every chat you can see, filtered by kind and period.
+- **Counts that open What changed.** The deleted and edited counts in a chat's info panel open What changed for that chat. Today they open the chat's own Deleted only and Edited only modes, and the panel's **What changed in this chat** row opens the feed for the chat.
 
 ## Notifications
 

@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **What changed for one chat.** **More actions**, **What changed in this chat** and the same row in the chat's info panel open the What changed feed narrowed to that chat, with the chat as a chip whose cross widens it back to every chat. For a channel or group that several accounts hold, it lists what any of them captured, each change once. A private chat lists only the conversation of the account you opened it from. The **Deleted messages** and **Edited messages** rows keep opening the chat's own Deleted only and Edited only modes. `/api/changes` takes `chat_ref`, a read-only filter that keeps the viewer's chat and account restrictions: a chat the viewer cannot see answers 404, like an unknown one. See [What changed](viewer/using-the-viewer.md#what-changed).
+
 ### Security
 - **urllib3 2.8.0.** The lockfile, and so the images and the wheel's pinned install, move urllib3 from 2.7.0 to 2.8.0, which closes three advisories: an HTTPS proxy TLS configuration that could be ignored (GHSA-8988-9cw3-xx77), an unbounded chunk-size line read into memory (GHSA-vxq7-64xx-v4gw) and an infinite loop in chunked deflate streaming (GHSA-gh4c-6fx4-qh6g). The archive only reaches urllib3 through `requests`, in the transcription provider adapters.
 
