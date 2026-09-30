@@ -225,7 +225,7 @@ A tab with nothing in it is left out.
 
 Items load 50 at a time, and the next 50 load as you reach the end. A **Load more** button at the end does the same, for when the Voice filter hides a whole page.
 
-A photo or video whose message was deleted in Telegram carries a small trash in the deleted colour on a white disc in its tile's corner.
+A photo or video whose message was deleted in Telegram carries a dark pill in its tile's bottom left corner, the same pill a photo's time uses in the chat, with a trash and the word "deleted". Small tiles show the trash alone. Hover the tile to see when it was deleted.
 
 Photos, videos and GIFs open in the lightbox. It shows the sender, the date and the caption, and "deleted" after the date when Telegram deleted the message, whether you opened it from the chat or from here. **Show in chat** closes it and goes to the message in the chat around it, leaving the pinned-only view or an in-chat search if one is open. A round video tile jumps to its message. Press <kbd>Esc</kbd> to close the lightbox and <kbd>Left</kbd> or <kbd>Right</kbd> to move between items. Files have a download button and a go-to-message button. Download buttons are hidden for [no-download logins](access.md#no-download-logins).
 

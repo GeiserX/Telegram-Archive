@@ -144,7 +144,7 @@ Full mode uses Web Push. The browser's push service delivers the notification, s
 
     The viewer uses the environment keys only when both are set. One key alone is ignored. `VAPID_CONTACT` defaults to `mailto:admin@example.com` and is sent with every push, so set a real address.
 
-4. Restart the viewer, open it in the browser and click **Enable** in the sidebar banner.
+4. Restart the viewer, open it in the browser and click **Turn on notifications** at the top of the chat list, or turn on **Notifications** in the main menu. Allow notifications when the browser asks.
 
 A subscription made from the viewer covers every chat that user may see.
 
