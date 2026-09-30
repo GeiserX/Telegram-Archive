@@ -4,7 +4,9 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
-## [Unreleased]
+## [8.18.0] - 2026-09-30
+
+The viewer looks like Telegram. It follows the system light or dark setting by default, offers twelve themes, folds deleted messages into one line, counts edits and opens their history beside the chat. The archive gets `status` and `merge` commands, a way to end every session, and its own name in Telegram's device list. No migration runs. Docker deployments only need the new pins.
 
 ### Added
 - **The archive shows under its own name in Telegram's device list.** Every Telegram client the app builds now reports the device `Telegram Archive`, the operating system and the app version, so the entry under Settings, Devices is easy to recognise. `TELEGRAM_DEVICE_MODEL` sets another name per install. Existing logins keep working. ([#500](https://github.com/GeiserX/Telegram-Archive/pull/500))
