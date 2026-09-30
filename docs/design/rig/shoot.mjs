@@ -344,6 +344,27 @@ async function openChangesFeed(page) {
     await page.waitForTimeout(400)
 }
 
+// What changed narrowed to the group: from the chat's More actions menu on a
+// wide screen, from its info panel on a phone, where that menu is hidden.
+async function openChangesForChat(page, fromInfo = false) {
+    await open(page)
+    await openGroup(page)
+    if (fromInfo) {
+        await page.getByRole('button', { name: 'Chat information' }).click()
+        await page.locator('.tg-row').filter({ hasText: 'What changed in this chat' }).first().click()
+    } else {
+        await page.getByRole('button', { name: 'More actions' }).click()
+        await page.locator('.popover-sheet .info-action').filter({ hasText: 'What changed in this chat' }).click()
+    }
+    await page.locator('#changes-feed-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.getByRole('button', { name: 'Filter What changed' }).click()
+    await page.getByRole('radio', { name: 'All time' }).click()
+    await page.keyboard.press('Escape')
+    await page.evaluate(() => document.activeElement?.blur())
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    await page.waitForTimeout(400)
+}
+
 // The main menu, and one of the pages it opens in place (Statistics, Theme,
 // Archive status).
 async function openMainMenu(page, row = null) {
@@ -743,11 +764,12 @@ const desktopViews = {
         return peekFrame
     },
     '33-edited-menu': (page) => openEditedMenu(page),
-    '34-removed-reactions': async (page) => {
+    '34-changes-chat': (page) => openChangesForChat(page),
+    '35-removed-reactions': async (page) => {
         await openRemovedReactions(page)
         return editedFrame
     },
-    '35-removed-reactions-picture': async (page) => {
+    '36-removed-reactions-picture': async (page) => {
         await openRemovedReactionsPicture(page)
         return editedFrame
     },
@@ -776,8 +798,9 @@ const mobileViews = {
     '20-media-missing-mobile': (page) => openMediaMissing(page),
     '25-avatar-lightbox-mobile': (page) => openAvatarLightbox(page),
     '31-edited-mobile': (page) => openEdited(page),
-    '34-removed-reactions-mobile': (page) => openRemovedReactions(page),
-    '35-removed-reactions-picture-mobile': (page) => openRemovedReactionsPicture(page),
+    '34-changes-chat-mobile': (page) => openChangesForChat(page, true),
+    '35-removed-reactions-mobile': (page) => openRemovedReactions(page),
+    '36-removed-reactions-picture-mobile': (page) => openRemovedReactionsPicture(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the

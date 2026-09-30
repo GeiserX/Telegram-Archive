@@ -96,6 +96,11 @@ logger = logging.getLogger(__name__)
 # ids sit above it — the same constant migration 022 types placeholders with.
 SUPERGROUP_ID_CEILING = -(10**12)
 
+# The order the viewer's export lists messages in, unique per message within
+# a chat. Its messages query and its versions query both sort by it, so the
+# versions can be walked beside the messages; written once so they cannot drift.
+EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
+
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again. The drain query retries a media
 # whose newest row failed only while it has fewer than this many failed rows.
@@ -1600,25 +1605,71 @@ class DatabaseAdapter:
         export tells them apart by the account.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Message)
-
-            conditions = []
-            if account_id is not None:
-                conditions.append(Message.account_id == account_id)
-            if chat_id:
-                conditions.append(Message.chat_id == chat_id)
-            if start_date:
-                conditions.append(Message.date >= start_date)
-            if end_date:
-                conditions.append(Message.date <= end_date)
-
-            if conditions:
-                stmt = stmt.where(and_(*conditions))
-
-            stmt = stmt.order_by(Message.date.asc())
-
+            stmt = (
+                select(Message)
+                .where(*self._date_range_conditions(chat_id, start_date, end_date, account_id))
+                .order_by(Message.date.asc())
+            )
             result = await session.execute(stmt)
             return [{**self._message_to_dict(m), "account_id": m.account_id} for m in result.scalars()]
+
+    @staticmethod
+    def _date_range_conditions(
+        chat_id: int | None,
+        start_date: datetime | None,
+        end_date: datetime | None,
+        account_id: int | None,
+    ) -> list:
+        """The message filters of ``get_messages_by_date_range``, both ends inclusive."""
+        conditions = []
+        if account_id is not None:
+            conditions.append(Message.account_id == account_id)
+        if chat_id:
+            conditions.append(Message.chat_id == chat_id)
+        if start_date:
+            conditions.append(Message.date >= start_date)
+        if end_date:
+            conditions.append(Message.date <= end_date)
+        return conditions
+
+    async def get_messages_and_versions_by_date_range(
+        self,
+        chat_id: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        *,
+        account_id: int | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """What ``telegram-archive export`` writes, read from one snapshot.
+
+        First the messages ``get_messages_by_date_range`` returns, each with
+        ``versions``: every earlier text the archive kept of it, whatever the
+        version's date, oldest first, with ``text``, ``date`` and
+        ``captured_at``. The dates stay datetimes, as every other date of that
+        file does. Then the flat list ``get_message_versions_by_date_range``
+        returns, picked by the version's own date. One snapshot, so a backup
+        writing meanwhile cannot make a message and its versions disagree.
+        """
+        conditions = self._date_range_conditions(chat_id, start_date, end_date, account_id)
+        async with self.db_manager.async_session_factory() as session:
+            await self._read_one_snapshot(session)
+            versions: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+            for row in await session.execute(self._versions_of_messages_query(conditions)):
+                versions.setdefault((row.account_id, row.chat_id, row.message_id), []).append(
+                    {"text": row.text, "date": row.date, "captured_at": row.captured_at}
+                )
+            result = await session.execute(select(Message).where(*conditions).order_by(Message.date.asc()))
+            messages = [
+                {
+                    **self._message_to_dict(m),
+                    "account_id": m.account_id,
+                    "versions": versions.get((m.account_id, m.chat_id, m.id), []),
+                }
+                for m in result.scalars()
+            ]
+            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
+            message_versions = [self._message_version_to_dict(row) for row in result.scalars()]
+        return messages, message_versions
 
     async def find_message_by_date(
         self, chat_id: int, target_date: datetime, *, account_id: int | None = None
@@ -2149,6 +2200,74 @@ class DatabaseAdapter:
             "date": row.date,
         }
 
+    @staticmethod
+    def _export_version_dict(row) -> dict[str, Any]:
+        """One earlier version as the viewer's export lists it under its message.
+
+        ``date`` is when that text was current in Telegram (the edit that
+        produced it, or the send), ``captured_at`` when the archive saw it
+        replaced. Both columns are NOT NULL. ISO 8601, like every other date
+        the viewer's export writes.
+        """
+        return {
+            "text": row.text,
+            "date": row.date.isoformat(),
+            "captured_at": row.captured_at.isoformat(),
+        }
+
+    @staticmethod
+    def _versions_of_messages_query(message_conditions: list):
+        """Every kept version of the messages ``message_conditions`` pick, in export order.
+
+        The conditions apply to the message (its chat, account and date), not
+        to the version, so a message in a date window keeps all its versions.
+        Rows come in ``EXPORT_MESSAGE_ORDER``, the order the viewer's export
+        lists messages, each message's versions oldest first (the order they
+        were captured in when two share a date), so a reader can walk them
+        beside the messages.
+        """
+        return (
+            select(
+                MessageVersion.account_id,
+                MessageVersion.chat_id,
+                MessageVersion.message_id,
+                MessageVersion.text,
+                MessageVersion.date,
+                MessageVersion.captured_at,
+            )
+            .join(
+                Message,
+                and_(
+                    Message.account_id == MessageVersion.account_id,
+                    Message.chat_id == MessageVersion.chat_id,
+                    Message.id == MessageVersion.message_id,
+                ),
+            )
+            .where(*message_conditions)
+            .order_by(*EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc())
+        )
+
+    async def _read_one_snapshot(self, session) -> None:
+        """Make every read ``session`` runs from here on see the same archive state.
+
+        The exports read a message and its kept versions in separate
+        statements. Under PostgreSQL's default READ COMMITTED each statement
+        takes its own snapshot, so an edit landing between them would export
+        the old text beside a version holding that same text. REPEATABLE READ
+        gives the whole transaction one snapshot. SQLite's driver begins a
+        transaction only before a write, so an explicit deferred BEGIN does
+        the same there. The command's export needs it on SQLite: it reads
+        each statement to the end before the next. The viewer's export keeps
+        its messages statement open while it reads the versions, which
+        already holds SQLite's read snapshot, so there the BEGIN only guards
+        a later change that closes it first. Call it before the session runs
+        anything.
+        """
+        if self._is_sqlite:
+            await session.execute(text("BEGIN"))
+        else:
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+
     async def get_message_versions(
         self, chat_id: int, message_id: int, limit: int = 100, *, account_id: int | None = None
     ) -> list[dict[str, Any]]:
@@ -2240,6 +2359,8 @@ class DatabaseAdapter:
         limit: int = 50,
         scope: ChatScope | None = None,
         with_transcripts: bool = True,
+        chat_id: int | None = None,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """The what-changed feed: deletions, edits and transcripts the archive captured.
 
@@ -2264,6 +2385,19 @@ class DatabaseAdapter:
         row, the same compiled rules as the chat list — a restricted viewer's
         feed touches only their rows. Hard deletions cannot appear: their
         content no longer exists (DELETION_MODE=soft is what feeds this).
+
+        ``chat_id`` with ``account_id`` narrows the feed to the chat a ref
+        names. For a channel or a group that is the chat itself, every copy the
+        scope allows: an event exists only in the copy whose listener was up
+        when it happened, so narrowing to the ref's own copy would drop the
+        events only another account captured, which the feed of every chat
+        lists. Each event is still listed once, under the lowest entitled copy
+        that holds it. A ref to a private chat narrows to the ref's own
+        account, since its id is the other party's user id and names a
+        different conversation in each account, whatever type another
+        account's copy of that id carries. It narrows, never widens: ``scope``
+        still applies, and the caller resolves the ref under the same scope
+        first.
         """
         per_stream = max(1, min(int(limit), 200))
 
@@ -2344,6 +2478,29 @@ class DatabaseAdapter:
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
                     transcript_stmt = transcript_stmt.where(predicate)
+            if chat_id is not None:
+                deleted_stmt = deleted_stmt.where(Message.chat_id == chat_id)
+                edited_stmt = edited_stmt.where(MessageVersion.chat_id == chat_id)
+                transcript_stmt = transcript_stmt.where(Message.chat_id == chat_id)
+            if chat_id is not None and account_id is not None:
+                # Only a private chat's id collides across accounts, so only
+                # there does the ref's account pick the conversation. The
+                # REF's type decides, not each row's: another account's copy
+                # of the same id may be typed otherwise (an HTML-export import
+                # stores "unknown"), and it is still another conversation.
+                ref_type = await session.scalar(
+                    select(Chat.type).where(Chat.account_id == account_id, Chat.id == chat_id)
+                )
+                if ref_type == PRIVATE_CHAT_TYPE:
+                    deleted_stmt = deleted_stmt.where(Message.account_id == account_id)
+                    edited_stmt = edited_stmt.where(MessageVersion.account_id == account_id)
+                    transcript_stmt = transcript_stmt.where(Message.account_id == account_id)
+                else:
+                    # Every non-private copy of a channel or group stays in,
+                    # and the deduplication below lists each event once.
+                    deleted_stmt = deleted_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    edited_stmt = edited_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    transcript_stmt = transcript_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -2413,6 +2570,9 @@ class DatabaseAdapter:
                 select(literal(1)).where(*lower_transcript_match).correlate(MediaTranscript, lower_media).exists(),
             ]
 
+            # A feed narrowed to one chat runs the check too: every copy of a
+            # shared chat is inside that filter, so the lower copy an event
+            # defers to is listed, and a private chat is exempt anyway.
             deleted_stmt = deleted_stmt.where(
                 self._event_not_already_listed(
                     scope, lower_rows=lower_deleted, lower_chat=lower_deleted_chat, event_match=deleted_duplicate
@@ -5766,14 +5926,24 @@ class DatabaseAdapter:
             to_date: naive-UTC EXCLUSIVE upper bound on Message.date
 
         Yields:
-            Message dictionaries with user info. A message whose media has
-            transcripts carries them all under ``transcripts``, newest first.
+            Message dictionaries with user info, deleted messages included and
+            marked by ``is_deleted``/``deleted_at``. Each carries ``edit_date``
+            and ``versions``, every earlier text the archive kept of it (any
+            date, oldest first). A message whose media has transcripts carries
+            them all under ``transcripts``, newest first.
         """
         transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for row in await self.get_transcripts_for_export(
             chat_id, account_id=account_id, from_date=from_date, to_date=to_date
         ):
             transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
+        conditions = [Message.chat_id == chat_id]
+        if account_id is not None:
+            conditions.append(Message.account_id == account_id)
+        if from_date is not None:
+            conditions.append(Message.date >= from_date)
+        if to_date is not None:
+            conditions.append(Message.date < to_date)
         async with self.db_manager.async_session_factory() as session:
             if include_media:
                 stmt = (
@@ -5785,6 +5955,9 @@ class DatabaseAdapter:
                         Message.is_outgoing,
                         Message.reply_to_msg_id,
                         Message.sender_name,
+                        Message.edit_date,
+                        Message.is_deleted,
+                        Message.deleted_at,
                         Media.type.label("media_type"),
                         Media.file_path.label("media_file_path"),
                         User.first_name,
@@ -5800,8 +5973,8 @@ class DatabaseAdapter:
                             Media.chat_id == Message.chat_id,
                         ),
                     )
-                    .where(Message.chat_id == chat_id)
-                    .order_by(Message.date.asc())
+                    .where(*conditions)
+                    .order_by(*EXPORT_MESSAGE_ORDER)
                 )
             else:
                 stmt = (
@@ -5813,24 +5986,36 @@ class DatabaseAdapter:
                         Message.is_outgoing,
                         Message.reply_to_msg_id,
                         Message.sender_name,
+                        Message.edit_date,
+                        Message.is_deleted,
+                        Message.deleted_at,
                         User.first_name,
                         User.last_name,
                         User.username,
                     )
                     .outerjoin(User, Message.sender_id == User.id)
-                    .where(Message.chat_id == chat_id)
-                    .order_by(Message.date.asc())
+                    .where(*conditions)
+                    .order_by(*EXPORT_MESSAGE_ORDER)
                 )
 
-            if account_id is not None:
-                stmt = stmt.where(Message.account_id == account_id)
-            if from_date is not None:
-                stmt = stmt.where(Message.date >= from_date)
-            if to_date is not None:
-                stmt = stmt.where(Message.date < to_date)
-
+            await self._read_one_snapshot(session)
             result = await session.stream(stmt)
+            # The kept versions walk beside the messages, in the same order,
+            # so only the current message's versions are ever in memory,
+            # however long a chat's edit history is.
+            versions = await session.stream(self._versions_of_messages_query(conditions))
+            pending = await anext(versions, None)
+            last_key: tuple[int, int] | None = None
+            last_versions: list[dict[str, Any]] = []
             async for row in result:
+                key = (row.account_id, row.id)
+                if key != last_key:
+                    # With media a message repeats once per media row, and
+                    # every copy carries the same versions.
+                    last_key, last_versions = key, []
+                    while pending is not None and (pending.account_id, pending.message_id) == key:
+                        last_versions.append(self._export_version_dict(pending))
+                        pending = await anext(versions, None)
                 msg = {
                     "id": row.id,
                     "date": row.date.isoformat() if row.date else None,
@@ -5844,13 +6029,25 @@ class DatabaseAdapter:
                     "text": row.text,
                     "is_outgoing": bool(row.is_outgoing),
                     "reply_to": row.reply_to_msg_id,
+                    # What the viewer shows beside the text: deleted in
+                    # Telegram and kept here, and when Telegram last marked
+                    # it edited.
+                    "is_deleted": bool(row.is_deleted),
+                    "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
+                    "edit_date": row.edit_date.isoformat() if row.edit_date else None,
                 }
                 if include_media:
                     msg["media_type"] = row.media_type
                     msg["media_path"] = row.media_file_path
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
+                msg["versions"] = list(last_versions)
                 yield msg
+            if pending is not None:
+                # A version left over means the two queries stopped sorting
+                # alike and some messages went out without their versions.
+                # Fail the export rather than write a file that drops them.
+                raise RuntimeError("Export versions fell out of step with the messages")
 
     # ========== Forum Topic Operations (v6.2.0) ==========
 

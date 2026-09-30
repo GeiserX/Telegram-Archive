@@ -3191,6 +3191,7 @@ async def get_recent_changes(
     since: str | None = Query(None),
     before: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    chat_ref: str | None = Query(None),
 ):
     """What changed: deletions and edits the archive captured, newest first.
 
@@ -3198,9 +3199,14 @@ async def get_recent_changes(
     cursor — pass the last row's ``date`` to page older. Entitlements are the
     chat list's own compiled scope, so a restricted viewer sees only their
     chats' changes.
+
+    ``chat_ref`` narrows the feed to that one chat. It resolves through the
+    same resolver as every {chat_ref} route, so a chat the viewer may not see
+    answers exactly like an unknown one: 404.
     """
     parsed_since = _parse_changes_bound(since, "since") if since else None
     parsed_before = _parse_changes_bound(before, "before") if before else None
+    chat = await _resolve_chat_ref(chat_ref, user) if chat_ref is not None else None
     try:
         changes = await db.get_recent_changes(
             since=parsed_since,
@@ -3208,6 +3214,8 @@ async def get_recent_changes(
             limit=limit,
             scope=_chat_scope(user),
             with_transcripts=not user.no_download,
+            chat_id=chat.chat_id if chat else None,
+            account_id=chat.account_id if chat else None,
         )
         next_cursor = changes[-1]["date"] if len(changes) == limit else None
         return JSONResponse(
