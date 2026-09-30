@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:8.17.0
+        image: drumsergio/telegram-archive:8.18.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:8.17.0
+        image: drumsergio/telegram-archive-viewer:8.18.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `8.17.0`, `v8.17.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `8.18.0`, `v8.18.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
 | 8.17.0 | Migration 033 runs on start. The module is now `telegram_archive`, and `python -m src` keeps working. See [Upgrading to 8.17.0](#upgrading-to-8170). |
 | 8.16.1 | Nothing. |
 | 8.16.0 | Migration 032 runs on start. Voice transcription is on but stays idle until `TRANSCRIPTION_URL` is set. Set `TRANSCRIPTION_ENABLED=false` to hide its banner. See [Voice transcription](../configuration/transcription.md). |
