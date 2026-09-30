@@ -68,7 +68,9 @@ async def _replaced(adapter, media_type: str = "photo") -> MediaVersion:
             },
             account_id=1,
         )
-        await adapter.reconcile_media_row(chat_id, MESSAGE_ID, media_type, account_id=1, telegram_file_id="222")
+        await adapter.reconcile_media_row(
+            chat_id, MESSAGE_ID, media_type, account_id=1, telegram_file_id="222", edit_date=datetime(2026, 3, 1, 10)
+        )
     async with adapter.db_manager.async_session_factory() as session:
         return (await session.execute(select(MediaVersion).where(MediaVersion.chat_id == CHAT_ID))).scalar_one()
 
@@ -200,7 +202,7 @@ async def test_the_current_media_url_changes_when_an_edit_replaces_it(main_mod, 
     before = await current_url()
 
     replaced = await real_adapter.reconcile_media_row(
-        CHAT_ID, MESSAGE_ID + 1, "photo", account_id=1, telegram_file_id="333"
+        CHAT_ID, MESSAGE_ID + 1, "photo", account_id=1, telegram_file_id="333", edit_date=datetime(2026, 3, 1, 10)
     )
     assert replaced["replaced"] is True
     await real_adapter.insert_media(

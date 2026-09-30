@@ -57,6 +57,7 @@ from .message_utils import (
     is_youtube_preview_video,
     media_download_allowed,
     media_file_id,
+    media_read_date,
     message_edit_hide,
     message_entities,
     message_plain_text,
@@ -971,6 +972,7 @@ class TelegramListener:
                 telegram_file_id=telegram_file_id,
                 source="listener",
                 edit_date=getattr(message, "edit_date", None),
+                edit_hide=message_edit_hide(message),
             )
             if isinstance(existing, dict) and existing.get("superseded") is True:
                 # The archive already holds newer media for this message.
@@ -1010,6 +1012,10 @@ class TelegramListener:
                 "downloaded": True,
                 "download_date": utcnow_naive(),
                 "telegram_file_id": telegram_file_id,
+                # Date and path for the file when another writer stored other
+                # media first: it is kept as an earlier media (insert_media).
+                "version_date": media_read_date(message),
+                "version_source": "listener",
                 **media_attributes,
             }
             written_id = await self.db.insert_media(media_row, account_id=self.account_id)
@@ -1065,6 +1071,7 @@ class TelegramListener:
             telegram_file_id=telegram_file_id,
             source="listener",
             edit_date=getattr(message, "edit_date", None),
+            edit_hide=message_edit_hide(message),
         )
         if isinstance(row, dict) and row.get("replaced") is True:
             return media_type

@@ -1,11 +1,15 @@
 """Migration 034: ``messages.edit_hide``, added by an inspector-guarded step."""
 
 import importlib.util
+from datetime import datetime
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from conftest import NO_POSTGRES_REASON
+from test_schema_parity import _build_alembic_schema
 
 _VERSIONS = Path(__file__).resolve().parent.parent / "telegram_archive" / "alembic" / "versions"
 
@@ -56,3 +60,57 @@ def test_upgrade_without_the_table_does_nothing():
     with engine.connect() as conn:
         _run(conn, migration_034.upgrade)
         assert "messages" not in sa.inspect(conn).get_table_names()
+
+
+@pytest.fixture(params=("sqlite", "postgresql"))
+def database_urls(request, tmp_path, postgres_server_url, make_postgres_database) -> tuple[str, str]:
+    """(async url, sync url) of an empty database on each backend."""
+    if request.param == "postgresql":
+        if not postgres_server_url:
+            pytest.skip(NO_POSTGRES_REASON)
+        return make_postgres_database("telegram_archive_migration_034")
+    path = tmp_path / "archive.db"
+    return f"sqlite+aiosqlite:///{path}", f"sqlite:///{path}"
+
+
+def test_upgrade_from_033_keeps_rows_and_downgrade_drops_the_column(database_urls):
+    """Synchronous on purpose: Alembic's env.py runs its own event loop."""
+    async_url, sync_url = database_urls
+    _build_alembic_schema(async_url, "033")
+
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.begin() as conn:
+            assert "edit_hide" not in _columns(conn)
+            conn.execute(
+                sa.text(
+                    "INSERT INTO chats (account_id, id, ref, type, last_synced_message_id) "
+                    "VALUES (1, -1001, 'ref0034', 'group', 0)"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO messages "
+                    "(account_id, id, chat_id, date, edit_date, text, is_outgoing, is_pinned, is_deleted) "
+                    "VALUES (1, 5, -1001, :sent, :edited, 'kept', 0, 0, 0)"
+                ),
+                {"sent": str(datetime(2026, 1, 1, 9)), "edited": str(datetime(2026, 1, 1, 9, 5))},
+            )
+
+        _build_alembic_schema(async_url, "034")
+
+        with engine.begin() as conn:
+            assert "edit_hide" in _columns(conn)
+            assert [tuple(row) for row in conn.execute(sa.text("SELECT text, edit_hide FROM messages"))] == [
+                ("kept", None)
+            ]
+            _run(conn, migration_034.upgrade)  # a re-run changes nothing
+            assert "edit_hide" in _columns(conn)
+
+        with engine.begin() as conn:
+            _run(conn, migration_034.downgrade)
+            assert "edit_hide" not in _columns(conn)
+            _run(conn, migration_034.downgrade)
+            assert [tuple(row) for row in conn.execute(sa.text("SELECT text FROM messages"))] == [("kept",)]
+    finally:
+        engine.dispose()

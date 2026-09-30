@@ -152,11 +152,19 @@ class NotificationType(str, Enum):
     TRANSCRIPT = "transcript"
 
 
+# The bytes an edit frame's data may take with its entities. PostgreSQL's
+# NOTIFY payload stops at 8000 bytes, and the frame adds its envelope.
+_NOTIFY_ENTITIES_BUDGET = 6000
+
+
 def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:
     """Truncate large string fields in notification data to stay under PostgreSQL's 8KB NOTIFY limit.
 
     Handles both ``data["message"]["text"]`` (new_message) and ``data["new_text"]`` (edit)
-    paths. Returns a shallow-copied dict so the caller's original is not mutated.
+    paths. An edit's ``entities`` are dropped when the data with them would pass
+    ``_NOTIFY_ENTITIES_BUDGET`` bytes: a short text can carry many custom emoji or
+    long link entities. The viewer keeps the formatting it has for a frame without
+    entities. Returns a shallow-copied dict so the caller's original is not mutated.
     """
     truncated = False
 
@@ -176,6 +184,14 @@ def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:
             data = data.copy()
         data["new_text"] = data["new_text"][:max_text] + "…"
         data.pop("entities", None)
+        truncated = True
+
+    if data.get("entities"):
+        size = len(json.dumps(data, default=_json_serializer).encode("utf-8"))
+        if size > _NOTIFY_ENTITIES_BUDGET:
+            if not truncated:
+                data = data.copy()
+            data.pop("entities", None)
 
     return data
 

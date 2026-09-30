@@ -545,7 +545,11 @@ class MediaVersion(Base):
     when this media became current, the same value ``message_versions.date``
     has for the text shown beside it, so the edit history pairs them.
     ``captured_at`` is when the archive saw the replacement, and ``source``
-    the path that saw it (listener, sync or backup). Rows are never updated.
+    the path that saw it (listener, sync or backup). ``first_seen`` is the
+    media row's ``created_at``, when the archive first recorded this media,
+    and ``skip_reason`` the row's reason for not downloading it. Rows are
+    never updated, except that a file whose download finished after the
+    replacement is filled in.
     """
 
     __tablename__ = "media_versions"
@@ -567,6 +571,8 @@ class MediaVersion(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64))
     downloaded: Mapped[int] = mapped_column(Integer, nullable=False)
     download_date: Mapped[datetime | None] = mapped_column(DateTime)
+    skip_reason: Mapped[str | None] = mapped_column(String(16))
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
     source: Mapped[str | None] = mapped_column(String(16))

@@ -57,6 +57,27 @@ def test_upgrade_without_the_tables_does_nothing():
         assert _tables(conn) == set()
 
 
+def test_upgrade_adds_the_columns_an_earlier_build_of_the_table_lacks():
+    """A database that ran an earlier build of 036 has media_versions without
+    skip_reason and first_seen: the upgrade adds both and keeps the rows."""
+    engine = sa.create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(sa.text("CREATE TABLE messages (account_id INTEGER, id INTEGER, chat_id INTEGER)"))
+        conn.execute(sa.text("CREATE TABLE media (account_id INTEGER, id TEXT, telegram_file_id TEXT)"))
+        conn.execute(
+            sa.text(
+                "CREATE TABLE media_versions (id INTEGER PRIMARY KEY, account_id INTEGER, chat_id INTEGER, "
+                "message_id INTEGER, media_id TEXT, downloaded INTEGER, date DATETIME, captured_at DATETIME)"
+            )
+        )
+        conn.execute(sa.text("INSERT INTO media_versions VALUES (1, 1, -1001, 5, 'kept', 1, :d, :d)"), {"d": str(SENT)})
+        _run(conn, migration_036.upgrade)
+        columns = {c["name"] for c in sa.inspect(conn).get_columns("media_versions")}
+        assert {"skip_reason", "first_seen"} <= columns
+        rows = conn.execute(sa.text("SELECT media_id, skip_reason, first_seen FROM media_versions")).all()
+        assert [tuple(row) for row in rows] == [("kept", None, None)]
+
+
 @pytest.fixture(params=("sqlite", "postgresql"))
 def database_urls(request, tmp_path, postgres_server_url, make_postgres_database) -> tuple[str, str]:
     """(async url, sync url) of an empty database on each backend."""
@@ -110,6 +131,8 @@ def test_upgrade_from_035_keeps_media_and_is_idempotent(database_urls):
             assert "telegram_file_id" in _media_columns(conn)
             index_names = {i["name"] for i in sa.inspect(conn).get_indexes("media_versions")}
             assert "ix_media_versions_message" in index_names
+            version_columns = {c["name"] for c in sa.inspect(conn).get_columns("media_versions")}
+            assert {"skip_reason", "first_seen"} <= version_columns
 
         with engine.begin() as conn:
             _run(conn, migration_036.downgrade)

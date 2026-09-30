@@ -12,7 +12,9 @@ file name instead, and a row whose name carries none stays unknown.
 ``media_versions`` is append-only. Before a media row takes a new file, its
 values are copied there with the id it had (transcripts point at it) and the
 date that media became current, the same date ``message_versions`` gives the
-text beside it.
+text beside it. ``skip_reason`` and ``first_seen`` (the row's ``created_at``)
+come along, so a filtered or oversize media keeps its reason and its first
+capture time.
 
 Idempotent: the entrypoint stamping ladder is frozen at 018, a create_all()
 database already has the table and the column, and every step is guarded by
@@ -69,6 +71,8 @@ def upgrade() -> None:
             sa.Column("content_hash", sa.String(length=64), nullable=True),
             sa.Column("downloaded", sa.Integer(), nullable=False),
             sa.Column("download_date", sa.DateTime(), nullable=True),
+            sa.Column("skip_reason", sa.String(length=16), nullable=True),
+            sa.Column("first_seen", sa.DateTime(), nullable=True),
             sa.Column("date", sa.DateTime(), nullable=False),
             sa.Column("captured_at", sa.DateTime(), nullable=False),
             sa.Column("source", sa.String(length=16), nullable=True),
@@ -82,6 +86,14 @@ def upgrade() -> None:
             sa.UniqueConstraint("account_id", "media_id", name="uq_media_versions_media_id"),
         )
         inspector = sa.inspect(conn)
+
+    # A database that ran an earlier build of this revision has the table
+    # without these two columns.
+    version_columns = {c["name"] for c in inspector.get_columns(TABLE_NAME)}
+    if "skip_reason" not in version_columns:
+        op.add_column(TABLE_NAME, sa.Column("skip_reason", sa.String(length=16), nullable=True))
+    if "first_seen" not in version_columns:
+        op.add_column(TABLE_NAME, sa.Column("first_seen", sa.DateTime(), nullable=True))
 
     if INDEX_NAME not in {idx["name"] for idx in inspector.get_indexes(TABLE_NAME)}:
         op.create_index(INDEX_NAME, TABLE_NAME, ["account_id", "chat_id", "message_id"])

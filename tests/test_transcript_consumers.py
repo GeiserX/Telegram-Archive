@@ -284,6 +284,35 @@ class TestExports:
         assert "transcripts" not in exported[2]
         json.dumps(exported[1])  # serialisable as the route streams it
 
+    async def test_the_transcript_of_media_an_edit_replaced_is_still_exported(self, real_adapter):
+        """The old voice message is kept in media_versions under the id its
+        transcript points at; the export still puts the transcript under the message."""
+        media_id = await _voice(real_adapter, 1, "the first take")
+        await real_adapter.insert_media(
+            {
+                "id": media_id,
+                "message_id": 1,
+                "chat_id": CHAT,
+                "type": "voice",
+                "telegram_file_id": "700000000000000111",
+            },
+            account_id=1,
+        )
+        replaced = await real_adapter.reconcile_media_row(
+            CHAT,
+            1,
+            "voice",
+            account_id=1,
+            telegram_file_id="700000000000000222",
+            edit_date=WHEN + timedelta(minutes=5),
+        )
+        assert replaced["replaced"] is True
+
+        rows = await real_adapter.get_transcripts_for_export(CHAT, account_id=1)
+        assert [(row["text"], row["media_id"], row["message_id"]) for row in rows] == [("the first take", media_id, 1)]
+        assert await real_adapter.get_transcripts_for_export(OTHER_CHAT, account_id=1) == []
+        assert await real_adapter.get_transcripts_for_export(CHAT, account_id=2) == []
+
     async def test_a_windowed_viewer_export_reads_only_the_rows_of_its_messages(self, real_adapter):
         await _voice(real_adapter, 1, "inside the window")
         await _voice(real_adapter, 2, "before the window")

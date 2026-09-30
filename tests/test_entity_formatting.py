@@ -240,7 +240,8 @@ async def test_text_edit_stores_entities_and_preserves_raw_data(adapter):
 @pytest.mark.asyncio
 async def test_formatting_only_edit_is_a_version(adapter):
     """Same text + different entities + a newer edit_date: an edit. The old
-    formatting (none here) goes into a version and edit_date moves."""
+    formatting goes into a version and edit_date moves."""
+    await adapter.update_message_text(CHAT_ID, 1, "original", None, account_id=1, entities=BOLD, update_entities=True)
     outcome, _ = await adapter.update_message_text(
         CHAT_ID, 1, "original", datetime(2026, 1, 2), account_id=1, entities=ITALIC, update_entities=True
     )
@@ -249,7 +250,23 @@ async def test_formatting_only_edit_is_a_version(adapter):
     assert json.loads(row.raw_data)["entities"] == ITALIC
     assert row.edit_date == datetime(2026, 1, 2)
     versions = await adapter.get_message_versions(CHAT_ID, 1, account_id=1)
-    assert [(v["text"], v["entities"]) for v in versions] == [("original", None)]
+    assert [(v["text"], v["entities"]) for v in versions] == [("original", BOLD)]
+
+
+@pytest.mark.asyncio
+async def test_formatting_the_archive_never_knew_is_filled_not_versioned(adapter):
+    """A row archived before formatting was captured has no entities key.
+    A visible, newer edit_date with the same text and entities is no proof of
+    a formatting edit (Telegram moves edit_date for other reasons), so the key
+    is filled, no version is written and edit_date stays."""
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID, 1, "original", datetime(2026, 1, 2), account_id=1, entities=ITALIC, update_entities=True, source="sync"
+    )
+    assert outcome == "noop"
+    row = await _row(adapter)
+    assert json.loads(row.raw_data)["entities"] == ITALIC
+    assert row.edit_date is None
+    assert await adapter.get_message_versions(CHAT_ID, 1, account_id=1) == []
 
 
 @pytest.mark.asyncio

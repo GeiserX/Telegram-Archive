@@ -78,6 +78,7 @@ from .message_utils import (
     is_youtube_url,
     media_download_allowed,
     media_file_id,
+    media_read_date,
     message_edit_hide,
     message_entities,
     message_plain_text,
@@ -1886,6 +1887,11 @@ class TelegramBackup:
                         # a new row by _process_media below. Its file is not the
                         # one to replace, so it is not sidestepped.
                         replaced = await self._keep_replaced_media(msg, chat_id, "backup")
+                        if replaced:
+                            # The edit that replaced it moves edit_date, as the
+                            # sync and the listener move it: the next sync sees
+                            # the new media already in place and moves nothing.
+                            await self._apply_edit(msg, chat_id, "backup", media_changed=True)
                         # A corrupted file is sidestepped, never pre-deleted: the
                         # replacement must be in hand before the original goes.
                         # Pre-deleting meant a failed re-download left the file
@@ -2106,6 +2112,10 @@ class TelegramBackup:
                     # being re-fetched once it hits MEDIA_MAX_DOWNLOAD_ATTEMPTS.
                     try:
                         result = await self._process_media(msg, chat_id)
+                        if result and result.get("replaced") is True:
+                            # This read's edit replaced the media: its edit_date
+                            # moves, as the sync and the listener move it.
+                            await self._apply_edit(msg, chat_id, "backup", media_changed=True)
                         if result and result.get("skip_reason"):
                             await self.db.insert_media(result, account_id=self.account_id)
                             skipped += 1
@@ -2783,19 +2793,7 @@ class TelegramBackup:
                         media_replaced = await self._keep_replaced_media(remote_msg, chat_id, "sync")
                         # Update text and edit_date; count only edits the archive
                         # actually accepted (the adapter re-checks under lock).
-                        outcome, _ = await self.db.update_message_text(
-                            chat_id,
-                            msg_id,
-                            message_plain_text(remote_msg),
-                            remote_msg.edit_date,
-                            account_id=self.account_id,
-                            edit_hide=message_edit_hide(remote_msg),
-                            entities=message_entities(remote_msg),
-                            update_entities=True,
-                            rich_message=message_rich_payload(remote_msg),
-                            source="sync",
-                            media_changed=media_replaced,
-                        )
+                        outcome = await self._apply_edit(remote_msg, chat_id, "sync", media_changed=media_replaced)
                         if outcome == "applied":
                             total_updated += 1
                         if media_replaced:
@@ -3928,8 +3926,31 @@ class TelegramBackup:
             telegram_file_id=telegram_file_id,
             source=source,
             edit_date=getattr(message, "edit_date", None),
+            edit_hide=message_edit_hide(message),
         )
         return isinstance(row, dict) and row.get("replaced") is True
+
+    async def _apply_edit(self, message: Message, chat_id: int, source: str, *, media_changed: bool) -> str:
+        """Apply a read's text, formatting and edit date to the archived message; the outcome.
+
+        ``media_changed`` says this read's edit replaced the photo or file
+        (``_keep_replaced_media``): it moves ``edit_date`` even when the
+        caption stayed the same, as the listener does.
+        """
+        outcome, _ = await self.db.update_message_text(
+            chat_id,
+            message.id,
+            message_plain_text(message),
+            message.edit_date,
+            account_id=self.account_id,
+            edit_hide=message_edit_hide(message),
+            entities=message_entities(message),
+            update_entities=True,
+            rich_message=message_rich_payload(message),
+            source=source,
+            media_changed=media_changed,
+        )
+        return outcome
 
     async def _download_replaced_media(self, message: Message, chat_id: int) -> None:
         """Fetch the media an edit put in place of the kept one.
@@ -3982,6 +4003,7 @@ class TelegramBackup:
             telegram_file_id=telegram_file_id,
             source="backup",
             edit_date=getattr(message, "edit_date", None),
+            edit_hide=message_edit_hide(message),
         )
         if isinstance(existing, dict) and existing.get("superseded") is True:
             # The archive holds other media for this message than this read
@@ -3990,8 +4012,13 @@ class TelegramBackup:
             logger.debug("Media not processed: the archive holds newer media for this message")
             return None
         result = await self._media_row_for(message, chat_id, media, media_type, telegram_file_id, existing)
-        if result is not None and isinstance(existing, dict) and existing.get("replaced") is True:
+        if isinstance(existing, dict) and existing.get("replaced") is True:
             # Tells the message upsert that this read's edit replaced the media.
+            # With no row to write (a YouTube preview video declined), the
+            # replaced row as it stands carries that, and writing it changes
+            # nothing.
+            if result is None:
+                result = existing
             result["replaced"] = True
         return result
 
@@ -4181,6 +4208,10 @@ class TelegramBackup:
                 "downloaded": True,
                 "download_date": utcnow_naive(),
                 "telegram_file_id": telegram_file_id,
+                # Date and path for the file when another writer stored other
+                # media first: it is kept as an earlier media (insert_media).
+                "version_date": media_read_date(message),
+                "version_source": "backup",
                 **extract_media_attributes(payload),
                 "file_size": file_size,
             }

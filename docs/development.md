@@ -160,7 +160,7 @@ None of the fixing hooks touch `telegram_archive/web/static/vendor/`. Those vend
 A schema change needs an Alembic migration. Create it from the checkout:
 
 ```bash
-alembic -c telegram_archive/alembic.ini revision --rev-id 036 -m "add something"
+alembic -c telegram_archive/alembic.ini revision --rev-id 037 -m "add something"
 telegram-archive --data-dir ./data migrate
 ```
 

@@ -143,7 +143,7 @@ To check or run migrations by hand:
     telegram-archive --data-dir ./data migrate
     ```
 
-The newest revision is `035`, which keeps each earlier version's formatting and the path that saw it. There is no supported downgrade. To go back to an older release, restore the backup you took before upgrading. See [Upgrading](../operations/upgrading.md).
+The newest revision is `036`, which keeps a message's earlier photo or file when an edit replaces it. There is no supported downgrade. To go back to an older release, restore the backup you took before upgrading. See [Upgrading](../operations/upgrading.md).
 
 ## Search
 

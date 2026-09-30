@@ -608,15 +608,15 @@ async def test_content_hash_refcount_counts_surviving_rows(sqlite_adapter):
 
 @pytest.mark.asyncio
 async def test_content_hash_refcount_counts_kept_earlier_media(sqlite_adapter):
-    """A preview video an edit replaced is kept in media_versions; while that
-    row names the blob, deleting the current row must not free it."""
+    """A video an edit replaced with a link preview is kept in media_versions;
+    while that row names the blob, deleting the current row must not free it."""
     await _plant(sqlite_adapter, media_id="a", chat_id=-1, message_id=1, mime_type="video/mp4", url=YOUTUBE_URL)
     await sqlite_adapter.insert_media(
-        {"id": "a", "message_id": 1, "chat_id": -1, "type": "webpage", "telegram_file_id": "7000000000000000888"},
+        {"id": "a", "message_id": 1, "chat_id": -1, "type": "video", "telegram_file_id": "7000000000000000888"},
         account_id=1,
     )
     replaced = await sqlite_adapter.reconcile_media_row(
-        -1, 1, "webpage", account_id=1, telegram_file_id="7000000000000000999"
+        -1, 1, "webpage", account_id=1, telegram_file_id="7000000000000000999", edit_date=datetime(2026, 9, 1, 13)
     )
     assert replaced["replaced"] is True
     # The link was edited back to a preview whose video is the same blob.

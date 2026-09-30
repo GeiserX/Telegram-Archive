@@ -277,7 +277,14 @@ class TestSweepAdoptionHook(unittest.TestCase):
 
         self.assertIs(result, existing)
         backup.db.reconcile_media_row.assert_awaited_once_with(
-            CHAT_ID, MSG_ID, "photo", account_id=1, telegram_file_id="42", source="backup", edit_date=None
+            CHAT_ID,
+            MSG_ID,
+            "photo",
+            account_id=1,
+            telegram_file_id="42",
+            source="backup",
+            edit_date=None,
+            edit_hide=0,
         )
         backup._download_media_to_path.assert_not_awaited()
 

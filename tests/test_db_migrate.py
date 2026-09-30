@@ -156,7 +156,9 @@ async def test_media_versions_move_to_postgresql_and_the_next_replacement_is_kep
         },
         account_id=1,
     )
-    first = await adapter.reconcile_media_row(chat, 1, "photo", account_id=1, telegram_file_id="7000000000000000222")
+    first = await adapter.reconcile_media_row(
+        chat, 1, "photo", account_id=1, telegram_file_id="7000000000000000222", edit_date=datetime(2026, 9, 1, 13)
+    )
     assert first["replaced"] is True
     await source.close()
 
@@ -168,7 +170,9 @@ async def test_media_versions_move_to_postgresql_and_the_next_replacement_is_kep
     await target.init()
     try:
         moved = DatabaseAdapter(target)
-        row = await moved.reconcile_media_row(chat, 1, "photo", account_id=1, telegram_file_id="7000000000000000333")
+        row = await moved.reconcile_media_row(
+            chat, 1, "photo", account_id=1, telegram_file_id="7000000000000000333", edit_date=datetime(2026, 9, 1, 14)
+        )
         assert row["replaced"] is True
         async with target.async_session_factory() as session:
             kept = (await session.execute(select(MediaVersion).order_by(MediaVersion.id))).scalars().all()

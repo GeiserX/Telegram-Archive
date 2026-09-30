@@ -1336,6 +1336,19 @@ def message_edit_hide(message: object) -> int:
     return 1 if getattr(message, "edit_hide", None) is True else 0
 
 
+def media_read_date(message: object) -> datetime | None:
+    """When the media a read of ``message`` shows became current, as far as the read tells.
+
+    Its edit date when Telegram shows the edit, else its send date: the rule
+    ``message_versions`` dates a text by.
+    """
+    edit_date = getattr(message, "edit_date", None)
+    if isinstance(edit_date, datetime) and not message_edit_hide(message):
+        return edit_date
+    date = getattr(message, "date", None)
+    return date if isinstance(date, datetime) else None
+
+
 _ENTITY_CLASS_PREFIX = "MessageEntity"
 _ENTITY_SNAKE_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
@@ -1784,12 +1797,18 @@ def media_file_id(media: object) -> str | None:
 # The Telegram file id a stored file name starts with: ``build_media_filename``
 # writes ``<file_id>_<name>`` and ``fallback_media_filename`` ``<file_id>.<ext>``.
 # Telegram's photo and document ids are random 64-bit numbers, so a real one
-# has far more than 12 digits. Older releases started names with a message id
-# (``<message_id>_<original>``, ``<message_id>_<YYYYmmdd_HHMMSS>.<ext>``), a
-# date (``<YYYYmmdd_HHMMSS>_<message_id>.<ext>``) or the sender's own name, and
-# the name for media without a file id is ``<message_id>_<type>.<ext>``. None
-# of those has 12 digits before the first separator, so none reads as an id.
-_STORED_FILE_ID_RE = re.compile(r"^(-?[0-9]{12,})[._]")
+# has 15 to 19 digits (a shorter one is about one in 100,000). Older releases
+# started names with a message id (``<message_id>_<original>``,
+# ``<message_id>_<YYYYmmdd_HHMMSS>.<ext>``), a date
+# (``<YYYYmmdd_HHMMSS>_<message_id>.<ext>``) or the sender's own name as it
+# was, and the name for media without a file id is ``<message_id>_<type>.<ext>``.
+# A sender's name can start with a long number: a millisecond timestamp
+# (``1704067200000.jpg``, 13 digits) or a scanner's date and time
+# (``20240101123045_scan.pdf``, 14 digits). So only 15 to 20 digits count.
+# A name that still matches by chance (a 17-digit timestamp) replaces nothing
+# by itself: a replacement also needs an edit Telegram shows
+# (``DatabaseAdapter._shows_replacing_edit``).
+_STORED_FILE_ID_RE = re.compile(r"^(-?[0-9]{15,20})[._]")
 
 
 def stored_media_file_id(telegram_file_id: str | None, file_name: str | None) -> str | None:
