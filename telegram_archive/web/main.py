@@ -1852,8 +1852,15 @@ class GatedFileResponse(FileResponse):
 def _avatar_file_response(avatar_path: str):
     """Serve an avatars/ file with the containment avatars always had."""
     checked = _checked_media_path(avatar_path)
+    # Containment twice over: the lexical check first (normpath + prefix, the
+    # form static analysis reads as a path sanitizer), then the resolved one
+    # that also bounds a symlink.
+    root = str(_media_root)
+    normalized = os.path.normpath(os.path.join(root, checked))
+    if not normalized.startswith(root + os.sep):
+        raise HTTPException(status_code=404, detail="File not found")
     try:
-        resolved = (_media_root / checked).resolve(strict=True)
+        resolved = Path(normalized).resolve(strict=True)
     except OSError, ValueError:
         raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root) or not resolved.is_file():
