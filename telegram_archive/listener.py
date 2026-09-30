@@ -1724,7 +1724,13 @@ class TelegramListener:
                 if self.config.should_skip_topic(chat_id, getattr(event, "top_msg_id", None)):
                     return
 
-                observed = extract_reactions(getattr(event, "reactions", None))
+                reactions_obj = getattr(event, "reactions", None)
+                if getattr(reactions_obj, "min", False):
+                    # A min payload is partial (Telegram may leave out this
+                    # account's own reaction), so reconciling it could tombstone
+                    # a reaction nobody took back. Same rule as the other paths.
+                    return
+                observed = extract_reactions(reactions_obj)
                 if observed is None:
                     # Extraction failed (unexpected shape) — skip rather than buffer
                     # an empty snapshot that would tombstone valid reactions.
