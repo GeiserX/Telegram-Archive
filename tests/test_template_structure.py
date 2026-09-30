@@ -150,5 +150,5 @@ def test_every_app_surface_lives_inside_the_mount_target():
     """
     auditor = _audit()
     inside = "".join(auditor.inside_app_text)
-    for marker in ("Admin Settings", "toastMessage", "adminTokenError", "Create Share Token"):
+    for marker in ("Admin settings", "toastMessage", "adminTokenError", "Add share token"):
         assert marker in inside, f"{marker!r} is OUTSIDE #app — Vue will never compile it"

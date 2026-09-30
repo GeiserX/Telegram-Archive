@@ -60,7 +60,7 @@ The listener applies an edit only when the text changed and the edit is not olde
 
 When an edit is applied, the previous text is saved as a version. The viewer marks the message "edited", with the number of saved versions in its tooltip, and lets you open the earlier texts.
 
-![A group chat with a message marked edited(1)](../images/screenshots/chat-replies-forward.png)
+![The edit history of a message edited twice](../images/screenshots/edit-history-desktop.png)
 
 An edit that changes only the formatting refreshes the stored formatting quietly. It saves no version, sends no update to the viewer and fires no webhook.
 
@@ -70,7 +70,7 @@ Deletions are ignored unless `LISTEN_DELETIONS=true`. `DELETION_MODE` then decid
 
 | Mode | Effect |
 |------|--------|
-| `soft` (default) | The listener marks the message deleted, keeps it, and records the first deletion time. The viewer fades it with a `deleted` label and lists it in **What changed**. |
+| `soft` (default) | The listener marks the message deleted, keeps it, and records the first deletion time. The viewer keeps its text and marks it with a faint wash and `deleted` before its time, and lists it in **What changed**. |
 | `hard` | The message row is removed, together with its saved versions, its media rows, their transcripts and its reactions. |
 
 !!! tip "Keep evidence with soft mode"
@@ -116,7 +116,7 @@ The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the sch
 
 ## Checking that it runs
 
-In the viewer, the sidebar header shows **Real-time sync** under the archive's name while a listener is active, with the last backup time in its tooltip. For the master login, the Archive Status panel shows one Listener row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+In the viewer, the sidebar header shows **Live**, with a green dot and the last backup time, under the archive's name while a listener is active. For the master login, the **Live sync** section of Archive status shows one row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter.
 

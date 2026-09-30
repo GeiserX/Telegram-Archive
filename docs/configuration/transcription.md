@@ -247,9 +247,9 @@ The button has five states:
 
 ### The text
 
-An open transcript shows the full text in the message's own text colour, or "No speech detected" when the server returned no words. A small "Transcript" label under it says where the text came from. Point at the label to see the engine, the model, the language and the date. The message's details in the info panel show the same.
+An open transcript shows the full text straight under the player, in the message's own size and colour, with no heading, as Telegram shows it. When the server returned no words it says "No speech detected". Point at the text to see the engine, the model, the language and the date. The message's details in the info panel show the same. The transcript button shows an arrow while the text is open, and a small dot when the last attempt failed; the reason then shows under the player, in the time colour.
 
-When a file has more than one finished transcript, a picker labelled "1 of N" switches between them, newest first.
+When a file has more than one finished transcript, a small "1 of N" at the end of the text steps to the next one, newest first.
 
 With more than one speaker, the text reads as turns: "Speaker 1:", "Speaker 2:", numbered in order of first speech.
 
@@ -257,14 +257,14 @@ The viewer remembers per message whether a transcript is open. **Expand all tran
 
 ### Status, search and exports
 
-The Archive Status panel, which only the master login sees, has a Transcription row. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+Archive status, which only the master login sees, has a Voice transcripts row. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 | Value | Meaning |
 |---|---|
-| off | `TRANSCRIPTION_ENABLED=false` |
-| on, no server configured | `TRANSCRIPTION_URL` is empty |
-| on, server not detected yet | No drain has reached the server yet |
-| on, `<name> <version>` | The server the last drain detected |
+| Off | `TRANSCRIPTION_ENABLED=false` |
+| No server set | `TRANSCRIPTION_URL` is empty. The row links to this page. |
+| Server not found yet | No drain has reached the server yet |
+| `<name> <version>` | The server the last drain detected. For akou it links to the engine's page. |
 
 Chat search and global search find messages by their transcripts. The viewer marks these results as found in the transcript and opens the transcript at the match. On SQLite this needs FTS5. See [SQLite and PostgreSQL](database.md).
 
@@ -326,6 +326,6 @@ Transcription logs never contain the key, media ids, file names or transcript te
 | Files stay queued and every drain ends early on an OpenAI-compatible server | The server answers `404`. Check that `TRANSCRIPTION_URL` has no `/v1` suffix and that the model exists. |
 | A warning to check `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_LANGUAGE` | Two files were refused with a 4xx error and none succeeded. The model or language is usually wrong for this provider. |
 | `callback_not_allowed` | The callback host is not on the akou key's callback allowlist. Add it on akou's side, or unset `TRANSCRIPTION_CALLBACK_URL`. |
-| Archive Status says "on, server not detected yet" | No drain has reached the server yet. It fills after the next backup run. |
+| Archive status says "On, server not found yet" | No drain has reached the server yet. It fills after the next backup run. |
 
 For general log and health checks, see [Monitoring and troubleshooting](../operations/troubleshooting.md).

@@ -399,7 +399,7 @@ class TestPreviousPhotosRow:
         panel = html[html.index('<aside v-if="showInfoPanel && selectedChat" id="info-panel"') :]
         panel = panel[: panel.index("</aside>")]
         assert 'v-if="previousAvatars.length"' in panel
-        assert ">Previous photos<" in panel
+        assert ">Earlier photos<" in panel
         assert '@click="openPreviousAvatar(index)"' in panel
         assert ':src="entry.url"' in panel
 

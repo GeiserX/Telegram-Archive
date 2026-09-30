@@ -4,14 +4,5 @@ https://cdn.tailwindcss.com/3.4.17 -> 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d
 https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js -> 45c5186437878319a4b86339f475e8e2f0b27e1752f9e6387ebb15854425847f  vue-3.5.41.global.prod.js
 https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js -> 081737985335af4be15fc676ed4ccc0703c7446c6b5cbc9317e40bcdc6428e5d  moment-2.29.4.min.js
 https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js -> d92825b456bb1537593c4c3e68eb08bad49cbd352846faf660afcf17cfe7e98b  moment-timezone-with-data-1970-2030-0.5.43.min.js
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css -> 1edb1725a9ea8ca4dcf2f5508cee183218aa1685e47c1b23056717f754f58ebf  fontawesome/css/all.min.css
 https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css -> 1b34a42552c96f10e4dfaaa4a367276b03868aacff63c1ac42ffe331352bc754  flatpickr-4.6.13.min.css
 https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js -> 1eeab1cb779471a0b0aaa93dd91c2eb1aa537d696f01ab05ea9dabc55e8525a1  flatpickr-4.6.13.min.js
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-brands-400.ttf -> 20c4a58bc9d1d69e935d06f1528923646a715be5e218665655cade8f5f1b8c00  fontawesome/webfonts/fa-brands-400.ttf
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-brands-400.woff2 -> 748332090c4b8e20f95d0ff59f0be20fa9c889359d3b36d4b886d73376054207  fontawesome/webfonts/fa-brands-400.woff2
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-regular-400.ttf -> 528d022dce6725f8a0811fd91d8e6513445c81ef33353a5c3234eab932551abf  fontawesome/webfonts/fa-regular-400.ttf
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-regular-400.woff2 -> 8e7e5ea1b15f62ab14dbd41768e8fbcd21cc859a4ea5da812457ee714299fb35  fontawesome/webfonts/fa-regular-400.woff2
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.ttf -> 67a65763c7f80903d81603bbeb9049fc2bf28508479b83ed011fe24c71fa950a  fontawesome/webfonts/fa-solid-900.ttf
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.woff2 -> 7152a6933ee3d690ec2af3d09da9d701723d16aa3410a6d80f28ff8866f3b880  fontawesome/webfonts/fa-solid-900.woff2
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-v4compatibility.ttf -> 0515a423f828ce4e6accf92a2ea0b03d19d31cc86d9af0373291e1fd4db5f348  fontawesome/webfonts/fa-v4compatibility.ttf
-https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-v4compatibility.woff2 -> 694a17c3d9d6c05f8aac63c544615552a4b220e9a4de863d87341a6bcfc1bc8d  fontawesome/webfonts/fa-v4compatibility.woff2

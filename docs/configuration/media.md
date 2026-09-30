@@ -152,7 +152,7 @@ Time spent waiting out a FloodWait during a download counts toward `DOWNLOAD_TIM
 
 A failed download leaves a pending row. At the end of every run, a retry pass takes up to 1000 pending rows for each account, fewest attempts first. Each failed retry adds one attempt. A message that was deleted, or no longer carries media, also spends an attempt. After `MEDIA_MAX_DOWNLOAD_ATTEMPTS` failed attempts, `5` by default, the file is no longer retried.
 
-The run logs a warning with the number of files that gave up. The Archive Status panel in the viewer shows these counts. See [Archive status](../viewer/using-the-viewer.md#archive-status). The viewer reads `MEDIA_MAX_DOWNLOAD_ATTEMPTS` to count these files, so set the same value in the viewer's environment block. See [Environment variables](../reference/environment-variables.md#media).
+The run logs a warning with the number of files that gave up. Archive status in the viewer counts them as "Gave up after retries". See [Archive status](../viewer/using-the-viewer.md#archive-status). The viewer reads `MEDIA_MAX_DOWNLOAD_ATTEMPTS` to count these files, so set the same value in the viewer's environment block. See [Environment variables](../reference/environment-variables.md#media).
 
 ## Verify files on disk
 
@@ -220,14 +220,17 @@ When the cache is anywhere other than `media/.thumbs`, as with `THUMBNAIL_CACHE_
 
 ## Why media is missing in the viewer
 
-A message whose file is not on disk shows a placeholder with one of these reasons:
+A message whose file the viewer cannot show keeps its place: a placeholder in the shape the media would take, with what it is and why, and the size when the archive knows it, for example `Photo` over `24 MB · over the download limit`.
 
 | Viewer text | Meaning |
 |-------------|---------|
-| Not downloaded: larger than the size limit | Skip reason `oversize`. Raise `MAX_MEDIA_SIZE_MB` to fetch it. |
-| Not downloaded: excluded by the media filter | Skip reason `filtered`. Relax `DOWNLOAD_MEDIA_TYPES` or `DOWNLOAD_DOCUMENT_MIME_TYPES`, or remove the chat from `SKIP_MEDIA_CHAT_IDS`. |
-| Not available for this login | The viewer account or share token has **No Downloads** ticked. The file may be archived. See [No-download logins](../viewer/access.md#no-download-logins). |
-| Will download on next backup | The row is pending. The retry pass picks it up, until it gives up. |
+| over the download limit | Skip reason `oversize`. Raise `MAX_MEDIA_SIZE_MB` to fetch it. |
+| skipped by the media filter | Skip reason `filtered`. Relax `DOWNLOAD_MEDIA_TYPES` or `DOWNLOAD_DOCUMENT_MIME_TYPES`, or remove the chat from `SKIP_MEDIA_CHAT_IDS`. |
+| hidden for this login | The viewer account or share token has downloads off. The file may be archived. See [No-download logins](../viewer/access.md#no-download-logins). |
+| not downloaded yet | The row is pending. The retry pass picks it up, until it gives up. Archive status counts the files that gave up. |
+| missing from the archive disk | The row says the file was downloaded, but the viewer could not load it: the file was moved or deleted outside the archive. |
+
+![The four reasons in one chat](../images/screenshots/media-missing.png)
 
 ## Media from the real-time listener
 

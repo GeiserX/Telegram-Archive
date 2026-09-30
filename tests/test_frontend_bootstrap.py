@@ -216,7 +216,7 @@ class TestSenderPresentation(unittest.TestCase):
         """The run-start avatar exposes archived/current names and the numeric ID."""
         self.assertIn('@click="openSenderInfo(msg, $event)"', self.html)
         self.assertIn('role="dialog" aria-modal="true" aria-labelledby="sender-info-title"', self.html)
-        self.assertIn("senderInfoMessage.sender_name ? 'Archived name'", self.html)
+        self.assertIn("senderInfoMessage.sender_name ? 'Name when this message was sent'", self.html)
         self.assertIn("getCurrentSenderName(senderInfoMessage) ? 'Latest known name' : 'Name'", self.html)
         self.assertIn("hasDifferentCurrentSenderName(senderInfoMessage)", self.html)
         self.assertIn("senderInfoMessage.sender_id ?? 'Unknown'", self.html)
@@ -307,7 +307,7 @@ def test_message_versions_trigger_is_plain_text():
     assert "</svg>edited\n" in button
     assert "edited · {{ msg.version_count }}" not in button
     assert "kept. Open edit history" in button
-    assert 'class="hit-40 order-2' in button
+    assert 'class="meta-edited hit-40 order-2' in button
     assert "earlier ${Number(msg.version_count) === 1 ? 'version' : 'versions'}" in button
     assert ":aria-label=" in button
 
@@ -333,7 +333,7 @@ def test_versions_can_open_without_edit_date_when_count_exists():
 
     assert 'v-if="Number(msg.version_count) > 0"' in html
     assert 'v-if="msg.edit_date && Number(msg.version_count) > 0"' not in html
-    assert ":title=\"formatMetadataTimestampTitle('Edited', msg.edit_date)\"" in html
+    assert ':title="editedTitle(msg)"' in html
 
 
 def test_message_versions_ignore_stale_load_responses():
@@ -361,12 +361,22 @@ def test_message_status_badges_show_timestamps_on_hover():
     """Edited/deleted status badges should expose their event timestamps on hover."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    edited_title = ":title=\"formatMetadataTimestampTitle('Edited', msg.edit_date)\""
-    deleted_title = ":title=\"formatMetadataTimestampTitle('Deleted', msg.deleted_at)\""
+    # One helper per mark: the deletion's own time (never the send time the
+    # time beside it shows), and for an edit whether earlier versions exist.
+    edited_title = ':title="editedTitle(msg)"'
+    deleted_title = ':title="deletedTitle(msg)"'
     assert edited_title in html
     assert deleted_title in html
     assert html.index(deleted_title) < html.index(edited_title)
-    assert '<span v-else-if="msg.is_deleted" class="meta-deleted order-1 inline-flex items-center gap-1"' in html
+    assert '<span v-else-if="isBubbleDeleted(msg)" class="meta-deleted order-1 inline-flex items-center gap-1"' in html
+    deleted = html[html.index("const deletedTitle = (msg) =>") :]
+    deleted = deleted[: deleted.index("\n                }\n")]
+    assert "formatStamp(member.deleted_at)" in deleted
+    assert "The archive kept it." in deleted
+    edited = html[html.index("const editedTitle = (msg) =>") :]
+    edited = edited[: edited.index("\n                }\n")]
+    assert "Click to see them." in edited
+    assert "The archive did not see the earlier text." in edited
     # The time's own tooltip carries the full date, the edit and the deletion.
     assert '<span v-else class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
     start = html.index("const messageTimeTitle = (msg) =>")
@@ -375,7 +385,7 @@ def test_message_status_badges_show_timestamps_on_hover():
     assert "formatMetadataTimestampTitle('Deleted', msg.deleted_at)" in body
     assert "earlier ${versions === 1 ? 'version' : 'versions'} kept" in body
     assert "const formatMetadataTimestampTitle = (label, dateStr) =>" in html
-    assert "`${label} ${formatDateFull(dateStr)} ${formatTime(dateStr)}`" in html
+    assert "`${label} ${formatStamp(dateStr)}`" in html
 
 
 def test_message_versions_use_drawer_not_inline_panel():
@@ -710,7 +720,7 @@ def test_chat_wallpaper_is_a_theme_token_not_a_per_render_style_read():
     assert "background-color: var(--tg-service-bg);" in html
     assert "color: var(--tg-service-fg);" in html
     assert 'style="background: var(--tg-service-bg); color: var(--tg-service-fg);"' in html
-    assert '<span class="pane-note">Beginning of chat history</span>' in html
+    assert '<span class="pane-note">Nothing older in the archive</span>' in html
     # Nothing may keep the hardcoded fills those tokens replaced.
     assert "background: rgba(0,0,0,0.3)" not in html
     assert "background-color: rgb(var(--tg-sidebar) / 0.85)" not in html
@@ -874,7 +884,7 @@ def test_unseen_message_badge_tracks_background_arrivals():
     # Button shows for the badge even before the distance threshold (and always
     # while a detached jump window is pinned), with an aria-label.
     assert 'v-if="showScrollToBottom || unseenMessageCount > 0 || viewingPinnedWindow"' in html
-    assert "' new message(s) — scroll to latest'" in html
+    assert "new ${unseenMessageCount === 1 ? 'message' : 'messages'}. Scroll to the latest`" in html
 
 
 def test_reaction_ws_case_patches_message_reactions():
@@ -958,19 +968,24 @@ def test_newer_sentinel_and_live_tail_transition_are_independent():
     assert "newestMessageId = null" in reset_body
 
 
-def test_flatpickr_month_select_has_dark_native_colors():
-    """The native Flatpickr month select and its options must remain readable in dark mode."""
+def test_flatpickr_month_is_static_text_not_a_native_select():
+    """The calendar draws its own month header: Flatpickr's month select is off
+    (monthSelectorType static), so no style for that select is left behind."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert ".flatpickr-monthDropdown-months {" in html
+    assert "monthSelectorType: 'static'," in html
+    assert ".flatpickr-monthDropdown-months" not in html
+    assert ".flatpickr-monthDropdown-month" not in html
     assert "color-scheme: dark;" in html
-    assert ".flatpickr-monthDropdown-month {" in html
-    assert "background: rgb(var(--tg-hover)) !important;" in html
-    assert "color: rgb(var(--tg-text)) !important;" in html
 
 
 def test_date_picker_fetches_month_availability_and_marks_days():
-    """Calendar open/month/year changes fetch availability and decorate, never disable, dates."""
+    """Calendar open/month/year changes fetch availability and decorate, never disable, dates.
+
+    A day with messages is marked in ink and a day without is greyed, but every
+    day up to today stays selectable: a jump to an empty day lands on the next
+    message, and a failed check leaves every day open.
+    """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert "const calendarAvailabilityCache = new Map()" in html
@@ -983,7 +998,11 @@ def test_date_picker_fetches_month_availability_and_marks_days():
     assert "loadCalendarAvailability(instance.currentYear, instance.currentMonth)" in html
     assert "onDayCreate:" in html
     assert "calendar-available-date" in html
-    assert "calendar-availability-dot" in html
+    # Ink for a day with messages, muted for one without: no dots, and no day
+    # closed by the availability check.
+    assert "calendar-availability-dot" not in html
+    assert "dayElem.classList.add('calendar-empty-date')" in html
+    assert "dayElem.classList.add('flatpickr-disabled'" not in html
     assert "dayElem.setAttribute('aria-label'" in html
     assert "dayElem.title =" in html
     assert "disable:" not in html[html.index("flatpickr(datePickerInput.value") : html.index("const closeDatePicker")]
@@ -1125,26 +1144,32 @@ def test_date_picker_dialog_accessibility_and_mobile_calendar():
     assert '<button type="button" @click="openDatePicker(msg.date)"' in html
     assert 'role="dialog" aria-modal="true" aria-labelledby="date-picker-title"' in html
     assert 'id="date-picker-title"' in html
-    assert 'aria-label="Close date picker"' in html
+    # No text field and no Jump button: one click on a day jumps; Cancel closes.
+    assert '<button type="button" @click="closeDatePicker()" class="tg-text-btn">Cancel</button>' in html
     assert 'aria-label="Date to jump to"' in html
     assert "disableMobile: true" in html
     # Open in the dialog under the date field, never a popup over its buttons.
     assert "inline: true," in html
     assert "appendTo: datePickerCalendarHost.value" in html
-    assert '<div ref="datePickerCalendarHost" class="date-picker-calendar"></div>' in html
+    assert '<div v-show="!calendarMonthView" ref="datePickerCalendarHost" class="date-picker-calendar"></div>' in html
+    # The month's name opens the year's months, so a far year is a few clicks away.
+    assert '@click="toggleCalendarMonthView()"' in html
+    assert '@click="pickCalendarMonth(cell.index)"' in html
 
     handler_start = html.index("const handleDatePickerKeydown = (event) =>")
     handler_body = html[handler_start : html.index("const openDatePicker", handler_start)]
     assert "event.key === 'Escape'" in handler_body
-    assert "event.key !== 'Tab'" in handler_body
-    assert "datePickerDialog.value.querySelectorAll" in handler_body
+    # Shift+Page Up/Down steps a year; the Tab trap is the shared one.
+    assert "if (event.shiftKey) stepCalendarYear(delta)" in handler_body
+    assert "cycleTabWithin(datePickerDialog.value, event)" in handler_body
     assert "event.preventDefault()" in handler_body
 
     open_start = html.index("const openDatePicker = (initialDate) =>")
     open_body = html[open_start : html.index("const closeDatePicker", open_start)]
     assert "document.activeElement instanceof HTMLElement" in open_body
     assert "document.addEventListener('keydown', handleDatePickerKeydown)" in open_body
-    assert "datePickerInput.value?.focus()" in open_body
+    # Focus lands on the day itself, where the arrow keys move.
+    assert "focusCalendarDay()" in open_body
 
     close_start = html.index("const closeDatePicker = (invalidateJump = true) =>")
     close_body = html[close_start : html.index("const jumpToDate", close_start)]
@@ -1168,7 +1193,7 @@ def test_calendar_status_deduplicates_requests_and_fails_open_visibly():
     assert "let calendarAvailabilityActiveKey = null" in html
     assert 'v-if="calendarAvailabilityLoading" role="status" aria-live="polite"' in html
     assert 'v-else-if="calendarAvailabilityError" role="status" aria-live="polite"' in html
-    assert "Availability unavailable; all dates remain selectable." in html
+    assert "Could not check which days have messages" in html
 
     availability_start = html.index("const loadCalendarAvailability = async (year, month) =>")
     availability_body = html[availability_start : html.index("const handleDatePickerKeydown", availability_start)]
@@ -1179,10 +1204,7 @@ def test_calendar_status_deduplicates_requests_and_fails_open_visibly():
     assert "calendarAvailabilityActiveKey !== cacheKey" in availability_body
     assert "calendarAvailabilityLoading.value = true" in availability_body
     assert "calendarAvailabilityLoading.value = false" in availability_body
-    assert (
-        "calendarAvailabilityError.value = 'Availability unavailable; all dates remain selectable.'"
-        in availability_body
-    )
+    assert "calendarAvailabilityError.value = 'Could not check which days have messages'" in availability_body
     assert "disable:" not in html[html.index("flatpickr(datePickerInput.value") : html.index("const closeDatePicker")]
 
 
@@ -1244,16 +1266,20 @@ def test_date_separators_are_not_individually_sticky():
     assert "position: sticky" not in separator_css
 
     # ...and no other rule may reintroduce per-day stickiness in the message
-    # list. The two sticky boxes in the page are the phone sheet's grab bar and
-    # the What changed day pill, which sticks inside its own day's section of
-    # the feed, not in the message list.
-    assert html.count("position: sticky") == 2
-    grab_bar = html[html.index("html .popover-sheet::before {") :]
-    grab_bar = grab_bar[: grab_bar.index("}")]
-    assert "position: sticky" in grab_bar
-    day_pill = html[html.index(".change-day-pill {") :]
-    day_pill = day_pill[: day_pill.index("}")]
-    assert "position: sticky" in day_pill
+    # list. The sticky boxes in the page are the phone sheet's grab bar, the
+    # What changed day pill (inside its own day's section of the feed), the
+    # sidebar's back row over Archived Chats and topics, and the filter row
+    # over the admin chat checklist. None is in the message list.
+    assert html.count("position: sticky") == 4
+    for selector in (
+        "html .popover-sheet::before {",
+        ".change-day-pill {",
+        ".list-back-row {",
+        ".admin-checklist-head {",
+    ):
+        rule = html[html.index(selector) :]
+        rule = rule[: rule.index("}")]
+        assert "position: sticky" in rule, selector
 
 
 def test_floating_date_pill_is_a_single_element_outside_the_scroller():
@@ -1344,7 +1370,7 @@ def test_sender_details_dialog_shows_a_large_avatar():
 
     # Big circle, above the definition list.
     assert "w-20 h-20 rounded-full" in body
-    assert body.index("w-20 h-20 rounded-full") < body.index('<dl class="mt-4 space-y-3 text-sm">')
+    assert body.index("w-20 h-20 rounded-full") < body.index('<div class="tg-dialog-body mt-2">')
 
     # Same photo the message row resolved, with a fallback on load failure.
     assert 'v-if="senderInfoMessage.sender_avatar_url"' in body
@@ -1355,7 +1381,7 @@ def test_sender_details_dialog_shows_a_large_avatar():
     assert "getAvatarFill(senderInfoMessage)" in body
 
     # Decorative only: it must not become a focusable child of the dialog's Tab trap.
-    avatar = body[body.index("w-20 h-20 rounded-full") : body.index('<dl class="mt-4 space-y-3 text-sm">')]
+    avatar = body[body.index("w-20 h-20 rounded-full") : body.index('<div class="tg-dialog-body mt-2">')]
     assert "<button" not in avatar
     assert "<a " not in avatar
 
@@ -3856,7 +3882,8 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
     def test_the_specific_spans_reported_in_267(self) -> None:
         self.assertIn('<span v-if="msg.media?.duration" class="whitespace-nowrap">', self.bubble)
         self.assertIn('<span v-if="isCurrentAudioMessage(msg)" class="text-tg-quote whitespace-nowrap">', self.bubble)
-        self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>', self.bubble)
+        self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">', self.bubble)
+        self.assertIn("playback off for this login</span>", self.bubble)
 
     def test_the_filename_span_keeps_its_own_protection(self) -> None:
         """``truncate`` implies nowrap; the duration span never had either."""
@@ -4641,7 +4668,7 @@ class TestAudioBubbleDownload(unittest.TestCase):
     def test_duration_is_rendered_once(self) -> None:
         """#263: duration already exists on the bubble — no duplicate element."""
         bubble = self._audio_bubble()
-        self.assertEqual(bubble.count("formatAudioTime(msg.media.duration)"), 1)
+        self.assertEqual(bubble.count("formatDuration(msg.media.duration)"), 1)
 
 
 class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
@@ -4707,7 +4734,7 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
             "<div class=\"voice-title truncate\">{{ msg.media?.type === 'voice' ? 'Voice message' : getDocumentDisplayName(msg) }}</div>",
             bubble,
         )
-        self.assertIn("{{ formatFileSize(msg.media.file_size) }}", bubble)
+        self.assertIn("{{ formatBytes(msg.media.file_size) }}", bubble)
 
 
 def test_gif_observer_watcher_is_shallow_and_ordered():
@@ -4988,53 +5015,78 @@ class TestStatsPopupMediaRows(unittest.TestCase):
 def test_the_two_media_rows_hide_only_when_the_figure_is_absent():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert html.count('v-if="statsData.media_files != null"') == 1
-    assert html.count('v-if="statsData.total_size_mb != null"') == 1
+    # Statistics' "Media on disk" and the Media row of Archive status's Disk use.
+    assert html.count('v-if="statsData.total_size_mb != null"') == 2
 
 
 @unittest.skipIf(NODE is None, "node executable is not installed")
-class TestFormatSizeSubMiB(unittest.TestCase):
-    """Storage row and per-chat badge: a measured figure, never a placeholder.
+class TestFormatBytes(unittest.TestCase):
+    """Every size in the viewer, as Telegram labels storage: B, KB, MB, GB, TB.
 
-    Under 1 MiB in whole KiB (a few KiB of media must not read as "0 MiB" or
-    "<1 MiB"), one decimal up to 10 MiB, whole MiB up to 1 GiB, then GiB and TiB.
+    Base 1024. Under 10 of a unit one decimal, from 10 up whole, and the tier
+    is chosen on the ROUNDED figure, so a figure never reads "1024 KB". A few
+    KB never read as "0 MB". Zero reads "0 B"; an unknown size reads nothing,
+    never "0 B", which would be a false fact about the file.
     """
 
     def test_each_tier_reads_as_measured(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
         out = _run_setup_helpers(
             html,
-            ("const formatSize = (sizeMB, exactBytes) =>",),
-            "[[0], [0.29], [0.5], [1.6], [9.96], [12.3], [1023.7], [1536], [3 * 1024 * 1024],"
-            " [0, 0], [0, 512], [0, 1048371], [2, 1677722]].map(args => formatSize(...args))",
+            ("const formatCount = (n) =>", "const formatBytes = (bytes) =>"),
+            "[0, null, 812, 1023.6, 1024, 10035, 476774, 1048371, 1677722, 10444000, 25165824, 1073741824 * 1.5,"
+            " 3 * 1024 ** 4].map(formatBytes)",
         )
         self.assertEqual(
             out,
             [
-                "0 KiB",
-                "297 KiB",
-                "512 KiB",
-                "1.6 MiB",
-                # Rounds up into the next tier instead of reading "10.0 MiB".
-                "10 MiB",
-                "12 MiB",
-                "1.0 GiB",
-                "1.5 GiB",
-                "3.00 TiB",
-                # The exact byte count wins over the rounded MiB figure.
-                "0 KiB",
-                "<1 KiB",
-                "1.0 MiB",
-                "1.6 MiB",
+                "0 B",
+                "",
+                "812 B",
+                # Rounds up into the next tier instead of reading "1024 B".
+                "1.0 KB",
+                "1.0 KB",
+                "9.8 KB",
+                "466 KB",
+                "1.0 MB",
+                "1.6 MB",
+                # 9.96 MB rounds to 10: whole, "10 MB", never "10.0 MB".
+                "10 MB",
+                "24 MB",
+                "1.5 GB",
+                "3.0 TB",
             ],
         )
+
+    def test_counts_keep_every_digit(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        out = _run_setup_helpers(
+            html,
+            ("const formatCount = (n) =>",),
+            "[0, 7, 1234, 12345, 1234567, null].map(formatCount)",
+        )
+        self.assertEqual(out, ["0", "7", "1,234", "12,345", "1,234,567", "0"])
+        self.assertNotIn("const formatNumber", html)
+        self.assertNotIn("KiB", html)
+        self.assertNotIn("MiB", html)
+
+    def test_durations_read_like_the_apps(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        out = _run_setup_helpers(
+            html,
+            ("const formatDuration = (seconds) =>",),
+            "[0, 14, 723, 3765, null, -3].map(formatDuration)",
+        )
+        self.assertEqual(out, ["0:00", "0:14", "12:03", "1:02:45", "0:00", "0:00"])
+        self.assertNotIn("formatAudioTime", html)
 
     def test_the_chat_figures_carry_the_exact_bytes(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
         self.assertIn(
-            ':title="formatBytesTitle(chatStats.total_size_bytes)">{{ formatSize(chatStats.total_size_mb, chatStats.total_size_bytes) }}',
+            ':title="formatBytesTitle(chatStats.total_size_bytes)">{{ formatBytes(chatStats.total_size_bytes ?? (chatStats.total_size_mb || 0) * 1048576) }}',
             html,
         )
-        self.assertNotIn("'<1 MiB'", html)
+        self.assertIn("`${formatCount(bytes)} bytes`", html)
 
 
 # ---------------------------------------------------------------------------
@@ -5103,7 +5155,10 @@ def test_bubble_account_chip_shows_when_several_archived_accounts_speak():
     assert "chatAccountLabels(selectedChat.value).length > 1" not in html
     assert "if (row.sender_account_id != null) ids.add(row.sender_account_id)" in html
     assert "bubbleAccountIds.value.size > 1 ? senderAccountLabel(msg) : ''" in html
-    assert '<span v-if="bubbleAccountLabel(msg)" class="account-chip">' in html
+    # Incoming: at the name row's far end; outgoing: in the meta row, like a
+    # channel signature.
+    assert '<span v-if="bubbleAccountLabel(msg)" class="sender-account">' in html
+    assert '<span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2">' in html
     assert '<span v-if="senderAccountLabel(msg)" class="account-chip">' not in html
 
 
@@ -5151,7 +5206,7 @@ def test_reply_quote_is_reachable_from_the_keyboard():
 
 
 def test_deleted_text_stays_readable():
-    """A deleted message keeps its text colour; a wash of the danger colour and the meta row mark it.
+    """A deleted message keeps its text colour; a faint wash of the deleted colour and the meta row mark it.
 
     No ring round the whole bubble (it read as an error or a selection) and no
     bar down its start edge (it curled into the corner and cut the tail off).
@@ -5159,7 +5214,8 @@ def test_deleted_text_stays_readable():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "{ 'opacity-50': msg.is_deleted }" not in html
     assert "message-text-deleted" not in html
-    assert "msg.is_deleted ? 'is-deleted' : ''" in html
+    # An album's caption bubble takes the mark when any of its pictures was deleted.
+    assert "isBubbleDeleted(msg) ? 'is-deleted' : ''" in html
     rule = html[html.index(".message-bubble.is-deleted {") :]
     rule = rule[: rule.index("}")]
     assert (
@@ -5170,8 +5226,14 @@ def test_deleted_text_stays_readable():
     # error or a selection. A dark palette takes a stronger wash instead.
     assert "--tg-deleted-edge" not in html
     assert "box-shadow" not in rule
-    assert html.count("--tg-deleted-wash: rgb(248 113 113 / 0.12);") == 7
-    assert html.count("--tg-deleted-wash: rgb(185 28 28 / 0.07);") == 4
+    # The wash is the calm deleted colour, not the danger one, 6% on the light
+    # palettes. A pale wash lifted a dark bubble, so a deleted message stood out more
+    # than a live one: the dark palettes take a dark, saturated red that keeps
+    # the fill's lightness (a stronger one over AMOLED's near-black).
+    assert html.count("--tg-deleted-wash: rgb(122 46 46 / 0.16);") == 6
+    assert html.count("--tg-deleted-wash: rgb(90 30 30 / 0.3);") == 1
+    assert html.count("--tg-deleted-wash: rgb(163 58 47 / 0.06);") == 4
+    assert "--tg-deleted-wash: rgb(255 154 143" not in html
     assert "inset 0 0 0 1.5px" not in html
     assert "--tg-deleted-bar" not in html
     assert ".message-meta .meta-deleted {" in html
@@ -5246,9 +5308,9 @@ def test_search_hits_take_the_chat_rows_peer_colour():
 
 
 def test_header_popovers_are_a_bottom_sheet_on_phones():
-    """On a phone the theme, stats and account menus (and More actions) span the screen instead of running off its edge."""
+    """On a phone the main menu, More actions and the What changed filter span the screen instead of running off its edge."""
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert html.count('class="popover-sheet ') == 4
+    assert html.count('class="popover-sheet ') == 3
     sheet = html[html.index("        @media (max-width: 767px) {\n            html .popover-sheet {") :]
     sheet = sheet[: sheet.index("\n        }\n")]
     for rule in ("position: fixed;", "left: 0;", "right: 0;", "bottom: 0;", "max-height: 70vh;", "var(--sab)"):
@@ -5279,11 +5341,17 @@ def test_archive_figures_use_one_icon_set_not_emoji():
     html = INDEX_HTML.read_text(encoding="utf-8")
     for emoji in ("📊", "💬 Chats", "📬", "🖼️ Media", "💾"):
         assert emoji not in html, emoji
-    assert html.count('class="stats-row"') >= 2
     assert "stats-inline" not in html
-    # Messages, media, disk use, oldest, and the two kept-changes rows.
-    assert html.count('class="info-row"') == 6
-    assert 'aria-label="Archive"' in html
+    # Statistics and "In the archive" share one row shape (.tg-row): a stroked
+    # icon, the label, the figure.
+    stats = html[html.index("<template v-else-if=\"mainMenuPage === 'stats'\">") :]
+    stats = stats[: stats.index("</template>")]
+    assert stats.count('<div class="tg-row"><svg') == 2
+    assert stats.count('class="tg-row"><svg') == 4
+    assert html.count('<div v-if="chatStats.deleted_messages > 0" class="tg-row">') == 1
+    assert ".info-row" not in html
+    assert 'aria-labelledby="info-archive-title"' in html
+    assert ">In the archive</h4>" in html
 
 
 # ---------------------------------------------------------------------------
@@ -5371,7 +5439,8 @@ def test_a_jump_marks_its_target_in_the_selection_colour():
 
 def test_a_failed_load_does_not_look_like_loading():
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert html.count('class="pane-note is-error"') == 2
+    # The chat's two, the feed's, the edit history's and Archive status's.
+    assert html.count('class="pane-note is-error"') == 5
     assert ".pane-note.is-error {" in html
     start = html.index('@click="retryNewerMessages"')
     assert "min-h-[40px]" in html[start : html.index(">", start)]
@@ -5379,10 +5448,15 @@ def test_a_failed_load_does_not_look_like_loading():
 
 def test_the_info_panel_counts_what_the_archive_kept():
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert '<div v-if="chatStats.deleted_messages > 0" class="info-row">' in html
-    assert '<div v-if="chatStats.edited_messages > 0" class="info-row">' in html
-    status = html[html.index('<span v-if="infoPanelMessage.is_deleted"') :]
-    assert "bg-tg-danger/15 text-tg-danger-fg" in status[: status.index("</span>")]
+    assert '<div v-if="chatStats.deleted_messages > 0" class="tg-row">' in html
+    assert '<div v-if="chatStats.edited_messages > 0" class="tg-row">' in html
+    # The message's deletion is a fact in the calm deleted colour, never a red pill.
+    status = html[html.index('<div v-if="infoPanelMessage.is_deleted" class="tg-fact">') :]
+    status = status[: status.index("</div>\n                            </div>")]
+    assert "text-tg-deleted" in status
+    assert "The archive kept this message." in status
+    aside = html[html.index('<aside v-if="showInfoPanel && selectedChat" id="info-panel"') :]
+    assert "bg-tg-danger/15" not in aside[: aside.index("</aside>")]
 
 
 def test_search_fields_keep_16px_and_40px_on_a_phone():
@@ -5501,7 +5575,10 @@ def test_pictures_open_from_the_keyboard():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert '<button type="button" class="album-item media-open' in html
     assert 'class="media-open cursor-pointer hover:opacity-90 transition"' in html
-    assert 'aria-label="Open photo" @click="openMedia(msg)"' in html
+    assert (
+        ":aria-label=\"isBubbleDeleted(msg) ? 'Open photo, deleted in Telegram' : 'Open photo'\" @click=\"openMedia(msg)\""
+        in html
+    )
     assert 'class="media-open aspect-square relative cursor-pointer group overflow-hidden"' in html
     ring = html[html.index(".media-open:focus-visible::after {") :]
     assert "inset 0 0 0 3px rgb(var(--tg-focus))" in ring[: ring.index("}")]
@@ -5539,9 +5616,11 @@ def test_folder_tabs_carry_no_count_that_reads_as_unread():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert '<span class="folder-tab-count">{{ folder.chat_count }}</span>' not in html
     assert ":title=\"`${folder.chat_count} ${folder.chat_count === 1 ? 'chat' : 'chats'}`\"" in html
-    # An empty Shared Media tab stays in place, greyed out, unless it is the open one.
-    assert ':disabled="mediaGalleryCounts[tab.id] === 0 && mediaGalleryTab !== tab.id"' in html
-    assert ".folder-tab:disabled {" in html
+    # An empty Shared Media tab is left out, unless it is the open one, and
+    # a count shows only when it is not 0.
+    assert "mediaTabs.filter(tab => mediaGalleryCounts.value[tab.id] !== 0 || tab.id === mediaGalleryTab.value)" in html
+    assert '<button v-for="tab in galleryTabs"' in html
+    assert '<span v-if="mediaGalleryCounts[tab.id]" class="folder-tab-count">' in html
 
 
 def test_what_changed_has_its_own_glyph_and_an_unseen_dot():
@@ -5552,7 +5631,7 @@ def test_what_changed_has_its_own_glyph_and_an_unseen_dot():
     assert 'd="M22 12h-4l-3 9L9 3l-3 9H2"' in button
     assert "M3 12a9 9 0 1 0 9-9" not in button
     assert '<span v-if="changesUnseen" class="changes-dot" aria-hidden="true"></span>' in button
-    opener = html[html.index("const openChangesFeed = () => {") :]
+    opener = html[html.index("const openChangesFeed = (fromMenu = false) => {") :]
     assert opener[: opener.index("\n                }")].count("markChangesSeen()") == 1
 
 

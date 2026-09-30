@@ -17,6 +17,12 @@ Telegram Archive backs up one or more Telegram accounts to a machine you host. I
 
 ![Telegram Archive viewer](https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-desktop.png)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/chat-mobile.png" alt="A group chat on a phone" width="250">
+  <img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/deleted-mobile.png" alt="Messages deleted in Telegram, kept and marked" width="250">
+  <img src="https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/docs/images/screenshots/what-changed-mobile.png" alt="What changed: deletions, edits and transcripts" width="250">
+</p>
+
 ## Features
 
 - Scheduled incremental backups, with an optional real-time listener for new messages, edits and deletions.
@@ -24,7 +30,7 @@ Telegram Archive backs up one or more Telegram accounts to a machine you host. I
 - Keeps earlier versions of edited messages, and keeps deleted messages marked as deleted. The real-time listener or the scheduled edit and deletion sync records both.
 - Several Telegram accounts in one archive.
 - Imports from Telegram Desktop exports.
-- A web viewer with search, forum topics, folders, a media gallery, and eleven themes plus a Match system setting.
+- A web viewer that looks like Telegram, with search, forum topics, folders, a media gallery, a What changed feed of deletions, edits and transcripts, and eleven themes plus a Match system setting.
 - Extra viewer accounts, share links that open only chosen chats, and browser notifications for new messages.
 - Optional voice transcription.
 - SQLite by default, or PostgreSQL.

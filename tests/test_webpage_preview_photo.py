@@ -242,4 +242,7 @@ class TestViewerTemplate(unittest.TestCase):
         template = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
         html = template.read_text(encoding="utf-8")
         self.assertIn("msg.media?.type === 'webpage' && msg.media?.file_path", html)
-        self.assertIn("msg.media?.type !== 'webpage' && !getExtendedMediaChip(msg)", html)
+        # The placeholder never stands in for a link card's picture or an
+        # extended-media chip: the card and the chip are the whole rendering.
+        self.assertIn("if (!media?.type || media.type === 'webpage') return null", html)
+        self.assertIn("if (!media.file_path && getExtendedMediaChip(msg)) return null", html)

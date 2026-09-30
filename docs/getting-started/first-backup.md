@@ -37,7 +37,7 @@ Open the viewer while the backup runs. You will see the following:
 - Chats appear in the list as they are written. The list does not refresh on its own, so reload the page to pick up new chats.
 - The open chat checks for new messages every 3 seconds, so you can watch a chat fill up.
 - The statistics dropdown (the chart icon) in the sidebar header shows cached totals and a **Backup in progress** marker from the last page load. On a new archive the totals show what the viewer saw when it started. The run recalculates them when it finishes. Reload the page to see the new totals or a change in the marker.
-- Only the master login sees the [Archive Status](../viewer/using-the-viewer.md#archive-status) panel.
+- Only the master login sees [Archive status](../viewer/using-the-viewer.md#archive-status), in the viewer's main menu.
 
 For a full tour of the viewer, see [Using the viewer](../viewer/using-the-viewer.md).
 
@@ -50,7 +50,7 @@ docker compose ps
 The backup container reports `healthy` while the scheduler is running.
 
 !!! warning "Healthy does not mean the backup worked"
-    The health check only proves the process runs. Read the logs and the Archive Status panel to confirm the backup. See [Backup container](../operations/troubleshooting.md#backup-container).
+    The health check only proves the process runs. Read the logs and Archive status to confirm the backup. See [Backup container](../operations/troubleshooting.md#backup-container).
 
 ## After the first run
 

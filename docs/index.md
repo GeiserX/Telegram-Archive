@@ -52,7 +52,21 @@ hide:
 
 The viewer looks and works like the Telegram app, with the archive behind it. See [Using the viewer](viewer/using-the-viewer.md).
 
-![A group chat open in the viewer, with a pinned message, a photo and reactions](images/screenshots/chat-desktop.png)
+=== "Desktop"
+
+    ![A group chat open in the viewer, with a pinned message, a photo and reactions](images/screenshots/chat-desktop.png)
+
+=== "Phone"
+
+    ![The same group chat on a phone](images/screenshots/chat-mobile.png){ width="300" }
+
+=== "Telegram Night"
+
+    ![The same group chat in Telegram Night](images/screenshots/chat-desktop-night.png)
+
+What Telegram no longer shows, the archive keeps and marks: a message deleted in Telegram stays with its text, and What changed lists every deletion, edit and new transcript. See [Deleted messages](viewer/using-the-viewer.md#deleted-messages) and [What changed](viewer/using-the-viewer.md#what-changed).
+
+![A deleted text and a deleted photo, each marked in a calm colour](images/screenshots/deleted-desktop.png)
 
 ## What it saves
 

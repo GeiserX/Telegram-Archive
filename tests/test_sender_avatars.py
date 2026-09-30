@@ -313,8 +313,8 @@ class TestPeerColourContrast(unittest.TestCase):
 
     def test_a_deleted_bubble_stays_readable(self):
         """The deleted wash keeps every text pair drawn straight on the bubble at
-        4.5:1: the text, the time, links and the poll's figures, and the red
-        "deleted" marker. The tinted boxes inside a deleted bubble are drawn over
+        4.5:1: the text, the time, links and the poll's figures, and the
+        "deleted" mark in the side's calm deleted colour. The tinted boxes inside a deleted bubble are drawn over
         the plain fill (see test_deleted_boxes_skip_the_wash), so their pairs are
         the ones test_bubble_text_pairs_read_on_both_sides measures."""
         for name, tokens in self.palettes.items():
@@ -322,7 +322,12 @@ class TestPeerColourContrast(unittest.TestCase):
             for side in ("in", "out"):
                 for fill in self._fills(tokens, side):
                     washed = _over(wash, wash_alpha, fill)
-                    for token in (f"--tg-text-{side}", f"--tg-meta-{side}", f"--tg-quote-{side}", "--tg-danger-fg"):
+                    for token in (
+                        f"--tg-text-{side}",
+                        f"--tg-meta-{side}",
+                        f"--tg-quote-{side}",
+                        f"--tg-deleted-fg-{side}",
+                    ):
                         self._check(name, f"{token} on the deleted {side} bubble", _triplet(tokens[token]), washed)
                     # The reaction count is the side's text colour on the reaction tint.
                     reaction = self._tinted(tokens, f"--tg-reaction-bg-{side}", fill)
@@ -341,6 +346,63 @@ class TestPeerColourContrast(unittest.TestCase):
         wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
         washed = _over(wash, wash_alpha, fill)
         self.assertLess(_contrast(quote, self._tinted(tokens, "--tg-quote-bg-in", washed)), 4.5)
+
+    def test_the_switch_reads_on_the_panel(self):
+        """A switch is a non-text control: 3:1 against the panel it sits on. Off
+        is a ring and a thumb in n400, on is the track in --tg-switch-on."""
+        for name, tokens in self.palettes.items():
+            panel = _triplet(tokens["--tg-sidebar"])
+            self._check(name, "switch off ring on the panel", _triplet(tokens["--tg-n400"]), panel, 3.0)
+            self._check(name, "switch on track on the panel", _triplet(tokens["--tg-switch-on"]), panel, 3.0)
+            # A ticked box or radio (the What changed filter, the admin
+            # checklists) uses the same colour, and its white check sits on it.
+            self._check(name, "check mark on a ticked box", panel, _triplet(tokens["--tg-switch-on"]), 3.0)
+
+    def test_ticked_boxes_and_radios_use_the_switch_colour(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        for selector in (
+            '[aria-checked="true"] > .tg-check {',
+            '[aria-checked="true"] > .tg-radio {',
+            ".admin-checkbox {",
+        ):
+            rule = html[html.index(selector) :]
+            rule = rule[: rule.index("}")]
+            assert "--tg-switch-on" in rule, selector
+            assert "--tg-accent-strong" not in rule, selector
+
+    def test_the_edit_history_marks_stay_readable(self):
+        """Added words keep the side's text colour on the green tint; removed
+        words take the time colour on the faint red tint."""
+        for name, tokens in self.palettes.items():
+            for side in ("in", "out"):
+                for fill in self._fills(tokens, side):
+                    added = self._tinted(tokens, "--tg-diff-ins-bg", fill)
+                    removed = self._tinted(tokens, "--tg-diff-del-bg", fill)
+                    self._check(name, f"text-{side} on the added tint", _triplet(tokens[f"--tg-text-{side}"]), added)
+                    self._check(
+                        name, f"meta-{side} on the removed tint", _triplet(tokens[f"--tg-meta-{side}"]), removed
+                    )
+
+    def test_a_missing_file_reason_reads_in_a_deleted_bubble(self):
+        """A placeholder in a deleted bubble is drawn over the plain fill, like the
+        other boxes, so its reason line (the time colour on the quote tint) is
+        the pair measured on a live bubble. The amber reason of a file missing
+        from the disk reads on the same tint."""
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        rule = html[html.index(".message-bubble.is-deleted .media-placeholder,") :]
+        rule = rule[: rule.index("}")]
+        assert "linear-gradient(var(--tg-quote-bg), var(--tg-quote-bg)), rgb(var(--tg-bubble-fill))" in rule
+        for name, tokens in self.palettes.items():
+            for side in ("in", "out"):
+                fill = self._bubble(tokens, side)
+                tint = self._tinted(tokens, f"--tg-quote-bg-{side}", fill)
+                self._check(name, f"meta-{side} on the placeholder", _triplet(tokens[f"--tg-meta-{side}"]), tint)
+                if side == "in":
+                    self._check(name, "warning on the in placeholder", _triplet(tokens["--tg-warning"]), tint)
+                # The amber disc against the tint, and its glyph on it.
+                disc = _triplet(tokens["--tg-warning"])
+                self._check(name, f"amber disc on the {side} placeholder", disc, tint, 3.0)
+                self._check(name, "glyph on the amber disc", _triplet(tokens["--tg-warning-bg"]), disc, 3.0)
 
     def test_the_floating_pill_reads_over_any_content(self):
         """The floating date passes over photos and bubbles: its text is measured
@@ -417,8 +479,17 @@ class TestPeerColourContrast(unittest.TestCase):
             on_accent = _triplet(tokens["--tg-on-accent"])
             self._check(name, "on-accent on accent-strong", on_accent, _triplet(tokens["--tg-accent-strong"]))
             self._check(name, "on-accent on accent-hover", on_accent, _triplet(tokens["--tg-accent-hover"]))
-            chip_bg = self._tinted(tokens, "--tg-account-chip-bg", _triplet(tokens["--tg-sidebar"]))
-            self._check(name, "account chip", _triplet(tokens["--tg-account-chip-fg"]), chip_bg)
+            # Account tags: the colour on its own 10% fill, over the panel and
+            # over a hovered row.
+            for index in range(7):
+                tag = _triplet(tokens[f"--tg-tag-{index}"])
+                for surface in ("--tg-sidebar", "--tg-hover"):
+                    self._check(name, f"tag {index} on {surface}", tag, _over(tag, 0.10, _triplet(tokens[surface])))
+            # The deleted mark outside a bubble: search hits, the info panel.
+            for surface in ("--tg-sidebar", "--tg-hover"):
+                self._check(
+                    name, f"deleted-fg on {surface}", _triplet(tokens["--tg-deleted-fg"]), _triplet(tokens[surface])
+                )
             chip_active_bg = self._tinted(tokens, "--tg-account-chip-active-bg", active)
             self._check(name, "account chip on the selected row", _triplet(tokens["--tg-active-text"]), chip_active_bg)
             # A hovered chat row lifts its second line to text-dim and its accent to accent-bright.
@@ -444,14 +515,41 @@ class TestPeerColourContrast(unittest.TestCase):
             well = _triplet(tokens["--tg-n700"])
             self._check(name, "n300 chip text on n700", _triplet(tokens["--tg-n300"]), well)
             self._check(name, "n400 chip text on n700", _triplet(tokens["--tg-n400"]), well)
-            # The deleted status chip and the pane's error pill.
+            # The login error's box and the pane's error pill.
             danger_chip = _over(_triplet(tokens["--tg-danger"]), 0.15, _triplet(tokens["--tg-sidebar"]))
-            self._check(name, "danger-fg on the deleted chip", _triplet(tokens["--tg-danger-fg"]), danger_chip)
+            self._check(name, "danger-fg on its tinted box", _triplet(tokens["--tg-danger-fg"]), danger_chip)
             self._check(
                 name,
                 "warning-fg on warning-bg",
                 _triplet(tokens["--tg-warning-fg"]),
                 _triplet(tokens["--tg-warning-bg"]),
+            )
+
+    def test_the_archive_surfaces_read(self):
+        """The surfaces only an archive has: a media placeholder's two lines on
+        the side's quote tint, a file's extension on its disc, the shown-once
+        token panel, and the tags and deleted mark on the selected row."""
+        for name, tokens in self.palettes.items():
+            for side in ("in", "out"):
+                for fill in self._fills(tokens, side):
+                    tint = self._tinted(tokens, f"--tg-quote-bg-{side}", fill)
+                    self._check(
+                        name, f"placeholder type on the {side} tint", _triplet(tokens[f"--tg-text-{side}"]), tint
+                    )
+                    self._check(
+                        name, f"placeholder reason on the {side} tint", _triplet(tokens[f"--tg-meta-{side}"]), tint
+                    )
+            self._check(
+                name,
+                "file extension on its disc",
+                _triplet(tokens["--tg-accent-soft"]),
+                _triplet(tokens["--tg-accent-dim"]),
+            )
+            self._check(
+                name,
+                "success-fg on success-bg",
+                _triplet(tokens["--tg-success-fg"]),
+                _triplet(tokens["--tg-success-bg"]),
             )
 
     def test_the_selected_row_ring_is_its_text_colour(self):

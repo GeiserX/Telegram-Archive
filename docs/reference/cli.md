@@ -169,7 +169,7 @@ telegram-archive [--data-dir PATH] status [--json]
 |-------|------|----------|----------|---------|
 | | `--json` | | no | Print the status as JSON instead of text. |
 
-Says whether the archive is healthy, for a cron job or a monitoring check. It reads the database directly, so the viewer does not need to run and no viewer login is needed. It reports what the master login's [Archive Status panel](../viewer/using-the-viewer.md#archive-status) shows, except transcription: the last backup run, the listener of each Telegram account, the media counts, when the statistics were last calculated, and the database backend and size. It prints counts and times only, never chat ids, titles or text.
+Says whether the archive is healthy, for a cron job or a monitoring check. It reads the database directly, so the viewer does not need to run and no viewer login is needed. It reports what the master login's [Archive status](../viewer/using-the-viewer.md#archive-status) page shows, except transcription: the last backup run, the listener of each Telegram account, the media counts, when the statistics were last calculated, and the database backend and size. It prints counts and times only, never chat ids, titles or text.
 
 The archive is unhealthy when one of these holds:
 
@@ -318,7 +318,7 @@ telegram-archive [--data-dir PATH] reclassify-round-videos [-c CHAT_ID] [--dry-r
 
 Archives captured before 8.5.0 stored round video messages as ordinary videos. This command asks Telegram which archived videos are round, with one filtered search per chat, and changes the type of those rows in place. Nothing is downloaded, renamed or deleted.
 
-Run it while nobody has the viewer open. An open tab shows `Media not found` for a changed video until you reload the tab.
+Run it while nobody has the viewer open. An open tab shows `missing from the archive disk` for a changed video until you reload the tab.
 
 It prints:
 

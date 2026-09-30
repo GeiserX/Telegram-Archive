@@ -4,9 +4,9 @@ This page shows how to pick a colour theme in the viewer, set a default theme fo
 
 ## Pick a theme
 
-Click the palette button in the sidebar header. A list opens with **Match system** at the top and the eleven themes below it. Click one and the viewer switches to it at once. Each row shows a tiny chat: the theme's background with a message from someone else at the top left and one of your own at the bottom right. The one for Match system is split on the diagonal between the two themes it can show, and its row says which one it shows now. On a phone the list opens as a sheet, with the themes two to a row.
+Open the main menu, the three lines at the top of the sidebar, and click **Theme**. Its row names the theme you use now. A list opens in the menu with **Match system** at the top and the eleven themes below it. Click one and the viewer switches to it at once. Each row shows a tiny chat: the theme's background with a message from someone else at the top left and one of your own at the bottom right. The one for Match system is split on the diagonal between the two themes it can show, and its row says which one it shows now. The back arrow returns to the menu. On a phone the menu opens as a sheet, with the themes two to a row.
 
-![Theme picker open from the palette button](../images/screenshots/theme-picker.png)
+![The Theme page of the main menu](../images/screenshots/theme-picker.png)
 
 ## The themes
 

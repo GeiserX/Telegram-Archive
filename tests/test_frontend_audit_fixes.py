@@ -197,6 +197,12 @@ const mediaGalleryLoading = ref(false);
 const mediaGalleryHasMore = ref(true);
 const mediaGalleryCounts = ref({});
 let mediaGalleryRequestSeq = 0;
+// The follow-up look for a sentinel still in view is not under test here.
+let mediaGalleryEmptyPages = 0;
+const mediaGalleryError = ref(false);
+const galleryShownCount = () => mediaGalleryItems.value.length;
+const nextTick = fn => Promise.resolve().then(fn);
+const loadMoreMediaIfInView = () => {};
 const toasts = [];
 const showToast = message => { toasts.push(message); };
 const console = { error: () => {} };
@@ -267,6 +273,12 @@ const mediaGalleryLoading = ref(false);
 const mediaGalleryHasMore = ref(true);
 const mediaGalleryCounts = ref({});
 let mediaGalleryRequestSeq = 0;
+// The follow-up look for a sentinel still in view is not under test here.
+let mediaGalleryEmptyPages = 0;
+const mediaGalleryError = ref(false);
+const galleryShownCount = () => mediaGalleryItems.value.length;
+const nextTick = fn => Promise.resolve().then(fn);
+const loadMoreMediaIfInView = () => {};
 const showToast = () => {};
 const console = { error: () => {} };
 const requests = [];
@@ -1207,12 +1219,22 @@ def test_media_error_placeholder_is_rendered_by_vue_not_written_into_the_dom() -
     assert "innerHTML" not in _without_comments(handler)
     assert "msg.mediaLoadFailed = true" in handler
 
-    # ...and the placeholder is a real branch of the template.
+    # ...and the placeholder is a real branch of the template: one shared
+    # placeholder the flag selects (mediaPlaceholder), which the media block
+    # gives way to, and the player itself is drawn only while the flag is off.
+    assert '<template v-for="ph in [mediaPlaceholder(msg)]"' in html
+    assert "const missing = !!media.file_path && !!msg.mediaLoadFailed" in html
+    # An album draws its grid whatever its first picture's file says: a
+    # missing first picture takes its own tile, beside its archived siblings.
+    assert "(msg.media?.file_path && !msg.mediaLoadFailed) || isFirstInAlbum(msg, index)" in html
     video_block = html[html.index("<!-- Videos - click to open in lightbox -->") :]
     video_block = video_block[: video_block.index("<!-- Stickers")]
-    assert 'v-if="msg.mediaLoadFailed"' in video_block
-    assert "<template v-else>" in video_block
-    assert video_block.index('v-if="msg.mediaLoadFailed"') < video_block.index("<video")
+    assert '<template v-if="!msg.mediaLoadFailed">' in video_block
+    assert video_block.index('<template v-if="!msg.mediaLoadFailed">') < video_block.index("<video")
+    # A broken picture takes the same route: a flag, never a picture drawn into the <img>.
+    image_handler = _extract_const_arrow_function(html, "handleImageError", asynchronous=False)
+    assert "msg.mediaLoadFailed = true" in image_handler
+    assert "data:image/svg+xml" not in image_handler
 
     # The handler must flag the row and touch nothing else (the stub throws on a write).
     script = "\n".join(
@@ -1316,6 +1338,8 @@ const ref = value => ({ value });
 // Loaders address and guard by the chat's opaque ref, not its id.
 const selectedChat = ref({ ref: 'ref-111' });
 const chatStats = ref(null);
+// The info panel's "Could not load the archive figures" flag.
+const chatStatsFailed = ref(false);
 const console = { error: () => {} };
 """,
             _STALE_PANEL_FETCH_STUB,
@@ -1363,6 +1387,7 @@ const console = { error: () => {} };
     fail(4);
     await flush();
     assert.equal(chatStats.value, null, 'a live network error no longer clears the header');
+    assert.equal(chatStatsFailed.value, true, 'the panel says the figures failed, with a retry');
 
     // A stale HTTP failure must not blank the header either.
     loadChatStats('ref-333');
@@ -1624,3 +1649,108 @@ const fetch = async (url) => { calls.push(`fetch:${url}`); return { ok: true }; 
     )
 
     _run_node(script)
+
+
+def test_admin_settings_takes_focus_and_gives_it_back() -> None:
+    """Opened from the main menu, the row that opened Admin settings is gone:
+    the dialog focuses its heading, and on closing focus goes to the menu
+    button. Escape is heard at document level, not only inside the scrim."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    dialog = html[html.index('aria-labelledby="admin-title"') :]
+    dialog = dialog[: dialog.index("<!-- Tabs -->")]
+    assert 'id="admin-title" ref="adminHeading" tabindex="-1"' in dialog
+    scrim = html[html.index('<div v-if="showAdminPanel"') :]
+    scrim = scrim[: scrim.index(">")]
+    assert "@keydown.escape" not in scrim
+    watcher = html[html.index("watch(showAdminPanel, (open) => {") :]
+    watcher = watcher[: watcher.index("\n                })\n")]
+    assert "document.addEventListener('keydown', handleAdminKeydown)" in watcher
+    assert "nextTick(() => adminHeading.value?.focus())" in watcher
+    assert "document.removeEventListener('keydown', handleAdminKeydown)" in watcher
+    assert "else mainMenuButton.value?.focus()" in watcher
+    assert "                    adminHeading,\n" in html
+
+
+def test_enter_in_a_chat_filter_never_submits_the_admin_form() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    filters = re.findall(r'<input v-model="adminChatFilter"[^>]*>', html)
+    assert len(filters) == 2
+    for field in filters:
+        assert "@keydown.enter.prevent" in field
+
+
+def test_escape_in_admin_settings_clears_a_filter_and_keeps_a_form() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+class Element { constructor(inForm) { this.inForm = inForm; } closest(sel) { return sel === '.admin-form' && this.inForm ? {} : null; } }
+class HTMLInputElement extends Element { constructor(type, value, inForm) { super(inForm); this.type = type; this.value = value; } }
+const document = { querySelector: () => null };
+const showAdminPanel = ref(true);
+const confirmState = ref(null);
+const adminChatFilter = ref('hik');
+const cycleTabWithin = () => {};
+const escape = target => ({ key: 'Escape', target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+""",
+            _extract_const_arrow_function(html, "handleAdminKeydown", asynchronous=False),
+            """
+handleAdminKeydown(escape(new HTMLInputElement('search', 'hik', true)));
+assert.equal(adminChatFilter.value, '', 'Escape in a filled filter clears it');
+assert.equal(showAdminPanel.value, true, 'and keeps the dialog');
+
+handleAdminKeydown(escape(new HTMLInputElement('search', '', true)));
+assert.equal(showAdminPanel.value, true, 'a half-built form survives Escape');
+
+handleAdminKeydown(escape(new HTMLInputElement('password', 'pw1', true)));
+assert.equal(showAdminPanel.value, true, 'a typed password survives Escape');
+
+confirmState.value = { title: 'Delete?' };
+handleAdminKeydown(escape(new Element(false)));
+assert.equal(showAdminPanel.value, true, 'the confirm dialog on top owns Escape');
+confirmState.value = null;
+
+handleAdminKeydown(escape(new Element(false)));
+assert.equal(showAdminPanel.value, false, 'Escape outside a form closes the dialog');
+""",
+        ]
+    )
+    _run_node(script)
+
+
+def test_tag_view_takes_focus_and_escape_closes_it_from_anywhere() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    scrim = html[html.index('<div v-if="tagView"') :]
+    scrim = scrim[: scrim.index(">")]
+    assert "@keydown.escape" not in scrim
+    assert 'id="tag-view-title" ref="tagViewTitle" tabindex="-1"' in html
+    watcher = html[html.index("watch(() => !!tagView.value, (open) => {") :]
+    watcher = watcher[: watcher.index("\n                })\n")]
+    assert "document.addEventListener('keydown', handleTagViewKeydown)" in watcher
+    assert "nextTick(() => tagViewTitle.value?.focus())" in watcher
+
+
+def test_the_changes_feed_does_not_crawl_for_a_filter_that_shows_nothing() -> None:
+    """With every kind unticked nothing loads; a rare kind stops loading on its
+    own after three pages in a row that add nothing, and "Load older" goes on."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert '<div v-if="changesNextBefore && changesAnyKind" ref="changesSentinel"' in html
+    look = html[html.index("const loadMoreChangesIfInView = () => {") :]
+    look = look[: look.index("\n                }\n")]
+    assert "if (!changesAnyKind.value || changesAutoPaused.value) return" in look
+    assert "const CHANGES_EMPTY_AUTO_PAGES = 3" in html
+    assert '@click="loadMoreChangesByHand"' in html
+
+
+def test_the_gallery_keeps_a_way_to_load_more_on_screen() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    sentinel = html[html.index('ref="mediaGallerySentinel"') :]
+    sentinel = sentinel[: sentinel.index("</div>")]
+    assert ">Load more</button>" in sentinel
+    assert "Could not load more. Retry" in sentinel
+    loader = html[html.index("const loadMediaGallery = async") :]
+    loader = loader[: loader.index("const loadMediaCounts")]
+    assert "nextTick(loadMoreMediaIfInView)" in loader

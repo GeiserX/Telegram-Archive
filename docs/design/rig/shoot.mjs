@@ -13,7 +13,9 @@
 // (prefers-color-scheme) before every navigation.
 //
 // Credentials come from VIEWER_USERNAME and VIEWER_PASSWORD, with the demo
-// defaults admin and demo-not-a-secret.
+// defaults admin and demo-not-a-secret. The share-link view opens the demo's
+// share link (DEMO_SHARE_TOKEN in scripts/generate_dummy_db.py), or
+// SHARE_TOKEN when set.
 
 import { createRequire } from 'node:module'
 import { mkdirSync, readFileSync } from 'node:fs'
@@ -46,6 +48,7 @@ const CSS = args.css && args.css !== 'none' ? readFileSync(resolve(args.css), 'u
 const ONLY = args.only ? new Set(args.only.split(',').map((s) => s.trim().padStart(2, '0'))) : null
 const USER = process.env.VIEWER_USERNAME || 'admin'
 const PASS = process.env.VIEWER_PASSWORD || 'demo-not-a-secret'
+const SHARE_TOKEN = process.env.SHARE_TOKEN || 'demo-share-link-not-a-secret'
 const GROUP = 'Weekend Hikers'
 mkdirSync(OUT, { recursive: true })
 
@@ -118,11 +121,44 @@ async function centerOn(page, text, block = 'center') {
         el.scrollIntoView({ block: b })
         if (b === 'start') el.closest('.messages-scroll')?.scrollBy(0, -24)
     }, block)
-    await page.waitForTimeout(400)
+    // The floating day fades 1.2 s after the last scroll; a picture of a chat
+    // at rest shows it gone, as a reader sees it.
+    await page.waitForTimeout(1400)
+}
+
+// Scrolled up, the list shows the jump-to-latest button over its bottom right
+// corner, as Telegram does. For a picture, move the list a little (up to 160px
+// back towards the album) until no bubble's time sits under the button.
+async function clearOfScrollButton(page) {
+    for (let step = 0; step <= 20; step++) {
+        const covered = await page.evaluate(() => {
+            const button = document.querySelector('.scroll-to-bottom-btn')
+            if (!button) return false
+            const b = button.getBoundingClientRect()
+            return [...document.querySelectorAll('.message-meta')].some((meta) => {
+                const m = meta.getBoundingClientRect()
+                return m.right > b.left - 4 && m.left < b.right + 4 && m.bottom > b.top - 4 && m.top < b.bottom + 4
+            })
+        })
+        if (!covered) break
+        await page.locator('.messages-scroll').first().evaluate((el) => el.scrollBy(0, -8))
+        await page.waitForTimeout(50)
+    }
+    await page.waitForTimeout(1400)
+}
+
+// A headless browser answers "denied" for notifications whatever it is
+// granted, so the main menu would read "Blocked in the browser settings" in
+// every picture. The pages see the answer of a browser that said yes.
+async function allowNotifications(context) {
+    await context.addInitScript(() => {
+        try { Object.defineProperty(Notification, 'permission', { get: () => 'granted' }) } catch (e) { /* ignore */ }
+    })
 }
 
 async function newContext(browser, profile) {
     const context = await browser.newContext({ ...profile, reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US' })
+    await allowNotifications(context)
     // The transcription nudge only shows on a fresh browser with no server set;
     // dismissing it keeps every view on the chat itself.
     await context.addInitScript(() => {
@@ -141,18 +177,76 @@ async function newContext(browser, profile) {
 
 async function openChangesFeed(page) {
     await open(page)
-    await page.getByRole('button', { name: 'What changed' }).click()
+    await page.getByRole('button', { name: 'What changed', exact: true }).click()
     await page.locator('#changes-feed-title').waitFor({ state: 'visible', timeout: 10000 })
-    await page.getByRole('combobox', { name: 'Time window' }).selectOption('')
+    // Every period, so the whole demo feed shows.
+    await page.getByRole('button', { name: 'Filter What changed' }).click()
+    await page.getByRole('radio', { name: 'All time' }).click()
+    await page.keyboard.press('Escape')
+    // Escape hands focus back to the filter button; its ring is not part of the view.
+    await page.evaluate(() => document.activeElement?.blur())
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
     await page.waitForTimeout(400)
 }
 
-async function openStatusPanel(page) {
+// The main menu, and one of the pages it opens in place (Statistics, Theme,
+// Archive status).
+async function openMainMenu(page, row = null) {
     await open(page)
-    await page.getByRole('button', { name: 'Backup statistics' }).click()
-    await page.getByRole('group', { name: 'Backup statistics' }).waitFor({ state: 'visible', timeout: 10000 })
-    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: 'Main menu' }).click()
+    await page.locator('.main-menu').waitFor({ state: 'visible', timeout: 10000 })
+    if (row) {
+        await page.locator('.main-menu .tg-row').filter({ hasText: row }).first().click()
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+    }
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(400)
+}
+
+async function openStatusPanel(page) {
+    await openMainMenu(page, 'Statistics')
+    await page.getByRole('group', { name: 'Statistics' }).last().waitFor({ state: 'visible', timeout: 10000 })
+}
+
+// Media the archive does not show: one of each reason, in one private chat.
+async function openMediaMissing(page) {
+    await open(page)
+    await page.locator('.cursor-pointer h3').filter({ hasText: 'Orson Quill' }).first().click()
+    await page.locator('.media-placeholder').first().waitFor({ state: 'visible', timeout: 20000 })
+    await centerOn(page, 'The panorama from the top', 'start')
+}
+
+// A forum's topics in the sidebar, with one topic open.
+async function openTopics(page) {
+    await open(page)
+    await page.locator('.cursor-pointer h3').filter({ hasText: 'Maker Space' }).first().click()
+    await page.locator('.chat-row').filter({ hasText: 'Woodworking' }).first().waitFor({ state: 'visible', timeout: 15000 })
+    await page.locator('.chat-row').filter({ hasText: 'Events' }).first().click()
+    await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 20000 })
+    await settle(page)
+}
+
+async function openAdmin(page) {
+    await openMainMenu(page, 'Admin settings')
+    await page.locator('#admin-title').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForTimeout(400)
+}
+
+// The transcript in each state: two versions, no speech, and a failure.
+async function openTranscripts(page) {
+    await open(page)
+    await page.locator('.cursor-pointer h3').filter({ hasText: 'Juniper Vale' }).first().click()
+    await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 20000 })
+    const buttons = page.locator('.message-row .transcript-btn:not(.transcript-btn--overlay)')
+    for (let i = 0; i < await buttons.count(); i++) {
+        const button = buttons.nth(i)
+        if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click()
+        await page.waitForTimeout(200)
+    }
+    const dismiss = page.getByRole('button', { name: 'Dismiss' })
+    if (await dismiss.count()) await dismiss.first().click()
+    await page.mouse.move(0, 0)
+    await centerOn(page, 'The trail map is on the fridge', 'center')
 }
 
 async function openEditHistory(page) {
@@ -260,12 +354,7 @@ const desktopViews = {
         await btn.evaluate((el) => el.closest('.message-row').scrollIntoView({ block: 'center' }))
         await page.waitForTimeout(400)
     },
-    '09-theme-picker': async (page) => {
-        await open(page)
-        await openGroup(page)
-        await page.getByRole('button', { name: 'Choose color theme' }).click()
-        await page.waitForTimeout(300)
-    },
+    '09-theme-picker': (page) => openMainMenu(page, 'Theme'),
     '10-changes-feed': (page) => openChangesFeed(page),
     '11-status-panel': (page) => openStatusPanel(page),
     '12-edit-history': (page) => openEditHistory(page),
@@ -274,6 +363,12 @@ const desktopViews = {
     '15-deleted': (page) => openDeleted(page),
     '16-archived-chats': (page) => openArchivedChats(page),
     '17-date-picker': (page) => openDatePicker(page),
+    '18-archive-status': (page) => openMainMenu(page, 'Archive status'),
+    '19-main-menu': (page) => openMainMenu(page),
+    '20-media-missing': (page) => openMediaMissing(page),
+    '21-topics': (page) => openTopics(page),
+    '22-admin': (page) => openAdmin(page),
+    '24-transcripts': (page) => openTranscripts(page),
 }
 
 const mobileViews = {
@@ -281,6 +376,7 @@ const mobileViews = {
         await open(page)
         await openGroup(page)
         await centerOn(page, 'A few shots from the ridge loop', 'start')
+        await clearOfScrollButton(page)
     },
     '05-chat-list-mobile': async (page) => {
         await open(page)
@@ -293,12 +389,37 @@ const mobileViews = {
     '15-deleted-mobile': (page) => openDeleted(page),
     '16-archived-chats-mobile': (page) => openArchivedChats(page),
     '17-date-picker-mobile': (page) => openDatePicker(page),
+    '19-main-menu-mobile': (page) => openMainMenu(page),
+    '20-media-missing-mobile': (page) => openMediaMissing(page),
 }
 
-async function run(browser, profile, views) {
+// A share-link session: its own browser, opened through the link, so the
+// menu names it "Shared link" and downloads are off.
+const shareViews = {
+    '23-share-view': async (page) => {
+        await page.goto(`${BASE}/?theme=${encodeURIComponent(args.theme || 'telegram')}#token=${encodeURIComponent(SHARE_TOKEN)}`, { waitUntil: 'load' })
+        await page.getByText(GROUP, { exact: true }).first().waitFor({ state: 'visible', timeout: 30000 })
+        await openGroup(page)
+        await centerOn(page, 'Found this view on the way back')
+        await page.getByRole('button', { name: 'Main menu' }).click()
+        await page.mouse.move(0, 0)
+        await page.waitForTimeout(400)
+    },
+}
+
+async function run(browser, profile, views, signIn = true) {
     const wanted = Object.entries(views).filter(([name]) => !ONLY || ONLY.has(name.slice(0, 2)))
     if (!wanted.length) return
-    const context = await newContext(browser, profile)
+    let context
+    if (signIn) {
+        context = await newContext(browser, profile)
+    } else {
+        context = await browser.newContext({ ...profile, reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US' })
+        await allowNotifications(context)
+        await context.addInitScript(() => {
+            try { localStorage.setItem('transcriptNudgeDismissed', '1') } catch (e) { /* ignore */ }
+        })
+    }
     try {
         for (const [name, view] of wanted) {
             const page = await newPage(context)
@@ -321,6 +442,7 @@ const browser = await chromium.launch({ headless: true })
 try {
     await run(browser, DESKTOP, desktopViews)
     await run(browser, MOBILE, mobileViews)
+    await run(browser, DESKTOP, shareViews, false)
 } finally {
     await browser.close()
 }

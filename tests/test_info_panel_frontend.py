@@ -40,7 +40,8 @@ const selectedChat = ref({ ref: 'c1', type: 'group', id: -100123 });
 const userRole = ref('master');
 const albums = new Map();
 const getAlbumForMessage = msg => albums.get(msg.id) || null;
-const formatFileSize = bytes => `${bytes} B`;
+const formatBytes = bytes => `${bytes} B`;
+const formatCount = n => Number(n || 0).toLocaleString('en-US');
 const isDeletedChat = chat => !!chat.deleted;
 const getMediaUrl = msg => msg.media?.url || '';
 const formatDuration = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -94,15 +95,16 @@ assert.equal(chatStatusLine({ type: 'group', participants_count: 1 }), '1 member
 assert.equal(chatStatusLine({ type: 'channel', participants_count: 20000 }), '20,000 subscribers');
 assert.equal(chatStatusLine({ type: 'channel', participants_count: null }), 'private channel');
 assert.equal(chatStatusLine({ type: 'private', username: 'x' }), 'private chat');
-selectedChat.value = { type: 'private' }; assert.equal(infoPanelTitle.value, 'User Info');
-selectedChat.value = { type: 'group' }; assert.equal(infoPanelTitle.value, 'Group Info');
-selectedChat.value = { type: 'supergroup' }; assert.equal(infoPanelTitle.value, 'Group Info');
-selectedChat.value = { type: 'channel' }; assert.equal(infoPanelTitle.value, 'Channel Info');
-selectedChat.value = { type: 'weird' }; assert.equal(infoPanelTitle.value, 'Chat Info');
+selectedChat.value = { type: 'private' }; assert.equal(infoPanelTitle.value, 'User info');
+selectedChat.value = { type: 'group' }; assert.equal(infoPanelTitle.value, 'Group info');
+selectedChat.value = { type: 'supergroup' }; assert.equal(infoPanelTitle.value, 'Group info');
+selectedChat.value = { type: 'channel' }; assert.equal(infoPanelTitle.value, 'Channel info');
+selectedChat.value = { type: 'weird' }; assert.equal(infoPanelTitle.value, 'Chat info');
 assert.equal(mediaSummaryLine({ mime_type: 'image/jpeg', file_size: 10, width: 4, height: 3 }), 'image/jpeg · 10 B · 4 × 3');
-assert.equal(mediaSummaryLine({ type: 'photo' }), 'photo');
-assert.equal(mediaSummaryLine({ type: 'video', file_size: 0 }), 'video · 0 B');
-assert.equal(mediaSummaryLine({ type: 'video', duration: 754, file_size: 9 }), 'video · 12:34 · 9 B', 'duration leads, as the apps show it');
+assert.equal(mediaSummaryLine({ type: 'photo' }), 'Photo', 'the type in words');
+assert.equal(mediaSummaryLine({ type: 'video', file_size: 0 }), 'Video · 0 B');
+assert.equal(mediaSummaryLine({ type: 'video', duration: 754, file_size: 9 }), 'Video · 12:34 · 9 B', 'duration leads, as the apps show it');
+assert.equal(mediaSummaryLine({ type: 'document', mime_type: 'application/pdf', file_size: 9 }), 'application/pdf · 9 B', 'the MIME type for a document only');
 
 // Long descriptions fold; the fold resets with the chat.
 selectedChat.value = { ref: 'a', type: 'group', description: 'short' };

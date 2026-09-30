@@ -10,13 +10,13 @@ With `ALLOW_ANONYMOUS_VIEWER=true` and no other login method set, every visitor 
 
 The saved data: the media folder and session files under the data directory, plus the database, which is a file in that directory on SQLite and a separate PostgreSQL volume otherwise. The backup writes it and the viewer reads it. The product itself is called Telegram Archive. See [Backing up the archive](../operations/backup-and-restore.md#where-everything-lives).
 
-## Archive Status panel
+## Archive status
 
-A panel in the viewer that only the master login can open, through the account menu at the top of the sidebar. It has rows for the backup, one listener per Telegram account, the media pipeline, statistics, transcription and the database. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+A page of the viewer's main menu that only the master login can open. It says whether everything runs, then has sections for the backup, live sync per Telegram account, media, transcription, the database and the statistics. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 ## Audit log
 
-The record of logins, failed logins, logouts, share-token logins and admin changes, kept in the database. The master login reads it under **Admin Settings > Audit Log**. Ordinary reads of chats are not logged. See [The audit log](../viewer/access.md#the-audit-log).
+The record of logins, failed logins, logouts, share-token logins and admin changes, kept in the database. The master login reads it under **Admin settings > Activity**. Ordinary reads of chats are not logged. See [The audit log](../viewer/access.md#the-audit-log).
 
 ## The backup
 
@@ -72,11 +72,11 @@ A per-chat rate limit on edits and deletions applied by the real-time listener. 
 
 ## Master login
 
-The `VIEWER_USERNAME` and `VIEWER_PASSWORD` credentials, and the session opened with them. It has the master role, which can do everything, including Admin Settings and the Archive Status panel. A proxy user listed in `AUTH_PROXY_ADMIN_USERS` gets the same role. See [The master login](../viewer/access.md#the-master-login).
+The `VIEWER_USERNAME` and `VIEWER_PASSWORD` credentials, and the session opened with them. It has the master role, which can do everything, including Admin settings and Archive status. A proxy user listed in `AUTH_PROXY_ADMIN_USERS` gets the same role. See [The master login](../viewer/access.md#the-master-login).
 
 ## No-download login
 
-A viewer account or share token with **No Downloads** ticked. It can read messages, but media files, thumbnails, exports and transcripts answer HTTP 403, and files show `Not available for this login`. See [No-download logins](../viewer/access.md#no-download-logins).
+A viewer account or share token with downloads off. It can read messages, but media files, thumbnails, exports and transcripts answer HTTP 403, and files show `hidden for this login`. See [No-download logins](../viewer/access.md#no-download-logins).
 
 ## One client per session
 
@@ -116,7 +116,7 @@ The URL of the form `https://<host>/#token=<token>` that carries a share token. 
 
 ## Share token
 
-A 64-character secret the master login creates under **Admin Settings > Share Tokens**, bound to a fixed set of chats. It can carry a label, an expiry and **No Downloads**, and its sessions get the `token` role. See [Share links](../viewer/access.md#share-links).
+A 64-character secret the master login creates under **Admin settings > Share tokens**, bound to a fixed set of chats. It can carry a label, an expiry and downloads off, and its sessions get the `token` role. See [Share links](../viewer/access.md#share-links).
 
 ## Sync pass
 
@@ -132,7 +132,7 @@ The web app that reads the archive and serves it to browsers. It never contacts 
 
 ## Viewer account
 
-A login stored in the database with the viewer role, limited to the Telegram accounts and chats granted to it. The master login creates it under **Admin Settings > Viewer Accounts**, or the viewer creates it on first visit for a proxy user who is not an admin. See [Viewer accounts](../viewer/access.md#viewer-accounts).
+A login stored in the database with the viewer role, limited to the Telegram accounts and chats granted to it. The master login creates it under **Admin settings > Viewers**, or the viewer creates it on first visit for a proxy user who is not an admin. See [Viewer accounts](../viewer/access.md#viewer-accounts).
 
 ## Viewer session
 

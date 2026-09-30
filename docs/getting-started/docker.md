@@ -27,7 +27,7 @@ To limit growth, use `MAX_MEDIA_SIZE_MB`, `DOWNLOAD_MEDIA_TYPES`, `DOWNLOAD_DOCU
 
 To see how much space you use, pick one:
 
-- In the viewer, signed in with the master login, open the Stats dropdown or the Archive Status panel.
+- In the viewer, signed in with the master login, open the main menu, then Statistics or Archive status.
 - Run `docker compose exec telegram-backup python -m telegram_archive stats`.
 - Run `du -sh data/backups/media` on the host.
 
