@@ -2359,6 +2359,8 @@ class DatabaseAdapter:
         limit: int = 50,
         scope: ChatScope | None = None,
         with_transcripts: bool = True,
+        chat_id: int | None = None,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """The what-changed feed: deletions, edits and transcripts the archive captured.
 
@@ -2383,6 +2385,19 @@ class DatabaseAdapter:
         row, the same compiled rules as the chat list — a restricted viewer's
         feed touches only their rows. Hard deletions cannot appear: their
         content no longer exists (DELETION_MODE=soft is what feeds this).
+
+        ``chat_id`` with ``account_id`` narrows the feed to the chat a ref
+        names. For a channel or a group that is the chat itself, every copy the
+        scope allows: an event exists only in the copy whose listener was up
+        when it happened, so narrowing to the ref's own copy would drop the
+        events only another account captured, which the feed of every chat
+        lists. Each event is still listed once, under the lowest entitled copy
+        that holds it. A ref to a private chat narrows to the ref's own
+        account, since its id is the other party's user id and names a
+        different conversation in each account, whatever type another
+        account's copy of that id carries. It narrows, never widens: ``scope``
+        still applies, and the caller resolves the ref under the same scope
+        first.
         """
         per_stream = max(1, min(int(limit), 200))
 
@@ -2463,6 +2478,29 @@ class DatabaseAdapter:
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
                     transcript_stmt = transcript_stmt.where(predicate)
+            if chat_id is not None:
+                deleted_stmt = deleted_stmt.where(Message.chat_id == chat_id)
+                edited_stmt = edited_stmt.where(MessageVersion.chat_id == chat_id)
+                transcript_stmt = transcript_stmt.where(Message.chat_id == chat_id)
+            if chat_id is not None and account_id is not None:
+                # Only a private chat's id collides across accounts, so only
+                # there does the ref's account pick the conversation. The
+                # REF's type decides, not each row's: another account's copy
+                # of the same id may be typed otherwise (an HTML-export import
+                # stores "unknown"), and it is still another conversation.
+                ref_type = await session.scalar(
+                    select(Chat.type).where(Chat.account_id == account_id, Chat.id == chat_id)
+                )
+                if ref_type == PRIVATE_CHAT_TYPE:
+                    deleted_stmt = deleted_stmt.where(Message.account_id == account_id)
+                    edited_stmt = edited_stmt.where(MessageVersion.account_id == account_id)
+                    transcript_stmt = transcript_stmt.where(Message.account_id == account_id)
+                else:
+                    # Every non-private copy of a channel or group stays in,
+                    # and the deduplication below lists each event once.
+                    deleted_stmt = deleted_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    edited_stmt = edited_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    transcript_stmt = transcript_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -2532,6 +2570,9 @@ class DatabaseAdapter:
                 select(literal(1)).where(*lower_transcript_match).correlate(MediaTranscript, lower_media).exists(),
             ]
 
+            # A feed narrowed to one chat runs the check too: every copy of a
+            # shared chat is inside that filter, so the lower copy an event
+            # defers to is listed, and a private chat is exempt anyway.
             deleted_stmt = deleted_stmt.where(
                 self._event_not_already_listed(
                     scope, lower_rows=lower_deleted, lower_chat=lower_deleted_chat, event_match=deleted_duplicate

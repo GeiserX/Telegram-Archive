@@ -159,7 +159,7 @@ To see every edited message of a chat, open **More actions** and choose **Edited
 
 === "The menu"
 
-    ![More actions with Deleted messages and Edited messages, each with its count](../images/screenshots/edited-menu.png)
+    ![More actions with Deleted messages and Edited messages, each with its count, then What changed in this chat, Export chat and Expand all transcripts](../images/screenshots/edited-menu.png)
 
 ### Deleted messages
 
@@ -187,7 +187,7 @@ To see every deletion of a chat, open **More actions**, the three dots in the ch
 
 === "The menu"
 
-    ![More actions with Deleted messages and its count](../images/screenshots/deleted-menu.png)
+    ![More actions with Deleted messages and Edited messages, each with its count, then What changed in this chat, Export chat and Expand all transcripts](../images/screenshots/deleted-menu.png)
 
 === "Deleted only"
 
@@ -338,6 +338,8 @@ The list button with a small clock in the sidebar header opens **What changed**,
 The feed lists deletions, edits and new voice transcripts, newest first, grouped by day. Each entry is a line such as "Deleted in Weekend Hikers · 17:57" over the message, drawn as a bubble with its sender's name. The line always names the chat; for a private chat that is the other person, even when they sent the message. A deleted message carries its deleted mark. An edited one shows its earlier text as a quote above the current text, and with more than one earlier version, a button that opens the edit history. A transcript shows its text under a recording row. Click a bubble to open the message in its chat, or the chat's name to open the chat. Older entries load as you reach the end.
 
 The filter button in the feed's header picks what to show, **Deleted**, **Edited** and **Transcripts**, and the period: **Last 24 hours**, **Last 7 days**, **Last 30 days** or **All time**. The browser remembers both. With nothing ticked, nothing loads. When few entries match, the feed stops loading by itself after three pages that add nothing, and **Load older** carries on. [No-download logins](access.md#no-download-logins) see no transcripts.
+
+To see what changed in one chat, open **More actions** in the chat header and choose **What changed in this chat**, under **Edited messages**. On a phone, use the **What changed in this chat** row of the chat's info panel. The feed opens with the chat as a pressed chip under its header and lists only that chat's deletions, edits and transcripts, with the same filter. For a channel or group that more than one account holds, it lists what any of those accounts captured, each change once, the same entries the feed for every chat shows for it. A private chat lists only the conversation of the account you opened it from. The chip's cross widens the feed back to every chat. The **Deleted messages** and **Edited messages** rows of the info panel and of **More actions** keep opening the chat's own **Deleted only** and **Edited only** modes, which show each message in the chat around it and let the search narrow them; **What changed in this chat** is the way to the feed. The sidebar button and the main menu always open it for every chat. The dot and the main menu's count clear only when you read the feed for every chat.
 
 === "Desktop"
 

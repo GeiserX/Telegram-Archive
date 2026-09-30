@@ -3541,6 +3541,19 @@
             height: 13px;
             opacity: 0.85;
         }
+        /* What changed's chat chip: a chat's name can be long, so the chip
+           yields and the name ends in an ellipsis; the cross always shows. */
+        .changes-chat-chip {
+            flex-shrink: 1;
+            min-width: 0;
+            max-width: 70%;
+        }
+        .changes-chat-chip-title {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .deleted-filter-count {
             min-width: 0;
             overflow: hidden;
@@ -6784,6 +6797,18 @@
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
                         </button>
                     </div>
+                    <!-- Narrowed to one chat (from its menu or info panel): the chat as
+                         a pressed chip, the way the chat search shows "Deleted only".
+                         Its cross widens the feed back to every chat. -->
+                    <div v-if="changesChat" class="deleted-filter-bar" role="group" aria-label="Chat filter">
+                        <button type="button" class="deleted-filter-chip changes-chat-chip" aria-pressed="true" @click="widenChangesFeed"
+                            :aria-label="`Only ${changesChat.title}. Show every chat`" title="Show every chat">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            <bdi class="changes-chat-chip-title">{{ changesChat.title }}</bdi>
+                            <svg class="deleted-filter-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                        </button>
+                        <span class="deleted-filter-count">This chat only</span>
+                    </div>
                     <div class="chat-wallpaper changes-scroll flex-1 min-h-0 overflow-y-auto"
                         :class="{ 'is-reloading': changesLoading && !changesLoadingOlder && changesFeed.length }"
                         :aria-busy="changesLoading ? 'true' : 'false'">
@@ -7037,7 +7062,7 @@
                                  gets the button only when the chat has deleted or edited
                                  messages. -->
                             <div v-if="!noDownload || chatDeletedCount > 0 || chatEditedCount > 0" class="relative phone-hide">
-                                <button type="button" @click="chatMenuOpen = !chatMenuOpen"
+                                <button ref="chatMenuButton" type="button" @click="chatMenuOpen = !chatMenuOpen"
                                     class="chat-header-btn"
                                     :class="{ 'is-on': chatMenuOpen }"
                                     aria-label="More actions" title="More actions"
@@ -7065,6 +7090,13 @@
                                         <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                                         <span class="flex-1 text-left">Edited messages</span>
                                         <span v-if="chatEditedCount" class="info-action-count">{{ formatCount(chatEditedCount) }}</span>
+                                    </button>
+                                    <!-- What changed, narrowed to this chat: its deletions, edits
+                                         and transcripts in the feed's own layout. -->
+                                    <button type="button" @click="openChangesFeedForChat('menu')"
+                                        class="info-action">
+                                        <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h14"/><path d="M3 10h9"/><path d="M3 15h5"/><circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/></svg>
+                                        <span class="flex-1 text-left">What changed in this chat</span>
                                     </button>
                                     <button v-if="!noDownload" type="button" @click="chatMenuOpen = false; exportChat()"
                                         class="info-action">
@@ -8395,6 +8427,9 @@
                             <button v-if="chatStats.deleted_messages > 0" type="button" class="tg-row" @click="openDeletedOnlyFromInfo" title="Show the deleted messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span class="tg-row-label">Deleted messages</span><span class="tg-row-value">{{ formatCount(chatStats.deleted_messages) }}</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
                             <!-- Edited messages open the "Edited only" mode the same way. -->
                             <button v-if="chatStats.edited_messages > 0" type="button" class="tg-row" @click="openEditedOnlyFromInfo" title="Show the edited messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span class="tg-row-label">Edited messages</span><span class="tg-row-value">{{ formatCount(chatStats.edited_messages) }}</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+                            <!-- The What changed feed, narrowed to this chat. On a phone, where
+                                 the chat menu is hidden, this is the way there. -->
+                            <button type="button" class="tg-row" @click="openChangesFeedForChat('info')" title="Show What changed for this chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h14"/><path d="M3 10h9"/><path d="M3 15h5"/><circle cx="16.5" cy="16.5" r="5"/><path d="M16.5 14v2.5l1.6 1"/></svg><span class="tg-row-label">What changed in this chat</span><svg class="tg-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
                             <!-- The oldest message opens: the calendar's "First message". -->
                             <button v-if="chatStats.first_message_date" type="button" class="tg-row" @click="jumpToFirstMessage"
                                 :title="formatStamp(chatStats.first_message_date)">
@@ -10966,6 +11001,9 @@
 
                 const showChangesFeed = ref(false)
                 const changesFeed = ref([])
+                // The one chat the feed is narrowed to ({ ref, title }), or null for
+                // every chat. Set by the chat's menu and info panel, never remembered.
+                const changesChat = ref(null)
                 const changesNextBefore = ref(null)
                 const changesLoading = ref(false)
                 // The feed's filter, remembered in this browser: the period (days, or
@@ -11021,6 +11059,7 @@
                         const since = changesSinceIso()
                         if (since) params.set('since', since)
                         if (before) params.set('before', before)
+                        if (changesChat.value) params.set('chat_ref', changesChat.value.ref)
                         const resp = await fetch(`/api/changes?${params}`, { credentials: 'same-origin' })
                         if (seq !== changesRequestSeq) return
                         if (resp.status === 401) {
@@ -11034,7 +11073,9 @@
                         else changesFeed.value = data.changes
                         changesNextBefore.value = data.next_before
                         if (before) changesEmptyPages.value = shownChangeCount() > shownBefore ? 0 : changesEmptyPages.value + 1
-                        if (!before && showChangesFeed.value) markChangesSeen()
+                        // One chat's newest entry says nothing about the others, so
+                        // only the feed of every chat marks the changes seen.
+                        if (!before && showChangesFeed.value && !changesChat.value) markChangesSeen()
                         // The observer only speaks when the end of the feed enters or
                         // leaves the view. A page that adds nothing on screen (the filter
                         // hides it all) leaves the end in view, so look again.
@@ -11146,6 +11187,10 @@
                 const changesTitle = ref(null)
                 const changesSentinel = ref(null)
                 let changesTrigger = null
+                // Where focus goes back when the element that opened the feed is
+                // gone: the chat view is mounted again on close, so a template ref
+                // (the chat's More actions or info button) finds its new element.
+                let changesReturnFocus = null
                 // The feed replaces the chat view (v-if), so closing it mounts a new
                 // message list: the reading position and the scroll observers go with
                 // the old one. Kept here when the feed opens over a chat, as the
@@ -11159,13 +11204,31 @@
                     event.preventDefault()
                     closeChangesFeed()
                 }
-                const openChangesFeed = (fromMenu = false) => {
-                    markChangesSeen()
+                // Which chat the loaded cards belong to (null: every chat). The kind
+                // filter never looks at the chat, so cards of another chat would
+                // sit under the new chip until its first page came back: they go
+                // when the chat changes, and the feed shows its loading state.
+                let changesFeedChatRef = null
+                const setChangesChat = (chat) => {
+                    changesChat.value = chat
+                    const chatRef = chat?.ref ?? null
+                    if (chatRef === changesFeedChatRef) return
+                    changesFeedChatRef = chatRef
+                    changesFeed.value = []
+                    changesNextBefore.value = null
+                }
+                // With a chat ({ ref, title }) the feed opens narrowed to it, from the
+                // chat's menu or info panel; without one it shows every chat. The
+                // sidebar button passes its click event, which is no chat.
+                const openChangesFeed = (fromMenu = false, chat = null, returnFocus = null) => {
+                    setChangesChat(chat && chat.ref ? { ref: chat.ref, title: chat.title || 'Unnamed chat' } : null)
+                    if (!changesChat.value) markChangesSeen()
                     if (!showChangesFeed.value) {
                         // From the main menu, the row is gone as soon as the menu
                         // closes; the menu button is where focus goes back.
                         const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
                         changesTrigger = fromMenu === true ? (mainMenuButton.value || active) : active
+                        changesReturnFocus = returnFocus
                         changesReturnState = selectedChat.value ? {
                             chatRef: selectedChat.value.ref,
                             topicId: selectedPaneTopic.value?.id ?? null,
@@ -11183,9 +11246,12 @@
                     if (!showChangesFeed.value) return
                     showChangesFeed.value = false
                     changesFilterOpen.value = false
+                    changesChat.value = null
                     document.removeEventListener('keydown', handleChangesKeydown)
                     const trigger = changesTrigger
                     changesTrigger = null
+                    const returnFocus = changesReturnFocus
+                    changesReturnFocus = null
                     const returnState = changesReturnState
                     changesReturnState = null
                     nextTick(() => {
@@ -11202,11 +11268,29 @@
                         }
                         if (!restoreFocus) return
                         if (trigger?.isConnected) trigger.focus()
+                        else if (returnFocus?.value?.isConnected) returnFocus.value.focus()
                         else mainMenuButton.value?.focus()
                     })
                 }
                 // Opening a chat from the list, a search hit or a topic leaves the feed.
                 const leaveChangesFeed = () => closeChangesFeed(false)
+                // "What changed in this chat", from the chat's More actions menu or its
+                // info panel: the feed narrowed to the open chat.
+                const chatMenuButton = ref(null)
+                const openChangesFeedForChat = (from) => {
+                    const chat = selectedChat.value
+                    if (!chat) return
+                    chatMenuOpen.value = false
+                    if (from === 'info') closeInfoPanel()
+                    openChangesFeed(false, { ref: chat.ref, title: getChatName(chat) }, from === 'info' ? infoPanelToggleBtn : chatMenuButton)
+                }
+                // The chip's cross: back to every chat, in the same period and kinds.
+                const widenChangesFeed = () => {
+                    if (!changesChat.value) return
+                    setChangesChat(null)
+                    fetchChanges(null)
+                    nextTick(() => changesTitle.value?.focus())
+                }
                 // An entry leads to its message in the chat, and "2 earlier versions"
                 // to its edit history as well. Reading only: it opens the chat the way
                 // a shared link does.
@@ -11258,6 +11342,7 @@
                     if (changesFeed.value.length && changesNextBefore.value) return 'No match in the changes loaded so far'
                     if (changesFeed.value.length) return 'Nothing to show with this filter'
                     const period = CHANGE_PERIODS.find(p => p.value === changesSince.value) || CHANGE_PERIODS[1]
+                    if (changesChat.value) return `Nothing changed in this chat ${period.words}`
                     return `Nothing changed ${period.words}`
                 })
                 // The text a bubble shows: the current text of an edit, the kept text
@@ -19101,6 +19186,10 @@
                     changesLoading,
                     changesSince,
                     openChangesFeed,
+                    changesChat,
+                    openChangesFeedForChat,
+                    widenChangesFeed,
+                    chatMenuButton,
                     leaveChangesFeed,
                     openChangeChat,
                     changesTitle,
