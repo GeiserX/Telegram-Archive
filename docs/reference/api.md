@@ -234,7 +234,7 @@ All of these need any login. Results cover only chats the caller can see.
 |-----------------|-----------|----------|
 | `GET /api/search/messages` | `q` required, 1 to 500 characters. `limit` default 20, up to 100. `offset` up to 5000. | `{query, limit, offset, has_more, indexed, results}` |
 | `GET /api/tags/{tag}` | `scope` is `chat`, `mine` or `all`, default `all`. `chat_ref`, required with `scope=chat`. `limit` default 50, up to 200. `offset`. | `{tag, results, has_more, truncated}` |
-| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. | `{changes, next_before}` |
+| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. `chat_ref` for one chat. | `{changes, next_before}` |
 
 `/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum` and `avatar_url`.
 
@@ -251,6 +251,8 @@ curl -s -b jar.txt 'http://localhost:8000/api/tags/%23holiday?scope=all&limit=50
 | `deleted` | `text` |
 | `edited` | `old_text`, `new_text` |
 | `transcript` | `text`, `language` |
+
+`chat_ref` narrows the feed to one chat, the account's copy that ref names. A chat the caller cannot see answers 404, the same as an unknown ref. Paging works the same way.
 
 Hard deletions never appear, and no-download logins get no transcript rows. The response is sent with `Cache-Control: private, no-store`. To walk the feed, pass `next_before` from each answer as `before` on the next request until it comes back empty. To poll for new changes, pass the time of your last poll as `since`:
 

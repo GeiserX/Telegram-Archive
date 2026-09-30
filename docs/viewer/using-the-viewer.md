@@ -339,6 +339,8 @@ The feed lists deletions, edits and new voice transcripts, newest first, grouped
 
 The filter button in the feed's header picks what to show, **Deleted**, **Edited** and **Transcripts**, and the period: **Last 24 hours**, **Last 7 days**, **Last 30 days** or **All time**. The browser remembers both. With nothing ticked, nothing loads. When few entries match, the feed stops loading by itself after three pages that add nothing, and **Load older** carries on. [No-download logins](access.md#no-download-logins) see no transcripts.
 
+To see what changed in one chat, open **More actions** in the chat header and choose **What changed in this chat**, under **Edited messages**. On a phone, use the **What changed in this chat** row of the chat's info panel. The feed opens with the chat as a pressed chip under its header and lists only that chat's deletions, edits and transcripts, with the same filter. The chip's cross widens the feed back to every chat. The sidebar button and the main menu always open it for every chat. The dot and the main menu's count clear only when you read the feed for every chat.
+
 === "Desktop"
 
     ![What changed in the chat's place, with deletions, an edit and transcripts](../images/screenshots/what-changed-desktop.png)

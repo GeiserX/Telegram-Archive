@@ -2240,6 +2240,8 @@ class DatabaseAdapter:
         limit: int = 50,
         scope: ChatScope | None = None,
         with_transcripts: bool = True,
+        chat_id: int | None = None,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """The what-changed feed: deletions, edits and transcripts the archive captured.
 
@@ -2264,6 +2266,12 @@ class DatabaseAdapter:
         row, the same compiled rules as the chat list — a restricted viewer's
         feed touches only their rows. Hard deletions cannot appear: their
         content no longer exists (DELETION_MODE=soft is what feeds this).
+
+        ``chat_id`` with ``account_id`` narrows the feed to one chat copy, the
+        one a chat ref names: the copy whose messages, figures and deleted and
+        edited lists the viewer shows for that chat. It narrows, never widens:
+        ``scope`` still applies, and the caller resolves the ref under the same
+        scope first.
         """
         per_stream = max(1, min(int(limit), 200))
 
@@ -2344,6 +2352,14 @@ class DatabaseAdapter:
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
                     transcript_stmt = transcript_stmt.where(predicate)
+            if chat_id is not None:
+                deleted_stmt = deleted_stmt.where(Message.chat_id == chat_id)
+                edited_stmt = edited_stmt.where(MessageVersion.chat_id == chat_id)
+                transcript_stmt = transcript_stmt.where(Message.chat_id == chat_id)
+            if account_id is not None:
+                deleted_stmt = deleted_stmt.where(Message.account_id == account_id)
+                edited_stmt = edited_stmt.where(MessageVersion.account_id == account_id)
+                transcript_stmt = transcript_stmt.where(Message.account_id == account_id)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -2413,22 +2429,26 @@ class DatabaseAdapter:
                 select(literal(1)).where(*lower_transcript_match).correlate(MediaTranscript, lower_media).exists(),
             ]
 
-            deleted_stmt = deleted_stmt.where(
-                self._event_not_already_listed(
-                    scope, lower_rows=lower_deleted, lower_chat=lower_deleted_chat, event_match=deleted_duplicate
+            # Rows of ONE account cannot repeat an event across accounts, so a
+            # feed narrowed to one account's copy skips the check. Running it
+            # there would hide every event a lower account also captured,
+            # since the lower copy it defers to is outside the filter.
+            if account_id is None:
+                deleted_stmt = deleted_stmt.where(
+                    self._event_not_already_listed(
+                        scope, lower_rows=lower_deleted, lower_chat=lower_deleted_chat, event_match=deleted_duplicate
+                    )
                 )
-            )
-            edited_stmt = edited_stmt.where(
-                self._event_not_already_listed(
-                    scope, lower_rows=lower_edited, lower_chat=lower_edited_chat, event_match=edited_duplicate
+                edited_stmt = edited_stmt.where(
+                    self._event_not_already_listed(
+                        scope, lower_rows=lower_edited, lower_chat=lower_edited_chat, event_match=edited_duplicate
+                    )
                 )
-            )
-
-            transcript_stmt = transcript_stmt.where(
-                self._event_not_already_listed(
-                    scope, lower_rows=lower_media, lower_chat=lower_media_chat, event_match=transcript_duplicate
+                transcript_stmt = transcript_stmt.where(
+                    self._event_not_already_listed(
+                        scope, lower_rows=lower_media, lower_chat=lower_media_chat, event_match=transcript_duplicate
+                    )
                 )
-            )
 
             deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
             edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
