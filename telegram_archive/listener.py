@@ -8,7 +8,8 @@ Safety features:
 - Mass operation detection: Blocks bulk deletions to protect data
 
 Mass operation protection is rate limiting, not buffering, and covers
-deletions only; an edit keeps the earlier text as a version. Deletions under
+deletions only. An edit keeps the earlier text as a version but replaces the
+earlier formatting in place, so edits are never limited. Deletions under
 the threshold are applied immediately; disable LISTEN_DELETIONS to guarantee
 Telegram deletions never remove archived messages.
 """
@@ -76,8 +77,11 @@ class MassOperationProtector:
     """
     Rate-limiting protection against mass deletions.
 
-    Only deletions pass through it. An edit never removes anything, because
-    the earlier text is kept as a version, so edits are never rate limited.
+    Only deletions pass through it. Edits are never rate limited: an edit
+    keeps the earlier text as a version, though it replaces the earlier
+    formatting (raw_data entities and rich_message) in place, and Telegram
+    sends many reaction changes as edit events, which would use up the budget
+    and drop real text edits.
 
     HOW IT WORKS:
     - Uses a sliding time window to count deletions per chat
@@ -243,7 +247,8 @@ class TelegramListener:
 
     RATE LIMITING PROTECTION:
     Uses a sliding window to limit deletions per chat. Edits are not limited,
-    since an edit keeps the earlier text as a version. Normal usage (deleting
+    since an edit keeps the earlier text as a version (its earlier formatting
+    is replaced in place, not kept). Normal usage (deleting
     a few messages) works instantly. Mass operations (deleting 50+ messages)
     are blocked after the threshold, protecting most of your backup.
 
@@ -314,7 +319,7 @@ class TelegramListener:
         # each a full snapshot, so we coalesce per (chat_id, message_id) keeping only
         # the latest and flush on a timer — one reconcile + one broadcast per window.
         # Kept separate from the MassOperationProtector so a reaction storm can never
-        # rate-limit edits/deletions in the same chat.
+        # rate-limit deletions in the same chat.
         self._reaction_pending: dict[tuple[int, int], list[dict]] = {}
         self._reaction_flush_task: asyncio.Task | None = None
 
@@ -1044,9 +1049,10 @@ class TelegramListener:
             Handle message edit events.
 
             Edits are applied at once and never pass through the mass-deletion
-            guard: an edit keeps the earlier text as a version, so it removes
-            nothing, and a reaction-only edit event must not use up a budget
-            that would then drop real text edits.
+            guard: an edit keeps the earlier text as a version (the earlier
+            formatting is replaced in place, not kept), and a reaction-only
+            edit event must not use up a budget that would then drop real
+            text edits.
             """
             # Check if edits are enabled
             if not self.config.listen_edits:

@@ -49,7 +49,6 @@ The archive loses these today. Each proposal adds data beside what exists; none 
 - **A replaced photo or file.** Telegram lets a sender swap the media of a message. The edit paths only look at the text: the media row and its file stay as first captured, and the new media is never downloaded. So the archive keeps the old picture and loses the new one, while the caption shows the latest text beside the old picture. If the old file later goes missing from disk, `VERIFY_MEDIA` fetches whatever the message holds now into the old row. *Proposal:* on an edit, compare Telegram's media id with the stored one, and when it differs, download the new file as a new media row beside the old (a `media_versions` table or a replaced-by pointer), never over it.
 - **Polls, live locations and link previews.** These live in `raw_data` as captured and no edit path refreshes them. A poll's later votes and closing, a live location's later positions and a link preview Telegram fills in later are never seen. Nothing old is lost, but the archive does not follow them. *Proposal:* append a snapshot row when an edit event carries a changed poll, location or preview.
 - **Reactions.** Kept on their own path with `removed_at` tombstones, not as versions. Some reaction changes reach the listener as edit events; they are harvested there before any text check.
-- **Edits dropped by the rate limit.** The listener's mass-operation guard (`MASS_OPERATION_THRESHOLD`, default 10 in 30 seconds per chat) counts edits and deletions together, and it counts every edit event, reaction-only ones included, because the check runs before the text comparison. In a busy group, a burst of reactions can block real text edits for the next 30 seconds, and a blocked edit is dropped, not queued. *Proposal:* do not rate-limit edits at all. An edit is no longer destructive, since the old text is always kept, and the guard exists to stop mass removals.
 
 So an "edited" mark can honestly say: "edited at 08:57 by Telegram's clock, and these are the earlier texts the archive saw". It cannot say how many edits there really were, or that an unmarked message was never edited.
 
@@ -271,7 +270,7 @@ We recommend **A + C + E + F**, with G's honesty folded into A's tooltip, and th
 
 For capture, in order of value, all beside existing data:
 
-1. Stop rate-limiting edits in the listener, since an edit no longer removes anything, or at least stop counting reaction-only edit events.
+1. Done: the listener no longer rate-limits edits, so a burst of reactions cannot block real text edits. See [Mass-operation protection](../configuration/listener.md#mass-operation-protection). An edit keeps its earlier text but still replaces its earlier formatting; item 3 covers that.
 2. Download a replaced photo or file as a new media row, keeping the old one.
 3. Keep formatting with each version, and version formatting-only edits.
 4. Record the source of each version and return `captured_at`, so the viewer can say "at least N edits" for versions the sync found.

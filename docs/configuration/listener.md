@@ -97,14 +97,14 @@ The listener can miss some reaction changes. Telegram does not reliably push rea
 
 A burst of deletions, such as someone clearing a whole chat, could remove large parts of the archive. The listener guards against this with a rate limiter on deletions.
 
-Edits are not limited. An edit removes nothing, because the listener keeps the earlier text as a version. Telegram also sends many reaction changes as edit events, so a limit on edits would let a burst of reactions block real edits.
+Edits are not limited. An edit keeps the earlier text as a version, so the words are never lost. It does replace the earlier formatting (bold, links, a Rich Text Editor layout) in place, and a formatting-only edit makes no version at all. With no limit, a burst of edits replaces the formatting of every message it reaches. Telegram also sends many reaction changes as edit events, so a limit on edits would let a burst of reactions block real edits.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `MASS_OPERATION_THRESHOLD` | `10` | Most deletions the listener applies per chat within one window. |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | Length of the sliding window. It is also how long a chat stays blocked once it goes over the limit. |
 
-Each chat has one sliding window. With the defaults, the first 10 deletions inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's deletions for one more window. Edits in that chat are still applied.
+Each chat has one sliding window, and only deletions count against it, so edits never use up the budget. With the defaults, the first 10 deletions inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's deletions for one more window. Edits in that chat are still applied.
 
 The listener drops blocked deletions. It does not queue them, update the viewer or fire a webhook. It keeps every deletion it applied before the chat went over the limit. The counters live in memory and reset when the process restarts.
 

@@ -1112,13 +1112,16 @@ class Config:
         # =====================================================================
         # MASS OPERATION PROTECTION (rate limiter)
         # =====================================================================
-        # Deletions/edits are RATE LIMITED per chat: the first THRESHOLD
-        # operations inside WINDOW are applied immediately (in hard deletion
-        # mode, irreversibly), and only the overflow is blocked. Nothing is
-        # buffered and nothing already applied is ever rolled back.
+        # Deletions are RATE LIMITED per chat: the first THRESHOLD deletions
+        # inside WINDOW are applied immediately (in hard deletion mode,
+        # irreversibly), and only the overflow is blocked. Nothing is buffered
+        # and nothing already applied is ever rolled back. Edits are never
+        # limited: an edit keeps the earlier text as a version (its earlier
+        # formatting is replaced in place), and Telegram sends reaction changes
+        # as edit events, which must not use up the deletion budget.
         #
-        # THRESHOLD: Max operations applied per chat per window (default: 10)
-        # WINDOW: Sliding window for counting operations (default: 30 seconds)
+        # THRESHOLD: Max deletions applied per chat per window (default: 10)
+        # WINDOW: Sliding window for counting deletions (default: 30 seconds)
         #
         # Example: If >10 deletions arrive within 30s, the first 10 are
         # applied and the rest are blocked (counted, logged).
