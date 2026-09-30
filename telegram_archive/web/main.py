@@ -1625,22 +1625,41 @@ def _parse_media_key(media_key: str) -> tuple[int, str] | None:
     return message_id, type_part
 
 
-# The URL key's second part for an earlier media: ``v`` and the media_versions
-# row id. No media type is spelled that way.
-_MEDIA_VERSION_KEY_RE = re.compile(r"^v([0-9]{1,18})$")
+# The URL key's second part for an earlier media: ``v`` and its number among
+# the message's earlier media (1 for the first kept). No media type is spelled
+# that way, and a number too long for the key answers the uniform 404.
+_MEDIA_VERSION_KEY_RE = re.compile(r"^v([1-9][0-9]{0,8})$")
 
 
-def _media_version_id(type_part: str) -> int | None:
-    """The media_versions id a URL key's second part names, or None for a media type."""
+def _media_version_number(type_part: str) -> int | None:
+    """The earlier-media number a URL key's second part names, or None for a media type."""
     match = _MEDIA_VERSION_KEY_RE.match(type_part)
     return int(match.group(1)) if match else None
 
 
-def _media_version_key(message_id: object, version_id: object) -> str | None:
-    """The chat-free URL key ``{message_id}_v{id}`` of an earlier media, or None."""
-    if message_id is None or version_id is None:
+def _media_version_key(message_id: object, number: object) -> str | None:
+    """The chat-free URL key ``{message_id}_v{number}`` of an earlier media, or None."""
+    if message_id is None or number is None:
         return None
-    return f"{message_id}_v{version_id}"
+    return f"{message_id}_v{number}"
+
+
+# A media row an edit gave new media is re-keyed ``…_v{n}``
+# (``reconcile_media_row``), while its URL key stays ``{message_id}_{type}``.
+_REKEYED_MEDIA_ID_RE = re.compile(r"_v([0-9]+)$")
+
+
+def _current_media_url(chat_ref: str, media_key: str, storage_id: object, prefix: str = "/media/") -> str:
+    """The URL of a message's current media, which changes when an edit replaces it.
+
+    The URL key names the message and the type, so a photo replaced by
+    another photo keeps it, and a browser that cached the old bytes (the
+    thumbnail for a day) would keep showing them. The re-keyed row's number
+    rides along as ``?v=``, which the server ignores.
+    """
+    url = f"{prefix}{chat_ref}/{_encode_media_key(media_key)}"
+    match = _REKEYED_MEDIA_ID_RE.search(storage_id) if isinstance(storage_id, str) else None
+    return f"{url}?v={match.group(1)}" if match else url
 
 
 def _url_media_key(message_id: object, media_type: object) -> str | None:
@@ -1761,7 +1780,7 @@ async def _entitled_media_row(chat: ChatContext, media_key: str, *, earlier_medi
     not found" (#423). Asking by column fixes both: the bound is explicit, and
     the row is found whatever its id spells.
 
-    An earlier media an edit replaced is addressed as ``{message_id}_v{id}``
+    An earlier media an edit replaced is addressed as ``{message_id}_v{n}``
     (``_media_version_key``) and found the same way, bound to the same chat.
     ``earlier_media=False`` refuses such a key, for routes that write.
     """
@@ -1769,10 +1788,10 @@ async def _entitled_media_row(chat: ChatContext, media_key: str, *, earlier_medi
     row = None
     if parsed is not None:
         message_id, media_type = parsed
-        version_id = _media_version_id(media_type)
-        if version_id is not None:
+        number = _media_version_number(media_type)
+        if number is not None:
             if earlier_media:
-                row = await db.get_media_version(chat.chat_id, message_id, version_id, account_id=chat.account_id)
+                row = await db.get_media_version(chat.chat_id, message_id, number, account_id=chat.account_id)
         else:
             row = await db.get_media_for_message(chat.chat_id, message_id, media_type, account_id=chat.account_id)
     if row is None:
@@ -2890,9 +2909,10 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
         # the chat id in front of the browser (and back in a cursor query string),
         # which the promise at the top of this docstring says never happens.
         media_key = _url_media_key(message.get("id"), media.get("type"))
+        storage_id = media.get("id")
         media["id"] = media_key
         if media_key and _media_relative_path(media.get("file_path")):
-            media["url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+            media["url"] = _current_media_url(chat.ref, media_key, storage_id)
         else:
             media["url"] = None
 
@@ -3273,7 +3293,8 @@ async def get_message_versions(
         for version in versions:
             for media in version.get("media") or ():
                 has_file = bool(media.pop("file_path", None)) and bool(media.get("downloaded"))
-                media_key = _media_version_key(message_id, media.pop("id", None))
+                media.pop("id", None)
+                media_key = _media_version_key(message_id, media.pop("number", None))
                 if user.no_download:
                     media["url"] = None
                     media["downloaded"] = False
@@ -3678,6 +3699,7 @@ async def get_chat_media(
             await _attach_media_transcripts(result["items"], chat)
         for item in result["items"]:
             media_key = _url_media_key(item.get("message_id"), item.get("type"))
+            storage_id = item.get("id")
             item["id"] = media_key
 
             relative = _media_relative_path(item.get("file_path", "") or "")
@@ -3689,7 +3711,7 @@ async def get_chat_media(
             filename = relative.rsplit("/", 1)[-1]
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             if ext in THUMBNAIL_EXTENSIONS:
-                item["thumb_url"] = f"/media/thumb/200/{chat.ref}/{_encode_media_key(media_key)}"
+                item["thumb_url"] = _current_media_url(chat.ref, media_key, storage_id, "/media/thumb/200/")
             else:
                 item["thumb_url"] = None
 
@@ -3700,7 +3722,7 @@ async def get_chat_media(
                 # lights up the gallery's own placeholder instead.
                 item["thumb_url"] = None
             else:
-                item["media_url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+                item["media_url"] = _current_media_url(chat.ref, media_key, storage_id)
 
         return result
     except Exception as e:

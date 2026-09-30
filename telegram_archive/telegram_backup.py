@@ -3520,6 +3520,10 @@ class TelegramBackup:
                 media_result = await self._process_media(message, chat_id)
                 if media_result:
                     message_data["_media_data"] = media_result
+                    if media_result.get("replaced") is True:
+                        # This read's edit replaced the media: the upsert takes
+                        # its edit_date even when the caption stayed the same.
+                        message_data["media_replaced"] = True
 
         # Extract reactions (per-emoji aggregate snapshot). Reconciled after the
         # message is inserted; see DatabaseAdapter.reconcile_reactions (#219).
@@ -3923,6 +3927,7 @@ class TelegramBackup:
             account_id=self.account_id,
             telegram_file_id=telegram_file_id,
             source=source,
+            edit_date=getattr(message, "edit_date", None),
         )
         return isinstance(row, dict) and row.get("replaced") is True
 
@@ -3958,7 +3963,6 @@ class TelegramBackup:
 
         # Telegram's id of the photo or document: the file's identity, and the
         # uniqueness prefix of its file name.
-        payload = downloadable_media_payload(media)
         telegram_file_id = media_file_id(media)
 
         # The id belongs to the ROW, not to this classification. Reuse whatever
@@ -3977,7 +3981,35 @@ class TelegramBackup:
             account_id=self.account_id,
             telegram_file_id=telegram_file_id,
             source="backup",
+            edit_date=getattr(message, "edit_date", None),
         )
+        if isinstance(existing, dict) and existing.get("superseded") is True:
+            # The archive holds other media for this message than this read
+            # shows (a newer edit, or a replacement that could not be kept):
+            # nothing is downloaded into that row.
+            logger.debug("Media not processed: the archive holds newer media for this message")
+            return None
+        result = await self._media_row_for(message, chat_id, media, media_type, telegram_file_id, existing)
+        if result is not None and isinstance(existing, dict) and existing.get("replaced") is True:
+            # Tells the message upsert that this read's edit replaced the media.
+            result["replaced"] = True
+        return result
+
+    async def _media_row_for(
+        self,
+        message: Message,
+        chat_id: int,
+        media,
+        media_type: str,
+        telegram_file_id: str | None,
+        existing: dict | None,
+    ) -> dict | None:
+        """The media row for a message, downloading its file when that is allowed.
+
+        ``existing`` is the message's media row from ``reconcile_media_row``,
+        or None when it has none yet.
+        """
+        payload = downloadable_media_payload(media)
         media_id = existing["id"] if existing else f"{chat_id}_{message.id}_{media_type}"
 
         # Metadata-only kinds (contacts, locations, polls, and the nine

@@ -125,6 +125,58 @@ async def test_transcripts_move_to_postgresql_and_new_ones_still_insert(
         await target.close()
 
 
+async def test_media_versions_move_to_postgresql_and_the_next_replacement_is_kept(
+    tmp_path, make_postgres_database, require_postgres
+):
+    """The copied media_versions ids stay taken on PostgreSQL (SERIAL_ID_MODELS):
+    the first replacement after the move adds a row instead of colliding."""
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from telegram_archive.db.adapter import DatabaseAdapter
+    from telegram_archive.db.base import DatabaseManager
+    from telegram_archive.db.models import MediaVersion
+
+    chat = -420900002
+    source = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'source.db'}")
+    await source.init()
+    adapter = DatabaseAdapter(source)
+    await adapter.upsert_chat({"id": chat, "type": "group", "title": "fixture chat"}, account_id=1)
+    await adapter.insert_message(
+        {"id": 1, "chat_id": chat, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}}, account_id=1
+    )
+    await adapter.insert_media(
+        {
+            "id": "m_1_photo",
+            "message_id": 1,
+            "chat_id": chat,
+            "type": "photo",
+            "telegram_file_id": "7000000000000000111",
+        },
+        account_id=1,
+    )
+    first = await adapter.reconcile_media_row(chat, 1, "photo", account_id=1, telegram_file_id="7000000000000000222")
+    assert first["replaced"] is True
+    await source.close()
+
+    target_url, _ = make_postgres_database("telegram_archive_pytest_move_versions")
+    counts = await migrate_sqlite_to_postgres(sqlite_path=str(tmp_path / "source.db"), postgres_url=target_url)
+    assert counts["media_versions"] == 1
+
+    target = DatabaseManager(target_url)
+    await target.init()
+    try:
+        moved = DatabaseAdapter(target)
+        row = await moved.reconcile_media_row(chat, 1, "photo", account_id=1, telegram_file_id="7000000000000000333")
+        assert row["replaced"] is True
+        async with target.async_session_factory() as session:
+            kept = (await session.execute(select(MediaVersion).order_by(MediaVersion.id))).scalars().all()
+        assert [v.telegram_file_id for v in kept] == ["7000000000000000111", "7000000000000000222"]
+    finally:
+        await target.close()
+
+
 # ============================================================
 # migrate_sqlite_to_postgres: path resolution
 # ============================================================

@@ -256,6 +256,7 @@ class TestSweepAdoptionHook(unittest.TestCase):
     def _photo_message(self):
         message = MagicMock()
         message.id = MSG_ID
+        message.edit_date = None
         media = object.__new__(MessageMediaPhoto)
         media.photo = SimpleNamespace(id=42, sizes=[SimpleNamespace(type="m", size=1000)])
         message.media = media
@@ -276,7 +277,7 @@ class TestSweepAdoptionHook(unittest.TestCase):
 
         self.assertIs(result, existing)
         backup.db.reconcile_media_row.assert_awaited_once_with(
-            CHAT_ID, MSG_ID, "photo", account_id=1, telegram_file_id="42", source="backup"
+            CHAT_ID, MSG_ID, "photo", account_id=1, telegram_file_id="42", source="backup", edit_date=None
         )
         backup._download_media_to_path.assert_not_awaited()
 

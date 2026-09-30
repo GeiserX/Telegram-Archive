@@ -989,6 +989,21 @@ class DatabaseAdapter:
             return False
         return _formatting_state(values.get("raw_data")) != _formatting_state(existing.raw_data)
 
+    @staticmethod
+    def _is_upsert_media_edit(existing: Message, message_data: dict[str, Any], values: dict[str, Any]) -> bool:
+        """True when this read's edit replaced the message's media (``media_replaced``).
+
+        The backup sets the flag when ``reconcile_media_row`` kept the old
+        media as a version for this read. The replacement already kept the
+        text shown beside the old media; the edit's date moves here, as the
+        listener and the sync move it with ``update_message_text(media_changed=True)``.
+        """
+        if not message_data.get("media_replaced"):
+            return False
+        new_edit_date = _strip_tz(values.get("edit_date"))
+        old_edit_date = _strip_tz(existing.edit_date)
+        return new_edit_date is not None and (old_edit_date is None or new_edit_date > old_edit_date)
+
     def _pending_update_values(
         self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1004,12 +1019,15 @@ class DatabaseAdapter:
         update_values = _message_conflict_update_values(message_data, values)
         text_applied = self._should_apply_upsert_text(existing, values)
         formatting_edit = not text_applied and self._is_upsert_formatting_edit(existing, message_data, values)
+        media_edit = (
+            not text_applied and not formatting_edit and self._is_upsert_media_edit(existing, message_data, values)
+        )
         if text_applied:
             if values.get("edit_date") is None and existing.edit_date is not None:
                 # Text change arrived without edit evidence (e.g. late hydration):
                 # keep the existing edit_date rather than nulling it.
                 update_values.pop("edit_date", None)
-        elif formatting_edit:
+        elif formatting_edit or media_edit:
             # The text is the same; the edit's date moves, as for a text edit,
             # so the version it supersedes keeps its own date.
             update_values.pop("text", None)
@@ -2589,11 +2607,13 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             versions = [self._message_version_to_dict(row) for row in result.scalars()]
 
+            # Every earlier media of the message, in the order it was kept: its
+            # position (1, 2, 3...) is the number its URL key names
+            # (``get_media_version``). A message has a handful at most.
             media_stmt = (
                 select(MediaVersion)
                 .where(and_(MediaVersion.chat_id == chat_id, MediaVersion.message_id == message_id))
-                .order_by(MediaVersion.date.desc(), MediaVersion.id.desc())
-                .limit(limit)
+                .order_by(MediaVersion.id)
             )
             if account_id is not None:
                 media_stmt = media_stmt.where(MediaVersion.account_id == account_id)
@@ -2601,11 +2621,18 @@ class DatabaseAdapter:
 
         if not media_rows:
             return versions
+        numbers: dict[int, int] = {}
+        seen_per_account: dict[int, int] = {}
+        for media_row in media_rows:
+            seen_per_account[media_row.account_id] = seen_per_account.get(media_row.account_id, 0) + 1
+            numbers[media_row.id] = seen_per_account[media_row.account_id]
+        media_rows = sorted(media_rows, key=lambda row: (row.date, row.id), reverse=True)[:limit]
         by_date: dict[datetime, dict[str, Any]] = {}
         for version in versions:
             by_date.setdefault(version["date"], version)
         for media_row in media_rows:
             media = self._media_version_to_dict(media_row)
+            media["number"] = numbers[media_row.id]
             version = by_date.get(media_row.date)
             if version is None:
                 version = {
@@ -2646,24 +2673,32 @@ class DatabaseAdapter:
         }
 
     async def get_media_version(
-        self, chat_id: int, message_id: int, version_id: int, *, account_id: int
+        self, chat_id: int, message_id: int, number: int, *, account_id: int
     ) -> dict[str, Any] | None:
         """One earlier media of one message in one chat, for the bytes routes.
 
-        Chat- and account-bound in SQL like ``get_media_for_message``: a
-        version id from another chat or account finds nothing.
+        ``number`` is the media's position among the message's earlier media
+        in the order they were kept (1 for the first), as
+        ``get_message_versions`` numbers them: a URL names no archive-wide id.
+        Chat- and account-bound in SQL like ``get_media_for_message``: another
+        chat, account or message finds nothing.
         """
+        if number < 1:
+            return None
         async with self.db_manager.async_session_factory() as session:
             row = (
                 await session.execute(
-                    select(MediaVersion).where(
+                    select(MediaVersion)
+                    .where(
                         and_(
-                            MediaVersion.id == version_id,
                             MediaVersion.account_id == account_id,
                             MediaVersion.chat_id == chat_id,
                             MediaVersion.message_id == message_id,
                         )
                     )
+                    .order_by(MediaVersion.id)
+                    .offset(number - 1)
+                    .limit(1)
                 )
             ).scalar_one_or_none()
             if row is None:
@@ -3144,8 +3179,8 @@ class DatabaseAdapter:
     # ========== Media Operations ==========
 
     @retry_on_locked()
-    async def insert_media(self, media_data: dict[str, Any], *, account_id: int) -> None:
-        """Insert (or upsert) a media file record.
+    async def insert_media(self, media_data: dict[str, Any], *, account_id: int) -> str | None:
+        """Insert (or upsert) a media file record; the id written, or None.
 
         Contract for the ``downloaded`` key: include it whenever the caller
         actually observed the download outcome (True after a successful write,
@@ -3153,11 +3188,23 @@ class DatabaseAdapter:
         when the caller cannot know whether a file is on disk. An omitted key
         means "leave the stored flag alone" on conflict and 0 on a fresh insert —
         see the comment on the conflict clause below.
+
+        A row that names its file (``telegram_file_id``) is written only where
+        that file belongs, checked in the same transaction as the write
+        (``_media_write_id``): a download that was still running when an edit
+        replaced the media never lands in the new media's row. None means
+        nothing was written to the message's current media.
         """
         async with self.db_manager.async_session_factory() as session:
+            media_id = media_data["id"]
+            if media_data.get("telegram_file_id") is not None:
+                media_id = await self._media_write_id(session, media_data, account_id=account_id)
+                if media_id is None:
+                    await session.commit()
+                    return None
             values = {
                 "account_id": account_id,
-                "id": media_data["id"],
+                "id": media_id,
                 "message_id": media_data.get("message_id"),
                 "chat_id": media_data.get("chat_id"),
                 "type": media_data["type"],
@@ -3236,6 +3283,104 @@ class DatabaseAdapter:
 
             await session.execute(stmt)
             await session.commit()
+            return media_id
+
+    async def _media_write_id(self, session, media_data: dict[str, Any], *, account_id: int) -> str | None:
+        """The media id a downloaded file may be written under, or None.
+
+        The caller asked ``reconcile_media_row`` for the id before it started
+        the download. An edit can replace the media in the meantime: the row
+        under that id then moved to ``media_versions`` and the message's
+        current media has another id and another file. So the file decides:
+
+        - the row under the id holds this file, or an unknown one: write there;
+        - the id was kept as an earlier media of this very file: its file
+          values are filled in the ``media_versions`` row, which had none,
+          and nothing is written to the current media;
+        - the message has another current media: nothing is written;
+        - the message has no media row: a new row, under the id unless a kept
+          version already holds it.
+        """
+        media_id = media_data["id"]
+        file_id = str(media_data["telegram_file_id"])
+        chat_id = media_data.get("chat_id")
+        message_id = media_data.get("message_id")
+        if chat_id is not None and message_id is not None:
+            # The lock _replace_media_row takes: the check below and the write
+            # after it cannot interleave with a replacement.
+            await self._load_message_for_update(session, account_id, chat_id, message_id)
+        row = (
+            await session.execute(
+                select(Media.telegram_file_id, Media.file_name).where(
+                    and_(Media.account_id == account_id, Media.id == media_id)
+                )
+            )
+        ).first()
+        if row is not None:
+            stored = stored_media_file_id(row.telegram_file_id, row.file_name)
+            if stored is None or stored == file_id:
+                return media_id
+            logger.debug("Media changed while it was downloading; the current media is left as it is")
+            return None
+        kept = (
+            await session.execute(
+                select(MediaVersion).where(
+                    and_(MediaVersion.account_id == account_id, MediaVersion.media_id == media_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if kept is not None and kept.telegram_file_id == file_id:
+            if media_data.get("downloaded") and not kept.downloaded:
+                await self._fill_media_version_file(session, kept.id, media_data)
+            return None
+        current = (
+            await session.execute(
+                select(Media.id)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.chat_id == chat_id,
+                        Media.message_id == message_id,
+                    )
+                )
+                .limit(1)
+            )
+        ).first()
+        if current is not None:
+            logger.debug("Media changed while it was downloading; the current media is left as it is")
+            return None
+        if kept is not None:
+            return await self._free_media_id(session, account_id, media_id)
+        return media_id
+
+    @staticmethod
+    async def _fill_media_version_file(session, version_id: int, media_data: dict[str, Any]) -> None:
+        """Give a kept media version the file a late download fetched for it.
+
+        Only a version with no file (kept while its download was still
+        running) is filled. Each value falls back to what the version holds,
+        as ``insert_media`` does on conflict.
+        """
+        values: dict[str, Any] = {"downloaded": 1}
+        for column in (
+            "file_path",
+            "file_name",
+            "file_size",
+            "mime_type",
+            "width",
+            "height",
+            "duration",
+            "content_hash",
+            "download_date",
+        ):
+            if media_data.get(column) is not None:
+                values[column] = media_data[column]
+        await session.execute(
+            update(MediaVersion)
+            .where(and_(MediaVersion.id == version_id, MediaVersion.downloaded == 0))
+            .values(**values)
+        )
+        logger.debug("Filled the file of an earlier media")
 
     async def find_media_by_content_hash(self, content_hash: str, *, account_id: int) -> dict[str, Any] | None:
         """Find an existing downloaded media record with the given SHA-256 content hash.
@@ -3813,7 +3958,9 @@ class DatabaseAdapter:
 
         Deliberately not scoped to one account: the shared store is keyed by
         (file_name, content_hash) with no account in the path, so a blob another
-        account's row points at must survive this account's cleanup.
+        account's row points at must survive this account's cleanup. Earlier
+        media an edit replaced (``media_versions``) count too: a kept version
+        whose file is the same blob keeps it.
         """
         hashes = [h for h in dict.fromkeys(content_hashes) if h]
         if not hashes:
@@ -3822,13 +3969,14 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             for start in range(0, len(hashes), 500):
                 chunk = hashes[start : start + 500]
-                stmt = (
-                    select(Media.content_hash, func.count())
-                    .where(Media.content_hash.in_(chunk))
-                    .group_by(Media.content_hash)
-                )
-                for content_hash, count in (await session.execute(stmt)).all():
-                    counts[content_hash] = count
+                for model in (Media, MediaVersion):
+                    stmt = (
+                        select(model.content_hash, func.count())
+                        .where(model.content_hash.in_(chunk))
+                        .group_by(model.content_hash)
+                    )
+                    for content_hash, count in (await session.execute(stmt)).all():
+                        counts[content_hash] = counts.get(content_hash, 0) + count
         return counts
 
     async def iter_media_for_verification(self, *, account_id: int, batch_size: int = 500):
@@ -4022,6 +4170,7 @@ class DatabaseAdapter:
         account_id: int,
         telegram_file_id: str | None = None,
         source: str | None = None,
+        edit_date: datetime | None = None,
     ) -> dict[str, Any] | None:
         """The media row this message already has, re-typed to the current
         judgement, or None when the message has no media row yet.
@@ -4031,7 +4180,13 @@ class DatabaseAdapter:
         id, an edit replaced the media: the row is kept as a ``media_versions``
         row and comes back empty under a new id, with ``"replaced": True``, so
         the caller downloads the new file into it (``_replace_media_row``).
-        ``source`` names the caller's path on the versions that writes.
+        ``source`` names the caller's path on the versions that writes, and
+        ``edit_date`` is the edit date of the message the caller read.
+
+        When the row holds another file and was not replaced (the caller's
+        read is older than the archived edit, or the row could not be kept),
+        it comes back with ``"superseded": True``: it holds other media than
+        the caller's, and the caller must not download into it.
 
         ``Media.id`` used to be minted fresh on every capture from
         ``{chat}_{msg}_{type}`` -- so it cached a JUDGEMENT (what kind of thing
@@ -4077,7 +4232,7 @@ class DatabaseAdapter:
             if row is None:
                 return None
             if telegram_file_id is not None:
-                stored = stored_media_file_id(row.telegram_file_id, row.file_name, row.message_id, row.type)
+                stored = stored_media_file_id(row.telegram_file_id, row.file_name)
                 if stored is not None and stored != str(telegram_file_id):
                     row_id = row.id
                     await session.rollback()
@@ -4089,11 +4244,20 @@ class DatabaseAdapter:
                         str(telegram_file_id),
                         account_id=account_id,
                         source=source,
+                        edit_date=edit_date,
                     )
                     if replaced is not None:
                         return replaced
-                    # Another writer replaced it first: return the row as it is now.
-                    return await self.reconcile_media_row(chat_id, message_id, media_type, account_id=account_id)
+                    # Not replaced here. Either another writer replaced it
+                    # first (the row now holds this file), or the read is
+                    # older than the archive, or the row could not be kept.
+                    # Only the first may take a download.
+                    current = await self.reconcile_media_row(chat_id, message_id, None, account_id=account_id)
+                    if current is not None:
+                        now = stored_media_file_id(current["telegram_file_id"], current["file_name"])
+                        if now is not None and now != str(telegram_file_id):
+                            current["superseded"] = True
+                    return current
             if media_type and row.type != media_type:
                 await session.execute(
                     update(Media)
@@ -4119,6 +4283,56 @@ class DatabaseAdapter:
                 "telegram_file_id": row.telegram_file_id,
             }
 
+    @staticmethod
+    def _is_current_read(message: Message, edit_date: datetime | None) -> bool:
+        """True unless a read of this message is older than its archived edit.
+
+        The rule ``_should_apply_edit_text`` applies to differing text: a read
+        with no edit date is current only for a message never edited, and a
+        read with one is current when it is not older than the archived edit.
+        """
+        archived = _strip_tz(message.edit_date)
+        read = _strip_tz(edit_date)
+        if archived is None:
+            return True
+        if read is None:
+            return False
+        return read >= archived
+
+    @staticmethod
+    async def _free_media_id(session, account_id: int, base: str) -> str:
+        """``{base}_v{n}`` with the lowest n above every one in use.
+
+        Checked against both tables: a media row and a kept version must never
+        share an id, and a row-level cleanup can leave gaps that a count of
+        versions would walk back into. A base that is itself re-keyed counts
+        from its own stem, so ids never grow a second suffix.
+        """
+        base = re.sub(r"_v[0-9]+$", "", base)
+        pattern = base.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + r"\_v%"
+        taken = set(
+            (
+                await session.execute(
+                    select(Media.id).where(and_(Media.account_id == account_id, Media.id.like(pattern, escape="\\")))
+                )
+            ).scalars()
+        )
+        taken.update(
+            (
+                await session.execute(
+                    select(MediaVersion.media_id).where(
+                        and_(MediaVersion.account_id == account_id, MediaVersion.media_id.like(pattern, escape="\\"))
+                    )
+                )
+            ).scalars()
+        )
+        highest = 0
+        for taken_id in taken:
+            suffix = taken_id[len(base) + 2 :]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+        return f"{base}_v{highest + 1}"
+
     @retry_on_locked()
     async def _replace_media_row(
         self,
@@ -4130,6 +4344,7 @@ class DatabaseAdapter:
         *,
         account_id: int,
         source: str | None,
+        edit_date: datetime | None = None,
     ) -> dict[str, Any] | None:
         """Keep a replaced media row as a version and free the row for the new file.
 
@@ -4144,8 +4359,14 @@ class DatabaseAdapter:
            file value cleared and ``downloaded=0``, so no later write can mix
            the old file into it. The caller downloads the new file into it.
 
-        Returns the row as the caller should use it, or None when the row is
-        gone or already holds this file (another path replaced it first).
+        ``edit_date`` is the edit date of the message the caller read. A read
+        older than the archived edit is stale evidence (the listener applied a
+        newer edit after the caller fetched the message), so it replaces
+        nothing, by the rule ``_should_apply_edit_text`` applies to text.
+
+        Returns the row as the caller should use it, or None when nothing was
+        replaced: the row is gone or already holds this file (another path
+        replaced it first), the read is stale, or the row could not be kept.
         """
         async with self.db_manager.async_session_factory() as session:
             message = await self._load_message_for_update(session, account_id, chat_id, message_id)
@@ -4160,8 +4381,11 @@ class DatabaseAdapter:
             ).scalar_one_or_none()
             if row is None:
                 return None
-            stored = stored_media_file_id(row.telegram_file_id, row.file_name, row.message_id, row.type)
+            stored = stored_media_file_id(row.telegram_file_id, row.file_name)
             if stored is None or stored == telegram_file_id:
+                return None
+            if not self._is_current_read(message, edit_date):
+                logger.debug("Media replacement refused: the read is older than the archived edit")
                 return None
 
             date = self._message_version_date(message)
@@ -4177,21 +4401,8 @@ class DatabaseAdapter:
                 rich_message=rich_message,
                 source=source,
             )
-            earlier = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(MediaVersion)
-                    .where(
-                        and_(
-                            MediaVersion.account_id == account_id,
-                            MediaVersion.chat_id == chat_id,
-                            MediaVersion.message_id == message_id,
-                        )
-                    )
-                )
-            ).scalar_one()
             new_type = media_type or row.type
-            new_id = f"{chat_id}_{message_id}_{new_type}_v{earlier + 1}"
+            new_id = await self._free_media_id(session, account_id, f"{chat_id}_{message_id}_{new_type}")
             try:
                 async with session.begin_nested():
                     await session.execute(
@@ -4239,8 +4450,9 @@ class DatabaseAdapter:
                         )
                     )
             except IntegrityError:
-                # A key already taken: nothing was changed. The caller keeps
-                # the row as it is, and the next read of the message tries again.
+                # A key already taken: nothing was changed. reconcile_media_row
+                # hands the row back as superseded, so no caller downloads the
+                # new media into it, and the next read of the message tries again.
                 await session.rollback()
                 logger.warning("Could not keep replaced media as a version; the row is unchanged")
                 return None

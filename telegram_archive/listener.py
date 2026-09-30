@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import weakref
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
@@ -969,7 +970,11 @@ class TelegramListener:
                 account_id=self.account_id,
                 telegram_file_id=telegram_file_id,
                 source="listener",
+                edit_date=getattr(message, "edit_date", None),
             )
+            if isinstance(existing, dict) and existing.get("superseded") is True:
+                # The archive already holds newer media for this message.
+                return None
             on_disk = (
                 resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
                 if existing and existing.get("downloaded")
@@ -1007,7 +1012,15 @@ class TelegramListener:
                 "telegram_file_id": telegram_file_id,
                 **media_attributes,
             }
-            await self.db.insert_media(media_row, account_id=self.account_id)
+            written_id = await self.db.insert_media(media_row, account_id=self.account_id)
+            if written_id is None:
+                # An edit replaced the media while this download ran: the file
+                # is not the message's current media (insert_media kept it
+                # with the earlier media when that is where it belongs).
+                return None
+            if isinstance(written_id, str):
+                media_id = written_id
+                media_row["id"] = written_id
             logger.debug("📎 Downloaded media")
             # A live voice message gets its transcript within seconds instead
             # of at the next drain.
@@ -1051,10 +1064,33 @@ class TelegramListener:
             account_id=self.account_id,
             telegram_file_id=telegram_file_id,
             source="listener",
+            edit_date=getattr(message, "edit_date", None),
         )
         if isinstance(row, dict) and row.get("replaced") is True:
             return media_type
         return None
+
+    def _message_media_lock(self, chat_id: int, message_id: int) -> asyncio.Lock:
+        """One lock per message for the handlers that write its media.
+
+        Telethon runs handlers concurrently, so an edit can arrive while the
+        new-message handler is still downloading the first file, or while an
+        earlier edit downloads its own. Without the lock the edit finds no
+        media row (or an old one) and the file it brings is never kept. The
+        new-message handler holds it from the message insert to the media
+        write, the edit handler from the media check to the new download.
+        Weak values: a lock no handler holds goes away with its last user.
+        """
+        locks = getattr(self, "_media_locks", None)
+        if locks is None:
+            locks = weakref.WeakValueDictionary()
+            self._media_locks = locks
+        key = (chat_id, message_id)
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
 
     async def _download_media(self, message, chat_id: int) -> tuple[str, str, str | None] | None:
         """
@@ -1237,34 +1273,37 @@ class TelegramListener:
                 edit_date = message.edit_date
                 edit_hide = message_edit_hide(message)
 
-                # An edit can replace the photo or file. The old media is kept as
-                # a version BEFORE the text moves, so the old media and the old
-                # text carry the same date in the edit history.
-                replaced_media_type = await self._keep_replaced_media(message, chat_id)
-
-                # Apply the edit immediately; count and broadcast only when the
-                # archive actually changed, so stats stay honest and the viewer
-                # never displays text the archive rejected as stale.
                 entities = message_entities(message)
-                outcome, prior = await self.db.update_message_text(
-                    chat_id=chat_id,
-                    message_id=message.id,
-                    new_text=new_text,
-                    edit_date=edit_date,
-                    account_id=self.account_id,
-                    edit_hide=edit_hide,
-                    entities=entities,
-                    update_entities=True,
-                    rich_message=message_rich_payload(message),
-                    source="listener",
-                    media_changed=replaced_media_type is not None,
-                )
-                # The new file, beside the kept one, under the same rules as a
-                # new message's media (SKIP_MEDIA, size, type filters).
-                if replaced_media_type is not None:
-                    capturable_type = self._capturable_media_type(message)
-                    if capturable_type is not None:
-                        await self._store_message_media(message, chat_id, capturable_type)
+                # Waits for a download of this message's media still running
+                # in another handler, so the check below sees its row.
+                async with self._message_media_lock(chat_id, message.id):
+                    # An edit can replace the photo or file. The old media is kept as
+                    # a version BEFORE the text moves, so the old media and the old
+                    # text carry the same date in the edit history.
+                    replaced_media_type = await self._keep_replaced_media(message, chat_id)
+
+                    # Apply the edit immediately; count and broadcast only when the
+                    # archive actually changed, so stats stay honest and the viewer
+                    # never displays text the archive rejected as stale.
+                    outcome, prior = await self.db.update_message_text(
+                        chat_id=chat_id,
+                        message_id=message.id,
+                        new_text=new_text,
+                        edit_date=edit_date,
+                        account_id=self.account_id,
+                        edit_hide=edit_hide,
+                        entities=entities,
+                        update_entities=True,
+                        rich_message=message_rich_payload(message),
+                        source="listener",
+                        media_changed=replaced_media_type is not None,
+                    )
+                    # The new file, beside the kept one, under the same rules as a
+                    # new message's media (SKIP_MEDIA, size, type filters).
+                    if replaced_media_type is not None:
+                        capturable_type = self._capturable_media_type(message)
+                        if capturable_type is not None:
+                            await self._store_message_media(message, chat_id, capturable_type)
                 if outcome == "not_found":
                     # The archive has not stored this message yet: the backup has
                     # not reached it, or it arrived while the listener was away.
@@ -1529,23 +1568,27 @@ class TelegramListener:
                 # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = self._capturable_media_type(message)
 
-                # Insert the message FIRST (required for FK constraint on media table)
-                await self.db.insert_message(message_data, account_id=self.account_id)
-                if not backfill:
-                    self.stats["new_messages_saved"] += 1
+                # Held until the media row is written: an edit of this message
+                # arriving meanwhile waits, and then finds the row (see
+                # _message_media_lock).
+                async with self._message_media_lock(chat_id, message.id):
+                    # Insert the message FIRST (required for FK constraint on media table)
+                    await self.db.insert_message(message_data, account_id=self.account_id)
+                    if not backfill:
+                        self.stats["new_messages_saved"] += 1
 
-                # New messages can arrive already carrying reactions (fast reactors,
-                # forwarded content). Buffer them now that the row exists (#221).
-                # overwrite=False: the awaits above (insert_message etc.) opened a
-                # window in which the live reaction handler may have buffered a
-                # FRESHER snapshot for this message — our event-time capture must
-                # not clobber it (review finding, reproduced).
-                self._buffer_reaction_snapshot(chat_id, message, overwrite=False)
+                    # New messages can arrive already carrying reactions (fast reactors,
+                    # forwarded content). Buffer them now that the row exists (#221).
+                    # overwrite=False: the awaits above (insert_message etc.) opened a
+                    # window in which the live reaction handler may have buffered a
+                    # FRESHER snapshot for this message — our event-time capture must
+                    # not clobber it (review finding, reproduced).
+                    self._buffer_reaction_snapshot(chat_id, message, overwrite=False)
 
-                # v6.0.0: Handle media - create Media record AFTER message exists
-                # ws_media mirrors the API row's nested media dict for the WS notify payload
-                # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
-                ws_media = await self._store_message_media(message, chat_id, media_type) if media_type else None
+                    # v6.0.0: Handle media - create Media record AFTER message exists
+                    # ws_media mirrors the API row's nested media dict for the WS notify payload
+                    # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
+                    ws_media = await self._store_message_media(message, chat_id, media_type) if media_type else None
 
                 # Send real-time notification (enriched to mirror the API row shape so the
                 # viewer can render sender name + media immediately instead of a bare row

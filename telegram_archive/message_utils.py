@@ -1783,25 +1783,27 @@ def media_file_id(media: object) -> str | None:
 
 # The Telegram file id a stored file name starts with: ``build_media_filename``
 # writes ``<file_id>_<name>`` and ``fallback_media_filename`` ``<file_id>.<ext>``.
-_STORED_FILE_ID_RE = re.compile(r"^(-?[0-9]+)[._]")
+# Telegram's photo and document ids are random 64-bit numbers, so a real one
+# has far more than 12 digits. Older releases started names with a message id
+# (``<message_id>_<original>``, ``<message_id>_<YYYYmmdd_HHMMSS>.<ext>``), a
+# date (``<YYYYmmdd_HHMMSS>_<message_id>.<ext>``) or the sender's own name, and
+# the name for media without a file id is ``<message_id>_<type>.<ext>``. None
+# of those has 12 digits before the first separator, so none reads as an id.
+_STORED_FILE_ID_RE = re.compile(r"^(-?[0-9]{12,})[._]")
 
 
-def stored_media_file_id(
-    telegram_file_id: str | None, file_name: str | None, message_id: int | None, media_type: str | None
-) -> str | None:
+def stored_media_file_id(telegram_file_id: str | None, file_name: str | None) -> str | None:
     """The Telegram file id an archived media row holds, or None when unknown.
 
     Rows written since migration 036 carry it in ``telegram_file_id``. Older
     rows written by the sweep or the listener carry it as the first part of
     their file name, so it is read from there. Unknown stays unknown: an
-    imported row (``import_…``), a row with no file name, and the fallback name
-    ``<message_id>_<type>.<ext>`` given to media without a file id.
+    imported row (``import_…``), a row with no file name, and every older name
+    shape (see ``_STORED_FILE_ID_RE``).
     """
     if telegram_file_id:
         return str(telegram_file_id)
     if not file_name:
-        return None
-    if message_id is not None and media_type and file_name.startswith(f"{message_id}_{media_type}."):
         return None
     match = _STORED_FILE_ID_RE.match(file_name)
     return match.group(1) if match else None

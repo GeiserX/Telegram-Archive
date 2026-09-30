@@ -238,7 +238,7 @@ Each earlier version of an edited message has these fields:
 | `source` | The path that saw it: `listener`, `sync`, `backup` or `import`. Null for a version archived before the archive kept it: unknown. |
 | `entities` | The formatting of that version, in the shape of the message's `raw_data.entities`: `[{type, offset, length, ...}]`. Null when it had none, or for a version archived before the archive kept it. |
 | `rich_message` | The block tree of a Rich Text Editor message, in the shape of the message's `raw_data.rich_message`. Null when that version had none. |
-| `media` | Present only when an edit replaced the message's photo or file: the media this version was shown with, as `[{type, file_name, file_size, mime_type, width, height, duration, downloaded, date, captured_at, source, url}]`. `url` is `/media/{chat_ref}/{message_id}_v{n}`, or null when the file was not downloaded; a login without downloads gets `url` null and `no_download` true. |
+| `media` | Present only when an edit replaced the message's photo or file: the media this version was shown with, as `[{type, file_name, file_size, mime_type, width, height, duration, downloaded, date, captured_at, source, url}]`. `url` is `/media/{chat_ref}/{message_id}_v{n}`, where `n` counts the message's earlier media in the order they were kept, from 1. It is null when the file was not downloaded; a login without downloads gets `url` null and `no_download` true. |
 | `media_only` | True on an entry that holds only earlier media, when the text version of that moment could not be written. Its `text` is null. |
 
 Only the listener sees each edit as it happens, and only while it runs: edits made while it was away reach it as one. The sync, a backup and an import read the text current at that moment, so several edits between two reads leave one version. When any version has one of those sources, or no source, the number of versions is a lower bound on the number of edits. The same holds when the oldest version's `date` is later than the message's `date`: the archive first saw the message already edited.
@@ -277,7 +277,7 @@ curl -s -b jar.txt 'http://localhost:8000/api/changes?since=2026-09-28T00:00:00Z
 
 ## Media
 
-A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route. An earlier photo or file an edit replaced has the key `{message_id}_v{n}`, from the `url` of its [message version](#message-versions). It works on the file, thumbnail and open routes, and the transcript routes read its transcripts; asking for a new transcript of it answers 404.
+A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route. An earlier photo or file an edit replaced has the key `{message_id}_v{n}`, from the `url` of its [message version](#message-versions): `n` is its place among the message's earlier media, 1 for the first one kept. It works on the file, thumbnail and open routes, and the transcript routes read its transcripts; asking for a new transcript of it answers 404. A key for an earlier media the message does not have answers 404.
 
 | Method and path | Login | Purpose |
 |-----------------|-------|---------|
@@ -290,7 +290,7 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 | `POST /media/open/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_CMD` on the file, on the viewer's host |
 | `POST /media/open-path/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_PATH_CMD` on the file, on the viewer's host |
 
-The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment. Media responses carry `Cache-Control: private`. Thumbnails and avatars add `max-age=86400`.
+The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment. Media responses carry `Cache-Control: private`. Thumbnails and avatars add `max-age=86400`. After an edit replaced a message's media, the `url` of its current media carries `?v={n}`, so a browser never shows cached bytes of the old media under it. The routes ignore the parameter; add `download=1` with `&`.
 
 The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`, and the message's `text`, `is_deleted` and `deleted_at`.
 

@@ -4625,8 +4625,27 @@ class TestAudioBubbleDownload(unittest.TestCase):
     def test_download_is_a_real_anchor_gated_on_no_download(self) -> None:
         bubble = self._audio_bubble()
         self.assertIn('v-if="!noDownload && getMediaUrl(msg)"', bubble)
-        self.assertIn(":href=\"getMediaUrl(msg) + '?download=1'\"", bubble)
+        self.assertIn(':href="mediaDownloadUrl(getMediaUrl(msg))"', bubble)
         self.assertIn(':download="getDocumentDisplayName(msg)"', bubble)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_the_download_flag_joins_a_url_that_has_a_query(self) -> None:
+        """The current media's URL carries ``?v=`` once an edit replaced the
+        media, so ``download=1`` must join it with ``&``, not start a second query."""
+        urls = ["/media/audioChatRef07AB/3_voice", "/media/audioChatRef07AB/3_voice?v=1", ""]
+        joined = _run_setup_helpers(
+            self.html,
+            ("const mediaDownloadUrl = (url) =>",),
+            f"{json.dumps(urls)}.map(mediaDownloadUrl)",
+        )
+        self.assertEqual(
+            joined,
+            [
+                "/media/audioChatRef07AB/3_voice?download=1",
+                "/media/audioChatRef07AB/3_voice?v=1&download=1",
+                "",
+            ],
+        )
 
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_the_url_term_of_the_guard_is_load_bearing(self) -> None:

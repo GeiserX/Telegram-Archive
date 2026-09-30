@@ -7357,7 +7357,7 @@
                                             <span class="block truncate text-[15px] leading-5 text-tg-ink">{{ getMediaDisplayName(item) }}</span>
                                             <span class="block text-[13px] leading-[18px] text-tg-muted tabular-nums">{{ [formatBytes(item.file_size), formatMediaDate(item.message_date)].filter(Boolean).join(' · ') }}</span>
                                         </span>
-                                        <a v-if="item.media_url && !noDownload" :href="item.media_url + '?download=1'" download @click.stop
+                                        <a v-if="item.media_url && !noDownload" :href="mediaDownloadUrl(item.media_url)" download @click.stop
                                             class="tg-icon-btn" :aria-label="`Download ${getMediaDisplayName(item)}`" title="Download">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1"/><path d="m8 12 4 4 4-4"/><path d="M12 4v12"/></svg>
                                         </a>
@@ -7804,7 +7804,7 @@
                                                          transcript button, in its shape; 8px from it so
                                                          their 40px hit areas meet and do not overlap. -->
                                                     <a v-if="!noDownload && getMediaUrl(msg)"
-                                                        :href="getMediaUrl(msg) + '?download=1'"
+                                                        :href="mediaDownloadUrl(getMediaUrl(msg))"
                                                         :download="getDocumentDisplayName(msg)"
                                                         @click.stop
                                                         :aria-label="'Download ' + getDocumentDisplayName(msg)"
@@ -8015,7 +8015,7 @@
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] text-tg-meta">
                                                 <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
-                                                <a v-if="!noDownload" :href="getMediaUrl(msg) + '?download=1'" download
+                                                <a v-if="!noDownload" :href="mediaDownloadUrl(getMediaUrl(msg))" download
                                                     class="text-tg-quote hover:underline whitespace-nowrap">
                                                     Download
                                                 </a>
@@ -8027,7 +8027,7 @@
                                              its name; an audio file takes the audio bubble above. -->
                                         <div v-else>
                                             <div class="flex items-center gap-2">
-                                                <a :href="noDownload ? '#' : getMediaUrl(msg) + '?download=1'" :download="!noDownload"
+                                                <a :href="noDownload ? '#' : mediaDownloadUrl(getMediaUrl(msg))" :download="!noDownload"
                                                     :class="{'pointer-events-none opacity-60': noDownload}"
                                                     class="flex-1 min-w-0 flex items-center gap-2 bg-tg-quote-bg p-2 rounded ring-inset hover:ring-1 hover:ring-tg-quote/60 transition">
                                                     <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
@@ -8643,7 +8643,7 @@
                                 </button>
                             </div>
                             <div class="flex flex-wrap gap-1 px-1">
-                                <a v-if="!noDownload && getMediaUrl(mediaMsg)" :href="getMediaUrl(mediaMsg) + '?download=1'" download class="tg-text-btn">Download</a>
+                                <a v-if="!noDownload && getMediaUrl(mediaMsg)" :href="mediaDownloadUrl(getMediaUrl(mediaMsg))" download class="tg-text-btn">Download</a>
                                 <button v-if="canOpenMedia.file && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open')" class="tg-text-btn">Open</button>
                                 <button v-if="canOpenMedia.path && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open-path')" class="tg-text-btn">Show in folder</button>
                             </div>
@@ -8879,7 +8879,7 @@
             </button>
 
             <!-- Download Button -->
-            <a v-if="lightboxMedia && !noDownload && !lightboxMedia.isAvatar" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
+            <a v-if="lightboxMedia && !noDownload && !lightboxMedia.isAvatar" :href="mediaDownloadUrl(getMediaUrl(lightboxMedia))" download
                 aria-label="Download"
                 class="lightbox-control absolute right-16 z-60 w-11 h-11 flex items-center justify-center rounded-full text-tg-on-scrim bg-tg-on-scrim/[0.12] hover:bg-tg-on-scrim/20 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-on-scrim">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -16414,6 +16414,13 @@
                     return msg.media?.url || ''
                 }
 
+                // The current media's URL can carry ?v= (it changes when an edit
+                // replaces the media), so the download flag joins the query.
+                const mediaDownloadUrl = (url) => {
+                    if (!url) return ''
+                    return url + (url.includes('?') ? '&' : '?') + 'download=1'
+                }
+
                 // The rows' own rule (video, animation and round video notes all render as
                 // <video>), plus the MIME hint isImageDocument also honours for documents.
                 const isVideoMedia = (msg) => {
@@ -19012,6 +19019,7 @@
                     versionEntries,
                     formatReactionEmoji,
                     getMediaUrl,
+                    mediaDownloadUrl,
                     isVideoMedia,
                     getMediaDisplayName,
                     getDocumentDisplayName,
