@@ -46,20 +46,17 @@ async def test_export_to_json_writes_correct_structure():
     temp_dir = tempfile.mkdtemp()
     try:
         mock_db = AsyncMock()
-        mock_db.get_messages_by_date_range = AsyncMock(
-            return_value=[
-                {"id": 1, "chat_id": -100123, "text": "hello", "date": "2024-01-01"},
-                {"id": 2, "chat_id": -100123, "text": "world", "date": "2024-01-02"},
-            ]
+        # Every kept version of message 1 sits under it, beside the flat list.
+        kept = [{"text": "helo", "date": datetime(2024, 1, 1), "captured_at": datetime(2024, 1, 1, 0, 5)}]
+        mock_db.get_messages_and_versions_by_date_range = AsyncMock(
+            return_value=(
+                [
+                    {"id": 1, "chat_id": -100123, "text": "hello", "date": "2024-01-01", "versions": kept},
+                    {"id": 2, "chat_id": -100123, "text": "world", "date": "2024-01-02", "versions": []},
+                ],
+                [{"id": 1, "chat_id": -100123, "message_id": 1, "text": "helo", "date": "2024-01-01"}],
+            )
         )
-        mock_db.get_message_versions_by_date_range = AsyncMock(
-            return_value=[
-                {"id": 1, "chat_id": -100123, "message_id": 1, "text": "helo", "date": "2024-01-01"},
-            ]
-        )
-        # Every kept version of message 1, under it; the key names the account too.
-        kept = [{"text": "helo", "date": "2024-01-01T00:00:00", "captured_at": "2024-01-01T00:05:00"}]
-        mock_db.get_versions_of_messages_by_date_range = AsyncMock(return_value={(None, -100123, 1): kept})
         # A voice transcript of message 2's media (docs/TRANSCRIPTION.md).
         transcript = {"id": 9, "chat_id": -100123, "message_id": 2, "status": "done", "text": "fixture voice words"}
         mock_db.get_transcripts_for_export = AsyncMock(return_value=[transcript])
@@ -86,9 +83,12 @@ async def test_export_to_json_writes_correct_structure():
         assert len(data["messages"]) == 2
         assert "transcripts" not in data["messages"][0]
         assert data["messages"][1]["transcripts"] == [transcript]
-        assert data["messages"][0]["versions"] == kept
+        # Written like every other date of the file (json.dump default=str).
+        assert data["messages"][0]["versions"] == [
+            {"text": "helo", "date": "2024-01-01 00:00:00", "captured_at": "2024-01-01 00:05:00"}
+        ]
         assert data["messages"][1]["versions"] == []
-        mock_db.get_versions_of_messages_by_date_range.assert_awaited_once_with(None, None, None)
+        mock_db.get_messages_and_versions_by_date_range.assert_awaited_once_with(None, None, None)
         mock_db.get_transcripts_for_export.assert_awaited_once_with(None)
         assert len(data["message_versions"]) == 1
         assert len(data["chats"]) == 1
@@ -105,8 +105,7 @@ async def test_export_to_json_with_date_filters():
     temp_dir = tempfile.mkdtemp()
     try:
         mock_db = AsyncMock()
-        mock_db.get_messages_by_date_range = AsyncMock(return_value=[])
-        mock_db.get_message_versions_by_date_range = AsyncMock(return_value=[])
+        mock_db.get_messages_and_versions_by_date_range = AsyncMock(return_value=([], []))
         mock_db.get_all_chats = AsyncMock(return_value=[])
 
         exporter = BackupExporter(mock_db)
@@ -114,15 +113,7 @@ async def test_export_to_json_with_date_filters():
 
         await exporter.export_to_json(output_file, chat_id=123, start_date="2024-01-01", end_date="2024-06-30")
 
-        mock_db.get_messages_by_date_range.assert_awaited_once()
-        call_args = mock_db.get_messages_by_date_range.call_args
-        assert call_args[0][0] == 123
-        assert call_args[0][1] == datetime(2024, 1, 1)
-        assert call_args[0][2] == datetime(2024, 6, 30)
-        mock_db.get_message_versions_by_date_range.assert_awaited_once_with(
-            123, datetime(2024, 1, 1), datetime(2024, 6, 30)
-        )
-        mock_db.get_versions_of_messages_by_date_range.assert_awaited_once_with(
+        mock_db.get_messages_and_versions_by_date_range.assert_awaited_once_with(
             123, datetime(2024, 1, 1), datetime(2024, 6, 30)
         )
 
@@ -141,8 +132,7 @@ async def test_export_to_json_creates_parent_directories():
     temp_dir = tempfile.mkdtemp()
     try:
         mock_db = AsyncMock()
-        mock_db.get_messages_by_date_range = AsyncMock(return_value=[])
-        mock_db.get_message_versions_by_date_range = AsyncMock(return_value=[])
+        mock_db.get_messages_and_versions_by_date_range = AsyncMock(return_value=([], []))
         mock_db.get_all_chats = AsyncMock(return_value=[])
 
         exporter = BackupExporter(mock_db)

@@ -102,9 +102,6 @@ SUPERGROUP_ID_CEILING = -(10**12)
 TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
 TRANSCRIPT_TERMINAL_STATUSES = frozenset({"done", "failed", "skipped"})
 TRANSCRIPT_MAX_FAILED_ROWS = 3
-# The chat export reads the kept versions of this many messages per query, so
-# a chat's edit history is never loaded into memory at once.
-EXPORT_VERSIONS_BATCH = 500
 TRANSCRIPT_JSON_COLUMNS = frozenset({"models", "words", "segments"})
 TRANSCRIPT_FILL_COLUMNS = frozenset(
     {
@@ -1603,25 +1600,71 @@ class DatabaseAdapter:
         export tells them apart by the account.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Message)
-
-            conditions = []
-            if account_id is not None:
-                conditions.append(Message.account_id == account_id)
-            if chat_id:
-                conditions.append(Message.chat_id == chat_id)
-            if start_date:
-                conditions.append(Message.date >= start_date)
-            if end_date:
-                conditions.append(Message.date <= end_date)
-
-            if conditions:
-                stmt = stmt.where(and_(*conditions))
-
-            stmt = stmt.order_by(Message.date.asc())
-
+            stmt = (
+                select(Message)
+                .where(*self._date_range_conditions(chat_id, start_date, end_date, account_id))
+                .order_by(Message.date.asc())
+            )
             result = await session.execute(stmt)
             return [{**self._message_to_dict(m), "account_id": m.account_id} for m in result.scalars()]
+
+    @staticmethod
+    def _date_range_conditions(
+        chat_id: int | None,
+        start_date: datetime | None,
+        end_date: datetime | None,
+        account_id: int | None,
+    ) -> list:
+        """The message filters of ``get_messages_by_date_range``, both ends inclusive."""
+        conditions = []
+        if account_id is not None:
+            conditions.append(Message.account_id == account_id)
+        if chat_id:
+            conditions.append(Message.chat_id == chat_id)
+        if start_date:
+            conditions.append(Message.date >= start_date)
+        if end_date:
+            conditions.append(Message.date <= end_date)
+        return conditions
+
+    async def get_messages_and_versions_by_date_range(
+        self,
+        chat_id: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        *,
+        account_id: int | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """What ``telegram-archive export`` writes, read from one snapshot.
+
+        First the messages ``get_messages_by_date_range`` returns, each with
+        ``versions``: every earlier text the archive kept of it, whatever the
+        version's date, oldest first, with ``text``, ``date`` and
+        ``captured_at``. The dates stay datetimes, as every other date of that
+        file does. Then the flat list ``get_message_versions_by_date_range``
+        returns, picked by the version's own date. One snapshot, so a backup
+        writing meanwhile cannot make a message and its versions disagree.
+        """
+        conditions = self._date_range_conditions(chat_id, start_date, end_date, account_id)
+        async with self.db_manager.async_session_factory() as session:
+            await self._read_one_snapshot(session)
+            versions: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+            for row in await session.execute(self._versions_of_messages_query(conditions)):
+                versions.setdefault((row.account_id, row.chat_id, row.message_id), []).append(
+                    {"text": row.text, "date": row.date, "captured_at": row.captured_at}
+                )
+            result = await session.execute(select(Message).where(*conditions).order_by(Message.date.asc()))
+            messages = [
+                {
+                    **self._message_to_dict(m),
+                    "account_id": m.account_id,
+                    "versions": versions.get((m.account_id, m.chat_id, m.id), []),
+                }
+                for m in result.scalars()
+            ]
+            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
+            message_versions = [self._message_version_to_dict(row) for row in result.scalars()]
+        return messages, message_versions
 
     async def find_message_by_date(
         self, chat_id: int, target_date: datetime, *, account_id: int | None = None
@@ -2153,12 +2196,13 @@ class DatabaseAdapter:
         }
 
     @staticmethod
-    def _export_version_dict(row: MessageVersion) -> dict[str, Any]:
-        """One earlier version as the exports list it under its message.
+    def _export_version_dict(row) -> dict[str, Any]:
+        """One earlier version as the viewer's export lists it under its message.
 
         ``date`` is when that text was current in Telegram (the edit that
         produced it, or the send), ``captured_at`` when the archive saw it
-        replaced. Both columns are NOT NULL.
+        replaced. Both columns are NOT NULL. ISO 8601, like every other date
+        the viewer's export writes.
         """
         return {
             "text": row.text,
@@ -2166,36 +2210,58 @@ class DatabaseAdapter:
             "captured_at": row.captured_at.isoformat(),
         }
 
-    async def _attach_export_versions(
-        self,
-        session,
-        chat_id: int,
-        account_id: int | None,
-        batch: list[tuple[int, dict[str, Any]]],
-    ) -> list[dict[str, Any]]:
-        """Give each exported message of ``batch`` its kept versions, oldest first.
+    @staticmethod
+    def _versions_of_messages_query(message_conditions: list):
+        """Every kept version of the messages ``message_conditions`` pick, in export order.
 
-        ``batch`` pairs a message's account with its export dict. One query
-        per batch keeps the export streaming: only this batch's versions are
-        in memory. Unscoped, two accounts can hold the same message id in one
-        chat, so versions are matched by account and message id.
+        The conditions apply to the message (its chat, account and date), not
+        to the version, so a message in a date window keeps all its versions.
+        Rows come in the order the viewer's export lists messages (date,
+        account, id), each message's versions oldest first, so a reader can
+        walk them beside the messages.
         """
-        stmt = (
-            select(MessageVersion)
-            .where(
-                MessageVersion.chat_id == chat_id,
-                MessageVersion.message_id.in_([msg["id"] for _, msg in batch]),
+        return (
+            select(
+                MessageVersion.account_id,
+                MessageVersion.chat_id,
+                MessageVersion.message_id,
+                MessageVersion.text,
+                MessageVersion.date,
+                MessageVersion.captured_at,
             )
-            .order_by(MessageVersion.date.asc(), MessageVersion.id.asc())
+            .join(
+                Message,
+                and_(
+                    Message.account_id == MessageVersion.account_id,
+                    Message.chat_id == MessageVersion.chat_id,
+                    Message.id == MessageVersion.message_id,
+                ),
+            )
+            .where(*message_conditions)
+            .order_by(
+                Message.date.asc(),
+                Message.account_id.asc(),
+                Message.id.asc(),
+                MessageVersion.date.asc(),
+                MessageVersion.id.asc(),
+            )
         )
-        if account_id is not None:
-            stmt = stmt.where(MessageVersion.account_id == account_id)
-        versions: dict[tuple[int, int], list[dict[str, Any]]] = {}
-        for row in (await session.execute(stmt)).scalars():
-            versions.setdefault((row.account_id, row.message_id), []).append(self._export_version_dict(row))
-        for message_account_id, msg in batch:
-            msg["versions"] = versions.get((message_account_id, msg["id"]), [])
-        return [msg for _, msg in batch]
+
+    async def _read_one_snapshot(self, session) -> None:
+        """Make every read ``session`` runs from here on see the same archive state.
+
+        The exports read a message and its kept versions in separate
+        statements. Under PostgreSQL's default READ COMMITTED each statement
+        takes its own snapshot, so an edit landing between them would export
+        the old text beside a version holding that same text. REPEATABLE READ
+        gives the whole transaction one snapshot. SQLite's driver begins a
+        transaction only before a write, so an explicit deferred BEGIN does
+        the same there. Call it before the session runs anything.
+        """
+        if self._is_sqlite:
+            await session.execute(text("BEGIN"))
+        else:
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
     async def get_message_versions(
         self, chat_id: int, message_id: int, limit: int = 100, *, account_id: int | None = None
@@ -2534,48 +2600,6 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
             return [self._message_version_to_dict(row) for row in result.scalars()]
-
-    async def get_versions_of_messages_by_date_range(
-        self,
-        chat_id: int | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        *,
-        account_id: int | None = None,
-    ) -> dict[tuple[int, int, int], list[dict[str, Any]]]:
-        """Every kept version of the messages ``get_messages_by_date_range`` returns.
-
-        Same filters, applied to the message (its date, not the version's), so
-        a message in the window gets all its versions. Keyed by
-        ``(account_id, chat_id, message_id)``, each list oldest first in the
-        ``_export_version_dict`` shape.
-        """
-        async with self.db_manager.async_session_factory() as session:
-            stmt = select(MessageVersion).join(
-                Message,
-                and_(
-                    Message.account_id == MessageVersion.account_id,
-                    Message.chat_id == MessageVersion.chat_id,
-                    Message.id == MessageVersion.message_id,
-                ),
-            )
-            conditions = []
-            if account_id is not None:
-                conditions.append(Message.account_id == account_id)
-            if chat_id:
-                conditions.append(Message.chat_id == chat_id)
-            if start_date:
-                conditions.append(Message.date >= start_date)
-            if end_date:
-                conditions.append(Message.date <= end_date)
-            if conditions:
-                stmt = stmt.where(and_(*conditions))
-            stmt = stmt.order_by(MessageVersion.date.asc(), MessageVersion.id.asc())
-            versions: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-            for row in (await session.execute(stmt)).scalars():
-                key = (row.account_id, row.chat_id, row.message_id)
-                versions.setdefault(key, []).append(self._export_version_dict(row))
-            return versions
 
     async def iter_message_versions_for_export(
         self,
@@ -5838,6 +5862,16 @@ class DatabaseAdapter:
             chat_id, account_id=account_id, from_date=from_date, to_date=to_date
         ):
             transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
+        conditions = [Message.chat_id == chat_id]
+        if account_id is not None:
+            conditions.append(Message.account_id == account_id)
+        if from_date is not None:
+            conditions.append(Message.date >= from_date)
+        if to_date is not None:
+            conditions.append(Message.date < to_date)
+        # Unique per message within the chat, so the versions query below
+        # returns its rows in exactly this order.
+        order = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
         async with self.db_manager.async_session_factory() as session:
             if include_media:
                 stmt = (
@@ -5867,8 +5901,8 @@ class DatabaseAdapter:
                             Media.chat_id == Message.chat_id,
                         ),
                     )
-                    .where(Message.chat_id == chat_id)
-                    .order_by(Message.date.asc())
+                    .where(*conditions)
+                    .order_by(*order)
                 )
             else:
                 stmt = (
@@ -5888,20 +5922,28 @@ class DatabaseAdapter:
                         User.username,
                     )
                     .outerjoin(User, Message.sender_id == User.id)
-                    .where(Message.chat_id == chat_id)
-                    .order_by(Message.date.asc())
+                    .where(*conditions)
+                    .order_by(*order)
                 )
 
-            if account_id is not None:
-                stmt = stmt.where(Message.account_id == account_id)
-            if from_date is not None:
-                stmt = stmt.where(Message.date >= from_date)
-            if to_date is not None:
-                stmt = stmt.where(Message.date < to_date)
-
+            await self._read_one_snapshot(session)
             result = await session.stream(stmt)
-            batch: list[tuple[int, dict[str, Any]]] = []
+            # The kept versions walk beside the messages, in the same order,
+            # so only the current message's versions are ever in memory,
+            # however long a chat's edit history is.
+            versions = await session.stream(self._versions_of_messages_query(conditions))
+            pending = await anext(versions, None)
+            last_key: tuple[int, int] | None = None
+            last_versions: list[dict[str, Any]] = []
             async for row in result:
+                key = (row.account_id, row.id)
+                if key != last_key:
+                    # With media a message repeats once per media row, and
+                    # every copy carries the same versions.
+                    last_key, last_versions = key, []
+                    while pending is not None and (pending.account_id, pending.message_id) == key:
+                        last_versions.append(self._export_version_dict(pending))
+                        pending = await anext(versions, None)
                 msg = {
                     "id": row.id,
                     "date": row.date.isoformat() if row.date else None,
@@ -5917,7 +5959,7 @@ class DatabaseAdapter:
                     "reply_to": row.reply_to_msg_id,
                     # What the viewer shows beside the text: deleted in
                     # Telegram and kept here, and when Telegram last marked
-                    # it edited. ``versions`` is filled per batch below.
+                    # it edited.
                     "is_deleted": bool(row.is_deleted),
                     "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
                     "edit_date": row.edit_date.isoformat() if row.edit_date else None,
@@ -5927,14 +5969,8 @@ class DatabaseAdapter:
                     msg["media_path"] = row.media_file_path
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
-                batch.append((row.account_id, msg))
-                if len(batch) >= EXPORT_VERSIONS_BATCH:
-                    for exported in await self._attach_export_versions(session, chat_id, account_id, batch):
-                        yield exported
-                    batch = []
-            if batch:
-                for exported in await self._attach_export_versions(session, chat_id, account_id, batch):
-                    yield exported
+                msg["versions"] = list(last_versions)
+                yield msg
 
     # ========== Forum Topic Operations (v6.2.0) ==========
 

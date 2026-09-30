@@ -7,11 +7,15 @@ the message they belong to. Without them an exported chat reads as a live
 Telegram chat. Runs on SQLite and PostgreSQL (``real_adapter``).
 """
 
+import hashlib
 import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from telegram_archive.db import adapter as adapter_module
+from sqlalchemy import Select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from telegram_archive.db.models import MessageVersion
 from telegram_archive.export_backup import BackupExporter
 
 CHAT = -420800001
@@ -39,6 +43,41 @@ async def _seed(adapter) -> None:
     await _message(adapter, 3, "never changed")
     await _message(adapter, 1, "other account draft", account_id=2)
     await adapter.update_message_text(CHAT, 1, "other account final", FIRST_EDIT, account_id=2)
+
+
+async def _store_backfilled_version(adapter, message_id: int, text: str, when: datetime) -> None:
+    """A version stored after the others whose Telegram date is older, as a late backfill stores it."""
+    async with adapter.db_manager.async_session_factory() as session:
+        session.add(
+            MessageVersion(
+                account_id=1,
+                chat_id=CHAT,
+                message_id=message_id,
+                text=text,
+                date=when,
+                change_hash=hashlib.sha256(text.encode()).hexdigest(),
+            )
+        )
+        await session.commit()
+
+
+def _edit_after_first_read(adapter, method: str):
+    """Edit message 3 through another session right after the export's first read.
+
+    ``method`` is the AsyncSession method the export reads with: ``stream``
+    for the viewer's export, ``execute`` for the command's.
+    """
+    original = getattr(AsyncSession, method)
+    edited: list[bool] = []
+
+    async def read_then_edit(session, statement, *args, **kwargs):
+        result = await original(session, statement, *args, **kwargs)
+        if isinstance(statement, Select) and not edited:
+            edited.append(True)
+            await adapter.update_message_text(CHAT, 3, "changed during export", DELETED, account_id=1)
+        return result
+
+    return patch.object(AsyncSession, method, read_then_edit)
 
 
 class TestViewerExport:
@@ -93,27 +132,56 @@ class TestViewerExport:
         exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, **window)]
         assert [(m["id"], [v["text"] for v in m["versions"]]) for m in exported] == [(4, ["inside", "edited later"])]
 
-    async def test_versions_are_read_per_batch_while_the_messages_stream(self, real_adapter):
-        """A chat's versions are never read in one go: one query per batch, in message order."""
-        for message_id in range(1, 6):
-            await _message(real_adapter, message_id, f"draft {message_id}", when=SENT + timedelta(minutes=message_id))
-            await real_adapter.update_message_text(
-                CHAT, message_id, f"final {message_id}", SENT + timedelta(hours=message_id), account_id=1
-            )
-        attach = real_adapter._attach_export_versions
-        with (
-            patch.object(adapter_module, "EXPORT_VERSIONS_BATCH", 2),
-            patch.object(real_adapter, "_attach_export_versions", wraps=attach) as spy,
-        ):
+    async def test_only_the_current_messages_versions_are_read_into_memory(self, real_adapter):
+        """Versions stream beside the messages: a long edit history is never read in one go."""
+        edits = {1: 2, 2: 30, 3: 1}
+        for message_id, count in edits.items():
+            await _message(real_adapter, message_id, f"draft {message_id}.0", when=SENT + timedelta(minutes=message_id))
+            for n in range(1, count + 1):
+                await real_adapter.update_message_text(
+                    CHAT,
+                    message_id,
+                    f"draft {message_id}.{n}",
+                    SENT + timedelta(hours=message_id, seconds=n),
+                    account_id=1,
+                )
+        with patch.object(real_adapter, "_export_version_dict", wraps=real_adapter._export_version_dict) as built:
             stream = real_adapter.get_messages_for_export(CHAT, account_id=1)
-            first = await anext(stream)
-            assert spy.await_count == 1  # the first batch left before the chat was read
-            rest = [m async for m in stream]
-        assert spy.await_count == 3  # batches of 2, 2 and 1
-        exported = [first, *rest]
+            exported = [await anext(stream)]
+            assert built.call_count == 2  # message 1's versions, none of message 2's yet
+            exported.append(await anext(stream))
+            assert built.call_count == 32
+            exported += [m async for m in stream]
+        assert [(m["id"], len(m["versions"])) for m in exported] == [(1, 2), (2, 30), (3, 1)]
+        assert [v["text"] for v in exported[1]["versions"]] == [f"draft 2.{n}" for n in range(30)]
+
+    async def test_versions_come_in_telegram_date_order_not_capture_order(self, real_adapter):
+        await _seed(real_adapter)
+        await _store_backfilled_version(real_adapter, 1, "backfilled", SENT - timedelta(minutes=1))
+        exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)}
+        assert [v["text"] for v in exported[1]["versions"]] == ["backfilled", "first draft", "second draft"]
+
+    async def test_a_message_with_two_media_repeats_with_the_same_versions(self, real_adapter):
+        await _seed(real_adapter)
+        for media_id in ("fixture-a", "fixture-b"):
+            await real_adapter.insert_media(
+                {"id": media_id, "message_id": 1, "chat_id": CHAT, "type": "photo"}, account_id=1
+            )
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT, include_media=True, account_id=1)]
         assert [(m["id"], [v["text"] for v in m["versions"]]) for m in exported] == [
-            (message_id, [f"draft {message_id}"]) for message_id in range(1, 6)
+            (1, ["first draft", "second draft"]),
+            (1, ["first draft", "second draft"]),
+            (2, []),
+            (3, []),
         ]
+
+    async def test_an_edit_during_the_export_cannot_make_a_message_disagree_with_its_versions(self, real_adapter):
+        """The messages and their versions come from one snapshot, whatever a backup writes meanwhile."""
+        await _seed(real_adapter)
+        with _edit_after_first_read(real_adapter, "stream"):
+            exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)}
+        plain = exported[3]
+        assert (plain["text"], plain["edit_date"], plain["versions"]) == ("never changed", None, [])
 
 
 class TestCliExport:
@@ -125,12 +193,16 @@ class TestCliExport:
         by_key = {(m["account_id"], m["id"]): m for m in data["messages"]}
 
         edited = by_key[(1, 1)]
-        assert edited["edit_date"] is not None
+        # One date format in the whole file: the versions' dates are written
+        # like the message's own, so they match as strings.
+        assert edited["edit_date"] == str(SECOND_EDIT)
         assert [(v["text"], v["date"]) for v in edited["versions"]] == [
-            ("first draft", SENT.isoformat()),
-            ("second draft", FIRST_EDIT.isoformat()),
+            ("first draft", str(SENT)),
+            ("second draft", str(FIRST_EDIT)),
         ]
-        assert all(isinstance(v["captured_at"], str) for v in edited["versions"])
+        flat = next(v for v in data["message_versions"] if v["text"] == "second draft")
+        assert edited["versions"][1]["date"] == flat["date"]
+        assert all(str(datetime.fromisoformat(v["captured_at"])) == v["captured_at"] for v in edited["versions"])
         assert [v["text"] for v in by_key[(2, 1)]["versions"]] == ["other account draft"]
 
         deleted = by_key[(1, 2)]
@@ -156,3 +228,25 @@ class TestCliExport:
         assert [(m["id"], [v["text"] for v in m["versions"]]) for m in data["messages"]] == [
             (4, ["inside", "edited later"])
         ]
+
+    async def test_versions_come_in_telegram_date_order_not_capture_order(self, real_adapter, tmp_path):
+        await _seed(real_adapter)
+        await _store_backfilled_version(real_adapter, 1, "backfilled", SENT - timedelta(minutes=1))
+        output = tmp_path / "export.json"
+        await BackupExporter(real_adapter).export_to_json(str(output), chat_id=CHAT)
+        data = json.loads(output.read_text(encoding="utf-8"))
+        edited = next(m for m in data["messages"] if (m["account_id"], m["id"]) == (1, 1))
+        assert [v["text"] for v in edited["versions"]] == ["backfilled", "first draft", "second draft"]
+
+    async def test_an_edit_during_the_export_cannot_make_a_message_disagree_with_its_versions(
+        self, real_adapter, tmp_path
+    ):
+        """Messages, their versions and the flat list come from one snapshot."""
+        await _seed(real_adapter)
+        output = tmp_path / "export.json"
+        with _edit_after_first_read(real_adapter, "execute"):
+            await BackupExporter(real_adapter).export_to_json(str(output), chat_id=CHAT)
+        data = json.loads(output.read_text(encoding="utf-8"))
+        plain = next(m for m in data["messages"] if (m["account_id"], m["id"]) == (1, 3))
+        assert (plain["text"], plain["edit_date"], plain["versions"]) == ("never changed", None, [])
+        assert data["statistics"]["total_message_versions"] == 3

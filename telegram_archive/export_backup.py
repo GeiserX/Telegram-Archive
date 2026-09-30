@@ -65,9 +65,11 @@ class BackupExporter:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
 
-        # Get messages
-        messages = await self.db.get_messages_by_date_range(chat_id, start_dt, end_dt)
-        message_versions = await self.db.get_message_versions_by_date_range(chat_id, start_dt, end_dt)
+        # Messages, each with every earlier text the archive kept of it under
+        # ``versions`` whatever the version's date, and the flat
+        # ``message_versions`` list, windowed by the version's own date and
+        # without the account. One snapshot, so they cannot disagree.
+        messages, message_versions = await self.db.get_messages_and_versions_by_date_range(chat_id, start_dt, end_dt)
         # Voice transcripts sit on the message whose media they transcribe. The
         # account is part of the key: two accounts' private chats with the same
         # peer share the chat id and the message ids, and are two conversations.
@@ -75,16 +77,10 @@ class BackupExporter:
         by_message: dict[tuple, list] = {}
         for row in transcripts:
             by_message.setdefault((row.get("account_id"), row["chat_id"], row["message_id"]), []).append(row)
-        # Every earlier text the archive kept, under the message it belongs
-        # to, whatever the version's own date. ``message_versions`` below
-        # stays as it was: windowed by version date, without the account.
-        versions = await self.db.get_versions_of_messages_by_date_range(chat_id, start_dt, end_dt)
         for message in messages:
-            key = (message.get("account_id"), message.get("chat_id"), message.get("id"))
-            rows = by_message.get(key)
+            rows = by_message.get((message.get("account_id"), message.get("chat_id"), message.get("id")))
             if rows:
                 message["transcripts"] = rows
-            message["versions"] = versions.get(key, [])
 
         # Get chats
         chats = await self.db.get_all_chats()
