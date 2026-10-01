@@ -128,6 +128,27 @@ def media_files_of(msg: dict[str, Any], media_base_path: str) -> list[tuple[str 
     ]
 
 
+# Waits one send may sit out before the message counts as an error.
+SEND_WAIT_RETRIES = 3
+
+
+async def send_with_wait_retry(send, *args, **kwargs):
+    """Await a Telethon send, and after a flood or slow-mode wait send the same thing again.
+
+    A message with several files is several sends; retrying the one that hit
+    the wait keeps the files after it from being dropped. After
+    ``SEND_WAIT_RETRIES`` waits the last wait error is raised.
+    """
+    for attempt in range(SEND_WAIT_RETRIES + 1):
+        try:
+            return await send(*args, **kwargs)
+        except (FloodWaitError, SlowModeWaitError) as e:
+            if attempt == SEND_WAIT_RETRIES:
+                raise
+            logger.warning(f"{type(e).__name__}: sleeping {e.seconds} seconds, then sending it again...")
+            await asyncio.sleep(e.seconds + 1)
+
+
 async def restore_chat(
     source_chat_id: int,
     dest_chat_id: int,
@@ -301,17 +322,23 @@ async def restore_chat(
                 # For photos/videos, caption limit is 1024 chars
                 caption = full_text[:1024] if len(full_text) <= 1024 else full_text[:1021] + "..."
 
-                await client.send_file(dest_chat_id, media_files[0], caption=caption)
+                await send_with_wait_retry(client.send_file, dest_chat_id, media_files[0], caption=caption)
                 media_sent += 1
                 sent_count += 1
-                for media_file in media_files[1:]:
+                for index, media_file in enumerate(media_files[1:], 2):
                     await asyncio.sleep(delay)
-                    await client.send_file(dest_chat_id, media_file)
+                    try:
+                        await send_with_wait_retry(client.send_file, dest_chat_id, media_file)
+                    except Exception:
+                        logger.warning(
+                            f"Message {msg.get('id')} incomplete: {index - 1} of {len(media_files)} files sent"
+                        )
+                        raise
                     media_sent += 1
 
             elif full_text.strip():
                 # Text-only message
-                await client.send_message(dest_chat_id, full_text)
+                await send_with_wait_retry(client.send_message, dest_chat_id, full_text)
                 sent_count += 1
             else:
                 # Skip empty messages with no media
@@ -328,7 +355,7 @@ async def restore_chat(
         except FloodWaitError as e:
             logger.warning(f"Flood wait: sleeping {e.seconds} seconds...")
             await asyncio.sleep(e.seconds + 1)
-            # Retry will happen on next iteration, message is skipped
+            # Only after SEND_WAIT_RETRIES waits on one send: the message counts as an error
             error_count += 1
         except SlowModeWaitError as e:
             logger.warning(f"Slow mode: sleeping {e.seconds} seconds...")

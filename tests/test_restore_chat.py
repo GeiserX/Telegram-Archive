@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telethon.errors import FloodWaitError, SlowModeWaitError
+
 CHAT = -1001900000002
 SENT = datetime(2026, 10, 1, 10, 38, 0)
 REPO = Path(__file__).resolve().parents[1]
@@ -82,33 +84,81 @@ async def test_the_adapter_hands_the_restore_every_media_row_in_export_order(rea
     assert all("media_files" not in m and "media_path" not in m for m in plain.values())
 
 
-async def test_a_message_is_sent_once_with_every_file_it_has_on_disk(real_adapter, tmp_path):
-    media_root = tmp_path / "media"
-    await _album(real_adapter, media_root)
+async def _restore(adapter, tmp_path, *, send_file=None, send_message=None):
+    """Run the restore into a fake client; returns the client to read its sends."""
     module = _load_restore()
     client = SimpleNamespace(
         get_entity=AsyncMock(return_value=SimpleNamespace(title="Fixture Destination")),
-        send_file=AsyncMock(),
-        send_message=AsyncMock(),
+        send_file=send_file or AsyncMock(),
+        send_message=send_message or AsyncMock(),
         disconnect=AsyncMock(),
     )
-
     with (
-        patch.object(module, "get_db_adapter", AsyncMock(return_value=real_adapter)),
+        patch.object(module, "get_db_adapter", AsyncMock(return_value=adapter)),
         patch.object(module, "get_telegram_client", AsyncMock(return_value=client)),
         patch("builtins.input", return_value="YES"),
         patch.dict(os.environ, {"BACKUP_PATH": str(tmp_path)}),
     ):
         await module.restore_chat(CHAT, CHAT, delay=0)
+    return client
 
-    sent = [(call.args[1], call.kwargs.get("caption")) for call in client.send_file.await_args_list]
-    assert sent == [
-        (
-            str(media_root / str(CHAT) / "fixture-b.jpg"),
-            "[Fixture Sender - 2026-10-01 10:38]\nThree photos from the trip",
-        ),
-        (str(media_root / str(CHAT) / "fixture-c.jpg"), None),
-    ]
+
+def _file_sends(client) -> list[tuple[str, str | None]]:
+    return [(os.path.basename(call.args[1]), call.kwargs.get("caption")) for call in client.send_file.await_args_list]
+
+
+CAPTION = "[Fixture Sender - 2026-10-01 10:38]\nThree photos from the trip"
+
+
+async def test_a_message_is_sent_once_with_every_file_it_has_on_disk(real_adapter, tmp_path):
+    await _album(real_adapter, tmp_path / "media")
+
+    client = await _restore(real_adapter, tmp_path)
+
+    assert client.send_file.await_args_list[0].args[1] == str(tmp_path / "media" / str(CHAT) / "fixture-b.jpg")
+    assert _file_sends(client) == [("fixture-b.jpg", CAPTION), ("fixture-c.jpg", None)]
     assert [call.args[1] for call in client.send_message.await_args_list] == [
         "[Fixture Sender - 2026-10-01 10:38]\nOnly text"
     ]
+
+
+async def test_a_wait_on_a_later_file_sends_that_file_again_and_the_rest_after_it(real_adapter, tmp_path):
+    """Telegram makes the second upload wait once: the same file goes again
+    after the wait, and the message is not left with one of its files."""
+    await _album(real_adapter, tmp_path / "media")
+    send_file = AsyncMock(side_effect=[None, FloodWaitError(request=None, capture=0), None])
+
+    client = await _restore(real_adapter, tmp_path, send_file=send_file)
+
+    assert _file_sends(client) == [("fixture-b.jpg", CAPTION), ("fixture-c.jpg", None), ("fixture-c.jpg", None)]
+    assert client.send_message.await_count == 1
+
+
+async def test_a_wait_on_the_first_file_or_a_text_sends_it_again_once(real_adapter, tmp_path):
+    """The first file carries the text: after a wait it goes again with its
+    caption, so the text is still sent exactly once, and so is a text-only message."""
+    await _album(real_adapter, tmp_path / "media")
+    send_file = AsyncMock(side_effect=[SlowModeWaitError(request=None, capture=0), None, None])
+    send_message = AsyncMock(side_effect=[FloodWaitError(request=None, capture=0), None])
+
+    client = await _restore(real_adapter, tmp_path, send_file=send_file, send_message=send_message)
+
+    assert _file_sends(client) == [("fixture-b.jpg", CAPTION), ("fixture-b.jpg", CAPTION), ("fixture-c.jpg", None)]
+    assert [call.args[1] for call in client.send_message.await_args_list] == [
+        "[Fixture Sender - 2026-10-01 10:38]\nOnly text"
+    ] * 2
+
+
+async def test_a_file_that_keeps_waiting_is_reported_and_the_restore_goes_on(real_adapter, tmp_path, caplog):
+    await _album(real_adapter, tmp_path / "media")
+    module_retries = _load_restore().SEND_WAIT_RETRIES
+    waits = [FloodWaitError(request=None, capture=0)] * (module_retries + 1)
+    send_file = AsyncMock(side_effect=[None, *waits])
+
+    with caplog.at_level("WARNING"):
+        client = await _restore(real_adapter, tmp_path, send_file=send_file)
+
+    assert send_file.await_count == 1 + module_retries + 1
+    assert any("incomplete: 1 of 2 files sent" in r.getMessage() for r in caplog.records)
+    # The next message still goes out.
+    assert client.send_message.await_count == 1
