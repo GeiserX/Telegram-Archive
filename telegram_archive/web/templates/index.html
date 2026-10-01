@@ -7982,7 +7982,7 @@
                                                             loading="lazy"
                                                             class="w-full h-full object-cover"
                                                             @error="handleImageError($event, albumMsg)">
-                                                        <video v-else-if="albumMsg.media?.type === 'video'"
+                                                        <video v-else-if="albumMsg.media?.type === 'video'" :key="getMediaUrl(albumMsg)"
                                                             class="w-full h-full object-cover"
                                                             preload="metadata">
                                                             <source :src="getMediaUrl(albumMsg)" type="video/mp4">
@@ -8128,7 +8128,7 @@
                                         </div>
 
                                         <!-- GIFs / Animations - autoplay when visible -->
-                                        <video v-else-if="msg.media?.type === 'animation'" :data-src="getMediaUrl(msg)"
+                                        <video v-else-if="msg.media?.type === 'animation'" :key="getMediaUrl(msg)" :data-src="getMediaUrl(msg)"
                                             class="rounded-lg max-h-64 w-auto max-w-full gif-video" loop muted
                                             playsinline @click="openMedia(msg)">
                                         </video>
@@ -8147,7 +8147,7 @@
                                                  toggle needs its own affordance: focusable, named, and
                                                  reachable with Enter or Space, not click alone. -->
                                             <div v-show="!isTranscriptExpanded(msg)" class="relative w-fit">
-                                                <video class="round-video gif-video cursor-pointer"
+                                                <video :key="getMediaUrl(msg)" class="round-video gif-video cursor-pointer"
                                                     loop muted playsinline
                                                     tabindex="0" role="button"
                                                     :aria-label="roundVideoHint"
@@ -8235,7 +8235,7 @@
                                                 <template v-if="!msg.mediaLoadFailed">
                                                     <!-- A <source> that fails fires its error on itself, not
                                                          on the <video>: both flag the row. -->
-                                                    <video preload="metadata"
+                                                    <video :key="getMediaUrl(msg)" preload="metadata"
                                                         class="rounded-lg max-h-64 w-full pointer-events-none"
                                                         @error="handleMediaError($event, msg)">
                                                         <source :src="getMediaUrl(msg)" type="video/mp4" @error="handleMediaError($event, msg)">
@@ -13085,6 +13085,11 @@
                                     editMsg.media = { ...data.media }
                                     // The earlier file's load failure says nothing about this one.
                                     editMsg.mediaLoadFailed = false
+                                    // The <video> elements are keyed by their URL, which the
+                                    // replacement changes (?v=), so the new clip gets a new
+                                    // element. The revision tells the GIF watcher to observe
+                                    // it: a GIF or round video loads only once it is observed.
+                                    mediaRevision.value++
                                 }
                                 // Every edit frame is an applied edit, and every applied
                                 // edit keeps the version it replaced.
