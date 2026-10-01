@@ -9,7 +9,8 @@ messages deleted in Telegram that the archive kept, and pinned messages.
 
 It also holds every state the viewer draws for what the archive alone knows:
 media never downloaded (too large, filtered out, not yet) or missing from
-disk, an edit made on a later day, transcripts that failed, found no
+disk, an edit made on a later day, an edit that changed only the
+formatting, edits the sync found (so the history says "at least"), transcripts that failed, found no
 speech or came in two versions, a closed and a pinned topic, two viewer
 accounts (password DEMO_VIEWER_PASSWORD), two share links (one revoked; the
 other opens with DEMO_SHARE_TOKEN and has downloads off), and a few audit
@@ -33,6 +34,7 @@ and the round video; without it those messages keep their rows but no file.
 import argparse
 import asyncio
 import hashlib
+import json
 import math
 import os
 import random
@@ -234,8 +236,11 @@ class ChatScript:
         self.messages: list[dict] = []
         self.media: list[dict] = []
         self.reactions: list[tuple[int, str, int, list[int]]] = []
-        self.versions: list[tuple[int, str, datetime]] = []
+        # (message id, text, date, formatting entities, the path that saw it)
+        self.versions: list[tuple[int, str, datetime, list | None, str | None]] = []
         self.transcripts: list[tuple[str, str, int]] = []
+        # Photos an edit replaced: kept as media versions beside the text of the time.
+        self.media_versions: list[dict] = []
         # (message id, emoji, when it was removed): reactions the archive keeps
         # as tombstones after they were taken back.
         self.removed_reactions: list[tuple[int, str, datetime]] = []
@@ -252,11 +257,13 @@ class ChatScript:
         raw: dict | None = None,
         pinned: bool = False,
         topic: int | None = None,
-        edited_from: str | list[str] | None = None,
+        edited_from: str | list[str | tuple[str, list | None]] | None = None,
+        edit_source: str | None = "listener",
         react: dict[str, int] | None = None,
         forward: tuple[int, int, str] | None = None,
         deleted_after: timedelta | None = None,
         edited_after: timedelta | None = None,
+        reacted_after: timedelta | None = None,
     ) -> int:
         mid = self.next_id
         self.next_id += 1
@@ -287,13 +294,22 @@ class ChatScript:
             # Oldest first: each earlier text is kept as a version, a few minutes apart.
             # edited_after moves the edits later, a day on for an edit made the
             # next day.
+            # An earlier version is its text, or (text, formatting entities).
+            # The listener saw it unless edit_source says otherwise; a version
+            # with no source is unknown and the history says "at least".
             earlier = [edited_from] if isinstance(edited_from, str) else list(edited_from)
             shift = edited_after or timedelta(0)
-            for step, old_text in enumerate(earlier):
+            for step, old in enumerate(earlier):
+                old_text, old_entities = old if isinstance(old, tuple) else (old, None)
                 # The original text dates from the send; each later one from its edit.
                 version_date = when if step == 0 else when + shift + timedelta(minutes=2 * step)
-                self.versions.append((mid, old_text, version_date))
+                self.versions.append((mid, old_text, version_date, old_entities, edit_source))
             msg["edit_date"] = when + shift + timedelta(minutes=2 * len(earlier) + 1)
+        if reacted_after is not None:
+            # Telegram moves edit_date when only the reactions change and sets
+            # edit_hide: the archive keeps both, and the viewer shows no edit.
+            msg["edit_date"] = when + reacted_after
+            msg["edit_hide"] = 1
         if deleted_after is not None:
             # Deleted in Telegram, kept by the archive (soft deletion).
             msg["is_deleted"] = 1
@@ -462,7 +478,14 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     s.add(t + timedelta(minutes=1), ESME, "", media={"type": "photo", "seed": 22, "grouped_id": album})
     s.add(t + timedelta(minutes=1), ESME, "", media={"type": "photo", "seed": 23, "grouped_id": album})
     s.add(t + timedelta(minutes=1), ESME, "", media={"type": "photo", "seed": 25, "grouped_id": album})
-    s.add(t + timedelta(minutes=6), HUGO, "That first one looks like a postcard", reply=first, react={"😂": 1})
+    s.add(
+        t + timedelta(minutes=6),
+        HUGO,
+        "That first one looks like a postcard",
+        reply=first,
+        react={"😂": 1},
+        reacted_after=timedelta(minutes=4),
+    )
     q = s.add(t + timedelta(minutes=9), KOFI, "Which trailhead did you park at?")
     s.add(
         t + timedelta(minutes=12),
@@ -520,12 +543,15 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         },
     )
     s.add(t + timedelta(minutes=70), HUGO, "", media={"type": "sticker"}, raw={"sticker": {"emoji": "☀️"}})
+    # Sent with another photo, which Kofi replaced three minutes later with
+    # the caption unchanged: the archive keeps the first one as a media version.
     view = s.add(
         t + timedelta(minutes=83),
         KOFI,
         "Found this view on the way back",
-        media={"type": "photo", "seed": 24},
+        media={"type": "photo", "seed": 24, "replaced_seed": 27},
         react={"❤️": 5, "🔥": 1},
+        edited_from="Found this view on the way back",
     )
     # Someone took their 😮 back: the archive keeps it as a tombstone, and the
     # viewer shows it after the live chips, folded into one quiet chip.
@@ -743,6 +769,28 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         react={"📚": 4},
         edited_from="Next month we read The Salt Orchard. Meeting on the 12th.",
         edited_after=day + timedelta(hours=2),
+    )
+    # An edit that changed only the formatting: the same words, "annotated" made bold.
+    s.add(
+        now - 3 * day + timedelta(hours=2),
+        WREN,
+        "Bring the annotated copy if you have one.",
+        raw={"entities": [{"type": "bold", "offset": 10, "length": 9}]},
+        edited_from=[("Bring the annotated copy if you have one.", None)],
+        edit_source="listener",
+    )
+    # Edits the sync found: it reads only the text current at each run, so the
+    # history can say only "at least". Each version keeps its own formatting.
+    s.add(
+        now - 3 * day + timedelta(hours=5),
+        LIOR,
+        "Chapter 4 has the best opening line in the book.",
+        raw={"entities": [{"type": "bold", "offset": 23, "length": 7}]},
+        edited_from=[
+            ("Chapter 3 has the best line in the book.", [{"type": "italic", "offset": 18, "length": 4}]),
+            ("Chapter 4 has the best line in the book.", None),
+        ],
+        edit_source="sync",
     )
     scripts.append(s)
 
@@ -1005,6 +1053,25 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
                 name = f"{file_id}_photo.jpg"
                 w, h = draw_landscape(folder / name, m.pop("seed"))
                 m.update(file_name=name, mime_type="image/jpeg", width=w, height=h)
+                replaced_seed = m.pop("replaced_seed", None)
+                if replaced_seed is not None:
+                    earlier = f"{file_id + 1}_photo.jpg"
+                    ew, eh = draw_landscape(folder / earlier, replaced_seed)
+                    earlier_path = folder / earlier
+                    s.media_versions.append(
+                        {
+                            "message_id": m["message_id"],
+                            "media_id": f"{m['id']}_replaced",
+                            "type": "photo",
+                            "file_name": earlier,
+                            "file_path": f"{s.chat_id}/{earlier}",
+                            "file_size": earlier_path.stat().st_size,
+                            "mime_type": "image/jpeg",
+                            "width": ew,
+                            "height": eh,
+                            "content_hash": hashlib.sha256(earlier_path.read_bytes()).hexdigest(),
+                        }
+                    )
             elif kind == "sticker":
                 name = f"{file_id}_sticker.webp"
                 folder.mkdir(parents=True, exist_ok=True)
@@ -1047,7 +1114,7 @@ async def seed(data_dir: Path) -> None:
     from sqlalchemy import insert, update
 
     from telegram_archive.db import close_adapter, create_adapter
-    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MessageVersion, Reaction
+    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MediaVersion, MessageVersion, Reaction
 
     backup = data_dir / "backups"
     media_root = backup / "media"
@@ -1155,7 +1222,7 @@ async def seed(data_dir: Path) -> None:
                         .where(Reaction.chat_id == s.chat_id, Reaction.message_id == mid, Reaction.emoji == emoji)
                         .values(removed_at=removed)
                     )
-                for index, (mid, old_text, when) in enumerate(s.versions):
+                for index, (mid, old_text, when, old_entities, source) in enumerate(s.versions):
                     digest = hashlib.sha256(f"{account}:{s.chat_id}:{mid}:{old_text}".encode()).hexdigest()
                     # Captured when the next text appeared: the next kept
                     # version of the same message, or its last edit.
@@ -1170,6 +1237,24 @@ async def seed(data_dir: Path) -> None:
                             date=when,
                             captured_at=captured,
                             change_hash=digest,
+                            entities=json.dumps(old_entities) if old_entities else None,
+                            source=source,
+                        )
+                    )
+                # The replaced photo, dated like the text it was sent with, as
+                # the archive pairs them in the edit history.
+                for earlier in s.media_versions:
+                    sent_msg = s.by_id[earlier["message_id"]]
+                    await session.execute(
+                        insert(MediaVersion).values(
+                            account_id=account,
+                            chat_id=s.chat_id,
+                            downloaded=1,
+                            download_date=sent_msg["date"],
+                            date=sent_msg["date"],
+                            captured_at=sent_msg["edit_date"],
+                            source="listener",
+                            **earlier,
                         )
                     )
                 await session.commit()

@@ -657,7 +657,10 @@ async def test_get_message_versions_returns_dicts(sqlite_adapter):
     assert versions[0]["chat_id"] == 300
     assert "id" not in versions[0]
     assert "change_hash" not in versions[0]
-    assert "captured_at" not in versions[0]
+    # When the archive noticed, the path that saw it (none named by this caller)
+    # and the version's formatting (none) come with each version.
+    assert isinstance(versions[0]["captured_at"], datetime)
+    assert (versions[0]["source"], versions[0]["entities"]) == (None, None)
     assert [version["text"] for version in versions] == ["v2", "v1"]
     assert [version["date"] for version in versions] == [
         datetime(2026, 6, 26, 14, 5),

@@ -77,6 +77,9 @@ from .message_utils import (
     is_youtube_preview_video,
     is_youtube_url,
     media_download_allowed,
+    media_file_id,
+    media_read_date,
+    message_edit_hide,
     message_entities,
     message_plain_text,
     message_rich_payload,
@@ -630,17 +633,21 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
             await _reconnect_before_retry(client, "iter_messages")
 
 
-def _failed_media_row(media_id: str, media_type: str, message_id: int, chat_id: int) -> dict:
+def _failed_media_row(
+    media_id: str, media_type: str, message_id: int, chat_id: int, telegram_file_id: str | None = None
+) -> dict:
     """The value-less media row a failed download leaves behind.
 
     downloaded=0 is what makes the failure retryable: the pending-media drain
-    only sees rows, so a failure that leaves none is permanently silent."""
+    only sees rows, so a failure that leaves none is permanently silent. The
+    file's identity is kept, so a later edit that replaces the media is seen."""
     return {
         "id": media_id,
         "type": media_type,
         "message_id": message_id,
         "chat_id": chat_id,
         "downloaded": False,
+        "telegram_file_id": telegram_file_id,
     }
 
 
@@ -1874,6 +1881,17 @@ class TelegramBackup:
 
                     backup_path = None
                     try:
+                        # An edit replaced this message's media since the record
+                        # was written: the record is kept as a media version with
+                        # the file it names, and the new media is downloaded into
+                        # a new row by _process_media below. Its file is not the
+                        # one to replace, so it is not sidestepped.
+                        replaced = await self._keep_replaced_media(msg, chat_id, "backup")
+                        if replaced:
+                            # The edit that replaced it moves edit_date, as the
+                            # sync and the listener move it: the next sync sees
+                            # the new media already in place and moves nothing.
+                            await self._apply_edit(msg, chat_id, "backup", media_changed=True)
                         # A corrupted file is sidestepped, never pre-deleted: the
                         # replacement must be in hand before the original goes.
                         # Pre-deleting meant a failed re-download left the file
@@ -1888,7 +1906,7 @@ class TelegramBackup:
                         file_path = record.get("_resolved_path") or resolve_stored_media_path(
                             record.get("file_path"), self.config.media_path
                         )
-                        if file_path and os.path.lexists(file_path):
+                        if not replaced and file_path and os.path.lexists(file_path):
                             backup_path = file_path + ".verify-bak"
                             os.replace(file_path, backup_path)
 
@@ -2094,11 +2112,16 @@ class TelegramBackup:
                     # being re-fetched once it hits MEDIA_MAX_DOWNLOAD_ATTEMPTS.
                     try:
                         result = await self._process_media(msg, chat_id)
+                        if result and result.get("replaced") is True:
+                            # This read's edit replaced the media: its edit_date
+                            # moves, as the sync and the listener move it.
+                            await self._apply_edit(msg, chat_id, "backup", media_changed=True)
                         if result and result.get("skip_reason"):
                             await self.db.insert_media(result, account_id=self.account_id)
                             skipped += 1
                         elif result and result.get("downloaded"):
                             await self.db.insert_media(result, account_id=self.account_id)
+                            removed = 0
                             if result.get("id") != record["id"]:
                                 # The message's file is held by ANOTHER row: _process_media
                                 # resolves a message to its canonical row (downloaded first,
@@ -2108,7 +2131,11 @@ class TelegramBackup:
                                 # counter untouched, so it was re-requested from Telegram on
                                 # every run and reported as a download that never happened.
                                 # Only the row goes; the file belongs to the canonical row.
-                                await self.db.delete_media_records([record["id"]], account_id=self.account_id)
+                                # When an edit replaced the media, this row was kept as a
+                                # media version and re-keyed: nothing is left under its id,
+                                # nothing is removed, and the download counts as one.
+                                removed = await self.db.delete_media_records([record["id"]], account_id=self.account_id)
+                            if removed:
                                 twins_removed += 1
                             else:
                                 downloaded += 1
@@ -2697,6 +2724,9 @@ class TelegramBackup:
             return
 
         local_ids = list(local_messages.keys())
+        # Edited rows archived before the edit_hide flag was kept: the flag is
+        # filled below from the message fetched anyway, when the date matches.
+        unflagged_ids = await self.db.get_unflagged_edit_ids(chat_id, account_id=self.account_id)
         total_checked = 0
         total_deleted = 0
         total_updated = 0
@@ -2759,21 +2789,28 @@ class TelegramBackup:
                         remote_edit_date = remote_edit_date.replace(tzinfo=None)
                     local_edit_date = local_messages[msg_id]
 
-                    if remote_edit_date and remote_edit_date != local_edit_date:
-                        # Update text and edit_date; count only edits the archive
-                        # actually accepted (the adapter re-checks under lock).
-                        outcome, _ = await self.db.update_message_text(
+                    if remote_edit_date and remote_edit_date == local_edit_date and msg_id in unflagged_ids:
+                        # Same edit, archived before the flag was kept: fill the
+                        # flag only. Text, edit_date and versions stay as they are.
+                        await self.db.fill_edit_hide(
                             chat_id,
                             msg_id,
-                            message_plain_text(remote_msg),
-                            remote_msg.edit_date,
+                            remote_edit_date,
+                            message_edit_hide(remote_msg),
                             account_id=self.account_id,
-                            entities=message_entities(remote_msg),
-                            update_entities=True,
-                            rich_message=message_rich_payload(remote_msg),
                         )
+                    elif remote_edit_date and remote_edit_date != local_edit_date:
+                        # An edit may have replaced the photo or file: the old
+                        # media is kept as a version before the text moves, so
+                        # both carry the date the old state began.
+                        media_replaced = await self._keep_replaced_media(remote_msg, chat_id, "sync")
+                        # Update text and edit_date; count only edits the archive
+                        # actually accepted (the adapter re-checks under lock).
+                        outcome = await self._apply_edit(remote_msg, chat_id, "sync", media_changed=media_replaced)
                         if outcome == "applied":
                             total_updated += 1
+                        if media_replaced:
+                            await self._download_replaced_media(remote_msg, chat_id)
 
                     # Piggyback reaction reconcile (#221): the full message is already
                     # in hand, so harvest its reactions at zero extra API cost. Skip
@@ -3300,9 +3337,15 @@ class TelegramBackup:
             "reply_to_text": None,
             "forward_from_id": self._extract_forward_from_id(message),
             "edit_date": message.edit_date,
+            "edit_hide": message_edit_hide(message),
             "raw_data": {},
             "is_outgoing": 1 if message.out else 0,
             "is_pinned": 1 if getattr(message, "pinned", False) else 0,
+            # A read from Telegram: when the listener stored a newer edit while
+            # this batch was pending, the upsert keeps this text as a version.
+            "keeps_older_text": True,
+            # The path named on any version this read writes.
+            "version_source": "backup",
         }
 
         # Capture-time web preview (mf7): Telegram resolved it when the
@@ -3488,6 +3531,10 @@ class TelegramBackup:
                 media_result = await self._process_media(message, chat_id)
                 if media_result:
                     message_data["_media_data"] = media_result
+                    if media_result.get("replaced") is True:
+                        # This read's edit replaced the media: the upsert takes
+                        # its edit_date even when the caption stayed the same.
+                        message_data["media_replaced"] = True
 
         # Extract reactions (per-emoji aggregate snapshot). Reconciled after the
         # message is inserted; see DatabaseAdapter.reconcile_reactions (#219).
@@ -3874,6 +3921,68 @@ class TelegramBackup:
                     pass
             raise
 
+    async def _keep_replaced_media(self, message: Message, chat_id: int, source: str) -> bool:
+        """True when an edit replaced this message's photo or file since it was archived.
+
+        Asks ``reconcile_media_row`` with the file id the message carries now.
+        When the archived row holds another file, the row is kept as a media
+        version and comes back empty under a new id. This only records the
+        replacement; ``_download_replaced_media`` fetches the new file.
+        """
+        media = getattr(message, "media", None)
+        if not media:
+            return False
+        media_type = self._get_media_type(media)
+        telegram_file_id = media_file_id(media)
+        if not media_type or telegram_file_id is None:
+            return False
+        row = await self.db.reconcile_media_row(
+            chat_id,
+            message.id,
+            media_type,
+            account_id=self.account_id,
+            telegram_file_id=telegram_file_id,
+            source=source,
+            edit_date=getattr(message, "edit_date", None),
+            edit_hide=message_edit_hide(message),
+        )
+        return isinstance(row, dict) and row.get("replaced") is True
+
+    async def _apply_edit(self, message: Message, chat_id: int, source: str, *, media_changed: bool) -> str:
+        """Apply a read's text, formatting and edit date to the archived message; the outcome.
+
+        ``media_changed`` says this read's edit replaced the photo or file
+        (``_keep_replaced_media``): it moves ``edit_date`` even when the
+        caption stayed the same, as the listener does.
+        """
+        outcome, _ = await self.db.update_message_text(
+            chat_id,
+            message.id,
+            message_plain_text(message),
+            message.edit_date,
+            account_id=self.account_id,
+            edit_hide=message_edit_hide(message),
+            entities=message_entities(message),
+            update_entities=True,
+            rich_message=message_rich_payload(message),
+            source=source,
+            media_changed=media_changed,
+        )
+        return outcome
+
+    async def _download_replaced_media(self, message: Message, chat_id: int) -> None:
+        """Fetch the media an edit put in place of the kept one.
+
+        The same rules as any download: nothing for a chat in SKIP_MEDIA_CHAT_IDS
+        (the row keeps the new file's identity and no file), and _process_media
+        applies MAX_MEDIA_SIZE_MB, DOWNLOAD_MEDIA_TYPES and the YouTube rule.
+        """
+        if not self.config.should_download_media_for_chat(chat_id):
+            return
+        result = await self._process_media(message, chat_id)
+        if result:
+            await self.db.insert_media(result, account_id=self.account_id)
+
     async def _process_media(self, message: Message, chat_id: int) -> dict | None:
         """
         Process and download media from a message.
@@ -3891,12 +4000,61 @@ class TelegramBackup:
         if not media_type:
             return None
 
+        # Telegram's id of the photo or document: the file's identity, and the
+        # uniqueness prefix of its file name.
+        telegram_file_id = media_file_id(media)
+
         # The id belongs to the ROW, not to this classification. Reuse whatever
         # the message's existing media row is filed under and correct only its
         # type; mint a fresh id only when the message has no row yet. Minting
         # from the type on every call is what made a reclassified round video
         # (video -> video_note) a second row, leaving the first pending forever.
-        existing = await self.db.reconcile_media_row(chat_id, message.id, media_type, account_id=self.account_id)
+        # With the file id, a row that holds another file (an edit replaced the
+        # media) is kept as a media version first and comes back empty under a
+        # new id, so the new file is downloaded beside the old one and never
+        # into its row.
+        existing = await self.db.reconcile_media_row(
+            chat_id,
+            message.id,
+            media_type,
+            account_id=self.account_id,
+            telegram_file_id=telegram_file_id,
+            source="backup",
+            edit_date=getattr(message, "edit_date", None),
+            edit_hide=message_edit_hide(message),
+        )
+        if isinstance(existing, dict) and existing.get("superseded") is True:
+            # The archive holds other media for this message than this read
+            # shows (a newer edit, or a replacement that could not be kept):
+            # nothing is downloaded into that row.
+            logger.debug("Media not processed: the archive holds newer media for this message")
+            return None
+        result = await self._media_row_for(message, chat_id, media, media_type, telegram_file_id, existing)
+        if isinstance(existing, dict) and existing.get("replaced") is True:
+            # Tells the message upsert that this read's edit replaced the media.
+            # With no row to write (a YouTube preview video declined), the
+            # replaced row as it stands carries that, and writing it changes
+            # nothing.
+            if result is None:
+                result = existing
+            result["replaced"] = True
+        return result
+
+    async def _media_row_for(
+        self,
+        message: Message,
+        chat_id: int,
+        media,
+        media_type: str,
+        telegram_file_id: str | None,
+        existing: dict | None,
+    ) -> dict | None:
+        """The media row for a message, downloading its file when that is allowed.
+
+        ``existing`` is the message's media row from ``reconcile_media_row``,
+        or None when it has none yet.
+        """
+        payload = downloadable_media_payload(media)
         media_id = existing["id"] if existing else f"{chat_id}_{message.id}_{media_type}"
 
         # Metadata-only kinds (contacts, locations, polls, and the nine
@@ -3935,23 +4093,6 @@ class TelegramBackup:
             logger.debug("Skipping YouTube link-preview video (DOWNLOAD_YOUTUBE_VIDEOS=false)")
             return None
 
-        # Get Telegram's file unique ID for deduplication. Webpage previews
-        # keep their photo/document one level down — unwrap once so every
-        # sniffer below sees the real payload.
-        payload = downloadable_media_payload(media)
-        # Truthy guards, not hasattr: a WebPage carries BOTH .photo and
-        # .document (one None), so hasattr would pick the empty photo branch
-        # for document-backed previews and lose the file id.
-        telegram_file_id = None
-        if getattr(payload, "photo", None):
-            telegram_file_id = str(getattr(payload.photo, "id", None))
-        elif getattr(payload, "document", None):
-            telegram_file_id = str(getattr(payload.document, "id", None))
-
-        # Guard against inaccessible media producing "None" string IDs
-        if telegram_file_id == "None":
-            telegram_file_id = None
-
         # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: media the
         # operator did not ask for is recorded with its metadata (name, MIME,
         # dimensions, size) while the bytes stay on Telegram. Modeled on the
@@ -3971,6 +4112,7 @@ class TelegramBackup:
                 "chat_id": chat_id,
                 "file_name": self._get_media_filename(message, media_type, telegram_file_id),
                 "skip_reason": "filtered",  # #465: the viewer says why, not "pending"
+                "telegram_file_id": telegram_file_id,
                 **extract_media_attributes(payload),
             }
 
@@ -3995,6 +4137,7 @@ class TelegramBackup:
                 "chat_id": chat_id,
                 "file_size": file_size,
                 "skip_reason": "oversize",  # #465: the viewer says why, not "pending"
+                "telegram_file_id": telegram_file_id,
             }
 
         # Download media (with optional global deduplication)
@@ -4033,7 +4176,7 @@ class TelegramBackup:
                     # None here made this failure shape permanently silent
                     # while the sibling exception path was retried every cycle.
                     logger.warning("Media download did not produce a file; recorded for retry")
-                    return _failed_media_row(media_id, media_type, message.id, chat_id)
+                    return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id)
 
                 # Backup-specific post-processing: update file_size from disk
                 if not shared_file_path:
@@ -4059,7 +4202,7 @@ class TelegramBackup:
                     if not file_path or not os.path.exists(file_path):
                         # Same retryable row as the dedup branch above.
                         logger.warning("Media download did not produce a file; recorded for retry")
-                        return _failed_media_row(media_id, media_type, message.id, chat_id)
+                        return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id)
                     logger.debug(f"Downloaded media: {file_name}")
 
                 # Update file_size and compute hash from disk
@@ -4082,6 +4225,11 @@ class TelegramBackup:
                 "content_hash": content_hash,
                 "downloaded": True,
                 "download_date": utcnow_naive(),
+                "telegram_file_id": telegram_file_id,
+                # Date and path for the file when another writer stored other
+                # media first: it is kept as an earlier media (insert_media).
+                "version_date": media_read_date(message),
+                "version_source": "backup",
                 **extract_media_attributes(payload),
                 "file_size": file_size,
             }
@@ -4100,7 +4248,7 @@ class TelegramBackup:
 
         except Exception as e:
             logger.error(f"Error downloading media: {describe_exception(e)}")
-            return _failed_media_row(media_id, media_type, message.id, chat_id)
+            return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id)
 
     def _should_parallelize(self, message, file_size: int) -> bool:
         """Decide whether this file should use the parallel chunked path.

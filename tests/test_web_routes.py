@@ -1848,6 +1848,13 @@ class TestBroadcastHelpers(_WebTestBase):
         self.assertEqual(msg["type"], "edit")
         self.assertEqual(msg["new_text"], "edited text")
         self.assertEqual(msg["chat_ref"], "broadcastRef000042AB")
+        # No entities given: the frame says nothing about formatting.
+        self.assertNotIn("entities", msg)
+
+        bold = [{"type": "bold", "offset": 0, "length": 6}]
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.broadcast_message_edit(42, 10, "edited text", "2025-01-01", entities=bold)
+        self.assertEqual(mock_bc.call_args[0][1]["entities"], bold)
 
     async def test_broadcast_message_delete(self):
         """broadcast_message_delete calls ws_manager.broadcast_to_chat."""

@@ -1326,6 +1326,29 @@ def message_plain_text(message: object) -> str:
     return render_rich_message(rich)[0] if rich is not None else ""
 
 
+def message_edit_hide(message: object) -> int:
+    """Telegram's ``edit_hide`` flag as the archive stores it: 1 or 0.
+
+    MTProto sets the flag when a message must be shown as not edited even
+    though its ``edit_date`` is set, which is what Telegram does when only the
+    reactions changed. The ``is True`` check keeps a MagicMock fixture at 0.
+    """
+    return 1 if getattr(message, "edit_hide", None) is True else 0
+
+
+def media_read_date(message: object) -> datetime | None:
+    """When the media a read of ``message`` shows became current, as far as the read tells.
+
+    Its edit date when Telegram shows the edit, else its send date: the rule
+    ``message_versions`` dates a text by.
+    """
+    edit_date = getattr(message, "edit_date", None)
+    if isinstance(edit_date, datetime) and not message_edit_hide(message):
+        return edit_date
+    date = getattr(message, "date", None)
+    return date if isinstance(date, datetime) else None
+
+
 _ENTITY_CLASS_PREFIX = "MessageEntity"
 _ENTITY_SNAKE_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
@@ -1748,6 +1771,61 @@ def downloadable_media_payload(media: object) -> object:
         if type(webpage).__name__ == "WebPage":
             return webpage
     return media
+
+
+def media_file_id(media: object) -> str | None:
+    """Telegram's id of the photo or document behind a message's media, as a string.
+
+    The identity of the file itself: an edit that replaces the media gives the
+    message a new photo or document with a new id, while a caption edit keeps
+    it. None when the media carries no file (a poll, a location) or the file is
+    inaccessible. Truthy guards, not hasattr: a WebPage carries BOTH .photo and
+    .document (one None), so hasattr would pick the empty photo branch for a
+    document-backed preview and lose the id.
+    """
+    payload = downloadable_media_payload(media)
+    file_id = None
+    if getattr(payload, "photo", None):
+        file_id = getattr(payload.photo, "id", None)
+    elif getattr(payload, "document", None):
+        file_id = getattr(payload.document, "id", None)
+    if file_id is None:
+        return None
+    return str(file_id)
+
+
+# The Telegram file id a stored file name starts with: ``build_media_filename``
+# writes ``<file_id>_<name>`` and ``fallback_media_filename`` ``<file_id>.<ext>``.
+# Telegram's photo and document ids are random 64-bit numbers, so a real one
+# has 15 to 19 digits (a shorter one is about one in 100,000). Older releases
+# started names with a message id (``<message_id>_<original>``,
+# ``<message_id>_<YYYYmmdd_HHMMSS>.<ext>``), a date
+# (``<YYYYmmdd_HHMMSS>_<message_id>.<ext>``) or the sender's own name as it
+# was, and the name for media without a file id is ``<message_id>_<type>.<ext>``.
+# A sender's name can start with a long number: a millisecond timestamp
+# (``1704067200000.jpg``, 13 digits) or a scanner's date and time
+# (``20240101123045_scan.pdf``, 14 digits). So only 15 to 20 digits count.
+# A name that still matches by chance (a 17-digit timestamp) replaces nothing
+# by itself: a replacement also needs an edit Telegram shows
+# (``DatabaseAdapter._shows_replacing_edit``).
+_STORED_FILE_ID_RE = re.compile(r"^(-?[0-9]{15,20})[._]")
+
+
+def stored_media_file_id(telegram_file_id: str | None, file_name: str | None) -> str | None:
+    """The Telegram file id an archived media row holds, or None when unknown.
+
+    Rows written since migration 036 carry it in ``telegram_file_id``. Older
+    rows written by the sweep or the listener carry it as the first part of
+    their file name, so it is read from there. Unknown stays unknown: an
+    imported row (``import_…``), a row with no file name, and every older name
+    shape (see ``_STORED_FILE_ID_RE``).
+    """
+    if telegram_file_id:
+        return str(telegram_file_id)
+    if not file_name:
+        return None
+    match = _STORED_FILE_ID_RE.match(file_name)
+    return match.group(1) if match else None
 
 
 def media_download_allowed(config, media: object, media_type: str | None) -> bool:

@@ -5,9 +5,11 @@ Catches events as they happen and updates the local database immediately.
 Safety features:
 - LISTEN_EDITS: Apply text edits (default: true, safe)
 - LISTEN_DELETIONS: Delete messages (default: false, opt-in mirror mode)
-- Mass operation detection: Blocks bulk edits/deletions to protect data
+- Mass operation detection: Blocks bulk deletions to protect data
 
-Mass operation protection is rate limiting, not buffering. Operations under
+Mass operation protection is rate limiting, not buffering, and covers
+deletions only. An edit keeps the earlier text and its formatting as a
+version, so edits are never limited. Deletions under
 the threshold are applied immediately; disable LISTEN_DELETIONS to guarantee
 Telegram deletions never remove archived messages.
 """
@@ -16,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import weakref
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
@@ -53,6 +56,9 @@ from .message_utils import (
     finalize_atomic_download,
     is_youtube_preview_video,
     media_download_allowed,
+    media_file_id,
+    media_read_date,
+    message_edit_hide,
     message_entities,
     message_plain_text,
     message_rich_payload,
@@ -73,16 +79,21 @@ logger = logging.getLogger(__name__)
 
 class MassOperationProtector:
     """
-    Rate-limiting protection against mass deletions/edits.
+    Rate-limiting protection against mass deletions.
+
+    Only deletions pass through it. Edits are never rate limited: an edit
+    keeps the earlier text and its formatting as a version, and Telegram
+    sends many reaction changes as edit events, which would use up the budget
+    and drop real text edits.
 
     HOW IT WORKS:
-    - Uses a sliding time window to count operations per chat
+    - Uses a sliding time window to count deletions per chat
     - Operations are applied IMMEDIATELY if under threshold
     - Once threshold exceeded, chat is blocked for remainder of window
 
     PARAMETERS:
-    - THRESHOLD (default 10): Max operations allowed in the time window
-    - WINDOW_SECONDS (default 30): Sliding time window for counting operations
+    - THRESHOLD (default 10): Max deletions allowed in the time window
+    - WINDOW_SECONDS (default 30): Sliding time window for counting deletions
 
     EXAMPLE:
     - User deletes 2 messages → both applied immediately ✓
@@ -126,7 +137,7 @@ class MassOperationProtector:
     def start(self):
         """Start the protector."""
         self._running = True
-        logger.info(f"🛡️ Rate limiter active: max {self.threshold} ops per {self.window_seconds}s per chat")
+        logger.info(f"🛡️ Rate limiter active: max {self.threshold} deletions per {self.window_seconds}s per chat")
 
     async def stop(self):
         """Stop the protector."""
@@ -238,7 +249,9 @@ class TelegramListener:
     Designed to run alongside the scheduled backup process.
 
     RATE LIMITING PROTECTION:
-    Uses a sliding window to limit operations per chat. Normal usage (deleting
+    Uses a sliding window to limit deletions per chat. Edits are not limited,
+    since an edit keeps the earlier text and its formatting as a version.
+    Normal usage (deleting
     a few messages) works instantly. Mass operations (deleting 50+ messages)
     are blocked after the threshold, protecting most of your backup.
 
@@ -309,7 +322,7 @@ class TelegramListener:
         # each a full snapshot, so we coalesce per (chat_id, message_id) keeping only
         # the latest and flush on a timer — one reconcile + one broadcast per window.
         # Kept separate from the MassOperationProtector so a reaction storm can never
-        # rate-limit edits/deletions in the same chat.
+        # rate-limit deletions in the same chat.
         self._reaction_pending: dict[tuple[int, int], list[dict]] = {}
         self._reaction_flush_task: asyncio.Task | None = None
 
@@ -378,7 +391,7 @@ class TelegramListener:
             total = sum(len(t) for t in config.skip_topic_ids.values())
             logger.info(f"  SKIP_TOPIC_IDS: {total} topic(s) excluded across {len(config.skip_topic_ids)} chat(s)")
         logger.info(
-            f"  Mass-op rate limit: first {config.mass_operation_threshold} ops per chat per "
+            f"  Mass-deletion rate limit: first {config.mass_operation_threshold} deletions per chat per "
             f"{config.mass_operation_window_seconds}s window are applied, the rest blocked"
         )
         logger.info("=" * 70)
@@ -729,6 +742,34 @@ class TelegramListener:
                 media_type=prior.get("media_type"),
             )
 
+    @staticmethod
+    def _event_chat_type_hints(event: events.NewMessage.Event) -> tuple[bool | None, bool | None, bool | None]:
+        """The (is_user, is_group, is_channel) hints for _should_process_chat.
+
+        NewMessage and MessageEdited events carry their peer type
+        (PeerUser/PeerChat/PeerChannel) synchronously via _chat_peer, with no
+        entity fetch, so a chat never backed up before can be matched against
+        CHAT_TYPES right now instead of being dropped until the next scheduled
+        backup adds it to _tracked_chat_ids.
+
+        Telethon's event.is_channel is True for BOTH broadcast channels and
+        megagroups (any PeerChannel), while event.is_group is True for
+        megagroups too, so a megagroup would otherwise set both flags and could
+        match a channels-only CHAT_TYPES filter it should be excluded from.
+        _get_chat_type() already treats a megagroup as "group", never
+        "channel"; this mirrors that.
+        """
+        is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
+        if is_channel and is_group is None:
+            # Telethon's is_group is None for a PeerChannel whose broadcast flag
+            # it can't see (chat entity absent from the update). Megagroup vs
+            # broadcast is unknowable here, so don't guess: drop the hints and
+            # take the conservative no-hint path.
+            return None, None, None
+        if is_channel and is_group:
+            is_channel = False
+        return is_user, is_group, is_channel
+
     def _should_process_chat(
         self,
         chat_id: int,
@@ -885,6 +926,179 @@ class TelegramListener:
         # identical to the backup module's ingest path for the same inputs.
         return fallback_media_filename(telegram_file_id, media_type, mime_type, message.id)
 
+    def _capturable_media_type(self, message) -> str | None:
+        """The message's media type when the live lane may store its file, else None.
+
+        The video Telegram attaches to a YouTube link preview (#440) is declined
+        exactly as the scheduled sweep declines it in _process_media, and so is
+        media DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES leave out.
+        Dropping the type (rather than refusing inside _download_media) also
+        stops the media ROW being written, so the pending drain never sees it.
+        The message, its text and its raw_data card are stored either way; the
+        scheduled sweep records the metadata-only row on its next run.
+        """
+        if not message.media:
+            return None
+        media_type = self._get_media_type(message.media)
+        if not self.config.download_youtube_videos and is_youtube_preview_video(message.media):
+            return None
+        if media_type and not media_download_allowed(self.config, message.media, media_type):
+            return None
+        return media_type
+
+    async def _store_message_media(self, message, chat_id: int, media_type: str) -> dict | None:
+        """Download a stored message's media and write its row; the WS media dict, or None.
+
+        The message row must exist first (the media table's foreign key). Runs
+        for a new message and for an edit that replaced the media. Returns the
+        nested media dict the viewer's live row uses, or None when nothing was
+        downloaded (LISTEN_NEW_MESSAGES_MEDIA off, SKIP_MEDIA, too large, failed).
+        """
+        if not (self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id)):
+            return None
+        telegram_file_id = media_file_id(message.media)
+        try:
+            # BEFORE the download, not after: if this message already has a row
+            # whose file is on disk (an import, or a replay of a message we have
+            # seen), downloading would fetch a second copy under the listener's
+            # own filename, repoint the row at it and orphan the original. With
+            # the file id, a row holding another file (an edit replaced the
+            # media) is kept as a media version first and comes back empty.
+            existing = await self.db.reconcile_media_row(
+                chat_id,
+                message.id,
+                media_type,
+                account_id=self.account_id,
+                telegram_file_id=telegram_file_id,
+                source="listener",
+                edit_date=getattr(message, "edit_date", None),
+                edit_hide=message_edit_hide(message),
+            )
+            if isinstance(existing, dict) and existing.get("superseded") is True:
+                # The archive already holds newer media for this message.
+                return None
+            on_disk = (
+                resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
+                if existing and existing.get("downloaded")
+                else None
+            )
+            if on_disk and os.path.lexists(on_disk):
+                return existing
+            download_result = await self._download_media(message, chat_id)
+            if not download_result:
+                return None
+            media_path, media_file_name, content_hash = download_result
+            # Create media record (FK to messages now satisfied). The row keeps
+            # whatever id it was first filed under: an edit that swaps the
+            # media's kind would otherwise plant a second row, the same way a
+            # reclassified round video did in the sweep.
+            media_id = existing["id"] if existing else f"{chat_id}_{message.id}_{media_type}"
+            # Same metadata the scheduled sweep records (#263) — without it
+            # live-captured voice notes had a NULL duration and rendered
+            # without it while sweep-captured ones showed it.
+            media_attributes = extract_media_attributes(downloadable_media_payload(message.media))
+            try:
+                media_attributes["file_size"] = os.path.getsize(media_path)
+            except OSError:
+                pass  # Keep Telegram's reported size when the path isn't stat-able
+            media_row = {
+                "id": media_id,
+                "message_id": message.id,
+                "chat_id": chat_id,
+                "type": media_type,
+                "file_path": media_path,
+                "file_name": media_file_name,
+                "content_hash": content_hash,
+                "downloaded": True,
+                "download_date": utcnow_naive(),
+                "telegram_file_id": telegram_file_id,
+                # Date and path for the file when another writer stored other
+                # media first: it is kept as an earlier media (insert_media).
+                "version_date": media_read_date(message),
+                "version_source": "listener",
+                **media_attributes,
+            }
+            written_id = await self.db.insert_media(media_row, account_id=self.account_id)
+            if written_id is None:
+                # An edit replaced the media while this download ran: the file
+                # is not the message's current media (insert_media kept it
+                # with the earlier media when that is where it belongs).
+                return None
+            if isinstance(written_id, str):
+                media_id = written_id
+                media_row["id"] = written_id
+            logger.debug("📎 Downloaded media")
+            # A live voice message gets its transcript within seconds instead
+            # of at the next drain.
+            self._enqueue_transcription(media_row)
+            # Mirror the DB row so the WS row matches what the next poll returns.
+            return {
+                "id": media_id,
+                "type": media_type,
+                "file_path": media_path,
+                "file_name": media_file_name,
+                "file_size": media_row["file_size"],
+                "mime_type": media_row["mime_type"],
+                "width": media_row["width"],
+                "height": media_row["height"],
+                "duration": media_row["duration"],
+            }
+        except Exception as e:
+            logger.warning(f"Failed to download media for message {message.id}: {describe_exception(e)}")
+            return None
+
+    async def _keep_replaced_media(self, message, chat_id: int) -> str | None:
+        """The media type when an edit replaced this message's photo or file, else None.
+
+        Asks ``reconcile_media_row`` with the file id the message carries now.
+        When the archived row holds another file, it is kept as a media version
+        (with the text it was shown beside) and comes back empty under a new id.
+        Runs before the edit's text is applied, so both versions carry the date
+        the old state began. The new file is fetched by _store_message_media.
+        """
+        media = getattr(message, "media", None)
+        if not media:
+            return None
+        media_type = self._get_media_type(media)
+        telegram_file_id = media_file_id(media)
+        if not media_type or telegram_file_id is None:
+            return None
+        row = await self.db.reconcile_media_row(
+            chat_id,
+            message.id,
+            media_type,
+            account_id=self.account_id,
+            telegram_file_id=telegram_file_id,
+            source="listener",
+            edit_date=getattr(message, "edit_date", None),
+            edit_hide=message_edit_hide(message),
+        )
+        if isinstance(row, dict) and row.get("replaced") is True:
+            return media_type
+        return None
+
+    def _message_media_lock(self, chat_id: int, message_id: int) -> asyncio.Lock:
+        """One lock per message for the handlers that write its media.
+
+        Telethon runs handlers concurrently, so an edit can arrive while the
+        new-message handler is still downloading the first file, or while an
+        earlier edit downloads its own. Without the lock the edit finds no
+        media row (or an old one) and the file it brings is never kept. The
+        new-message handler holds it from the message insert to the media
+        write, the edit handler from the media check to the new download.
+        Weak values: a lock no handler holds goes away with its last user.
+        """
+        locks = getattr(self, "_media_locks", None)
+        if locks is None:
+            locks = weakref.WeakValueDictionary()
+            self._media_locks = locks
+        key = (chat_id, message_id)
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
+
     async def _download_media(self, message, chat_id: int) -> tuple[str, str, str | None] | None:
         """
         Download media from a message.
@@ -901,18 +1115,7 @@ class TelegramListener:
             # Get Telegram's file unique ID for deduplication. Webpage previews
             # keep their photo/document one level down — unwrap once.
             payload = downloadable_media_payload(media)
-            # Truthy guards, not hasattr: a WebPage carries BOTH .photo and
-            # .document (one None), so hasattr would pick the empty photo
-            # branch for document-backed previews and lose the file id.
-            telegram_file_id = None
-            if getattr(payload, "photo", None):
-                telegram_file_id = str(getattr(payload.photo, "id", None))
-            elif getattr(payload, "document", None):
-                telegram_file_id = str(getattr(payload.document, "id", None))
-
-            # Guard against inaccessible media producing "None" string IDs
-            if telegram_file_id == "None":
-                telegram_file_id = None
+            telegram_file_id = media_file_id(media)
 
             # Check file size
             file_size = 0
@@ -1038,9 +1241,11 @@ class TelegramListener:
             """
             Handle message edit events.
 
-            Operations are QUEUED, not applied immediately.
-            The background processor applies them after the buffer delay,
-            allowing burst detection BEFORE any data is modified.
+            Edits are applied at once and never pass through the mass-deletion
+            guard: an edit keeps the earlier text and its formatting as a
+            version, and a reaction-only
+            edit event must not use up a budget that would then drop real
+            text edits.
             """
             # Check if edits are enabled
             if not self.config.listen_edits:
@@ -1049,7 +1254,11 @@ class TelegramListener:
             try:
                 chat_id = self._get_marked_id(event.chat_id)
 
-                if not self._should_process_chat(chat_id):
+                # Same type hints as a new message: an edit is often the first
+                # event of a chat never backed up yet (its message arrived while
+                # the listener was away), and the not_found path below stores it.
+                is_user, is_group, is_channel = self._event_chat_type_hints(event)
+                if not self._should_process_chat(chat_id, is_user=is_user, is_group=is_group, is_channel=is_channel):
                     return
 
                 # Skip edits in excluded forum topics
@@ -1061,36 +1270,59 @@ class TelegramListener:
                 # changes as genuine UpdateEditMessage events (Telethon #4635), which
                 # our text-outcome early return below would otherwise discard. Harvest
                 # them into the same debounce buffer as the live reaction handler,
-                # BEFORE the rate-limit check and the text early return, so a
-                # reaction-only edit still reconciles and an edit rate limit can't
-                # suppress it. Capture and write are synchronous here, so arrival
+                # BEFORE the text early return, so a reaction-only edit still
+                # reconciles. Capture and write are synchronous here, so arrival
                 # order is preserved and overwriting is correct.
                 self._buffer_reaction_snapshot(chat_id, message)
 
                 self.stats["edits_received"] += 1
                 new_text = message_plain_text(message)
                 edit_date = message.edit_date
+                edit_hide = message_edit_hide(message)
 
-                # Check rate limit before applying
-                allowed, reason = self._protector.check_operation(chat_id, "edit")
+                entities = message_entities(message)
+                # Waits for a download of this message's media still running
+                # in another handler, so the check below sees its row.
+                async with self._message_media_lock(chat_id, message.id):
+                    # An edit can replace the photo or file. The old media is kept as
+                    # a version BEFORE the text moves, so the old media and the old
+                    # text carry the same date in the edit history.
+                    replaced_media_type = await self._keep_replaced_media(message, chat_id)
 
-                if not allowed:
-                    self.stats["operations_discarded"] += 1
+                    # Apply the edit immediately; count and broadcast only when the
+                    # archive actually changed, so stats stay honest and the viewer
+                    # never displays text the archive rejected as stale.
+                    outcome, prior = await self.db.update_message_text(
+                        chat_id=chat_id,
+                        message_id=message.id,
+                        new_text=new_text,
+                        edit_date=edit_date,
+                        account_id=self.account_id,
+                        edit_hide=edit_hide,
+                        entities=entities,
+                        update_entities=True,
+                        rich_message=message_rich_payload(message),
+                        source="listener",
+                        media_changed=replaced_media_type is not None,
+                    )
+                    # The new file, beside the kept one, under the same rules as a
+                    # new message's media (SKIP_MEDIA, size, type filters).
+                    if replaced_media_type is not None:
+                        capturable_type = self._capturable_media_type(message)
+                        if capturable_type is not None:
+                            await self._store_message_media(message, chat_id, capturable_type)
+                if outcome == "not_found":
+                    # The archive has not stored this message yet: the backup has
+                    # not reached it, or it arrived while the listener was away.
+                    # Dropping the edit would lose the newest text, so store the
+                    # message now through the new-message path, with its current
+                    # text and edit_date. That path makes its own scope checks.
+                    # backfill=True stores it quietly: the message is not new, and
+                    # a reaction to an old message arrives as an edit too.
+                    self.stats["edits_skipped"] += 1
+                    logger.debug("📝 Edit of a message not archived yet, storing it")
+                    await on_new_message(event, backfill=True)
                     return
-
-                # Apply the edit immediately; count and broadcast only when the
-                # archive actually changed, so stats stay honest and the viewer
-                # never displays text the archive rejected as stale.
-                outcome, prior = await self.db.update_message_text(
-                    chat_id=chat_id,
-                    message_id=message.id,
-                    new_text=new_text,
-                    edit_date=edit_date,
-                    account_id=self.account_id,
-                    entities=message_entities(message),
-                    update_entities=True,
-                    rich_message=message_rich_payload(message),
-                )
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
                     logger.debug("📝 Edit skipped (%s)", outcome)
@@ -1107,6 +1339,9 @@ class TelegramListener:
                         "message_id": message.id,
                         "new_text": new_text,
                         "edit_date": edit_date.isoformat() if edit_date else None,
+                        "edit_hide": edit_hide,
+                        # The edit may have changed only the formatting.
+                        "entities": entities,
                     },
                 )
 
@@ -1199,41 +1434,26 @@ class TelegramListener:
                 self.stats["errors"] += 1
                 logger.error(f"Error processing deletion event: {e}", exc_info=True)
 
-        @self.client.on(events.NewMessage)
-        async def on_new_message(event: events.NewMessage.Event) -> None:
+        async def on_new_message(event: events.NewMessage.Event, *, backfill: bool = False) -> None:
             """
             Handle new messages.
 
             If LISTEN_NEW_MESSAGES is enabled, saves messages to database in real-time.
             Otherwise, just tracks chat IDs for edits/deletions.
+
+            on_message_edited also calls it, with its MessageEdited event (a
+            NewMessage event subclass) and ``backfill=True``, for an edit of a
+            message the archive has not stored yet. A back-fill stores the
+            message exactly the same way but announces nothing: no NEW_MESSAGE
+            notification (so no viewer row, Web Push or desktop alert for an old
+            message) and no new_messages_* counts. It is registered below the
+            definition, not by a decorator, so the name always holds this
+            function.
             """
             try:
                 chat_id = self._get_marked_id(event.chat_id)
 
-                # NewMessage carries its peer type (PeerUser/PeerChat/PeerChannel)
-                # synchronously via _chat_peer - no entity fetch needed - so a chat
-                # we've never backed up before can be matched against CHAT_TYPES
-                # right now instead of being dropped until the next scheduled
-                # backup adds it to _tracked_chat_ids. Otherwise a first message
-                # from someone we've never chatted with is invisible to the
-                # listener (see _should_process_chat).
-                #
-                # Telethon's event.is_channel is True for BOTH broadcast channels
-                # and megagroups (any PeerChannel), while event.is_group is True
-                # for megagroups too - so a megagroup would otherwise set both
-                # flags and could match a channels-only CHAT_TYPES filter it
-                # should be excluded from. _get_chat_type() already treats a
-                # megagroup as "group", never "channel"; mirror that here.
-                is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
-                if is_channel and is_group is None:
-                    # Telethon's is_group is None for a PeerChannel whose
-                    # broadcast flag it can't see (chat entity absent from
-                    # the update). Megagroup vs broadcast is unknowable
-                    # here, so don't guess: drop the hints and take the
-                    # conservative no-hint path for this message.
-                    is_user = is_group = is_channel = None
-                elif is_channel and is_group:
-                    is_channel = False
+                is_user, is_group, is_channel = self._event_chat_type_hints(event)
 
                 # Add to tracked chats if we should be backing up this chat
                 if chat_id not in self._tracked_chat_ids:
@@ -1257,7 +1477,8 @@ class TelegramListener:
                     logger.debug("⏭️ Skipping message in excluded topic")
                     return
 
-                self.stats["new_messages_received"] += 1
+                if not backfill:
+                    self.stats["new_messages_received"] += 1
 
                 # If LISTEN_NEW_MESSAGES is disabled, just track for edits/deletions
                 if not self.config.listen_new_messages:
@@ -1314,8 +1535,11 @@ class TelegramListener:
                     "reply_to_text": None,
                     "forward_from_id": None,  # Will be filled by next backup if needed
                     "edit_date": message.edit_date,
+                    "edit_hide": message_edit_hide(message),
                     "raw_data": {},
                     "is_outgoing": 1 if message.out else 0,
+                    # The path named on any version this read writes.
+                    "version_source": "listener",
                 }
 
                 # Capture grouped_id for album detection (multiple photos/videos sent together)
@@ -1349,120 +1573,35 @@ class TelegramListener:
                     message_data["raw_data"]["rich_message"] = rich_payload
 
                 # v6.0.0: Detect media type for logging (download happens after message insert)
-                media_type = None
-                if message.media:
-                    media_type = self._get_media_type(message.media)
-                    # The video Telegram attaches to a YouTube link preview (#440),
-                    # declined exactly as the scheduled sweep declines it in
-                    # _process_media. Dropping the type here (rather than inside
-                    # _download_media) also stops the media ROW being written, so
-                    # the pending drain never sees it. The message, its text and its
-                    # raw_data.webpage card above are stored either way.
-                    if not self.config.download_youtube_videos and is_youtube_preview_video(message.media):
-                        media_type = None
-                    # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: same
-                    # policy, same reason — dropping the type here keeps the
-                    # live lane from downloading filtered media and from
-                    # writing a row the pending drain would have to re-examine.
-                    # The message, its text and its raw_data card above are
-                    # stored either way; the scheduled sweep records the
-                    # metadata-only row on its next run.
-                    if media_type and not media_download_allowed(self.config, message.media, media_type):
-                        media_type = None
+                media_type = self._capturable_media_type(message)
 
-                # Insert the message FIRST (required for FK constraint on media table)
-                await self.db.insert_message(message_data, account_id=self.account_id)
-                self.stats["new_messages_saved"] += 1
+                # Held until the media row is written: an edit of this message
+                # arriving meanwhile waits, and then finds the row (see
+                # _message_media_lock).
+                async with self._message_media_lock(chat_id, message.id):
+                    # Insert the message FIRST (required for FK constraint on media table)
+                    await self.db.insert_message(message_data, account_id=self.account_id)
+                    if not backfill:
+                        self.stats["new_messages_saved"] += 1
 
-                # New messages can arrive already carrying reactions (fast reactors,
-                # forwarded content). Buffer them now that the row exists (#221).
-                # overwrite=False: the awaits above (insert_message etc.) opened a
-                # window in which the live reaction handler may have buffered a
-                # FRESHER snapshot for this message — our event-time capture must
-                # not clobber it (review finding, reproduced).
-                self._buffer_reaction_snapshot(chat_id, message, overwrite=False)
+                    # New messages can arrive already carrying reactions (fast reactors,
+                    # forwarded content). Buffer them now that the row exists (#221).
+                    # overwrite=False: the awaits above (insert_message etc.) opened a
+                    # window in which the live reaction handler may have buffered a
+                    # FRESHER snapshot for this message — our event-time capture must
+                    # not clobber it (review finding, reproduced).
+                    self._buffer_reaction_snapshot(chat_id, message, overwrite=False)
 
-                # v6.0.0: Handle media - create Media record AFTER message exists
-                # ws_media mirrors the API row's nested media dict for the WS notify payload
-                # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
-                ws_media = None
-                if media_type:
-                    # Download media immediately if enabled
-                    if self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id):
-                        try:
-                            # BEFORE the download, not after: if this message already
-                            # has a row whose file is on disk (an import, or a replay
-                            # of a message we have seen), downloading would fetch a
-                            # second copy under the listener's own filename, repoint
-                            # the row at it and orphan the original.
-                            _existing = await self.db.reconcile_media_row(
-                                chat_id, message.id, media_type, account_id=self.account_id
-                            )
-                            _on_disk = (
-                                resolve_stored_media_path(_existing.get("file_path"), self.config.media_path)
-                                if _existing and _existing.get("downloaded")
-                                else None
-                            )
-                            if _on_disk and os.path.lexists(_on_disk):
-                                ws_media = _existing
-                                download_result = None
-                            else:
-                                download_result = await self._download_media(message, chat_id)
-                            if download_result:
-                                media_path, media_file_name, content_hash = download_result
-                                # Create media record (FK to messages now satisfied).
-                                # The row keeps whatever id it was first filed under: an
-                                # edit that swaps the media's kind would otherwise plant a
-                                # second row, the same way a reclassified round video did
-                                # in the sweep.
-                                media_id = _existing["id"] if _existing else f"{chat_id}_{message.id}_{media_type}"
-                                # Same metadata the scheduled sweep records (#263) — without it
-                                # live-captured voice notes had a NULL duration and rendered
-                                # without it while sweep-captured ones showed it.
-                                media_attributes = extract_media_attributes(downloadable_media_payload(message.media))
-                                try:
-                                    media_attributes["file_size"] = os.path.getsize(media_path)
-                                except OSError:
-                                    pass  # Keep Telegram's reported size when the path isn't stat-able
-                                media_row = {
-                                    "id": media_id,
-                                    "message_id": message.id,
-                                    "chat_id": chat_id,
-                                    "type": media_type,
-                                    "file_path": media_path,
-                                    "file_name": media_file_name,
-                                    "content_hash": content_hash,
-                                    "downloaded": True,
-                                    "download_date": utcnow_naive(),
-                                    **media_attributes,
-                                }
-                                await self.db.insert_media(media_row, account_id=self.account_id)
-                                logger.debug("📎 Downloaded media")
-                                # A live voice message gets its transcript within
-                                # seconds instead of at the next drain.
-                                self._enqueue_transcription(media_row)
-                                # Mirror the DB row so the WS row matches what the next poll returns.
-                                ws_media = {
-                                    "id": media_id,
-                                    "type": media_type,
-                                    "file_path": media_path,
-                                    "file_name": media_file_name,
-                                    "file_size": media_row["file_size"],
-                                    "mime_type": media_row["mime_type"],
-                                    "width": media_row["width"],
-                                    "height": media_row["height"],
-                                    "duration": media_row["duration"],
-                                }
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to download media for message {message.id}: {describe_exception(e)}"
-                            )
+                    # v6.0.0: Handle media - create Media record AFTER message exists
+                    # ws_media mirrors the API row's nested media dict for the WS notify payload
+                    # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
+                    ws_media = await self._store_message_media(message, chat_id, media_type) if media_type else None
 
                 # Send real-time notification (enriched to mirror the API row shape so the
                 # viewer can render sender name + media immediately instead of a bare row
                 # until the next poll: flat user fields + nested media dict). message_data
                 # itself is left untouched since it was already passed to db.insert_message.
-                if self._notifier:
+                if self._notifier and not backfill:
                     ws_message = {
                         **message_data,
                         "first_name": sender_user["first_name"] if sender_user else None,
@@ -1476,7 +1615,10 @@ class TelegramListener:
 
                 # Log the new message (no chat_id/msg_id/text — PII)
                 media_indicator = f" [{media_type}]" if media_type else ""
-                logger.info(f"📩 New message saved{media_indicator}")
+                if backfill:
+                    logger.info(f"📩 Message stored from an edit{media_indicator}")
+                else:
+                    logger.info(f"📩 New message saved{media_indicator}")
 
             except Exception as e:
                 self.stats["errors"] += 1
@@ -1484,6 +1626,8 @@ class TelegramListener:
                 # OSError would print the media path that describe_exception
                 # just removed. Type and (where safe) message are kept.
                 logger.error(f"Error in new message handler: {describe_exception(e)}")
+
+        self.client.on(events.NewMessage)(on_new_message)
 
         # ChatAction handler - tracks chat metadata changes
         @self.client.on(events.ChatAction)
@@ -1792,8 +1936,8 @@ class TelegramListener:
 
         logger.info("=" * 70)
         logger.info("🎧 Real-time listener started with RATE LIMITING")
-        logger.info(f"   Max {self._protector.threshold} ops per {self._protector.window_seconds}s per chat")
-        logger.info("   Normal usage works instantly, mass operations blocked")
+        logger.info(f"   Max {self._protector.threshold} deletions per {self._protector.window_seconds}s per chat")
+        logger.info("   Normal usage works instantly, mass deletions blocked")
         logger.info("=" * 70)
 
         try:
@@ -1938,7 +2082,7 @@ class TelegramListener:
                 logger.warning("")
                 logger.warning(f"   🚫 Currently blocked chats: {len(blocked)}")
                 for _chat_id, (reason, discarded) in blocked.items():
-                    logger.warning(f"      {discarded} ops discarded - {reason}")
+                    logger.warning(f"      {discarded} deletions discarded - {reason}")
 
             logger.info("=" * 70)
 

@@ -226,6 +226,49 @@ class TestWithoutTranscriptIndex:
         assert _hits(await _chat_search(real_adapter, "harbour")) == [(3, "message"), (1, "message")]
 
 
+class TestEarlierMedia:
+    async def _replaced_voice(self, adapter, message_id: int, transcript: str, **kwargs) -> None:
+        """A voice message with a transcript, then an edit that replaced the audio."""
+        chat_id = kwargs.get("chat_id", CHAT)
+        media_id = await _voice(adapter, message_id, transcript, **kwargs)
+        await adapter.insert_media(
+            {
+                "id": media_id,
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "type": "voice",
+                "telegram_file_id": "700000000000000111",
+            },
+            account_id=1,
+        )
+        replaced = await adapter.reconcile_media_row(
+            chat_id,
+            message_id,
+            "voice",
+            account_id=1,
+            telegram_file_id="700000000000000222",
+            edit_date=BASE + timedelta(hours=1),
+        )
+        assert replaced["replaced"] is True
+
+    async def test_the_transcript_of_replaced_audio_is_still_found(self, real_adapter):
+        await _chat(real_adapter)
+        await self._replaced_voice(real_adapter, 2, "meet me at the harbour tonight", minutes=2)
+
+        assert _hits((await _global(real_adapter, "harbour"))["results"]) == [(2, "transcript")]
+        assert _hits(await _chat_search(real_adapter, "harbour")) == [(2, "transcript")]
+
+    async def test_the_scope_still_applies(self, real_adapter):
+        await _chat(real_adapter)
+        await _chat(real_adapter, OTHER_CHAT)
+        await self._replaced_voice(real_adapter, 1, "quarantine rules", chat_id=OTHER_CHAT)
+        await _voice(real_adapter, 1, "nothing relevant")
+
+        scoped = await _global(real_adapter, "quarantine", scope=ChatScope.build(ids={CHAT}))
+        assert scoped["results"] == []
+        assert await _chat_search(real_adapter, "quarantine") == []
+
+
 class TestPostgres:
     @pytest.fixture(autouse=True)
     def _postgres_only(self, real_adapter):

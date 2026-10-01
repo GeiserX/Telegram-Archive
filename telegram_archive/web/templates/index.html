@@ -3387,6 +3387,39 @@
         .version-bubble.is-current {
             background: rgb(var(--tg-accent-dim));
         }
+        /* The photo or file a version had, when a later edit replaced it: a
+           thumbnail for a photo, a line with the kind and name otherwise. */
+        .version-media {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+        }
+        .version-media-thumb {
+            display: block;
+            max-width: 200px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: rgb(var(--tg-field));
+        }
+        .version-media-thumb img {
+            display: block;
+            max-width: 200px;
+            max-height: 200px;
+            object-fit: cover;
+        }
+        .version-media-caption {
+            font-size: 13px;
+            line-height: 18px;
+            color: rgb(var(--tg-muted));
+            overflow-wrap: anywhere;
+        }
+        .version-media-caption.is-link {
+            color: rgb(var(--tg-quote));
+        }
+        .version-media-caption.is-link:hover {
+            text-decoration: underline;
+        }
         /* What an edit changed, in the colours a diff uses and nothing else
            here does (the quote tint already means a link or a search hit):
            added words keep the text colour on a green tint and are
@@ -7397,7 +7430,7 @@
                                             <span class="block truncate text-[15px] leading-5 text-tg-ink">{{ getMediaDisplayName(item) }}</span>
                                             <span class="block text-[13px] leading-[18px] text-tg-muted tabular-nums">{{ [formatBytes(item.file_size), formatMediaDate(item.message_date)].filter(Boolean).join(' · ') }}</span>
                                         </span>
-                                        <a v-if="item.media_url && !noDownload" :href="item.media_url + '?download=1'" download @click.stop
+                                        <a v-if="item.media_url && !noDownload" :href="mediaDownloadUrl(item.media_url)" download @click.stop
                                             class="tg-icon-btn" :aria-label="`Download ${getMediaDisplayName(item)}`" title="Download">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1"/><path d="m8 12 4 4 4-4"/><path d="M12 4v12"/></svg>
                                         </a>
@@ -7844,7 +7877,7 @@
                                                          transcript button, in its shape; 8px from it so
                                                          their 40px hit areas meet and do not overlap. -->
                                                     <a v-if="!noDownload && getMediaUrl(msg)"
-                                                        :href="getMediaUrl(msg) + '?download=1'"
+                                                        :href="mediaDownloadUrl(getMediaUrl(msg))"
                                                         :download="getDocumentDisplayName(msg)"
                                                         @click.stop
                                                         :aria-label="'Download ' + getDocumentDisplayName(msg)"
@@ -8055,7 +8088,7 @@
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] text-tg-meta">
                                                 <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
-                                                <a v-if="!noDownload" :href="getMediaUrl(msg) + '?download=1'" download
+                                                <a v-if="!noDownload" :href="mediaDownloadUrl(getMediaUrl(msg))" download
                                                     class="text-tg-quote hover:underline whitespace-nowrap">
                                                     Download
                                                 </a>
@@ -8067,7 +8100,7 @@
                                              its name; an audio file takes the audio bubble above. -->
                                         <div v-else>
                                             <div class="flex items-center gap-2">
-                                                <a :href="noDownload ? '#' : getMediaUrl(msg) + '?download=1'" :download="!noDownload"
+                                                <a :href="noDownload ? '#' : mediaDownloadUrl(getMediaUrl(msg))" :download="!noDownload"
                                                     :class="{'pointer-events-none opacity-60': noDownload}"
                                                     class="flex-1 min-w-0 flex items-center gap-2 bg-tg-quote-bg p-2 rounded ring-inset hover:ring-1 hover:ring-tg-quote/60 transition">
                                                     <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
@@ -8360,11 +8393,19 @@
                         </li>
                         <li v-for="entry in versionEntries" :key="entry.key"
                             class="version-item" :class="{ 'is-current': entry.current }">
-                            <p class="version-label"><span v-if="entry.when" class="version-when">{{ entry.when }}</span><span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template><template v-if="entry.parts === null"> · changes not marked, long text</template></span></p>
-                            <div class="version-bubble" :class="{ 'is-current': entry.current }" dir="auto">
-                                <template v-if="entry.parts"><span v-for="(part, i) in entry.parts" :key="i"
-                                    :class="part.kind === 'ins' ? 'diff-ins' : part.kind === 'del' ? 'diff-del' : null">{{ part.text }}</span></template>
-                                <template v-else-if="entry.text">{{ entry.text }}</template>
+                            <p class="version-label"><span v-if="entry.when" class="version-when">{{ entry.when }}</span><span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template><template v-if="entry.formattingOnly"> · formatting only</template><template v-if="entry.parts === null"> · changes not marked, long text</template></span></p>
+                            <!-- The photo or file this version had, when a later edit replaced it,
+                                 and on the current entry the one that replaced it. -->
+                            <div v-for="media in entry.media" :key="media.key" class="version-media">
+                                <a v-if="media.thumbUrl" :href="media.url" target="_blank" rel="noopener" class="version-media-thumb">
+                                    <img :src="media.thumbUrl" :alt="media.label" loading="lazy">
+                                </a>
+                                <a v-if="media.url" :href="media.url" target="_blank" rel="noopener" class="version-media-caption is-link">{{ media.label }}</a>
+                                <span v-else class="version-media-caption">{{ media.label }}</span>
+                            </div>
+                            <!-- entry.html comes from versionHtml: the bubble's renderer, escape-first. -->
+                            <div v-if="!entry.mediaOnly" class="version-bubble" :class="{ 'is-current': entry.current }" dir="auto">
+                                <span v-if="entry.html" v-html="entry.html"></span>
                                 <span v-else class="version-empty">No text</span>
                             </div>
                         </li>
@@ -8598,14 +8639,14 @@
                                 </div>
                             </div>
                             <!-- Edited: with earlier versions a row that opens them. -->
-                            <component v-if="infoPanelMessage.edit_date || Number(infoPanelMessage.version_count) > 0"
+                            <component v-if="isEditedMessage(infoPanelMessage)"
                                 :is="Number(infoPanelMessage.version_count) > 0 ? 'button' : 'div'"
                                 :type="Number(infoPanelMessage.version_count) > 0 ? 'button' : null"
                                 @click="Number(infoPanelMessage.version_count) > 0 && toggleMessageVersions(infoPanelMessage)"
                                 class="tg-fact w-full text-left" :class="{ 'tg-fact-button': Number(infoPanelMessage.version_count) > 0 }">
                                 <svg class="info-fact-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
                                 <span class="tg-fact-text">
-                                    <span class="tg-fact-value">{{ infoPanelMessage.edit_date ? formatStamp(infoPanelMessage.edit_date) : 'Edited' }}</span>
+                                    <span class="tg-fact-value">{{ shownEditDate(infoPanelMessage) ? formatStamp(shownEditDate(infoPanelMessage)) : 'Edited' }}</span>
                                     <span class="tg-fact-label">Edited<template v-if="Number(infoPanelMessage.version_count) > 0"> · {{ infoPanelMessage.version_count }} earlier {{ Number(infoPanelMessage.version_count) === 1 ? 'version' : 'versions' }}</template></span>
                                 </span>
                                 <svg v-if="Number(infoPanelMessage.version_count) > 0" class="tg-row-chevron w-4 h-4 text-tg-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
@@ -8703,7 +8744,7 @@
                                 </button>
                             </div>
                             <div class="flex flex-wrap gap-1 px-1">
-                                <a v-if="!noDownload && getMediaUrl(mediaMsg)" :href="getMediaUrl(mediaMsg) + '?download=1'" download class="tg-text-btn">Download</a>
+                                <a v-if="!noDownload && getMediaUrl(mediaMsg)" :href="mediaDownloadUrl(getMediaUrl(mediaMsg))" download class="tg-text-btn">Download</a>
                                 <button v-if="canOpenMedia.file && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open')" class="tg-text-btn">Open</button>
                                 <button v-if="canOpenMedia.path && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open-path')" class="tg-text-btn">Show in folder</button>
                             </div>
@@ -8940,7 +8981,7 @@
             </button>
 
             <!-- Download Button -->
-            <a v-if="lightboxMedia && !noDownload && !lightboxMedia.isAvatar" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
+            <a v-if="lightboxMedia && !noDownload && !lightboxMedia.isAvatar" :href="mediaDownloadUrl(getMediaUrl(lightboxMedia))" download
                 aria-label="Download"
                 class="lightbox-control absolute right-16 z-60 w-11 h-11 flex items-center justify-center rounded-full text-tg-on-scrim bg-tg-on-scrim/[0.12] hover:bg-tg-on-scrim/20 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-on-scrim">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -12703,12 +12744,21 @@
                             // above already matched the frame's chat_ref against it.
                             const editMsg = messages.value.find(m => m.id === data.message_id)
                             if (editMsg) {
-                                const previousText = editMsg.text
                                 editMsg.text = data.new_text
                                 editMsg.edit_date = data.edit_date
-                                if (previousText !== data.new_text) {
-                                    editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
+                                editMsg.edit_hide = data.edit_hide ? 1 : 0
+                                // An edit of the formatting only keeps the text; the frame
+                                // carries the new entities (none when the text was cut).
+                                if ('entities' in data) {
+                                    const raw = (editMsg.raw_data && typeof editMsg.raw_data === 'object') ? editMsg.raw_data : {}
+                                    const next = { ...raw }
+                                    if (Array.isArray(data.entities) && data.entities.length) next.entities = data.entities
+                                    else delete next.entities
+                                    editMsg.raw_data = next
                                 }
+                                // Every edit frame is an applied edit, and every applied
+                                // edit keeps the version it replaced.
+                                editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
                                 clearMessageVersionsCache(editMsg)
                                 // An open history or peek reads the new versions at once.
                                 if (isVersionsPanelOpenFor(editMsg) || isEditPeekFor(editMsg)) {
@@ -14201,14 +14251,14 @@
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (!hasTranscriptButton(msg) || !showTranscriptText(msg)) return false
                     if (msg.text || msg.raw_data?.webpage || msg.raw_data?.poll || hasReactionRow(msg)) return false
-                    if (isBubbleDeleted(msg) || msg.edit_date || Number(msg.version_count) > 0) return false
+                    if (isBubbleDeleted(msg) || isEditedMessage(msg)) return false
                     if (transcriptIsRtl(msg)) return false
                     return !(isOwnMessage(msg) && bubbleAccountLabel(msg))
                 }
                 const isCompactAudioBubble = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (msg.text || msg.raw_data?.webpage || hasReactionRow(msg)) return false
-                    if (msg.is_deleted || msg.edit_date || Number(msg.version_count) > 0) return false
+                    if (msg.is_deleted || isEditedMessage(msg)) return false
                     if (hasTranscriptButton(msg) && (showTranscriptText(msg) || transcriptStatus(msg) === 'error')) return false
                     // The time column holds a bare time; an account name needs the meta row.
                     return !(isOwnMessage(msg) && bubbleAccountLabel(msg))
@@ -14233,7 +14283,7 @@
                     if (!rendersAsPicture(msg)) return false
                     if (msg.reply_to_msg_id || msg.raw_data?.webpage) return false
                     if (hasReactionRow(msg)) return false
-                    if (msg.edit_date || Number(msg.version_count) > 0) return false
+                    if (isEditedMessage(msg)) return false
                     if (msg.text && msg.text.trim() !== '') return false
                     if (hasForwardHeader(msg)) return false
                     const namesSender = isGroup.value && !isOwnMessage(msg) && !FRAMELESS_MEDIA_TYPES.includes(msg.media.type)
@@ -15874,16 +15924,20 @@
                     await loadMessagesAroundId(msg.id)
                 }
                 // The pencil in the meta row. A message counts as edited when Telegram
-                // marks it (edit_date) or the archive kept an earlier version, the
-                // same rule as the server's edited_only filter and the chat's count.
+                // marks it or the archive kept an earlier version, the same rule as the
+                // server's edited_only filter and the chat's count. Telegram marks it
+                // with edit_date, unless edit_hide says the edit is not to be shown:
+                // Telegram bumps edit_date when only the reactions change.
                 const editedCount = (msg) => Number(msg?.version_count) || 0
-                const isEditedMessage = (msg) => !!msg?.edit_date || editedCount(msg) > 0
+                const shownEditDate = (msg) => (msg?.edit_date && !Number(msg?.edit_hide) ? msg.edit_date : null)
+                const isEditedMessage = (msg) => !!shownEditDate(msg) || editedCount(msg) > 0
                 // When the last edit was, by Telegram's clock: "at 08:57" on the day
                 // the message was sent, "on Sep 30 at 08:57" later, with the year
                 // when that differs too. Empty when Telegram gave no time.
                 const editedMoment = (msg) => {
-                    if (!msg?.edit_date) return null
-                    const at = moment.utc(msg.edit_date).tz(viewerTimezone.value)
+                    const editDate = shownEditDate(msg)
+                    if (!editDate) return null
+                    const at = moment.utc(editDate).tz(viewerTimezone.value)
                     if (!at.isValid()) return null
                     const sent = moment.utc(msg.date).tz(viewerTimezone.value)
                     return { at, sameDay: at.isSame(sent, 'day'), sameYear: at.isSame(sent, 'year') }
@@ -15918,14 +15972,14 @@
                 // rebuilt only when the zone or one of the facts it names changes.
                 const timeTitleCache = new WeakMap()
                 const messageTimeTitle = (msg) => {
-                    const stamp = [viewerTimezone.value, msg.date, msg.edit_date, msg.version_count, msg.is_deleted, msg.deleted_at].join('|')
+                    const stamp = [viewerTimezone.value, msg.date, msg.edit_date, msg.edit_hide, msg.version_count, msg.is_deleted, msg.deleted_at].join('|')
                     const cached = timeTitleCache.get(msg)
                     if (cached && cached.stamp === stamp) return cached.title
                     const lines = [formatStamp(msg.date)]
                     const versions = Number(msg.version_count) || 0
-                    if (msg.edit_date || versions > 0) {
+                    if (isEditedMessage(msg)) {
                         const kept = versions > 0 ? ` (${versions} earlier ${versions === 1 ? 'version' : 'versions'} kept)` : ''
-                        lines.push(formatMetadataTimestampTitle('Edited', msg.edit_date) + kept)
+                        lines.push(formatMetadataTimestampTitle('Edited', shownEditDate(msg)) + kept)
                     }
                     if (msg.is_deleted) lines.push(formatMetadataTimestampTitle('Deletion noticed', msg.deleted_at))
                     return lines.join('\n')
@@ -15998,43 +16052,168 @@
                     return `${Math.round(hours / 24)} days later`
                 }
 
+                // One piece of a version's text, start to end, with the formatting
+                // of that version, drawn by the bubble's own renderer. An entity
+                // that runs past the piece is cut to it.
+                const formattedSlice = (text, entityList, start, end) => {
+                    const slice = text.slice(start, end)
+                    if (!Array.isArray(entityList) || !entityList.length) return linkifyText(slice)
+                    const local = []
+                    for (const e of entityList) {
+                        if (!e || !Number.isInteger(e.offset) || !Number.isInteger(e.length)) continue
+                        const from = Math.max(e.offset, start)
+                        const to = Math.min(e.offset + e.length, end)
+                        if (from < to) local.push({ ...e, offset: from - start, length: to - from })
+                    }
+                    if (!local.length) return linkifyText(slice)
+                    try {
+                        return renderEntityHtml(slice, local)
+                    } catch (e) {
+                        return linkifyText(slice)
+                    }
+                }
+                // A version's card: its text with its own formatting, the way the
+                // bubble draws it, and what its edit added underlined and what it
+                // removed struck through. A removed word keeps the formatting of the
+                // version it was removed from. Every piece is escaped by the renderer.
+                const versionHtml = (entry, before) => {
+                    if (!entry.parts) return formattedSlice(entry.text, entry.entities, 0, entry.text.length)
+                    let html = ''
+                    let oldAt = 0
+                    let newAt = 0
+                    for (const part of entry.parts) {
+                        const size = part.text.length
+                        if (part.kind === 'del') {
+                            html += `<span class="diff-del">${formattedSlice(before.text, before.entities, oldAt, oldAt + size)}</span>`
+                            oldAt += size
+                        } else if (part.kind === 'ins') {
+                            html += `<span class="diff-ins">${formattedSlice(entry.text, entry.entities, newAt, newAt + size)}</span>`
+                            newAt += size
+                        } else {
+                            html += formattedSlice(entry.text, entry.entities, newAt, newAt + size)
+                            oldAt += size
+                            newAt += size
+                        }
+                    }
+                    return html
+                }
+
+                // What the archive can say about how many edits there were. Only the
+                // listener sees each edit; the sync, a backup and an import read the
+                // text current at that moment, so edits between two reads leave no
+                // version. Versions from before the archive named its paths have no
+                // source, which is unknown, so they count the same way. A message
+                // whose oldest kept version is newer than its send time was first
+                // archived already edited. Either way the count is a lower bound.
+                const VERSIONS_LIMIT = 100
+                const versionHistoryShape = (msg, kept) => {
+                    const truncated = kept.length >= VERSIONS_LIMIT
+                    const oldest = kept.length ? kept[kept.length - 1] : null
+                    const firstSeenEdited = !truncated && !!oldest && !!oldest.date && !!msg.date
+                        && moment.utc(oldest.date).valueOf() > moment.utc(msg.date).valueOf()
+                    const missedSome = kept.some(entry => entry.source !== 'listener')
+                    return {
+                        truncated,
+                        firstSeenEdited,
+                        lowerBound: firstSeenEdited || missedSome,
+                        edits: kept.length + (firstSeenEdited ? 1 : 0),
+                    }
+                }
+
                 // The edit history as a timeline, oldest first: "Sent", "Edit 1", ...
                 // and "Edit N, current", each with its time and how long after the one
                 // before. A version's date is when that text became current (the send
                 // time for the original, Telegram's edit time for each later one), and
                 // the current text's is the message's edit_date. Each later text
-                // carries its word diff against the one before. When the archive
-                // returned its limit of versions the oldest shown may not be the
-                // original, so the labels drop the numbers.
-                const VERSIONS_LIMIT = 100
+                // carries its word diff against the one before, and each is drawn
+                // with its own formatting. When the archive returned its limit of
+                // versions the oldest shown may not be the original, and when edits
+                // may have been missed the numbers would be wrong, so the labels
+                // drop them.
                 const versionEntries = computed(() => {
                     const msg = versionsMessage.value
                     if (!msg) return []
                     const kept = getMessageVersions(msg)
-                    const truncated = kept.length >= VERSIONS_LIMIT
+                    const shape = versionHistoryShape(msg, kept)
                     const oldestFirst = [...kept].reverse()
+                    const firstLabel = shape.firstSeenEdited ? 'First seen, already edited' : 'Sent'
                     const entries = oldestFirst.map((entry, index) => ({
                         key: `${entry.date || ''}:${index}`,
                         date: entry.date || null,
-                        what: truncated ? 'Earlier version' : (index === 0 ? 'Sent' : `Edit ${index}`),
+                        what: entry.media_only ? 'Earlier media'
+                            : shape.truncated ? 'Earlier version'
+                            : index === 0 ? firstLabel
+                                : shape.lowerBound ? 'Edit' : `Edit ${index}`,
                         text: entry.text || '',
+                        entities: Array.isArray(entry.entities) ? entry.entities : null,
                         current: false,
+                        mediaOnly: !!entry.media_only,
+                        media: versionMediaItems(entry.media, `${entry.date || ''}:${index}`, 'Earlier'),
                     }))
+                    const currentEntities = msg.raw_data?.entities
+                    // With an earlier photo or file in the history, the current one
+                    // shows too, so the two can be compared.
+                    const replacedMedia = entries.some(entry => entry.media.length)
                     entries.push({
                         key: 'current',
                         date: msg.edit_date || null,
-                        what: truncated || !kept.length ? 'Current' : `Edit ${kept.length}, current`,
+                        what: shape.truncated || shape.lowerBound || !kept.length ? 'Current' : `Edit ${kept.length}, current`,
                         text: msg.text || '',
+                        entities: Array.isArray(currentEntities) ? currentEntities : null,
                         current: true,
+                        mediaOnly: false,
+                        media: replacedMedia && msg.media ? versionMediaItems([msg.media], 'current', 'Current') : [],
                     })
+                    // A version kept only as media has no text to compare: the diff
+                    // runs between the text versions on either side of it.
+                    let textBefore = null
                     for (let index = 0; index < entries.length; index++) {
                         const entry = entries[index]
+                        const before = index > 0 ? entries[index - 1] : null
                         entry.when = versionWhen(msg, entry.date)
-                        entry.gap = index > 0 ? versionGap(entries[index - 1].date, entry.date) : ''
-                        if (index > 0) entry.parts = diffWords(entries[index - 1].text, entry.text)
+                        entry.gap = before ? versionGap(before.date, entry.date) : ''
+                        if (entry.mediaOnly) {
+                            entry.html = ''
+                            continue
+                        }
+                        const previous = textBefore
+                        textBefore = entry
+                        if (previous) {
+                            entry.parts = diffWords(previous.text, entry.text)
+                            entry.formattingOnly = previous.text === entry.text
+                                && JSON.stringify(previous.entities || []) !== JSON.stringify(entry.entities || [])
+                        }
+                        entry.html = versionHtml(entry, previous)
                     }
                     return entries
                 })
+
+                // The photo or file of a version for the history: a thumbnail for a
+                // photo, and a line naming the kind (and the file's name) that opens
+                // it. The URL is the server's ref-addressed one, or none when the
+                // file was not downloaded or this login may not download.
+                const versionMediaKind = (type) => {
+                    const value = String(type || '').toLowerCase()
+                    if (value === 'photo') return 'photo'
+                    if (value === 'video' || value === 'video_note' || value === 'animation') return 'video'
+                    if (value === 'voice' || value === 'audio') return 'audio'
+                    return 'file'
+                }
+                const versionMediaItems = (list, keyBase, prefix) => {
+                    if (!Array.isArray(list)) return []
+                    return list.map((media, index) => {
+                        const kind = versionMediaKind(media?.type)
+                        const url = media?.url || ''
+                        const name = kind === 'file' && media?.file_name ? ` · ${getMediaDisplayName(media)}` : ''
+                        const missing = !url && !media?.no_download ? ' · not downloaded' : ''
+                        return {
+                            key: `${keyBase}:m${index}`,
+                            url,
+                            thumbUrl: url && kind === 'photo' ? url.replace(/^\/media\//, '/media/thumb/200/') : '',
+                            label: `${prefix} ${kind}${name}${missing}`,
+                        }
+                    })
+                }
 
                 const messageVersionsKey = (msg) => {
                     const chatId = msg.chat_id ?? selectedChat.value?.id
@@ -16154,12 +16333,18 @@
                     closeVersionsPanel()
                     if (id != null) nextTick(() => scrollToMessage(id))
                 }
-                // "Sent September 29 at 16:29 · 2 earlier versions"
+                // "Sent September 29 at 16:29 · 2 earlier versions", or "· at least 3
+                // edits" when the archive may have missed some (versionHistoryShape).
                 const versionsSubtitle = computed(() => {
                     const msg = versionsMessage.value
                     if (!msg) return ''
                     const sent = `Sent ${formatDatePill(msg.date)} at ${formatTime(msg.date)}`
-                    const kept = getMessageVersions(msg).length || Number(msg.version_count) || 0
+                    const loaded = getMessageVersions(msg)
+                    const shape = versionHistoryShape(msg, loaded)
+                    if (loaded.length && shape.lowerBound && !shape.truncated) {
+                        return `${sent} · at least ${shape.edits} ${shape.edits === 1 ? 'edit' : 'edits'}`
+                    }
+                    const kept = loaded.length || Number(msg.version_count) || 0
                     return kept ? `${sent} · ${kept} earlier ${kept === 1 ? 'version' : 'versions'}` : sent
                 })
 
@@ -16474,6 +16659,13 @@
                     // it would put the chat id back into requests and access logs, which
                     // is exactly what the ref exists to prevent.
                     return msg.media?.url || ''
+                }
+
+                // The current media's URL can carry ?v= (it changes when an edit
+                // replaces the media), so the download flag joins the query.
+                const mediaDownloadUrl = (url) => {
+                    if (!url) return ''
+                    return url + (url.includes('?') ? '&' : '?') + 'download=1'
                 }
 
                 // The rows' own rule (video, animation and round video notes all render as
@@ -18946,6 +19138,7 @@
                     openEditedOnlyFromInfo,
                     closeEditedOnly,
                     editedCount,
+                    shownEditDate,
                     isEditedMessage,
                     editedLabel,
                     editedHeadText,
@@ -19082,6 +19275,7 @@
                     removedReactionText,
                     removedReactionTitle,
                     getMediaUrl,
+                    mediaDownloadUrl,
                     isVideoMedia,
                     getMediaDisplayName,
                     getDocumentDisplayName,

@@ -40,9 +40,9 @@ The listener keeps a set of tracked chats. It loads the set when it connects and
 
 A chat already in the archive stays tracked even if you later exclude it. The filters below decide only for chats the archive has not seen. To stop capturing an archived chat, remove its rows with `EXCLUDE_DELETE_EXISTING`.
 
-For new messages, the listener accepts a first message from an unseen chat when the backup's chat filter would accept it. That filter covers the exclude lists, the include lists and `CHAT_TYPES`. See [Choosing chats](choosing-chats.md). A first message from a bot is judged as a private chat until the next backup run classifies it.
+For new messages and edits, the listener accepts a first event from an unseen chat when the backup's chat filter would accept it. That filter covers the exclude lists, the include lists and `CHAT_TYPES`. See [Choosing chats](choosing-chats.md). A first message from a bot is judged as a private chat until the next backup run classifies it.
 
-Edits, deletions, pins, reactions and chat actions carry no chat type. For a chat that is not tracked yet, the listener processes them only when the chat is in an explicit include list or include folder.
+Deletions, pins, reactions and chat actions carry no chat type. For a chat that is not tracked yet, the listener processes them only when the chat is in an explicit include list or include folder.
 
 When `CHAT_IDS` is set, the listener processes only those chats, plus supergroups adopted through `FOLLOW_CHAT_MIGRATIONS`.
 
@@ -56,13 +56,17 @@ Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_
 
 ## Edits
 
-The listener applies an edit only when the text changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. Edits to messages that are not in the archive are skipped.
+The listener applies an edit only when the text or the formatting changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. An edit to a message that is not in the archive yet stores the message, with its current text and edit time, the way a new message is stored. It is stored quietly: the message is not new, so the viewer gets no new row and no notification or Web Push is sent. That needs `LISTEN_NEW_MESSAGES`, and the text from before the edit is not known unless a backup run read it at the same time, in which case it is kept as an earlier version.
 
-When an edit is applied, the previous text is saved as a version. The viewer marks the message with a pencil and the number of saved versions, says when the last edit was, and lets you open the earlier texts. See [Reactions, edits and deletions](../viewer/using-the-viewer.md#reactions-edits-and-deletions).
+When an edit is applied, the previous text and its formatting are saved as a version, named as seen by the listener. The viewer marks the message with a pencil and the number of saved versions, says when the last edit was, and lets you open the earlier texts. See [Reactions, edits and deletions](../viewer/using-the-viewer.md#reactions-edits-and-deletions).
 
 ![The edit history of a message edited twice](../images/screenshots/edit-history.png)
 
-An edit that changes only the formatting refreshes the stored formatting quietly. It saves no version, sends no update to the viewer and fires no webhook.
+Telegram moves a message's edit time when only its reactions change, and flags that edit as one not to show. The archive keeps the flag beside the edit time, and the viewer does not mark or count such a message as edited unless it kept an earlier text.
+
+An edit that replaces the photo or file is an edit too, even with the same caption. The old media stays in the archive, as a version beside the earlier text, and the new one is downloaded by the same rules as a new message's media: `LISTEN_NEW_MESSAGES_MEDIA`, `SKIP_MEDIA_CHAT_IDS`, `MAX_MEDIA_SIZE_MB` and the media type filters. A file the listener does not fetch waits for the backup's pending downloads. The sync (`SYNC_DELETIONS_EDITS`) does the same for edits it finds. Only an edit Telegram shows replaces media: a reaction, which Telegram sends as a hidden edit, never does. Media the archive cannot identify, from a Telegram Desktop import or an older file name that does not start with Telegram's id, is not compared. Nor is a link preview's card picture, which Telegram can change for a message nobody edited.
+
+An edit that changes only the formatting, such as a word made bold, is an edit too: it saves a version with the old formatting, moves the edit time and fires the webhook, with the same old and new text. It needs an edit time newer than the stored one, since every edit moves it. The edit time counts whole seconds, and a bot can edit twice within one, so a live edit with other formatting at the stored edit time is applied too. The block tree of a Rich Text Editor message is formatting as well, and its old tree is kept in the version. An edit Telegram hides replaces no formatting. It only fills the formatting of a message archived before the archive kept formatting.
 
 ## Deletions
 
@@ -95,16 +99,18 @@ The listener can miss some reaction changes. Telegram does not reliably push rea
 
 ## Mass-operation protection
 
-A burst of edits or deletions, such as someone clearing a whole chat, could overwrite or remove large parts of the archive. The listener guards against this with a rate limiter.
+A burst of deletions, such as someone clearing a whole chat, could remove large parts of the archive. The listener guards against this with a rate limiter on deletions.
+
+Edits are not limited. An edit keeps the earlier text and its formatting as a version, so nothing is lost. Telegram also sends many reaction changes as edit events, so a limit on edits would let a burst of reactions block real edits.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `MASS_OPERATION_THRESHOLD` | `10` | Most edits plus deletions the listener applies per chat within one window. |
+| `MASS_OPERATION_THRESHOLD` | `10` | Most deletions the listener applies per chat within one window. |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | Length of the sliding window. It is also how long a chat stays blocked once it goes over the limit. |
 
-Each chat has one sliding window, shared by edits and deletions. With the defaults, the first 10 operations inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's edits and deletions for one more window.
+Each chat has one sliding window, and only deletions count against it, so edits never use up the budget. With the defaults, the first 10 deletions inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's deletions for one more window. Edits in that chat are still applied.
 
-The listener drops blocked operations. It does not queue them, update the viewer or fire a webhook. It keeps every operation it applied before the chat went over the limit. The counters live in memory and reset when the process restarts.
+The listener drops blocked deletions. It does not queue them, update the viewer or fire a webhook. It keeps every deletion it applied before the chat went over the limit. The counters live in memory and reset when the process restarts.
 
 The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the scheduled backup has no such limit.
 

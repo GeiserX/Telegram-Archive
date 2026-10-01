@@ -296,6 +296,46 @@ class TestRealtimeNotifierNotify:
             call_payload = mock_pg.call_args[0][0]
             assert len(call_payload["data"]["new_text"]) == 501  # 500 + ellipsis char
 
+    async def test_notify_drops_the_entities_of_a_cut_edit_text(self):
+        """Entities describe the whole text: a cut text goes without them, and a
+        short one keeps them."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        notifier = RealtimeNotifier(db_manager=mock_db)
+        await notifier.init()
+        bold = [{"type": "bold", "offset": 0, "length": 4}]
+
+        with patch.object(notifier, "_notify_postgres", new_callable=AsyncMock) as mock_pg:
+            await notifier.notify(
+                NotificationType.EDIT, 42, {"message_id": 1, "new_text": "x" * 1000, "entities": bold}
+            )
+            assert "entities" not in mock_pg.call_args[0][0]["data"]
+
+            await notifier.notify(NotificationType.EDIT, 42, {"message_id": 1, "new_text": "Meet", "entities": bold})
+            assert mock_pg.call_args[0][0]["data"]["entities"] == bold
+
+    async def test_notify_drops_entities_that_would_pass_the_notify_limit(self):
+        """A short text can carry many custom emoji: the frame stays under
+        PostgreSQL's 8000-byte NOTIFY limit and keeps its text."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        notifier = RealtimeNotifier(db_manager=mock_db)
+        await notifier.init()
+        emoji = [
+            {"type": "custom_emoji", "offset": index * 2, "length": 2, "document_id": 5000000000000000000 + index}
+            for index in range(150)
+        ]
+
+        with patch.object(notifier, "_notify_postgres", new_callable=AsyncMock) as mock_pg:
+            await notifier.notify(
+                NotificationType.EDIT, 42, {"chat_id": 42, "message_id": 1, "new_text": "ab" * 150, "entities": emoji}
+            )
+
+        payload = mock_pg.call_args[0][0]
+        assert payload["data"]["new_text"] == "ab" * 150
+        assert "entities" not in payload["data"]
+        assert len(json.dumps(payload).encode("utf-8")) < 8000
+
     async def test_notify_does_not_truncate_short_edit_new_text(self):
         """notify() preserves short data["new_text"] for edit notifications."""
         mock_db = MagicMock()

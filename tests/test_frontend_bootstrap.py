@@ -326,7 +326,7 @@ def test_edited_without_versions_is_still_a_button():
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert '<span v-else-if="msg.edit_date"' not in html
-    assert "const isEditedMessage = (msg) => !!msg?.edit_date || editedCount(msg) > 0" in html
+    assert "const isEditedMessage = (msg) => !!shownEditDate(msg) || editedCount(msg) > 0" in html
     assert "The archive did not see an earlier version." in html
 
 
@@ -352,12 +352,17 @@ def test_message_versions_ignore_stale_load_responses():
 
 
 def test_realtime_edits_increment_visible_version_count():
-    """Realtime text edits should keep the edited count in sync without loading versions."""
+    """Realtime edits keep the edited count in sync without loading versions.
+
+    Every edit frame is an applied edit that kept a version, a formatting-only
+    edit with the same text too, so the count moves on every frame (executed in
+    test_edited_messages_frontend.TestTheLiveEditFrame).
+    """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert "const previousText = editMsg.text" in html
-    assert "if (previousText !== data.new_text)" in html
-    assert "editMsg.version_count = (Number(editMsg.version_count) || 0) + 1" in html
+    edit_case = html[html.index("case 'edit':") : html.index("case 'reaction':")]
+    assert "previousText" not in edit_case
+    assert "editMsg.version_count = (Number(editMsg.version_count) || 0) + 1" in edit_case
 
 
 def test_message_status_badges_show_timestamps_on_hover():
@@ -382,7 +387,7 @@ def test_message_status_badges_show_timestamps_on_hover():
     assert '<span v-else class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>' in html
     start = html.index("const messageTimeTitle = (msg) =>")
     body = html[start : html.index("\n                }\n", start)]
-    assert "formatMetadataTimestampTitle('Edited', msg.edit_date)" in body
+    assert "formatMetadataTimestampTitle('Edited', shownEditDate(msg))" in body
     assert "formatMetadataTimestampTitle('Deletion noticed', msg.deleted_at)" in body
     assert "earlier ${versions === 1 ? 'version' : 'versions'} kept" in body
     assert "const formatMetadataTimestampTitle = (label, dateStr) =>" in html
@@ -4623,8 +4628,27 @@ class TestAudioBubbleDownload(unittest.TestCase):
     def test_download_is_a_real_anchor_gated_on_no_download(self) -> None:
         bubble = self._audio_bubble()
         self.assertIn('v-if="!noDownload && getMediaUrl(msg)"', bubble)
-        self.assertIn(":href=\"getMediaUrl(msg) + '?download=1'\"", bubble)
+        self.assertIn(':href="mediaDownloadUrl(getMediaUrl(msg))"', bubble)
         self.assertIn(':download="getDocumentDisplayName(msg)"', bubble)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_the_download_flag_joins_a_url_that_has_a_query(self) -> None:
+        """The current media's URL carries ``?v=`` once an edit replaced the
+        media, so ``download=1`` must join it with ``&``, not start a second query."""
+        urls = ["/media/audioChatRef07AB/3_voice", "/media/audioChatRef07AB/3_voice?v=1", ""]
+        joined = _run_setup_helpers(
+            self.html,
+            ("const mediaDownloadUrl = (url) =>",),
+            f"{json.dumps(urls)}.map(mediaDownloadUrl)",
+        )
+        self.assertEqual(
+            joined,
+            [
+                "/media/audioChatRef07AB/3_voice?download=1",
+                "/media/audioChatRef07AB/3_voice?v=1&download=1",
+                "",
+            ],
+        )
 
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_the_url_term_of_the_guard_is_load_bearing(self) -> None:

@@ -221,13 +221,13 @@ class TestMassOperationProtectorAdvanced:
         """check_operation records timestamps and uses sliding window correctly."""
         protector = MassOperationProtector(threshold=2, window_seconds=60)
 
-        allowed1, _ = protector.check_operation(100, "edit")
-        allowed2, _ = protector.check_operation(100, "edit")
+        allowed1, _ = protector.check_operation(100, "deletion")
+        allowed2, _ = protector.check_operation(100, "deletion")
         assert allowed1 is True
         assert allowed2 is True
 
         # Third exceeds threshold (3 > 2)
-        allowed3, reason3 = protector.check_operation(100, "edit")
+        allowed3, reason3 = protector.check_operation(100, "deletion")
         assert allowed3 is False
         assert "Rate limit" in reason3
         assert protector.stats["rate_limits_triggered"] == 1
@@ -1763,37 +1763,75 @@ class TestOnMessageEditedNotification:
         # _notify_update is called, which calls notifier.notify
         notifier.notify.assert_called_once()
 
-    async def test_edit_rate_limited_increments_discarded(self):
-        """When edit is rate-limited, operations_discarded is incremented."""
+    async def test_reaction_only_edit_burst_does_not_drop_a_text_edit(self):
+        """A burst of reaction-only edit events never blocks a later text edit.
+
+        Reaction changes arrive as MessageEdited events whose text did not
+        change. They used to spend the per-chat mass-operation budget, so the
+        next real text edit in that chat was dropped for a whole window.
+        """
         listener, handlers, db, config = _make_listener_with_handlers(
-            mass_operation_threshold=1,
-            mass_operation_window_seconds=60,
+            mass_operation_threshold=10,
+            mass_operation_window_seconds=30,
         )
         handler = handlers[events.MessageEdited]
 
-        # First: allowed
-        event1 = MagicMock()
-        event1.chat_id = -1001234567890
-        msg1 = MagicMock()
-        msg1.reply_to = None
-        msg1.id = 1
-        msg1.text = "edit1"
-        msg1.edit_date = None
-        event1.message = msg1
-        await handler(event1)
+        def edit_event(msg_id, text):
+            event = MagicMock()
+            event.chat_id = -1001234567890
+            msg = MagicMock()
+            msg.reply_to = None
+            msg.id = msg_id
+            msg.text = text
+            msg.edit_date = datetime(2025, 6, 1)
+            event.message = msg
+            return event
 
-        # Second: triggers rate limit
-        event2 = MagicMock()
-        event2.chat_id = -1001234567890
-        msg2 = MagicMock()
-        msg2.reply_to = None
-        msg2.id = 2
-        msg2.text = "edit2"
-        msg2.edit_date = None
-        event2.message = msg2
-        await handler(event2)
+        db.update_message_text = AsyncMock(return_value=("noop", None))
+        for msg_id in range(1, 26):
+            await handler(edit_event(msg_id, "unchanged text"))
 
-        assert listener.stats["operations_discarded"] >= 1
+        db.update_message_text = AsyncMock(return_value=("applied", {"text": "before"}))
+        await handler(edit_event(99, "after"))
+
+        db.update_message_text.assert_awaited_once()
+        assert db.update_message_text.await_args.kwargs["message_id"] == 99
+        assert listener.stats["edits_received"] == 26
+        assert listener.stats["edits_applied"] == 1
+        assert listener.stats["operations_discarded"] == 0
+
+    async def test_edits_leave_the_deletion_budget_untouched(self):
+        """Edits do not count toward the deletion limit, and deletions stay limited."""
+        listener, handlers, db, config = _make_listener_with_handlers(
+            mass_operation_threshold=2,
+            mass_operation_window_seconds=60,
+        )
+        edit_handler = handlers[events.MessageEdited]
+        delete_handler = handlers[events.MessageDeleted]
+        db.delete_message = AsyncMock(return_value=None)
+
+        for msg_id in range(1, 6):
+            event = MagicMock()
+            event.chat_id = -1001234567890
+            msg = MagicMock()
+            msg.reply_to = None
+            msg.id = msg_id
+            msg.text = f"edit {msg_id}"
+            msg.edit_date = datetime(2025, 6, 1)
+            event.message = msg
+            await edit_handler(event)
+
+        assert listener.stats["edits_applied"] == 5
+
+        deletion = MagicMock()
+        deletion.chat_id = -1001234567890
+        deletion.deleted_ids = [11, 12, 13]
+        await delete_handler(deletion)
+
+        # The first two deletions fit the budget; the third goes over it.
+        assert db.delete_message.await_count == 2
+        assert listener.stats["deletions_applied"] == 2
+        assert listener.stats["operations_discarded"] == 1
 
 
 # ===========================================================================
