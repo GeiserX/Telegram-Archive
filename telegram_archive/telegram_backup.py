@@ -3453,9 +3453,9 @@ class TelegramBackup:
         # Formatting entities (bold/italic/code/spoiler/blockquote/...): the
         # raw text above is what their UTF-16 offsets index into. Without them
         # spoilers arrive pre-revealed and code blocks flatten to body text.
-        entities = message_entities(message)
-        if entities:
-            message_data["raw_data"]["entities"] = entities
+        # An empty list says "no formatting", so a later edit that only adds
+        # some is an edit; an absent key (a row from before 9.0) is unknown.
+        message_data["raw_data"]["entities"] = message_entities(message) or []
 
         # Rich Text Editor messages (#470): text and entities above are rendered
         # from the block tree; keep the tree itself so nothing is discarded.

@@ -478,9 +478,10 @@ messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
 class TestTheLiveEditFrame(unittest.TestCase):
     """An "edit" frame updates the open chat at once, a formatting-only edit too."""
 
-    def _handle(self, msg: dict, frame: dict) -> dict:
+    def _handle(self, msg: dict, frame: dict, *, pinned: list | None = None, expression: str = "messages.value[0]"):
         prelude = f"""
 const messages = {{ value: [{json.dumps(msg)}] }}
+const pinnedMessages = {{ value: {json.dumps(pinned or [])} }}
 const clearMessageVersionsCache = () => {{}}
 const isVersionsPanelOpenFor = () => false
 const isEditPeekFor = () => false
@@ -492,7 +493,48 @@ const handle = (data) => {{
 }}
 handle({json.dumps(frame)})
 """
-        return _run("messages.value[0]", (), prelude)
+        return _run(expression, (), prelude)
+
+    # 2A (9.0): the frame of an edit that replaced the photo carries the new media.
+    _OLD_MEDIA = {"id": "5_photo", "type": "photo", "url": "/media/r7/5_photo", "file_name": "old.jpg"}
+    _NEW_MEDIA = {"id": "5_photo", "type": "photo", "url": "/media/r7/5_photo?v=1", "file_name": "new.jpg"}
+    _MEDIA_FRAME = {
+        "type": "edit",
+        "chat_ref": "r7",
+        "message_id": 5,
+        "new_text": "Look at this",
+        "edit_date": "2026-09-30T08:54:00",
+        "edit_hide": 0,
+        "media": _NEW_MEDIA,
+    }
+
+    def test_a_replacing_edit_swaps_in_the_new_media_at_once(self) -> None:
+        msg = {"id": 5, "text": "Look at this", "version_count": 0, "media": self._OLD_MEDIA, "mediaLoadFailed": True}
+        out = self._handle(msg, self._MEDIA_FRAME)
+        self.assertEqual(out["media"], self._NEW_MEDIA)
+        self.assertFalse(out["mediaLoadFailed"])
+        self.assertEqual(out["version_count"], 1)
+
+        # A frame without media (the media did not change, or did not fit) keeps it.
+        frame_without = {key: value for key, value in self._MEDIA_FRAME.items() if key != "media"}
+        out = self._handle(msg, frame_without)
+        self.assertEqual(out["media"], self._OLD_MEDIA)
+
+    def test_a_pinned_row_takes_the_edit_too(self) -> None:
+        """The pinned-only list holds its own copy of the row, which no refresh of
+        the newest 50 reaches: it takes the text and the media as well."""
+        msg = {"id": 5, "text": "Look", "version_count": 0, "media": self._OLD_MEDIA}
+        pinned = [
+            {"id": 5, "text": "Look", "version_count": 0, "media": self._OLD_MEDIA},
+            {"id": 6, "text": "Other", "version_count": 0, "media": self._OLD_MEDIA},
+        ]
+        out = self._handle(msg, self._MEDIA_FRAME, pinned=pinned, expression="[messages.value, pinnedMessages.value]")
+        loaded, pinned_out = out
+        self.assertEqual(loaded[0]["media"], self._NEW_MEDIA)
+        self.assertEqual((pinned_out[0]["text"], pinned_out[0]["media"]), ("Look at this", self._NEW_MEDIA))
+        self.assertEqual(pinned_out[0]["version_count"], 1)
+        # Another pinned message is left alone.
+        self.assertEqual((pinned_out[1]["text"], pinned_out[1]["media"]), ("Other", self._OLD_MEDIA))
 
     def test_a_formatting_only_edit_takes_the_new_entities_and_counts_a_version(self) -> None:
         bold = [{"type": "bold", "offset": 0, "length": 4}]
