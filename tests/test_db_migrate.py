@@ -181,6 +181,54 @@ async def test_media_versions_move_to_postgresql_and_the_next_replacement_is_kep
         await target.close()
 
 
+async def test_message_snapshots_move_to_postgresql_and_the_next_state_is_kept(
+    tmp_path, make_postgres_database, require_postgres
+):
+    """The copied message_snapshots ids stay taken on PostgreSQL (SERIAL_ID_MODELS):
+    the first poll state kept after the move adds a row instead of colliding."""
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from telegram_archive.db.adapter import DatabaseAdapter
+    from telegram_archive.db.base import DatabaseManager
+    from telegram_archive.db.models import MessageSnapshot
+
+    chat = -420900003
+    poll = {"id": 5550000000000000903, "question": "Demo?", "answers": [{"text": "A", "option": "AA=="}]}
+    source = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'source.db'}")
+    await source.init()
+    adapter = DatabaseAdapter(source)
+    await adapter.upsert_chat({"id": chat, "type": "group", "title": "fixture chat"}, account_id=1)
+    await adapter.insert_message(
+        {"id": 1, "chat_id": chat, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {"poll": poll}},
+        account_id=1,
+    )
+    closed = {**poll, "closed": True}
+    assert await adapter.record_message_snapshots(chat, 1, {"poll": closed}, account_id=1, source="listener") == [
+        "poll"
+    ]
+    await source.close()
+
+    target_url, _ = make_postgres_database("telegram_archive_pytest_move_snapshots")
+    counts = await migrate_sqlite_to_postgres(sqlite_path=str(tmp_path / "source.db"), postgres_url=target_url)
+    assert counts["message_snapshots"] == 1
+
+    target = DatabaseManager(target_url)
+    await target.init()
+    try:
+        moved = DatabaseAdapter(target)
+        reopened = {**poll, "closed": False}
+        assert await moved.record_message_snapshots(chat, 1, {"poll": reopened}, account_id=1, source="sync") == [
+            "poll"
+        ]
+        async with target.async_session_factory() as session:
+            kept = (await session.execute(select(MessageSnapshot).order_by(MessageSnapshot.id))).scalars().all()
+        assert [(row.id, row.source) for row in kept] == [(1, "listener"), (2, "sync")]
+    finally:
+        await target.close()
+
+
 # ============================================================
 # migrate_sqlite_to_postgres: path resolution
 # ============================================================

@@ -24,8 +24,11 @@ HTTP client.
 
 A server that cannot be reached is transient: the row stays ``queued`` and
 the ten-minute branch of the drain query resubmits on it, so an outage
-never spends the cap of three failed rows. A refusal about the server or
-its configuration, not about the file (401, 403, 429, akou's
+writes no failed row. A failed row whose reason is about the disk or the
+server (``TRANSCRIPT_ENVIRONMENT_ERRORS`` in the adapter) never counts
+toward the cap of three; the drain query says when such a media is tried
+again. A refusal about the server or its configuration, not about the
+file (401, 403, 429, akou's
 ``preset_unavailable`` and ``callback_not_allowed``, and a 5xx on the job
 path), ends the run the same way and also leaves the row ``queued``. Any
 other HTTP error is an answer about the file and is stored as a ``failed``
@@ -667,6 +670,15 @@ def _file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def _readable(path: str) -> bool:
+    """Whether the whole file reads, the way the hash that found it unreadable reads it."""
+    try:
+        _file_sha256(path)
+    except OSError:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class AudioProbe:
     """What ffprobe said about a stored file: an audio stream or not, and its duration if known."""
@@ -1249,7 +1261,10 @@ async def transcribe_media(
     ``refetch``. The next backup downloads it again and a later drain sends
     it, so no failed row is spent on a file the archive can still get.
     ``failed`` with ``file_missing`` is left for an entry that exists but
-    cannot be read from here.
+    cannot be read from here. When the newest row already says
+    ``file_missing``, or ``file_unreadable``, and the file is still missing
+    or unreadable, nothing is written and the answer is ``noop``: the drain
+    tries again next time, and the file goes out once it is back.
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -1306,6 +1321,18 @@ async def transcribe_media(
                 return await skip(NO_AUDIO_TRACK)
             if max_seconds is not None and duration is not None and duration > max_seconds:
                 return await skip(too_long)
+
+    # A file failure stands while its cause does: a file still missing or
+    # still unreadable adds no row, so a broken disk does not grow the table
+    # on every drain. The drain checks it again next time, and sends it once
+    # it is back. A press (an open row) always gets its answer.
+    newest = media.get("transcript") or {}
+    if newest.get("status") == "failed":
+        if not path or not os.path.isfile(path):
+            if newest.get("error") == "file_missing":
+                return "noop"
+        elif newest.get("error") == "file_unreadable" and not await asyncio.to_thread(_readable, path):
+            return "noop"
 
     # The source is written once; before the server is known (the
     # listener's call) it is left for the answer to fill.
@@ -1652,15 +1679,23 @@ async def drain_transcriptions(
     if not media_rows:
         logger.debug("Transcription: nothing to send")
         return stats
+    handled = 0
     for media in media_rows:
+        if handled >= per_run:
+            # The list holds checks of files still missing beyond the budget;
+            # a check that finds one still missing costs nothing, a file back
+            # on disk is sent and counts.
+            break
         outcome = await transcribe_media(
             config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
         )
         stats[outcome] = stats.get(outcome, 0) + 1
+        if outcome != "noop":
+            handled += 1
         if not client.answered and client.file_refusals >= 2:
             # Every file refused, none answered: more likely TRANSCRIPTION_MODEL or
             # TRANSCRIPTION_LANGUAGE than the files. Two rows a run at most, and a
-            # failed row retires after three.
+            # media retires after three such failed rows.
             logger.warning(
                 f"Transcription server refused {client.file_refusals} files and answered none this run; ending the "
                 "run. Check TRANSCRIPTION_MODEL and TRANSCRIPTION_LANGUAGE"

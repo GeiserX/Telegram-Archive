@@ -5869,6 +5869,12 @@
             font-size: 13px;
             line-height: 18px;
         }
+        /* A later state of a poll or link preview (message_snapshots): the
+           time colour, as small as the edit mark's words. */
+        .snapshot-note {
+            font-size: 12px;
+            line-height: 16px;
+        }
         .poll-answers {
             display: flex;
             flex-direction: column;
@@ -7844,16 +7850,21 @@
                                          the kind under it, then per answer the percentage in a
                                          column of its own, the answer, and a thin bar under the
                                          answer in the side's quote colour. No boxes and no tint
-                                         under the text. -->
-                                    <div v-if="msg.raw_data?.poll" class="poll mb-1.5 w-full max-w-sm">
-                                        <div class="font-semibold" dir="auto">{{ msg.raw_data.poll.question }}</div>
-                                        <div class="poll-kind text-tg-meta">{{ pollKindLabel(msg.raw_data.poll) }}</div>
+                                         under the text. It shows the newest state the archive
+                                         kept (message_snapshots): a closed poll reads "Final
+                                         results", and a quiet "updated" with when the archive saw
+                                         it follows the kind when that differs from the first
+                                         capture. -->
+                                    <div v-if="currentPoll(msg)" class="poll mb-1.5 w-full max-w-sm">
+                                        <div class="font-semibold" dir="auto">{{ currentPoll(msg).question }}</div>
+                                        <div class="poll-kind text-tg-meta">{{ pollKindLabel(currentPoll(msg)) }}<span v-if="snapshotNote(msg, 'poll')"
+                                            class="snapshot-note" :title="snapshotTitle(msg, 'poll')"> · {{ snapshotNote(msg, 'poll') }}</span></div>
                                         <ul class="poll-answers">
-                                            <li v-for="answer in msg.raw_data.poll.answers" :key="answer.option" class="poll-answer">
-                                                <span v-if="msg.raw_data.poll.results" class="poll-percent">{{ getPollPercentage(msg, answer) }}%</span>
+                                            <li v-for="answer in (currentPoll(msg).answers || [])" :key="answer.option" class="poll-answer">
+                                                <span v-if="currentPoll(msg).results" class="poll-percent">{{ getPollPercentage(msg, answer) }}%</span>
                                                 <span class="poll-answer-body">
                                                     <span class="block" dir="auto">{{ answer.text }}</span>
-                                                    <span v-if="msg.raw_data.poll.results" class="poll-track" aria-hidden="true"><span class="poll-bar"
+                                                    <span v-if="currentPoll(msg).results" class="poll-track" aria-hidden="true"><span class="poll-bar"
                                                         :style="{ width: getPollPercentage(msg, answer) + '%' }"></span></span>
                                                 </span>
                                             </li>
@@ -8387,16 +8398,19 @@
 
                                     <!-- A poll's vote count, on the time's line as in Telegram:
                                          the count on the left, the floated time on the right. -->
-                                    <span v-if="msg.raw_data?.poll?.results" class="poll-votes text-tg-meta">{{ msg.raw_data.poll.results.total_voters }} {{ msg.raw_data.poll.results.total_voters === 1 ? 'vote' : 'votes' }}</span>
+                                    <span v-if="currentPoll(msg)?.results" class="poll-votes text-tg-meta">{{ pollVotesText(msg) }}</span>
 
                                     <!-- Capture-time link preview (mf7): Telegram's own webpage card
-                                         as it existed when the message was archived -->
-                                    <div v-if="msg.raw_data?.webpage" class="link-preview border-s-[3px] border-tg-quote ps-2 pe-2 py-1 bg-tg-preview-bg max-w-full">
-                                        <div v-if="msg.raw_data.webpage.site_name" class="text-[13px] leading-[18px] font-semibold text-tg-quote" dir="auto">{{ msg.raw_data.webpage.site_name }}</div>
-                                        <a v-if="isHttpUrl(msg.raw_data.webpage.url)" :href="msg.raw_data.webpage.url" target="_blank" rel="noopener noreferrer"
-                                            class="text-[13px] leading-[18px] font-semibold hover:underline break-words block" dir="auto">{{ msg.raw_data.webpage.title || msg.raw_data.webpage.display_url || msg.raw_data.webpage.url }}</a>
-                                        <div v-else-if="msg.raw_data.webpage.title" class="text-[13px] leading-[18px] font-semibold break-words" dir="auto">{{ msg.raw_data.webpage.title }}</div>
-                                        <div v-if="msg.raw_data.webpage.description" class="text-[13px] leading-[18px] line-clamp-3 break-words whitespace-pre-wrap" dir="auto">{{ msg.raw_data.webpage.description }}</div>
+                                         as the archive last saw it. The first capture stays in
+                                         raw_data; a later state (message_snapshots) is shown, with a
+                                         quiet "updated" line when it differs from the first. -->
+                                    <div v-if="currentPreview(msg)" class="link-preview border-s-[3px] border-tg-quote ps-2 pe-2 py-1 bg-tg-preview-bg max-w-full">
+                                        <div v-if="currentPreview(msg).site_name" class="text-[13px] leading-[18px] font-semibold text-tg-quote" dir="auto">{{ currentPreview(msg).site_name }}</div>
+                                        <a v-if="isHttpUrl(currentPreview(msg).url)" :href="currentPreview(msg).url" target="_blank" rel="noopener noreferrer"
+                                            class="text-[13px] leading-[18px] font-semibold hover:underline break-words block" dir="auto">{{ currentPreview(msg).title || currentPreview(msg).display_url || currentPreview(msg).url }}</a>
+                                        <div v-else-if="currentPreview(msg).title" class="text-[13px] leading-[18px] font-semibold break-words" dir="auto">{{ currentPreview(msg).title }}</div>
+                                        <div v-if="currentPreview(msg).description" class="text-[13px] leading-[18px] line-clamp-3 break-words whitespace-pre-wrap" dir="auto">{{ currentPreview(msg).description }}</div>
+                                        <div v-if="snapshotNote(msg, 'preview')" class="snapshot-note text-tg-meta" :title="snapshotTitle(msg, 'preview')">{{ snapshotNote(msg, 'preview') }}</div>
                                         <img v-if="msg.media?.type === 'webpage' && msg.media?.file_path"
                                             :src="getMediaUrl(msg)" loading="lazy" alt=""
                                             class="mt-1 rounded max-h-48 max-w-full object-cover"
@@ -14560,14 +14574,14 @@
                 const metaRidesTranscript = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
                     if (!hasTranscriptButton(msg) || !showTranscriptText(msg)) return false
-                    if (msg.text || msg.raw_data?.webpage || msg.raw_data?.poll || hasReactionRow(msg)) return false
+                    if (msg.text || currentPreview(msg) || currentPoll(msg) || hasReactionRow(msg)) return false
                     if (isBubbleDeleted(msg) || isEditedMessage(msg)) return false
                     if (transcriptIsRtl(msg)) return false
                     return !(isOwnMessage(msg) && bubbleAccountLabel(msg))
                 }
                 const isCompactAudioBubble = (msg) => {
                     if (!msg.media?.file_path || !isAudioFile(msg)) return false
-                    if (msg.text || msg.raw_data?.webpage || hasReactionRow(msg)) return false
+                    if (msg.text || currentPreview(msg) || hasReactionRow(msg)) return false
                     if (msg.is_deleted || isEditedMessage(msg)) return false
                     if (hasTranscriptButton(msg) && (showTranscriptText(msg) || transcriptStatus(msg) === 'error')) return false
                     // The time column holds a bare time; an account name needs the meta row.
@@ -14591,7 +14605,7 @@
                     if (!msg.media?.file_path && !albumPicture && !['picture', 'sticker'].includes(mediaPlaceholder(msg)?.shape)) return false
                     if (!VISUAL_MEDIA_TYPES.includes(msg.media.type)) return false
                     if (!rendersAsPicture(msg)) return false
-                    if (msg.reply_to_msg_id || msg.raw_data?.webpage) return false
+                    if (msg.reply_to_msg_id || currentPreview(msg)) return false
                     if (hasReactionRow(msg)) return false
                     if (isEditedMessage(msg)) return false
                     if (msg.text && msg.text.trim() !== '') return false
@@ -15916,15 +15930,53 @@
 
                 // "Poll" or "Quiz", "Anonymous" in front when the voters are
                 // hidden, as the Telegram apps label it. Older rows carry no
-                // public_voters and read as a plain poll.
+                // public_voters and read as a plain poll. A closed poll reads
+                // "Final results", as in Telegram.
                 const pollKindLabel = (poll) => {
+                    if (poll.closed) return 'Final results'
                     const kind = poll.quiz ? 'quiz' : 'poll'
                     if (poll.public_voters === false) return `Anonymous ${kind}`
                     return kind === 'quiz' ? 'Quiz' : 'Poll'
                 }
 
+                // The poll and the link preview as the archive last saw them: the
+                // newest message_snapshots state over the first capture in raw_data
+                // (a poll state can hold the results alone). Null when there is none.
+                const currentPoll = (msg) => {
+                    const first = msg?.raw_data?.poll
+                    const newest = msg?.snapshots?.poll?.payload
+                    if (!newest) return first || null
+                    return first ? { ...first, ...newest } : newest
+                }
+                const currentPreview = (msg) => msg?.snapshots?.preview?.payload || msg?.raw_data?.webpage || null
+
+                // "updated 10:12" (a later day: "updated Mar 2, 10:12") when the
+                // newest state differs from the first capture; empty otherwise.
+                const snapshotNote = (msg, kind) => {
+                    const snapshot = msg?.snapshots?.[kind]
+                    if (!snapshot?.differs_from_first) return ''
+                    const stamp = noticedStamp(msg.date, snapshot.observed_at)
+                    return stamp ? `updated ${stamp}` : 'updated'
+                }
+                // Its tooltip: when the archive saw this state, and that the first
+                // capture is still kept.
+                const snapshotTitle = (msg, kind) => {
+                    const snapshot = msg?.snapshots?.[kind]
+                    if (!snapshot?.differs_from_first) return ''
+                    const what = kind === 'poll' ? 'These results' : 'This preview'
+                    const when = formatStamp(snapshot.observed_at, true)
+                    const seen = when ? ` as the archive saw it on ${when}` : ''
+                    return `${what}${seen}. The first capture is kept and differs.`
+                }
+                // "14 votes", "1 vote" under a poll, from its newest state.
+                const pollVotesText = (msg) => {
+                    const total = currentPoll(msg)?.results?.total_voters
+                    if (total == null) return ''
+                    return `${total} ${total === 1 ? 'vote' : 'votes'}`
+                }
+
                 const getPollPercentage = (msg, answer) => {
-                    const results = msg.raw_data?.poll?.results
+                    const results = currentPoll(msg)?.results
                     if (!results || !results.total_voters) return 0
 
                     const res = results.results?.find(r => r.option === answer.option)
@@ -15962,7 +16014,8 @@
                     const kind = msg.media?.type
                     const meta = EXTENDED_MEDIA_CHIP_META[kind]
                     if (!meta) return null
-                    if (kind === 'poll' && msg.raw_data?.poll) return null
+                    // The poll card draws it (currentPoll: the newest kept state over raw_data).
+                    if (kind === 'poll' && currentPoll(msg)) return null
                     const data = msg.raw_data?.[kind] || {}
                     let icon = meta.icon
                     let label = meta.label
@@ -19926,6 +19979,11 @@
                     isMediaOnlyMessage,
                     getPollPercentage,
                     pollKindLabel,
+                    currentPoll,
+                    currentPreview,
+                    snapshotNote,
+                    snapshotTitle,
+                    pollVotesText,
                     locationCard,
                     contactCard,
                     isMetadataOnlyMedia,

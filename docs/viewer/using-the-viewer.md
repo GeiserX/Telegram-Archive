@@ -122,10 +122,10 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 - **Round videos** play in place as a circle, muted, while they are on screen. Click one to turn the sound on or off. They never open in the lightbox.
 - **GIFs** loop while they are on screen and pause when you scroll away.
 - **Stickers** in `.webp` show as images up to 200 px wide. Other stickers show the text "Animated Sticker".
-- **Polls and quizzes** show each answer with a percentage bar and the total votes.
+- **Polls and quizzes** show each answer with a percentage bar and the total votes, as the archive last saw them. A closed poll reads **Final results**. When the votes differ from the first capture, a quiet "updated" and the time the archive saw them follow the poll's kind; hover it for the full date. The first capture is kept.
 - **Locations, venues, live locations and shared contacts** show as cards. See [Locations and contacts](#locations-and-contacts).
 - **Dice, invoices, stories, giveaways and games** show as a chip.
-- **Link previews** show the archived card with site name, title, description and image.
+- **Link previews** show the archived card with site name, title, description and image. When Telegram changed the card after the first capture, the newest card is shown with a quiet "updated" line and the time the archive saw it.
 
 #### Locations and contacts
 
