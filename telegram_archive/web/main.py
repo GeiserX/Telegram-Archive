@@ -3360,8 +3360,9 @@ async def get_recent_changes(
     before: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     chat_ref: str | None = Query(None),
+    reactions: bool = Query(False),
 ):
-    """What changed: deletions and edits the archive captured, newest first.
+    """What changed: deletions, edits, transcripts and reactions taken back, newest first.
 
     ``since`` bounds the window's start (inclusive); ``before`` is the keyset
     cursor — pass the last row's ``date`` to page older. Entitlements are the
@@ -3371,6 +3372,10 @@ async def get_recent_changes(
     ``chat_ref`` narrows the feed to that one chat. It resolves through the
     same resolver as every {chat_ref} route, so a chat the viewer may not see
     answers exactly like an unknown one: 404.
+
+    ``reactions=true`` adds the reactions taken back (``kind`` "reaction"),
+    under the same scope. They are left out unless asked for, since they
+    come and go far more often than the rest.
     """
     parsed_since = _parse_changes_bound(since, "since") if since else None
     parsed_before = _parse_changes_bound(before, "before") if before else None
@@ -3382,6 +3387,7 @@ async def get_recent_changes(
             limit=limit,
             scope=_chat_scope(user),
             with_transcripts=not user.no_download,
+            with_reactions=reactions,
             chat_id=chat.chat_id if chat else None,
             account_id=chat.account_id if chat else None,
         )

@@ -2257,6 +2257,12 @@
             opacity: 0.55;
             filter: grayscale(0.5);
         }
+        /* In What changed the chip sits in the time row, before "taken back". */
+        .message-bubble .reaction-chip.change-reaction {
+            height: 22px;
+            margin: 0;
+            vertical-align: middle;
+        }
         .message-meta svg {
             width: 12px;
             height: 12px;
@@ -6951,6 +6957,15 @@
                                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>{{ card.versions.length - 1 }} earlier versions
                                                     </button>
                                                     <span v-else-if="card.kind === 'edited'">edited</span>
+                                                    <!-- A reaction taken back: the bubble's own dashed chip, the
+                                                         emoji and how many went ("2 of 7" for a partial drop). -->
+                                                    <span v-else-if="card.kind === 'reaction'" class="inline-flex items-center gap-1.5">
+                                                        <span class="reaction-chip reaction-removed change-reaction">
+                                                            <span class="reaction-emoji" aria-hidden="true">{{ formatReactionEmoji(card.emoji) }}</span>
+                                                            <span class="reaction-count" aria-hidden="true">{{ changeReactionText(card) }}</span>
+                                                            <span class="sr-only">{{ changeReactionLabel(card) }}</span>
+                                                        </span>taken back
+                                                    </span>
                                                     <!-- The transcript controls' own glyph, a waveform turning
                                                          into lines, so the label reads as metadata like the
                                                          other two and never runs on from the text. -->
@@ -11117,7 +11132,9 @@
                 const changesNextBefore = ref(null)
                 const changesLoading = ref(false)
                 // The feed's filter, remembered in this browser: the period (days, or
-                // '' for all time) and the kinds shown.
+                // '' for all time) and the kinds shown. The period is the feed of every
+                // chat's: one chat's feed opens on All time, and a period picked there
+                // is neither remembered nor carried back to every chat.
                 const CHANGE_PERIODS = [
                     { value: '1', label: 'Last 24 hours', words: 'in the last 24 hours' },
                     { value: '7', label: 'Last 7 days', words: 'in the last 7 days' },
@@ -11126,13 +11143,20 @@
                 ]
                 const readStored = (key, fallback) => { try { return localStorage.getItem(key) ?? fallback } catch (e) { return fallback } }
                 const storedPeriod = readStored('changesPeriod', '7')
-                const changesSince = ref(CHANGE_PERIODS.some(p => p.value === storedPeriod) ? storedPeriod : '7')
+                // The period of the feed of every chat, and the one on screen.
+                const changesFeedPeriod = ref(CHANGE_PERIODS.some(p => p.value === storedPeriod) ? storedPeriod : '7')
+                const changesSince = ref(changesFeedPeriod.value)
+                // Reactions taken back come and go far more often than the rest, so
+                // their kind stays unticked until the reader asks for it.
+                const CHANGE_KIND_DEFAULTS = { deleted: true, edited: true, transcript: true, reaction: false }
                 const changesKinds = ref((() => {
-                    const all = { deleted: true, edited: true, transcript: true }
+                    const all = { ...CHANGE_KIND_DEFAULTS }
                     try {
                         const saved = JSON.parse(readStored('changesKinds', 'null'))
-                        if (saved && typeof saved === 'object') for (const key of Object.keys(all)) all[key] = saved[key] !== false
-                    } catch (e) { /* keep all on */ }
+                        if (saved && typeof saved === 'object') {
+                            for (const key of Object.keys(all)) all[key] = all[key] ? saved[key] !== false : saved[key] === true
+                        }
+                    } catch (e) { /* keep the defaults */ }
                     return all
                 })())
                 const changesFilterOpen = ref(false)
@@ -11170,6 +11194,9 @@
                         if (since) params.set('since', since)
                         if (before) params.set('before', before)
                         if (changesChat.value) params.set('chat_ref', changesChat.value.ref)
+                        // Only the server knows the reactions taken back; it sends
+                        // them when the kind is ticked.
+                        if (changesKinds.value.reaction) params.set('reactions', 'true')
                         const resp = await fetch(`/api/changes?${params}`, { credentials: 'same-origin' })
                         if (seq !== changesRequestSeq) return
                         if (resp.status === 401) {
@@ -11259,6 +11286,7 @@
                         try { seen = localStorage.getItem(changesSeenKey()) } catch (e) { /* private mode */ }
                         const params = new URLSearchParams({ limit: '100' })
                         if (seen) params.set('since', seen)
+                        if (changesKinds.value.reaction) params.set('reactions', 'true')
                         const resp = await fetch(`/api/changes?${params}`, { credentials: 'same-origin' })
                         if (!resp.ok) return
                         const data = await resp.json()
@@ -11332,6 +11360,8 @@
                 // sidebar button passes its click event, which is no chat.
                 const openChangesFeed = (fromMenu = false, chat = null, returnFocus = null) => {
                     setChangesChat(chat && chat.ref ? { ref: chat.ref, title: chat.title || 'Unnamed chat' } : null)
+                    // A chat's own feed is short: it opens on All time.
+                    changesSince.value = changesChat.value ? '' : changesFeedPeriod.value
                     if (!changesChat.value) markChangesSeen()
                     if (!showChangesFeed.value) {
                         // From the main menu, the row is gone as soon as the menu
@@ -11398,6 +11428,7 @@
                 const widenChangesFeed = () => {
                     if (!changesChat.value) return
                     setChangesChat(null)
+                    changesSince.value = changesFeedPeriod.value
                     fetchChanges(null)
                     nextTick(() => changesTitle.value?.focus())
                 }
@@ -11423,12 +11454,18 @@
                     changesKinds.value = { ...changesKinds.value, [kind]: !changesKinds.value[kind] }
                     try { localStorage.setItem('changesKinds', JSON.stringify(changesKinds.value)) } catch (e) { /* per-tab only */ }
                     changesEmptyPages.value = 0
-                    nextTick(loadMoreChangesIfInView)
+                    // The other kinds are filtered here; reactions come from the server.
+                    if (kind === 'reaction') fetchChanges(null)
+                    else nextTick(loadMoreChangesIfInView)
                 }
+                // Only the feed of every chat remembers its period.
                 const setChangesPeriod = (value) => {
                     if (changesSince.value === value) return
                     changesSince.value = value
-                    try { localStorage.setItem('changesPeriod', value) } catch (e) { /* per-tab only */ }
+                    if (!changesChat.value) {
+                        changesFeedPeriod.value = value
+                        try { localStorage.setItem('changesPeriod', value) } catch (e) { /* per-tab only */ }
+                    }
                     fetchChanges(null)
                 }
                 // The kinds a login may see: transcripts are left out for one that
@@ -11437,11 +11474,13 @@
                     { id: 'deleted', label: 'Deleted' },
                     { id: 'edited', label: 'Edited' },
                     ...(noDownload.value ? [] : [{ id: 'transcript', label: 'Transcripts' }]),
+                    { id: 'reaction', label: 'Reactions taken back' },
                 ])
-                const changesFilterActive = computed(() => changeKindOptions.value.some(kind => !changesKinds.value[kind.id]))
+                // The filter button lights when the kinds differ from the defaults.
+                const changesFilterActive = computed(() => changeKindOptions.value.some(kind => changesKinds.value[kind.id] !== CHANGE_KIND_DEFAULTS[kind.id]))
                 const changesAnyKind = computed(() => changeKindOptions.value.some(kind => changesKinds.value[kind.id]))
-                const CHANGE_KIND_WORDS = { deleted: 'deleted', edited: 'edited', transcript: 'transcribed' }
-                const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed' }
+                const CHANGE_KIND_WORDS = { deleted: 'deleted', edited: 'edited', transcript: 'transcribed', reaction: 'reactions taken back' }
+                const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed', reaction: 'Reaction taken back' }
                 const changesSubtitle = computed(() => {
                     const period = CHANGE_PERIODS.find(p => p.value === changesSince.value) || CHANGE_PERIODS[1]
                     const kinds = changeKindOptions.value.filter(kind => changesKinds.value[kind.id]).map(kind => CHANGE_KIND_WORDS[kind.id])
@@ -11455,6 +11494,14 @@
                     if (changesChat.value) return `Nothing changed in this chat ${period.words}`
                     return `Nothing changed ${period.words}`
                 })
+                // A reaction taken back, in its card's chip: how many went, "2 of 7"
+                // when some stayed, and the same words for a screen reader.
+                const changeReactionText = (card) => {
+                    const count = formatCount(Number(card.count) || 1)
+                    const before = Number(card.countBefore)
+                    return before > (Number(card.count) || 1) ? `${count} of ${formatCount(before)}` : count
+                }
+                const changeReactionLabel = (card) => `${formatReactionEmoji(card.emoji)} ${changeReactionText(card)}`
                 // The text a bubble shows: the current text of an edit, the kept text
                 // of a deletion, the transcript.
                 const changeText = (card) => card.kind === 'edited' ? card.versions[card.versions.length - 1] : card.text
@@ -11513,9 +11560,10 @@
                         const chatTitle = title
                         if (change.kind !== 'edited') {
                             cards.push({
-                                key: `${change.kind}:${change.chat?.ref}:${change.message_id}:${change.date}`,
+                                key: `${change.kind}:${change.chat?.ref}:${change.message_id}:${change.date}:${change.emoji || ''}`,
                                 kind: change.kind, who, chatTitle, date: change.date, text: change.text,
                                 language: change.language, chatRef: change.chat?.ref, messageId: change.message_id,
+                                emoji: change.emoji, count: change.count, countBefore: change.count_before,
                             })
                             continue
                         }
@@ -19595,6 +19643,8 @@
                     changeText,
                     changeLanguage,
                     CHANGE_PERIODS,
+                    changeReactionText,
+                    changeReactionLabel,
                     changesUnseen,
                     closeChangesFeed,
                     openChangeCard,

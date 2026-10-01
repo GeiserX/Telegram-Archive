@@ -3048,10 +3048,11 @@ class DatabaseAdapter:
         limit: int = 50,
         scope: ChatScope | None = None,
         with_transcripts: bool = True,
+        with_reactions: bool = False,
         chat_id: int | None = None,
         account_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """The what-changed feed: deletions, edits and transcripts the archive captured.
+        """The what-changed feed: deletions, edits, transcripts and reactions taken back.
 
         The archive's differentiator is that it KEEPS what disappeared; this
         is the query that finally lists it. Three streams share one shape:
@@ -3065,6 +3066,13 @@ class DatabaseAdapter:
           ``completed_at``, carrying the transcript text and its language, so
           a poller sees new transcripts (docs/TRANSCRIPTION.md). Left out
           when ``with_transcripts`` is False, for a no-download login.
+        * ``reaction`` — a reaction taken back: a ``reaction_history`` row
+          whose count is below the one before it, dated by ``observed_at``,
+          carrying the emoji, how many went (``count``), ``count_before``,
+          ``count_after`` and the message's current text. Only when
+          ``with_reactions`` is True: reactions come and go far more often
+          than the rest, and the viewer asks for them only when the reader
+          ticks the kind.
 
         Newest first. ``before`` is an exclusive keyset cursor over the
         per-row date: pass the last row's ``date`` back to page. Rows sharing
@@ -3154,23 +3162,55 @@ class DatabaseAdapter:
                 .join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
                 .where(MediaTranscript.status == "done", MediaTranscript.completed_at.isnot(None))
             )
+            reaction_stmt = (
+                select(
+                    ReactionHistory.message_id,
+                    ReactionHistory.observed_at.label("date"),
+                    ReactionHistory.emoji,
+                    ReactionHistory.count,
+                    ReactionHistory.previous_count,
+                    Message.text,
+                    Message.sender_name,
+                    Chat.ref,
+                    Chat.title,
+                    Chat.first_name,
+                    Chat.last_name,
+                    Chat.username,
+                    Chat.type.label("chat_type"),
+                )
+                .join(
+                    Message,
+                    and_(
+                        Message.account_id == ReactionHistory.account_id,
+                        Message.chat_id == ReactionHistory.chat_id,
+                        Message.id == ReactionHistory.message_id,
+                    ),
+                )
+                .join(Chat, and_(Chat.account_id == ReactionHistory.account_id, Chat.id == ReactionHistory.chat_id))
+                # The partial index's own predicate, so the feed reads only drops.
+                .where(ReactionHistory.count < ReactionHistory.previous_count)
+            )
             if since is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at >= since)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at >= since)
                 transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at >= since)
+                reaction_stmt = reaction_stmt.where(ReactionHistory.observed_at >= since)
             if before is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at < before)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at < before)
                 transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at < before)
+                reaction_stmt = reaction_stmt.where(ReactionHistory.observed_at < before)
             if scope is not None:
                 for predicate in scope.sql_predicates():
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
                     transcript_stmt = transcript_stmt.where(predicate)
+                    reaction_stmt = reaction_stmt.where(predicate)
             if chat_id is not None:
                 deleted_stmt = deleted_stmt.where(Message.chat_id == chat_id)
                 edited_stmt = edited_stmt.where(MessageVersion.chat_id == chat_id)
                 transcript_stmt = transcript_stmt.where(Message.chat_id == chat_id)
+                reaction_stmt = reaction_stmt.where(ReactionHistory.chat_id == chat_id)
             if chat_id is not None and account_id is not None:
                 # Only a private chat's id collides across accounts, so only
                 # there does the ref's account pick the conversation. The
@@ -3184,12 +3224,14 @@ class DatabaseAdapter:
                     deleted_stmt = deleted_stmt.where(Message.account_id == account_id)
                     edited_stmt = edited_stmt.where(MessageVersion.account_id == account_id)
                     transcript_stmt = transcript_stmt.where(Message.account_id == account_id)
+                    reaction_stmt = reaction_stmt.where(ReactionHistory.account_id == account_id)
                 else:
                     # Every non-private copy of a channel or group stays in,
                     # and the deduplication below lists each event once.
                     deleted_stmt = deleted_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
                     edited_stmt = edited_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
                     transcript_stmt = transcript_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    reaction_stmt = reaction_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -3241,14 +3283,28 @@ class DatabaseAdapter:
                 lower_transcript.completed_at.isnot(None),
                 lower_transcript.text.is_not_distinct_from(MediaTranscript.text),
             ]
+            # A drop is the same event in every account that saw it when the
+            # emoji went from the same count to the same count.
+            lower_reaction = aliased(ReactionHistory, name="lower_reaction_state")
+            lower_reaction_chat = aliased(Chat, name="lower_reaction_chat")
+            reaction_duplicate = [
+                lower_reaction.chat_id == ReactionHistory.chat_id,
+                lower_reaction.message_id == ReactionHistory.message_id,
+                lower_reaction.account_id < ReactionHistory.account_id,
+                lower_reaction.emoji == ReactionHistory.emoji,
+                lower_reaction.count == ReactionHistory.count,
+                lower_reaction.previous_count == ReactionHistory.previous_count,
+            ]
             if since is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at >= since)
                 edited_duplicate.append(lower_edited.captured_at >= since)
                 lower_transcript_match.append(lower_transcript.completed_at >= since)
+                reaction_duplicate.append(lower_reaction.observed_at >= since)
             if before is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at < before)
                 edited_duplicate.append(lower_edited.captured_at < before)
                 lower_transcript_match.append(lower_transcript.completed_at < before)
+                reaction_duplicate.append(lower_reaction.observed_at < before)
             transcript_duplicate = [
                 lower_media.chat_id == Message.chat_id,
                 lower_media.message_id == Message.id,
@@ -3279,9 +3335,18 @@ class DatabaseAdapter:
                 )
             )
 
+            reaction_stmt = reaction_stmt.where(
+                self._event_not_already_listed(
+                    scope, lower_rows=lower_reaction, lower_chat=lower_reaction_chat, event_match=reaction_duplicate
+                )
+            )
+
             deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
             edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
             transcript_stmt = transcript_stmt.order_by(MediaTranscript.completed_at.desc()).limit(per_stream)
+            reaction_stmt = reaction_stmt.order_by(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc()).limit(
+                per_stream
+            )
 
             changes: list[dict[str, Any]] = []
             for row in (await session.execute(deleted_stmt)).all():
@@ -3318,6 +3383,22 @@ class DatabaseAdapter:
                         "sender_name": row.sender_name,
                         "text": row.text,
                         "language": row.language,
+                    }
+                )
+            reaction_rows = (await session.execute(reaction_stmt)).all() if with_reactions else []
+            for row in reaction_rows:
+                changes.append(
+                    {
+                        "kind": "reaction",
+                        "date": row.date.isoformat() if row.date else None,
+                        "chat": _chat_fields(row),
+                        "message_id": row.message_id,
+                        "sender_name": row.sender_name,
+                        "text": row.text,
+                        "emoji": row.emoji,
+                        "count": row.previous_count - row.count,
+                        "count_before": row.previous_count,
+                        "count_after": row.count,
                     }
                 )
             changes.sort(key=lambda c: c["date"] or "", reverse=True)
