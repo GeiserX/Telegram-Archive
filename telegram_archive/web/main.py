@@ -215,11 +215,13 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections[websocket].discard(chat_ref)
 
-    async def broadcast_to_chat(self, chat: dict, message: dict):
+    async def broadcast_to_chat(self, chat: dict, message: dict, no_download_message: dict | None = None):
         """Broadcast a message to every connection subscribed AND entitled to ``chat``.
 
         ``chat`` is the resolved chat row (id, account_id, ref); ``message`` is
-        the ref-addressed frame to deliver.
+        the ref-addressed frame to deliver. ``no_download_message``, when given,
+        is the same frame for a login whose downloads are off (no media URL or
+        path), as the messages API answers it.
         """
         disconnected = []
         # Snapshot first: send_json suspends, and a connect/disconnect landing in
@@ -232,8 +234,9 @@ class ConnectionManager:
             user = self._contexts.get(websocket)
             if user is None or not _chat_visible(user, chat):
                 continue
+            frame = no_download_message if no_download_message is not None and user.no_download else message
             try:
-                await websocket.send_json(message)
+                await websocket.send_json(frame)
             except Exception as e:
                 logger.warning(f"Failed to send to websocket: {e}")
                 disconnected.append(websocket)
@@ -398,9 +401,14 @@ async def handle_realtime_notification(payload: dict):
     chat_ref = chat["ref"]
 
     if notification_type == "new_message":
-        await ws_manager.broadcast_to_chat(
-            chat, {"type": "new_message", "chat_ref": chat_ref, "message": data.get("message")}
-        )
+        message = data.get("message")
+        frame = {"type": "new_message", "chat_ref": chat_ref, "message": message}
+        no_download_frame = None
+        if isinstance(message, dict) and isinstance(message.get("media"), dict):
+            media, no_download_media = _frame_media(message["media"], message.get("id"), chat_ref)
+            frame["message"] = {**message, "media": media}
+            no_download_frame = {**frame, "message": {**message, "media": no_download_media}}
+        await ws_manager.broadcast_to_chat(chat, frame, no_download_message=no_download_frame)
 
         # Send Web Push notification for new messages
         if push_manager and push_manager.is_enabled:
@@ -437,18 +445,23 @@ async def handle_realtime_notification(payload: dict):
             )
 
     elif notification_type == "edit":
-        await ws_manager.broadcast_to_chat(
-            chat,
-            {
-                "type": "edit",
-                "chat_ref": chat_ref,
-                "message_id": data.get("message_id"),
-                "new_text": data.get("new_text"),
-                "edit_date": data.get("edit_date"),
-                "edit_hide": data.get("edit_hide"),
-                **({"entities": data["entities"]} if "entities" in data else {}),
-            },
-        )
+        frame = {
+            "type": "edit",
+            "chat_ref": chat_ref,
+            "message_id": data.get("message_id"),
+            "new_text": data.get("new_text"),
+            "edit_date": data.get("edit_date"),
+            "edit_hide": data.get("edit_hide"),
+            **({"entities": data["entities"]} if "entities" in data else {}),
+        }
+        # The edit replaced the photo or file: its current media, shaped like
+        # the messages API's. No key means the media did not change.
+        no_download_frame = None
+        if isinstance(data.get("media"), dict):
+            media, no_download_media = _frame_media(data["media"], data.get("message_id"), chat_ref)
+            frame["media"] = media
+            no_download_frame = {**frame, "media": no_download_media}
+        await ws_manager.broadcast_to_chat(chat, frame, no_download_message=no_download_frame)
     elif notification_type == "delete":
         await ws_manager.broadcast_to_chat(
             chat,
@@ -3023,17 +3036,53 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
         media = message.get("media")
         if not isinstance(media, dict):
             continue
-        # Media.type is nullable, so a key is not always constructible. Blank the
-        # id rather than leaving the storage key: passing it through is what put
-        # the chat id in front of the browser (and back in a cursor query string),
-        # which the promise at the top of this docstring says never happens.
-        media_key = _url_media_key(message.get("id"), media.get("type"))
-        storage_id = media.get("id")
-        media["id"] = media_key
-        if media_key and _media_relative_path(media.get("file_path")):
-            media["url"] = _current_media_url(chat.ref, media_key, storage_id)
-        else:
-            media["url"] = None
+        _attach_media_url(media, message.get("id"), chat.ref)
+
+
+def _attach_media_url(media: dict, message_id: object, chat_ref: str) -> None:
+    """Rewrite a nested media row's storage id to its URL key and add its ``url``."""
+    # Media.type is nullable, so a key is not always constructible. Blank the
+    # id rather than leaving the storage key: passing it through is what put
+    # the chat id in front of the browser (and back in a cursor query string),
+    # which _attach_message_payload_urls promises never happens.
+    media_key = _url_media_key(message_id, media.get("type"))
+    storage_id = media.get("id")
+    media["id"] = media_key
+    if media_key and _media_relative_path(media.get("file_path")):
+        media["url"] = _current_media_url(chat_ref, media_key, storage_id)
+    else:
+        media["url"] = None
+
+
+# The nested media fields a live frame passes on: the messages API's row.
+# Anything else the writer sent (chat id, Telegram's file id, hashes) stays out.
+_FRAME_MEDIA_FIELDS = (
+    "id",
+    "type",
+    "file_path",
+    "file_name",
+    "file_size",
+    "mime_type",
+    "width",
+    "height",
+    "duration",
+    "skip_reason",
+)
+
+
+def _frame_media(media: dict, message_id: object, chat_ref: str) -> tuple[dict, dict]:
+    """A live frame's nested media as the messages API returns it: for a full login, and for a no-download one.
+
+    The same rules as ``_attach_message_payload_urls`` and
+    ``_strip_original_media_paths``: the storage id becomes the URL key, the
+    URL is ref-addressed with the ``?v=`` cache key of media an edit replaced,
+    and a login whose downloads are off gets no URL and no path.
+    """
+    shaped = {key: media.get(key) for key in _FRAME_MEDIA_FIELDS}
+    _attach_media_url(shaped, message_id, chat_ref)
+    no_download = {"media": dict(shaped)}
+    _strip_original_media_paths([no_download])
+    return shaped, no_download["media"]
 
 
 @app.get("/api/accounts")

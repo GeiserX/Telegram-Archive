@@ -169,10 +169,12 @@ class TestSweepCapturesEntities(unittest.TestCase):
             [{"type": "bold", "offset": 0, "length": 4}],
         )
 
-    def test_plain_message_stores_no_entities_key(self):
+    def test_plain_message_stores_an_empty_entities_list(self):
+        """8.1B (9.0): "no formatting" is stored, so a later edit that only adds
+        some is an edit. An absent key stays the mark of a row from before."""
         msg = self._make_message(2)
         result = self._run(self.backup._process_message(msg, CHAT_ID))
-        self.assertNotIn("entities", result["raw_data"])
+        self.assertEqual(result["raw_data"]["entities"], [])
 
 
 # ---------------------------------------------------------------------------
@@ -289,14 +291,16 @@ async def test_formatting_without_an_edit_date_only_fills_a_missing_key(adapter)
 
 
 @pytest.mark.asyncio
-async def test_edit_that_dropped_formatting_removes_the_key(adapter):
+async def test_edit_that_dropped_formatting_keeps_an_empty_list(adapter):
+    """8.1B (9.0): the edit says the text has no formatting now. The key stays, as
+    an empty list, so a later edit that adds formatting again is an edit."""
     await adapter.update_message_text(CHAT_ID, 1, "original", None, account_id=1, entities=BOLD, update_entities=True)
     outcome, _ = await adapter.update_message_text(
         CHAT_ID, 1, "original", datetime(2026, 1, 2), account_id=1, entities=None, update_entities=True
     )
     assert outcome == "applied"
     raw = json.loads((await _row(adapter)).raw_data)
-    assert "entities" not in raw
+    assert raw["entities"] == []
     assert raw["webpage"] == {"url": "https://keep.example"}
     versions = await adapter.get_message_versions(CHAT_ID, 1, account_id=1)
     assert [(v["text"], v["entities"]) for v in versions] == [("original", BOLD)]

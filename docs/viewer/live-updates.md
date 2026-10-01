@@ -22,13 +22,15 @@ The viewer forwards these event types to open tabs:
 | Event | Sent when |
 |-------|-----------|
 | `new_message` | The listener saves a new message. |
-| `edit` | The listener applies a text edit. Needs `LISTEN_EDITS=true`, the default. |
+| `edit` | The listener applies an edit of the text, the formatting or the media. Needs `LISTEN_EDITS=true`, the default. |
 | `delete` | The listener applies a deletion. Needs `LISTEN_DELETIONS=true`, off by default. |
 | `pin` | The listener sees a message pinned or unpinned. |
 | `reaction` | Reaction counts on a message change. Needs `LISTEN_REACTIONS=true`, off by default. |
 | `transcript` | A voice transcript changes status, from the listener, a backup run, or the viewer's own transcription callback route. |
 
 The text of a new message or an edit is cut to 500 characters in the event. The full text is always in the database.
+
+An edit updates the open chat wherever the message shows: among the newest messages, further up, in a search or filter result, in a jump to a pinned message and in the pinned messages list. An edit that replaced the photo or file brings the new one, so the bubble swaps it in at once. When the new file is not downloaded yet, the bubble shows it as pending, as the chat would after a reload. An event that would pass PostgreSQL's size limit goes without the formatting first, then without the media, and the chat keeps what it shows until it reloads.
 
 ## How updates reach the viewer
 
