@@ -419,7 +419,10 @@ def test_the_markup_uses_what_the_setup_returns() -> None:
         assert f"                    {name},\n" in returned, name
     # What changed renders the transcript kind with its own body, not as an edit:
     # its own header ("Transcribed in ..."), and a recording row over the text.
-    assert "const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed' }" in html
+    assert (
+        "const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed',"
+        " reaction: 'Reaction taken back' }" in html
+    )
     assert '<div v-if="card.kind === \'transcript\'" class="flex items-center gap-2.5 mb-1.5">' in html
 
 
