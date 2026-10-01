@@ -18,7 +18,7 @@ With no media settings, the backup downloads every media type up to 100 MB per f
 | `document` | Any other file |
 | `webpage` | Link previews that carry a photo or a document |
 
-Some kinds of media have no file. The backup stores them as rows and never downloads anything for them: `contact`, `geo`, `venue`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `geo_live`, `game` and `unsupported`. What they hold lives in the message data, under a key named after the kind: a location's coordinates under `geo`, a contact's name, phone and vCard under `contact`, a poll's question, answers and results under `poll`, and so on. The backup and the listener both keep them, and a download filter never drops them.
+Some kinds of media have no file. The backup stores them as rows and never downloads anything for them: `contact`, `geo`, `venue`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `geo_live`, `game` and `unsupported`. What they hold lives in the message data, under a key named after the kind: a location's coordinates under `geo`, a contact's name, phone and vCard under `contact`, a poll's question, answers and results under `poll`, and so on. The backup and the listener both keep them, and a download filter never drops them. For messages archived before these details were kept, run [`backfill-payloads`](../operations/maintenance.md#fill-old-locations-contacts-and-polls).
 
 ## Reversible or not
 

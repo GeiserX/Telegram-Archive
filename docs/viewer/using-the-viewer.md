@@ -131,7 +131,7 @@ A location, a venue, a live location and a shared contact each show as a card in
 
 Click a location, venue or live location card to open the place on [OpenStreetMap](https://www.openstreetmap.org) in a new tab. OpenStreetMap needs no account, its pages carry no ads or ad trackers, and its map data is open. The viewer loads no map tiles and sends nothing anywhere until you click, so the page you open is the only one that sees the coordinates. The copy button beside the card copies the coordinates instead.
 
-A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download.
+A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link, until [`backfill-payloads`](../operations/maintenance.md#fill-old-locations-contacts-and-polls) reads it from Telegram again. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download, and the same command clears the leftover path.
 
 A login without downloads still sees the coordinates and phone numbers: they are the message's content, like its text.
 
