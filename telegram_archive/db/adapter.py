@@ -103,10 +103,43 @@ logger = logging.getLogger(__name__)
 # ids sit above it — the same constant migration 022 types placeholders with.
 SUPERGROUP_ID_CEILING = -(10**12)
 
-# The order the viewer's export lists messages in, unique per message within
-# a chat. Its messages query and its versions query both sort by it, so the
-# versions can be walked beside the messages; written once so they cannot drift.
-EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
+# The order both exports list messages in, unique per message across chats
+# and accounts. The messages query and the queries of their versions, media
+# and earlier media all sort by it, so those rows can be walked beside the
+# messages (``_ExportWalk``); written once so they cannot drift.
+EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.chat_id.asc(), Message.id.asc())
+
+
+class _ExportWalk:
+    """The rows of one statement, read beside the export's messages.
+
+    The statement sorts by ``EXPORT_MESSAGE_ORDER`` and names each row's
+    message by ``account_id``, ``chat_id`` and ``message_id``. ``take`` hands
+    over the rows of one message and reads no further than the next
+    message's first row, so only one message's rows are in memory at a time.
+    """
+
+    def __init__(self, result) -> None:
+        self._result = result
+        self.pending = None
+
+    @classmethod
+    async def open(cls, session, stmt) -> _ExportWalk:
+        walk = cls(await session.stream(stmt))
+        walk.pending = await anext(walk._result, None)
+        return walk
+
+    @staticmethod
+    def _key(row) -> tuple[int, int, int]:
+        return (row.account_id, row.chat_id, row.message_id)
+
+    async def take(self, key: tuple[int, int, int]) -> list:
+        rows = []
+        while self.pending is not None and self._key(self.pending) == key:
+            rows.append(self.pending)
+            self.pending = await anext(self._result, None)
+        return rows
+
 
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again. The drain query retries a media
@@ -2286,44 +2319,46 @@ class DatabaseAdapter:
             conditions.append(Message.date <= end_date)
         return conditions
 
-    async def get_messages_and_versions_by_date_range(
+    async def get_messages_for_backup_export(
         self,
         chat_id: int | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         *,
         account_id: int | None = None,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> list[dict[str, Any]]:
         """What ``telegram-archive export`` writes, read from one snapshot.
 
-        First the messages ``get_messages_by_date_range`` returns, each with
-        ``versions``: every earlier text the archive kept of it, whatever the
-        version's date, oldest first, with ``text``, ``date`` and
-        ``captured_at``. The dates stay datetimes, as every other date of that
-        file does. Then the flat list ``get_message_versions_by_date_range``
-        returns, picked by the version's own date. One snapshot, so a backup
-        writing meanwhile cannot make a message and its versions disagree.
+        The messages ``get_messages_by_date_range`` picks, in
+        ``EXPORT_MESSAGE_ORDER``, each with ``media``, ``versions`` and, when
+        it has any, ``transcripts`` (``_export_message_parts``). Dates stay
+        datetimes, as every other date of that file does. One snapshot, so a
+        backup writing meanwhile cannot make a message, its versions, its
+        media and its transcripts disagree: every transcript names a media
+        listed in the same file.
         """
         conditions = self._date_range_conditions(chat_id, start_date, end_date, account_id)
         async with self.db_manager.async_session_factory() as session:
             await self._read_one_snapshot(session)
-            versions: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-            for row in await session.execute(self._versions_of_messages_query(conditions)):
-                versions.setdefault((row.account_id, row.chat_id, row.message_id), []).append(
-                    {"text": row.text, "date": row.date, "captured_at": row.captured_at}
-                )
-            result = await session.execute(select(Message).where(*conditions).order_by(Message.date.asc()))
-            messages = [
-                {
+            transcripts: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+            for row in await self._read_export_transcripts(session, chat_id, account_id=account_id):
+                transcripts.setdefault((row["account_id"], row["chat_id"], row["message_id"]), []).append(row)
+            result = await session.stream(select(Message).where(*conditions).order_by(*EXPORT_MESSAGE_ORDER))
+            messages = []
+            async for m, media, versions in self._export_message_parts(
+                session, result.scalars(), conditions, iso=False
+            ):
+                message = {
                     **self._message_to_dict(m),
                     "account_id": m.account_id,
-                    "versions": versions.get((m.account_id, m.chat_id, m.id), []),
+                    "media": [self._export_media_dict(row) for row in media],
+                    "versions": versions,
                 }
-                for m in result.scalars()
-            ]
-            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
-            message_versions = [self._message_version_to_dict(row) for row in result.scalars()]
-        return messages, message_versions
+                rows = transcripts.get((m.account_id, m.chat_id, m.id))
+                if rows:
+                    message["transcripts"] = rows
+                messages.append(message)
+        return messages
 
     async def find_message_by_date(
         self, chat_id: int, target_date: datetime, *, account_id: int | None = None
@@ -3044,51 +3079,199 @@ class DatabaseAdapter:
         }
 
     @staticmethod
-    def _export_version_dict(row) -> dict[str, Any]:
-        """One earlier version as the viewer's export lists it under its message.
+    def _export_media_dict(row) -> dict[str, Any]:
+        """One media as both exports list it: what a reader needs to tell it
+        apart and match its transcripts, never where the file lies on disk.
 
-        ``date`` is when that text was current in Telegram (the edit that
-        produced it, or the send), ``captured_at`` when the archive saw it
-        replaced. Both columns are NOT NULL. ISO 8601, like every other date
-        the viewer's export writes.
+        ``media_id`` is the id the transcripts of that media name: the media
+        row's id, or for earlier media the id the row had when an edit
+        replaced it (``media_versions.media_id``).
         """
         return {
-            "text": row.text,
-            "date": row.date.isoformat(),
-            "captured_at": row.captured_at.isoformat(),
+            "media_id": row.media_id,
+            "type": row.type,
+            "file_name": row.file_name,
+            "file_size": row.file_size,
+            "mime_type": row.mime_type,
+            "width": row.width,
+            "height": row.height,
+            "duration": row.duration,
         }
 
     @staticmethod
-    def _versions_of_messages_query(message_conditions: list):
-        """Every kept version of the messages ``message_conditions`` pick, in export order.
+    def _export_version_dict(row, *, iso: bool = True) -> dict[str, Any]:
+        """One earlier text version as both exports list it under its message.
+
+        ``date`` is when that text was current in Telegram (the edit that
+        produced it, or the send), ``captured_at`` when the archive saw it
+        replaced. Both columns are NOT NULL. ``iso`` writes them as ISO 8601,
+        like every other date of the viewer's export; the command's export
+        keeps datetimes. ``media`` is filled by ``_export_versions``.
+        """
+        return {
+            "text": row.text,
+            "date": row.date.isoformat() if iso else row.date,
+            "captured_at": row.captured_at.isoformat() if iso else row.captured_at,
+            "source": row.source,
+            "entities": _formatting_of({"entities": _json_or_none(row.entities)}),
+            "rich_message": _rich_message_of({"rich_message": _json_or_none(row.rich_message)}),
+            "media": [],
+        }
+
+    @classmethod
+    def _export_versions(cls, text_rows: list, media_rows: list, *, iso: bool = True) -> list[dict[str, Any]]:
+        """A message's earlier versions with the earlier media each was shown with, oldest first.
+
+        The pairing rule of ``get_message_versions``: an earlier media sits
+        under the text version with the same ``date``, the moment that text
+        and that media became current together, and of two text versions
+        with one date the last one stored. Earlier media with no text version
+        of its date is listed as its own version, with ``text`` null and
+        ``media_only`` true, so no kept media goes unlisted. ``text_rows``
+        and ``media_rows`` come oldest first, the order their queries sort in.
+        """
+        versions = [cls._export_version_dict(row, iso=iso) for row in text_rows]
+        by_date = {row.date: version for row, version in zip(text_rows, versions, strict=True)}
+        dated = list(zip((row.date for row in text_rows), versions, strict=True))
+        for row in media_rows:
+            version = by_date.get(row.date)
+            if version is None:
+                version = {
+                    "text": None,
+                    "date": row.date.isoformat() if iso else row.date,
+                    "captured_at": row.captured_at.isoformat() if iso else row.captured_at,
+                    "source": row.source,
+                    "entities": None,
+                    "rich_message": None,
+                    "media": [],
+                    "media_only": True,
+                }
+                by_date[row.date] = version
+                dated.append((row.date, version))
+            version["media"].append(cls._export_media_dict(row))
+        dated.sort(key=lambda pair: pair[0])
+        return [version for _, version in dated]
+
+    @staticmethod
+    def _message_keys_of(model):
+        """``model``'s account, chat and message columns, labelled as ``_ExportWalk`` reads them."""
+        return (
+            model.account_id.label("account_id"),
+            model.chat_id.label("chat_id"),
+            model.message_id.label("message_id"),
+        )
+
+    @staticmethod
+    def _joined_to_its_message(stmt, model, message_conditions: list):
+        """``stmt`` over ``model`` narrowed to the messages ``message_conditions`` pick."""
+        return stmt.join(
+            Message,
+            and_(
+                Message.account_id == model.account_id,
+                Message.chat_id == model.chat_id,
+                Message.id == model.message_id,
+            ),
+        ).where(*message_conditions)
+
+    @classmethod
+    def _versions_of_messages_query(cls, message_conditions: list):
+        """Every kept text version of the messages ``message_conditions`` pick, in export order.
 
         The conditions apply to the message (its chat, account and date), not
         to the version, so a message in a date window keeps all its versions.
-        Rows come in ``EXPORT_MESSAGE_ORDER``, the order the viewer's export
-        lists messages, each message's versions oldest first (the order they
-        were captured in when two share a date), so a reader can walk them
-        beside the messages.
+        Rows come in ``EXPORT_MESSAGE_ORDER``, each message's versions oldest
+        first (the order they were captured in when two share a date), so a
+        reader can walk them beside the messages.
         """
-        return (
-            select(
-                MessageVersion.account_id,
-                MessageVersion.chat_id,
-                MessageVersion.message_id,
-                MessageVersion.text,
-                MessageVersion.date,
-                MessageVersion.captured_at,
-            )
-            .join(
-                Message,
-                and_(
-                    Message.account_id == MessageVersion.account_id,
-                    Message.chat_id == MessageVersion.chat_id,
-                    Message.id == MessageVersion.message_id,
-                ),
-            )
-            .where(*message_conditions)
-            .order_by(*EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc())
+        stmt = select(
+            *cls._message_keys_of(MessageVersion),
+            MessageVersion.text,
+            MessageVersion.date,
+            MessageVersion.captured_at,
+            MessageVersion.source,
+            MessageVersion.entities,
+            MessageVersion.rich_message,
         )
+        return cls._joined_to_its_message(stmt, MessageVersion, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc()
+        )
+
+    @classmethod
+    def _media_of_messages_query(cls, message_conditions: list):
+        """The current media rows of the messages ``message_conditions`` pick, in export order.
+
+        A message can hold more than one media row. Its rows come in the order
+        the viewer picks the one it shows: a downloaded row before a pending
+        one, then the lowest id. ``file_path`` is read for
+        ``scripts/restore_chat.py`` only (``include_media``); no export writes it.
+        """
+        stmt = select(
+            *cls._message_keys_of(Media),
+            Media.id.label("media_id"),
+            Media.type,
+            Media.file_path,
+            Media.file_name,
+            Media.file_size,
+            Media.mime_type,
+            Media.width,
+            Media.height,
+            Media.duration,
+        )
+        return cls._joined_to_its_message(stmt, Media, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, func.coalesce(Media.downloaded, 0).desc(), Media.id.asc()
+        )
+
+    @classmethod
+    def _media_versions_of_messages_query(cls, message_conditions: list):
+        """The earlier media (``media_versions``) of the messages ``message_conditions`` pick, in export order.
+
+        Each message's rows oldest first by ``date``, then in the order they were kept.
+        """
+        stmt = select(
+            *cls._message_keys_of(MediaVersion),
+            MediaVersion.media_id,
+            MediaVersion.type,
+            MediaVersion.file_name,
+            MediaVersion.file_size,
+            MediaVersion.mime_type,
+            MediaVersion.width,
+            MediaVersion.height,
+            MediaVersion.duration,
+            MediaVersion.date,
+            MediaVersion.captured_at,
+            MediaVersion.source,
+        )
+        return cls._joined_to_its_message(stmt, MediaVersion, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, MediaVersion.date.asc(), MediaVersion.id.asc()
+        )
+
+    async def _export_message_parts(self, session, messages, message_conditions: list, *, iso: bool):
+        """Yield each message of ``messages`` with its media rows and its ``versions``.
+
+        ``messages`` is an async iterable of rows or ``Message`` objects in
+        ``EXPORT_MESSAGE_ORDER``, picked by ``message_conditions``; each has
+        ``account_id``, ``chat_id`` and ``id``. Its current media, text
+        versions and earlier media are three more statements in the same
+        session, walked beside it, so only the current message's rows are
+        ever in memory, however long the chat. Call ``_read_one_snapshot``
+        first, so all four read the same archive state.
+
+        If rows are left over at the end, two statements stopped sorting
+        alike and some messages went out without them: the export fails
+        rather than write a file that drops them.
+        """
+        media = await _ExportWalk.open(session, self._media_of_messages_query(message_conditions))
+        texts = await _ExportWalk.open(session, self._versions_of_messages_query(message_conditions))
+        earlier = await _ExportWalk.open(session, self._media_versions_of_messages_query(message_conditions))
+        async for message in messages:
+            key = (message.account_id, message.chat_id, message.id)
+            yield (
+                message,
+                await media.take(key),
+                self._export_versions(await texts.take(key), await earlier.take(key), iso=iso),
+            )
+        if any(walk.pending is not None for walk in (media, texts, earlier)):
+            raise RuntimeError("Export versions fell out of step with the messages")
 
     async def _read_one_snapshot(self, session) -> None:
         """Make every read ``session`` runs from here on see the same archive state.
@@ -3099,12 +3282,11 @@ class DatabaseAdapter:
         the old text beside a version holding that same text. REPEATABLE READ
         gives the whole transaction one snapshot. SQLite's driver begins a
         transaction only before a write, so an explicit deferred BEGIN does
-        the same there. The command's export needs it on SQLite: it reads
-        each statement to the end before the next. The viewer's export keeps
-        its messages statement open while it reads the versions, which
-        already holds SQLite's read snapshot, so there the BEGIN only guards
-        a later change that closes it first. Call it before the session runs
-        anything.
+        the same there. Both exports need it on SQLite too: they read the
+        transcripts to the end before they open the messages, versions and
+        media statements, and without the BEGIN each read would see its own
+        state, so a transcript could name a media a backup removed in
+        between. Call it before the session runs anything.
         """
         if self._is_sqlite:
             await session.execute(text("BEGIN"))
@@ -3245,37 +3427,6 @@ class DatabaseAdapter:
                 "mime_type": row.mime_type,
                 "downloaded": row.downloaded,
             }
-
-    def _message_versions_query(
-        self,
-        chat_id: int | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        account_id: int | None = None,
-    ):
-        # No join to messages: versions already carry (chat_id, message_id), and
-        # referential integrity is owned by the explicit deletes in
-        # delete_message / delete_chat_and_related_data.
-        stmt = select(MessageVersion)
-
-        conditions = []
-        if account_id is not None:
-            conditions.append(MessageVersion.account_id == account_id)
-        if chat_id is not None:
-            conditions.append(MessageVersion.chat_id == chat_id)
-        if start_date:
-            conditions.append(MessageVersion.date >= start_date)
-        if end_date:
-            conditions.append(MessageVersion.date <= end_date)
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-
-        return stmt.order_by(
-            MessageVersion.chat_id.asc(),
-            MessageVersion.message_id.asc(),
-            MessageVersion.date.asc(),
-            MessageVersion.id.asc(),
-        )
 
     def _event_not_already_listed(
         self,
@@ -3595,44 +3746,6 @@ class DatabaseAdapter:
                 )
             changes.sort(key=lambda c: c["date"] or "", reverse=True)
             return changes[:per_stream]
-
-    async def get_message_versions_by_date_range(
-        self,
-        chat_id: int | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        *,
-        account_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Get previous message versions by version date/chat filter (None account_id = unscoped until phase 4)."""
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
-            return [self._message_version_to_dict(row) for row in result.scalars()]
-
-    async def iter_message_versions_for_export(
-        self,
-        chat_id: int,
-        *,
-        account_id: int | None = None,
-        from_date: datetime | None = None,
-        to_date: datetime | None = None,
-    ):
-        """Stream a chat's message versions one by one (async generator).
-
-        Mirrors get_messages_for_export so the export endpoint never
-        materializes an entire edit history in memory. The optional window
-        uses the export contract (>= from, < to) — deliberately NOT the shared
-        query's inclusive end_date, whose contract other callers own.
-        """
-        async with self.db_manager.async_session_factory() as session:
-            stmt = self._message_versions_query(chat_id, account_id=account_id)
-            if from_date is not None:
-                stmt = stmt.where(MessageVersion.date >= from_date)
-            if to_date is not None:
-                stmt = stmt.where(MessageVersion.date < to_date)
-            result = await session.stream(stmt)
-            async for row in result.scalars():
-                yield self._message_version_to_dict(row)
 
     @staticmethod
     def _marked_edited_predicate():
@@ -7639,33 +7752,28 @@ class DatabaseAdapter:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
     ):
+        """Stream a chat's messages for the viewer's export (async generator).
+
+        None account_id = unscoped until phase 4. ``from_date`` is a naive-UTC
+        inclusive lower bound on Message.date, ``to_date`` an EXCLUSIVE upper
+        bound.
+
+        Yields message dictionaries with sender info, deleted messages
+        included and marked by ``is_deleted``/``deleted_at``. Each carries
+        ``edit_date``, ``media`` (its current media, ``_export_media_dict``,
+        never a file path) and ``versions``, every earlier text and media the
+        archive kept of it (``_export_versions``, any date, oldest first). A
+        message whose media has transcripts carries them all under
+        ``transcripts``, newest first. Everything is read from one snapshot,
+        so every transcript names a media listed in the same file. A
+        location, a contact, a poll or another metadata-only kind is under
+        ``media_payload``, keyed as in ``raw_data``.
+
+        ``include_media`` is for ``scripts/restore_chat.py``, which uploads
+        the files again: each message also gets ``media_type`` and
+        ``media_path``, the stored path of its first media row, or None. The
+        viewer's export never passes it, so no file path leaves the archive.
         """
-        Get messages for export with user info.
-        Returns an async generator for streaming.
-        None account_id = unscoped until phase 4.
-
-        v6.0.0: Media info now comes from the media table via JOIN.
-
-        Args:
-            chat_id: Chat ID to export
-            include_media: If True, include media info from media table
-            from_date: naive-UTC inclusive lower bound on Message.date
-            to_date: naive-UTC EXCLUSIVE upper bound on Message.date
-
-        Yields:
-            Message dictionaries with user info, deleted messages included and
-            marked by ``is_deleted``/``deleted_at``. Each carries ``edit_date``
-            and ``versions``, every earlier text the archive kept of it (any
-            date, oldest first). A message whose media has transcripts carries
-            them all under ``transcripts``, newest first. A location, a
-            contact, a poll or another metadata-only kind is under
-            ``media_payload``, keyed as in ``raw_data``.
-        """
-        transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
-        for row in await self.get_transcripts_for_export(
-            chat_id, account_id=account_id, from_date=from_date, to_date=to_date
-        ):
-            transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
         conditions = [Message.chat_id == chat_id]
         if account_id is not None:
             conditions.append(Message.account_id == account_id)
@@ -7673,80 +7781,37 @@ class DatabaseAdapter:
             conditions.append(Message.date >= from_date)
         if to_date is not None:
             conditions.append(Message.date < to_date)
+        stmt = (
+            select(
+                Message.id,
+                Message.account_id,
+                Message.chat_id,
+                Message.date,
+                Message.text,
+                Message.is_outgoing,
+                Message.reply_to_msg_id,
+                Message.sender_name,
+                Message.edit_date,
+                Message.is_deleted,
+                Message.deleted_at,
+                Message.raw_data,
+                User.first_name,
+                User.last_name,
+                User.username,
+            )
+            .outerjoin(User, Message.sender_id == User.id)
+            .where(*conditions)
+            .order_by(*EXPORT_MESSAGE_ORDER)
+        )
         async with self.db_manager.async_session_factory() as session:
-            if include_media:
-                stmt = (
-                    select(
-                        Message.id,
-                        Message.account_id,
-                        Message.date,
-                        Message.text,
-                        Message.is_outgoing,
-                        Message.reply_to_msg_id,
-                        Message.sender_name,
-                        Message.edit_date,
-                        Message.is_deleted,
-                        Message.deleted_at,
-                        Message.raw_data,
-                        Media.type.label("media_type"),
-                        Media.file_path.label("media_file_path"),
-                        User.first_name,
-                        User.last_name,
-                        User.username,
-                    )
-                    .outerjoin(User, Message.sender_id == User.id)
-                    .outerjoin(
-                        Media,
-                        and_(
-                            Media.account_id == Message.account_id,
-                            Media.message_id == Message.id,
-                            Media.chat_id == Message.chat_id,
-                        ),
-                    )
-                    .where(*conditions)
-                    .order_by(*EXPORT_MESSAGE_ORDER)
-                )
-            else:
-                stmt = (
-                    select(
-                        Message.id,
-                        Message.account_id,
-                        Message.date,
-                        Message.text,
-                        Message.is_outgoing,
-                        Message.reply_to_msg_id,
-                        Message.sender_name,
-                        Message.edit_date,
-                        Message.is_deleted,
-                        Message.deleted_at,
-                        Message.raw_data,
-                        User.first_name,
-                        User.last_name,
-                        User.username,
-                    )
-                    .outerjoin(User, Message.sender_id == User.id)
-                    .where(*conditions)
-                    .order_by(*EXPORT_MESSAGE_ORDER)
-                )
-
             await self._read_one_snapshot(session)
+            transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
+            for row in await self._read_export_transcripts(
+                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+            ):
+                transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
             result = await session.stream(stmt)
-            # The kept versions walk beside the messages, in the same order,
-            # so only the current message's versions are ever in memory,
-            # however long a chat's edit history is.
-            versions = await session.stream(self._versions_of_messages_query(conditions))
-            pending = await anext(versions, None)
-            last_key: tuple[int, int] | None = None
-            last_versions: list[dict[str, Any]] = []
-            async for row in result:
-                key = (row.account_id, row.id)
-                if key != last_key:
-                    # With media a message repeats once per media row, and
-                    # every copy carries the same versions.
-                    last_key, last_versions = key, []
-                    while pending is not None and (pending.account_id, pending.message_id) == key:
-                        last_versions.append(self._export_version_dict(pending))
-                        pending = await anext(versions, None)
+            async for row, media, versions in self._export_message_parts(session, result, conditions, iso=True):
                 msg = {
                     "id": row.id,
                     "date": row.date.isoformat() if row.date else None,
@@ -7766,10 +7831,11 @@ class DatabaseAdapter:
                     "is_deleted": bool(row.is_deleted),
                     "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
                     "edit_date": row.edit_date.isoformat() if row.edit_date else None,
+                    "media": [self._export_media_dict(media_row) for media_row in media],
                 }
                 if include_media:
-                    msg["media_type"] = row.media_type
-                    msg["media_path"] = row.media_file_path
+                    msg["media_type"] = media[0].type if media else None
+                    msg["media_path"] = media[0].file_path if media else None
                 # A location, a contact, a poll and the other metadata-only
                 # kinds are the message's content: the card the viewer draws.
                 media_payload = _media_payloads_of(row.raw_data)
@@ -7777,13 +7843,8 @@ class DatabaseAdapter:
                     msg["media_payload"] = media_payload
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
-                msg["versions"] = list(last_versions)
+                msg["versions"] = versions
                 yield msg
-            if pending is not None:
-                # A version left over means the two queries stopped sorting
-                # alike and some messages went out without their versions.
-                # Fail the export rather than write a file that drops them.
-                raise RuntimeError("Export versions fell out of step with the messages")
 
     # ========== Forum Topic Operations (v6.2.0) ==========
 
@@ -8964,48 +9025,66 @@ class DatabaseAdapter:
         export reads only the rows of the messages it exports.
         """
         async with self.db_manager.async_session_factory() as session:
-            owners = self._transcribed_media_owners()
-            stmt = (
-                select(MediaTranscript, owners.c.chat_id, owners.c.message_id)
-                .join(
-                    owners,
-                    and_(
-                        owners.c.account_id == MediaTranscript.account_id,
-                        owners.c.media_id == MediaTranscript.media_id,
-                    ),
-                )
-                .order_by(MediaTranscript.id.desc())
+            return await self._read_export_transcripts(
+                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
             )
-            if chat_id is not None:
-                stmt = stmt.where(owners.c.chat_id == chat_id)
-            if account_id is not None:
-                stmt = stmt.where(MediaTranscript.account_id == account_id)
-            if from_date is not None or to_date is not None:
-                stmt = stmt.join(
-                    Message,
-                    and_(
-                        Message.account_id == owners.c.account_id,
-                        Message.chat_id == owners.c.chat_id,
-                        Message.id == owners.c.message_id,
-                    ),
-                )
-                if from_date is not None:
-                    stmt = stmt.where(Message.date >= from_date)
-                if to_date is not None:
-                    stmt = stmt.where(Message.date < to_date)
-            rows = []
-            for transcript, media_chat_id, message_id in await session.execute(stmt):
-                row = self._transcript_to_dict(transcript)
-                # The source of a copy may sit in an account the export's
-                # reader is not entitled to: its id stays out.
-                row.pop("copied_from_id", None)
-                for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
-                    if isinstance(row[key], datetime):
-                        row[key] = row[key].isoformat()
-                row["chat_id"] = media_chat_id
-                row["message_id"] = message_id
-                rows.append(row)
-            return rows
+
+    async def _read_export_transcripts(
+        self,
+        session,
+        chat_id: int | None = None,
+        *,
+        account_id: int | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """``get_transcripts_for_export`` in a session the caller holds.
+
+        The exports call it inside their snapshot, so each transcript they
+        write names a media they list from the same archive state.
+        """
+        owners = self._transcribed_media_owners()
+        stmt = (
+            select(MediaTranscript, owners.c.chat_id, owners.c.message_id)
+            .join(
+                owners,
+                and_(
+                    owners.c.account_id == MediaTranscript.account_id,
+                    owners.c.media_id == MediaTranscript.media_id,
+                ),
+            )
+            .order_by(MediaTranscript.id.desc())
+        )
+        if chat_id is not None:
+            stmt = stmt.where(owners.c.chat_id == chat_id)
+        if account_id is not None:
+            stmt = stmt.where(MediaTranscript.account_id == account_id)
+        if from_date is not None or to_date is not None:
+            stmt = stmt.join(
+                Message,
+                and_(
+                    Message.account_id == owners.c.account_id,
+                    Message.chat_id == owners.c.chat_id,
+                    Message.id == owners.c.message_id,
+                ),
+            )
+            if from_date is not None:
+                stmt = stmt.where(Message.date >= from_date)
+            if to_date is not None:
+                stmt = stmt.where(Message.date < to_date)
+        rows = []
+        for transcript, media_chat_id, message_id in await session.execute(stmt):
+            row = self._transcript_to_dict(transcript)
+            # The source of a copy may sit in an account the export's
+            # reader is not entitled to: its id stays out.
+            row.pop("copied_from_id", None)
+            for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
+                if isinstance(row[key], datetime):
+                    row[key] = row[key].isoformat()
+            row["chat_id"] = media_chat_id
+            row["message_id"] = message_id
+            rows.append(row)
+        return rows
 
     async def get_media_transcript(self, transcript_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
         """One transcript row by id, or None."""
