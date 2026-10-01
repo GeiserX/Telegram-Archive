@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **The list of reactions taken back shows partial drops and returns.** A count that drops without reaching zero reads as how many went of how many there were, "2 of 7 · 11:14", and a reaction that was taken back and given again stays in the list with when the archive saw it again, "1 · 11:08, back 11:12". Each emoji shows its latest drop, and a live reaction frame follows the same rule. See [Reactions, edits and deletions](viewer/using-the-viewer.md#reactions-edits-and-deletions).
+- **The messages list and both exports return the reaction history.** `/api/chats/{ref}/messages`, the viewer's **Export chat** and `telegram-archive export` give each message a `reaction_history` list: every state of its reactions the archive kept, oldest first, with `emoji`, `count`, `previous_count`, `observed_at` and `source`. It comes from the same reads as the rest of the message, so every viewer restriction applies, and each export reads it from the same snapshot as the messages. See [Messages](reference/api.md#messages) and [Export](reference/api.md#export).
+
+### Changed
+- **Breaking:** **`removed_reactions` lists every emoji with a drop, from the reaction history.** An entry is the emoji's latest drop: `count` is how many went, not the count it had, and the new `count_before` and `back_at` say how many there were before and when an emoji taken back to zero was seen again. An emoji that came back is now in both `reactions` and `removed_reactions`, and a partial drop is listed too. A script that read `count` as the count an emoji had when it went still reads the same number for an emoji taken back completely. See [Messages](reference/api.md#messages).
+
 ### Fixed
 - **Reactions keep every state the archive saw.** A count that dropped without reaching zero, say from 7 to 5, was written over the earlier count, and an emoji that was taken back and given again lost its removal. A new `reaction_history` table now keeps one row per state of an emoji on a message: `count` (0 when taken back), `previous_count`, `observed_at` and `source` (`listener`, `backup`, or `baseline` for rows copied when the history began). The listener and the backup add a row whenever a count differs from the newest one kept, and never change or remove a row. It stores counts per emoji, like `reactions`, never who reacted. `DELETION_MODE=hard`, deleting a chat and `EXCLUDE_DELETE_EXISTING` remove a message's history with its reactions; `telegram-archive merge` and the move to PostgreSQL copy it. Upgrading runs migration 037, which seeds the history from the reactions already kept. See [Reactions](configuration/listener.md#reactions).
 

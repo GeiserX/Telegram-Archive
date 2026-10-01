@@ -18,7 +18,9 @@ log entries. A few reactions were taken back: the archive keeps them as
 tombstones, and the viewer shows them after the live ones, folded into one
 quiet chip: on a photo beside live reactions, on a photo with no caption,
 on the only reaction of an outgoing message, on a message deleted later, and
-a day after the message.
+a day after the message. Every reaction has its history (reaction_history):
+on one photo seven hearts dropped to five, and a surprised face was taken
+back and given again.
 
 Usage:
     python scripts/generate_dummy_db.py --data-dir ./demo-data
@@ -244,6 +246,9 @@ class ChatScript:
         # (message id, emoji, when it was removed): reactions the archive keeps
         # as tombstones after they were taken back.
         self.removed_reactions: list[tuple[int, str, datetime]] = []
+        # (message id, emoji) -> [(count, when)]: the states the archive saw,
+        # oldest first, for a reaction whose count moved after it first came.
+        self.reaction_states: dict[tuple[int, str], list[tuple[int, datetime]]] = {}
         self.by_id: dict[int, dict] = {}
 
     def add(
@@ -337,6 +342,16 @@ class ChatScript:
         emoji with no reactor and the count it had, tombstoned at ``when``."""
         self.reactions.append((mid, emoji, count, []))
         self.removed_reactions.append((mid, emoji, when))
+
+    def reaction_moves(self, mid: int, emoji: str, states: list[tuple[int, datetime]]) -> None:
+        """A reaction whose count moved: every state the archive saw, oldest
+        first. The live row holds the last count, or the tombstone when it is 0."""
+        self.reaction_states[(mid, emoji)] = states
+        *_, (last, when) = states
+        if last:
+            self.reactions.append((mid, emoji, last, []))
+        else:
+            self.take_back(mid, emoji, states[-2][0], when)
 
 
 FILLER = {
@@ -550,12 +565,16 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         KOFI,
         "Found this view on the way back",
         media={"type": "photo", "seed": 24, "replaced_seed": 27},
-        react={"❤️": 5, "🔥": 1},
+        react={"🔥": 1},
         edited_from="Found this view on the way back",
     )
-    # Someone took their 😮 back: the archive keeps it as a tombstone, and the
-    # viewer shows it after the live chips, folded into one quiet chip.
-    s.take_back(view, "😮", 1, t + timedelta(minutes=88))
+    # Seven hearts dropped to five, and someone took their 😮 back and gave it
+    # again: the history keeps both, and the list of reactions taken back reads
+    # "2 of 7" and "back".
+    s.reaction_moves(view, "❤️", [(7, t + timedelta(minutes=84)), (5, t + timedelta(minutes=91))])
+    s.reaction_moves(
+        view, "😮", [(1, t + timedelta(minutes=84)), (0, t + timedelta(minutes=88)), (1, t + timedelta(minutes=89))]
+    )
     s.add(
         t + timedelta(minutes=95),
         ORSON,
@@ -1114,7 +1133,14 @@ async def seed(data_dir: Path) -> None:
     from sqlalchemy import insert, update
 
     from telegram_archive.db import close_adapter, create_adapter
-    from telegram_archive.db.models import AvatarHistory, MediaTranscript, MediaVersion, MessageVersion, Reaction
+    from telegram_archive.db.models import (
+        AvatarHistory,
+        MediaTranscript,
+        MediaVersion,
+        MessageVersion,
+        Reaction,
+        ReactionHistory,
+    )
 
     backup = data_dir / "backups"
     media_root = backup / "media"
@@ -1222,6 +1248,31 @@ async def seed(data_dir: Path) -> None:
                         .where(Reaction.chat_id == s.chat_id, Reaction.message_id == mid, Reaction.emoji == emoji)
                         .values(removed_at=removed)
                     )
+                # The history the listener would have written: a reaction seen a
+                # minute after its message, and its removal when it went, unless
+                # the script gave its own states.
+                gone = {(mid, emoji): removed for mid, emoji, removed in s.removed_reactions}
+                for mid, emoji, count, _voters in s.reactions:
+                    states = s.reaction_states.get((mid, emoji))
+                    if states is None:
+                        states = [(count, s.by_id[mid]["date"] + timedelta(minutes=1))]
+                        if (mid, emoji) in gone:
+                            states.append((0, gone[(mid, emoji)]))
+                    previous = None
+                    for n, when in states:
+                        await session.execute(
+                            insert(ReactionHistory).values(
+                                account_id=account,
+                                chat_id=s.chat_id,
+                                message_id=mid,
+                                emoji=emoji,
+                                count=n,
+                                previous_count=previous,
+                                observed_at=when,
+                                source="listener",
+                            )
+                        )
+                        previous = n
                 for index, (mid, old_text, when, old_entities, source) in enumerate(s.versions):
                     digest = hashlib.sha256(f"{account}:{s.chat_id}:{mid}:{old_text}".encode()).hexdigest()
                     # Captured when the next text appeared: the next kept

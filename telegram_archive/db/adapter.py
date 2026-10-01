@@ -2028,7 +2028,8 @@ class DatabaseAdapter:
         First the messages ``get_messages_by_date_range`` returns, each with
         ``versions``: every earlier text the archive kept of it, whatever the
         version's date, oldest first, with ``text``, ``date`` and
-        ``captured_at``. The dates stay datetimes, as every other date of that
+        ``captured_at``, and ``reaction_history``: every state of its
+        reactions the archive kept, oldest first (``_reaction_history_to_dict``). The dates stay datetimes, as every other date of that
         file does. Then the flat list ``get_message_versions_by_date_range``
         returns, picked by the version's own date. One snapshot, so a backup
         writing meanwhile cannot make a message and its versions disagree.
@@ -2041,12 +2042,18 @@ class DatabaseAdapter:
                 versions.setdefault((row.account_id, row.chat_id, row.message_id), []).append(
                     {"text": row.text, "date": row.date, "captured_at": row.captured_at}
                 )
+            reaction_history: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+            for h in (await session.execute(self._reaction_history_of_messages_query(conditions))).scalars():
+                reaction_history.setdefault((h.account_id, h.chat_id, h.message_id), []).append(
+                    self._reaction_history_to_dict(h)
+                )
             result = await session.execute(select(Message).where(*conditions).order_by(Message.date.asc()))
             messages = [
                 {
                     **self._message_to_dict(m),
                     "account_id": m.account_id,
                     "versions": versions.get((m.account_id, m.chat_id, m.id), []),
+                    "reaction_history": reaction_history.get((m.account_id, m.chat_id, m.id), []),
                 }
                 for m in result.scalars()
             ]
@@ -2785,6 +2792,29 @@ class DatabaseAdapter:
             )
             .where(*message_conditions)
             .order_by(*EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc())
+        )
+
+    @staticmethod
+    def _reaction_history_of_messages_query(message_conditions: list):
+        """Every kept reaction state of the messages ``message_conditions`` pick, in export order.
+
+        Like ``_versions_of_messages_query``: the conditions pick the message,
+        so a message in a date window keeps its whole reaction history, and
+        rows come in ``EXPORT_MESSAGE_ORDER``, each message's states oldest
+        first, so a reader can walk them beside the messages.
+        """
+        return (
+            select(ReactionHistory)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == ReactionHistory.account_id,
+                    Message.chat_id == ReactionHistory.chat_id,
+                    Message.id == ReactionHistory.message_id,
+                ),
+            )
+            .where(*message_conditions)
+            .order_by(*EXPORT_MESSAGE_ORDER, ReactionHistory.observed_at.asc(), ReactionHistory.id.asc())
         )
 
     async def _read_one_snapshot(self, session) -> None:
@@ -6810,6 +6840,23 @@ class DatabaseAdapter:
                         {"emoji": r.emoji, "user_id": r.user_id, "count": r.count}
                     )
 
+            # Every kept state of the page's reactions (reaction_history), oldest
+            # first, from the same chat, messages and account as the rows above.
+            history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+            if page_message_ids:
+                history_stmt = (
+                    select(ReactionHistory)
+                    .where(
+                        ReactionHistory.chat_id == chat_id,
+                        ReactionHistory.message_id.in_(page_message_ids),
+                    )
+                    .order_by(ReactionHistory.message_id, ReactionHistory.observed_at, ReactionHistory.id)
+                )
+                if account_id is not None:
+                    history_stmt = history_stmt.where(ReactionHistory.account_id == account_id)
+                for h in (await session.execute(history_stmt)).scalars():
+                    history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
+
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
 
@@ -6822,20 +6869,73 @@ class DatabaseAdapter:
                     if reaction.get("user_id"):
                         reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
                 msg["reactions"] = list(reactions_by_emoji.values())
-                # Newest removal first. An emoji that is live again is not listed:
-                # it has one row, and reconcile_reactions revived it.
-                msg["removed_reactions"] = sorted(
-                    (
-                        removed
-                        for emoji, removed in removed_by_message.get(msg["id"], {}).items()
-                        if emoji not in reactions_by_emoji
-                    ),
-                    key=lambda removed: (removed["removed_at"], removed["emoji"]),
-                    reverse=True,
+                history = history_by_message.get(msg["id"], [])
+                msg["reaction_history"] = history
+                msg["removed_reactions"] = self._removed_reactions(
+                    history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
                 )
 
             await self.attach_sender_accounts(messages)
             return messages
+
+    @staticmethod
+    def _reaction_history_to_dict(row: ReactionHistory) -> dict[str, Any]:
+        """One kept state of an emoji on a message, as the page read and both exports list it."""
+        return {
+            "emoji": row.emoji,
+            "count": row.count,
+            "previous_count": row.previous_count,
+            "observed_at": row.observed_at,
+            "source": row.source,
+        }
+
+    @staticmethod
+    def _removed_reactions(
+        history: list[dict[str, Any]], tombstones: dict[str, dict[str, Any]], live: set[str]
+    ) -> list[dict[str, Any]]:
+        """The reactions taken back the viewer lists, newest first, one entry per emoji.
+
+        From ``history`` (one message's ``reaction_history``, oldest first),
+        the latest drop of each emoji: a state whose count is below the one
+        before it. ``count`` is how many went, ``count_before`` the count
+        before the drop, so a partial drop reads "2 of 7", and ``removed_at``
+        when the archive saw it. A drop to zero followed by a state with a
+        count has ``back_at``, when the archive saw the emoji again.
+
+        An emoji with no history (a row written before 037 and not touched
+        since, if the baseline was ever skipped) falls back to its tombstone:
+        listed while it is not live, with the count it had when it went.
+        """
+        by_emoji: dict[str, list[dict[str, Any]]] = {}
+        for state in history:
+            by_emoji.setdefault(state["emoji"], []).append(state)
+        entries: list[dict[str, Any]] = []
+        for emoji, states in by_emoji.items():
+            drop_index = None
+            for index, state in enumerate(states):
+                before = state["previous_count"]
+                if before is not None and state["count"] < before:
+                    drop_index = index
+            if drop_index is None:
+                continue
+            drop = states[drop_index]
+            back_at = None
+            if drop["count"] == 0:
+                back_at = next((later["observed_at"] for later in states[drop_index + 1 :] if later["count"] > 0), None)
+            entries.append(
+                {
+                    "emoji": emoji,
+                    "count": drop["previous_count"] - drop["count"],
+                    "count_before": drop["previous_count"],
+                    "removed_at": drop["observed_at"],
+                    "back_at": back_at,
+                }
+            )
+        for emoji, removed in tombstones.items():
+            if emoji in by_emoji or emoji in live:
+                continue
+            entries.append({**removed, "count_before": removed["count"], "back_at": None})
+        return sorted(entries, key=lambda removed: (removed["removed_at"], removed["emoji"]), reverse=True)
 
     async def get_message_dates(
         self,
@@ -7233,7 +7333,8 @@ class DatabaseAdapter:
             Message dictionaries with user info, deleted messages included and
             marked by ``is_deleted``/``deleted_at``. Each carries ``edit_date``
             and ``versions``, every earlier text the archive kept of it (any
-            date, oldest first). A message whose media has transcripts carries
+            date, oldest first), and ``reaction_history``, every state of its
+            reactions the archive kept (oldest first, ISO 8601 dates). A message whose media has transcripts carries
             them all under ``transcripts``, newest first.
         """
         transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
@@ -7309,17 +7410,26 @@ class DatabaseAdapter:
             # however long a chat's edit history is.
             versions = await session.stream(self._versions_of_messages_query(conditions))
             pending = await anext(versions, None)
+            # The reaction history walks beside them the same way.
+            history = await session.stream_scalars(self._reaction_history_of_messages_query(conditions))
+            pending_state = await anext(history, None)
             last_key: tuple[int, int] | None = None
             last_versions: list[dict[str, Any]] = []
+            last_history: list[dict[str, Any]] = []
             async for row in result:
                 key = (row.account_id, row.id)
                 if key != last_key:
                     # With media a message repeats once per media row, and
                     # every copy carries the same versions.
-                    last_key, last_versions = key, []
+                    last_key, last_versions, last_history = key, [], []
                     while pending is not None and (pending.account_id, pending.message_id) == key:
                         last_versions.append(self._export_version_dict(pending))
                         pending = await anext(versions, None)
+                    while pending_state is not None and (pending_state.account_id, pending_state.message_id) == key:
+                        state = self._reaction_history_to_dict(pending_state)
+                        state["observed_at"] = state["observed_at"].isoformat()
+                        last_history.append(state)
+                        pending_state = await anext(history, None)
                 msg = {
                     "id": row.id,
                     "date": row.date.isoformat() if row.date else None,
@@ -7346,11 +7456,12 @@ class DatabaseAdapter:
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 msg["versions"] = list(last_versions)
+                msg["reaction_history"] = list(last_history)
                 yield msg
-            if pending is not None:
-                # A version left over means the two queries stopped sorting
-                # alike and some messages went out without their versions.
-                # Fail the export rather than write a file that drops them.
+            if pending is not None or pending_state is not None:
+                # A version or a reaction state left over means the queries
+                # stopped sorting alike and some messages went out without
+                # them. Fail the export rather than write a file that drops them.
                 raise RuntimeError("Export versions fell out of step with the messages")
 
     # ========== Forum Topic Operations (v6.2.0) ==========

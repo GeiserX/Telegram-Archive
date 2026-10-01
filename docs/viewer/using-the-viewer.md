@@ -135,11 +135,11 @@ Voice messages and other audio can carry a transcript that opens under the playe
 
 Reactions show as chips with the emoji and its count.
 
-A reaction taken back stays in the archive. After the live chips, a quieter chip with no fill and a dashed edge holds an undo arrow and how many reactions were taken back. Click or tap it, or reach it with <kbd>Tab</kbd> and press <kbd>Enter</kbd>, to show them: each emoji with the count it had and when the archive noticed it gone, for example "1 · 17:33", or "1 · Sep 2, 20:55" when that was on a later day. Click it again to hide them. The time is when the backup or the listener saw the reaction missing, not when it was taken back, and the archive does not know who took it back: it stores counts per emoji. "Taken back" covers every way a reaction leaves Telegram's count: the person removed it, their account was deleted, or an admin turned that reaction off for the chat. Two gaps remain, and they are known limits, not the design: a count that drops without reaching zero shows only the new count, and only the latest removal of an emoji is kept, because a reaction that comes back clears its earlier removal.
+A reaction taken back stays in the archive. After the live chips, a quieter chip with no fill and a dashed edge holds an undo arrow and how many reactions were taken back. Click or tap it, or reach it with <kbd>Tab</kbd> and press <kbd>Enter</kbd>, to show them: each emoji with the count it had and when the archive noticed it gone, for example "1 · 17:33", or "1 · Sep 2, 20:55" when that was on a later day. Click it again to hide them. The time is when the backup or the listener saw the reaction missing, not when it was taken back, and the archive does not know who took it back: it stores counts per emoji. "Taken back" covers every way a reaction leaves Telegram's count: the person removed it, their account was deleted, or an admin turned that reaction off for the chat. A count that drops without reaching zero is listed too, as how many went of how many there were: "2 of 7 · 11:14". A reaction taken back and given again stays in the list with when the archive saw it again: "1 · 11:08, back 11:12". Each emoji shows its latest drop. The archive keeps every state it saw, and the [export](#export-a-chat) carries them all.
 
 === "Desktop"
 
-    ![A photo with two live reactions, then the chip for one reaction taken back, open: a faded surprised face with "1 · 17:33"](../images/screenshots/reactions-taken-back.png)
+    ![A photo with three live reactions, then the chip for three reactions taken back, open: a faded heart with "2 of 7 · 13:11" and a faded surprised face with "1 · 13:08, back 13:09"](../images/screenshots/reactions-taken-back.png)
 
 === "Phone"
 
@@ -369,7 +369,7 @@ Deletions appear here only when the archive learns about them: the listener runs
 
 ![The Export chat dialog with its From and To days](../images/screenshots/export-desktop.png)
 
-The file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date` and, under `versions`, every earlier text the archive kept. The fields are in [Export](../reference/api.md#export). It holds no media files.
+The file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date`, under `versions` every earlier text the archive kept, and under `reaction_history` every state of its reactions the archive saw. The fields are in [Export](../reference/api.md#export). It holds no media files.
 
 [No-download logins](access.md#no-download-logins) cannot export, and have no **More actions** menu.
 

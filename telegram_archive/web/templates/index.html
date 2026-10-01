@@ -16585,10 +16585,12 @@
                     ? `${messageVersionsKey(editPeek.value.msg)}|${isMessageVersionsLoading(editPeek.value.msg)}|${getMessageVersions(editPeek.value.msg).length}`
                     : ''), (key) => { if (key) nextTick(placeEditPeek) })
 
-                // Reactions taken back (removed_reactions, newest first): the emojis
-                // Telegram no longer shows on the message, each with the count it
-                // had and removed_at, when the archive noticed it gone. Telegram
-                // does not say who reacted, so neither does the archive.
+                // Reactions taken back (removed_reactions, newest first): one entry
+                // per emoji with its latest drop. count is how many went, count_before
+                // the count before it (higher for a partial drop: "2 of 7"), removed_at
+                // when the archive noticed, and back_at when an emoji taken back to
+                // zero was seen again. Telegram does not say who reacted, so neither
+                // does the archive.
                 const removedReactions = (msg) => (Array.isArray(msg?.removed_reactions) ? msg.removed_reactions : [])
                 // Whether the bubble draws a reactions row: live chips, the chip for
                 // the ones taken back, or both.
@@ -16611,36 +16613,59 @@
                     else next[key] = true
                     openRemovedReactions.value = next
                 }
-                // One chip of the open list: "3 · 21:59", the count it had and when
-                // the archive noticed it gone.
+                // A partial drop: fewer went than the emoji had before.
+                const removedReactionBefore = (removed) => {
+                    const before = Number(removed.count_before)
+                    const count = Number(removed.count) || 1
+                    return before > count ? before : null
+                }
+                // One chip of the open list: "3 · 21:59", how many went and when the
+                // archive noticed. A partial drop reads "2 of 7 · 11:14", and an emoji
+                // that came back adds ", back 11:12" (a date too on a later day).
                 const removedReactionText = (msg, removed) => {
-                    const count = formatCount(Number(removed.count) || 1)
+                    const before = removedReactionBefore(removed)
+                    const count = formatCount(Number(removed.count) || 1) + (before ? ` of ${formatCount(before)}` : '')
                     const stamp = noticedStamp(msg.date, removed.removed_at)
-                    return stamp ? `${count} · ${stamp}` : count
+                    const back = removed.back_at ? noticedStamp(removed.removed_at || msg.date, removed.back_at) : ''
+                    const when = [stamp, back ? `back ${back}` : ''].filter(Boolean).join(', ')
+                    return when ? `${count} · ${when}` : count
                 }
                 // Its tooltip and spoken name: "😮 1, taken back. The archive noticed
-                // on September 29, 2026 at 21:59."
+                // on September 29, 2026 at 21:59." A partial drop says "2 of 7", and
+                // one that came back adds "It came back on ...".
                 const removedReactionTitle = (removed) => {
                     const count = Number(removed.count) || 1
+                    const before = removedReactionBefore(removed)
+                    const amount = formatCount(count) + (before ? ` of ${formatCount(before)}` : '')
                     const noticed = removed.removed_at ? ` The archive noticed on ${formatStamp(removed.removed_at)}.` : ''
-                    return `${formatReactionEmoji(removed.emoji)} ${formatCount(count)}, taken back.${noticed}`
+                    const back = removed.back_at ? ` It came back on ${formatStamp(removed.back_at)}.` : ''
+                    return `${formatReactionEmoji(removed.emoji)} ${amount}, taken back.${noticed}${back}`
                 }
-                // A live reaction frame carries the new live set. An emoji that left
-                // it was taken back: it joins the list with the count it had, noticed
-                // now, as reconcile_reactions stores it. One that came back leaves the
-                // list, as the server revives its row. The next page read replaces
-                // both with the stored rows.
+                // A live reaction frame carries the new live set, read the way the
+                // server reads its history. An emoji whose count fell is a new drop,
+                // noticed now: all of it when it left the set, part of it ("2 of 7")
+                // when it stayed. An emoji taken back to zero that is in the set again
+                // came back now. Every other entry stays. The next page read replaces
+                // the list with the stored one.
                 const applyLiveReactions = (msg, reactions) => {
                     const live = Array.isArray(reactions) ? reactions : []
-                    const liveEmoji = new Set(live.map(r => r.emoji))
+                    const liveCount = new Map(live.map(r => [r.emoji, Number(r.count) || 1]))
                     const noticed = new Date().toISOString()
-                    const gone = (msg.reactions || [])
-                        .filter(r => !liveEmoji.has(r.emoji))
-                        .map(r => ({ emoji: r.emoji, count: Number(r.count) || 1, removed_at: noticed }))
-                    const goneEmoji = new Set(gone.map(r => r.emoji))
-                    const kept = removedReactions(msg).filter(r => !liveEmoji.has(r.emoji) && !goneEmoji.has(r.emoji))
+                    const drops = []
+                    for (const r of (msg.reactions || [])) {
+                        const before = Number(r.count) || 1
+                        const after = liveCount.get(r.emoji) ?? 0
+                        if (after < before) drops.push({ emoji: r.emoji, count: before - after, count_before: before, removed_at: noticed, back_at: null })
+                    }
+                    const dropped = new Set(drops.map(r => r.emoji))
+                    const kept = removedReactions(msg)
+                        .filter(r => !dropped.has(r.emoji))
+                        .map(r => {
+                            const wentToZero = !removedReactionBefore(r)
+                            return wentToZero && !r.back_at && liveCount.has(r.emoji) ? { ...r, back_at: noticed } : r
+                        })
                     msg.reactions = live
-                    msg.removed_reactions = [...gone, ...kept]
+                    msg.removed_reactions = [...drops, ...kept]
                 }
 
                 const formatReactionEmoji = (emoji) => {

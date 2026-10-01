@@ -11,6 +11,7 @@ These run on a real engine, SQLite and PostgreSQL (``real_adapter``), through
 the same writer the backup and the listener use.
 """
 
+import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ import pytest
 from sqlalchemy import select
 
 from telegram_archive.db.models import Account, Reaction, ReactionHistory
+from telegram_archive.export_backup import BackupExporter
 
 CHAT_ID = -100910
 BASE_DATE = datetime(2026, 9, 1, 12, 0, 0)
@@ -250,3 +252,83 @@ class TestRemovalsTheOperatorAskedFor:
 
         assert await _history(real_adapter, account_id=1) == []
         assert [(e, n) for e, n, *_ in await _history(real_adapter, account_id=2)] == [("👍", 5)]
+
+
+class TestBothExportsCarryTheHistory:
+    """Each exported message carries ``reaction_history``: every kept state of
+    its reactions, oldest first, whatever the date of the state."""
+
+    async def _seed_history(self, adapter) -> None:
+        await _seed(adapter, 1, 2)
+        await _reconcile(adapter, [("❤️", 7)], source="backup")
+        await _reconcile(adapter, [("❤️", 5)], source="listener")
+        await _reconcile(adapter, [("🎉", 9)], account_id=2)
+
+    async def test_the_viewer_export_lists_each_state_in_iso_8601(self, real_adapter, clock):
+        await self._seed_history(real_adapter)
+        exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1)}
+
+        assert exported[1]["reaction_history"] == [
+            {"emoji": "❤️", "count": 7, "previous_count": None, "observed_at": _at(1).isoformat(), "source": "backup"},
+            {"emoji": "❤️", "count": 5, "previous_count": 7, "observed_at": _at(2).isoformat(), "source": "listener"},
+        ]
+        assert exported[2]["reaction_history"] == []
+
+    async def test_the_viewer_export_keeps_a_messages_states_dated_after_the_window(self, real_adapter, clock):
+        await self._seed_history(real_adapter)
+        window = {"from_date": BASE_DATE, "to_date": BASE_DATE + timedelta(minutes=1, seconds=30)}
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1, **window)]
+        assert [(m["id"], [h["count"] for h in m["reaction_history"]]) for m in exported] == [(1, [7, 5])]
+
+    async def test_a_message_with_two_media_repeats_with_the_same_history(self, real_adapter, clock):
+        await self._seed_history(real_adapter)
+        for media_id in ("fixture-a", "fixture-b"):
+            await real_adapter.insert_media(
+                {"id": media_id, "message_id": 1, "chat_id": CHAT_ID, "type": "photo"}, account_id=1
+            )
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT_ID, include_media=True, account_id=1)]
+        assert [(m["id"], [h["count"] for h in m["reaction_history"]]) for m in exported] == [
+            (1, [7, 5]),
+            (1, [7, 5]),
+            (2, []),
+        ]
+
+    async def test_an_unscoped_export_gives_each_account_its_own_history(self, real_adapter, clock):
+        await self._seed_history(real_adapter)
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT_ID)]
+        histories = {
+            (m["id"], tuple(h["emoji"] for h in m["reaction_history"])) for m in exported if m["reaction_history"]
+        }
+        assert histories == {(1, ("❤️", "❤️")), (1, ("🎉",))}
+
+    async def test_states_out_of_step_with_the_messages_fail_the_export(self, real_adapter, clock):
+        await self._seed_history(real_adapter)
+        await _reconcile(real_adapter, [("👍", 1)], message_id=2)
+        original = real_adapter._reaction_history_of_messages_query
+
+        def newest_message_first(conditions):
+            return original(conditions).order_by(None).order_by(ReactionHistory.message_id.desc())
+
+        with (
+            patch.object(real_adapter, "_reaction_history_of_messages_query", newest_message_first),
+            pytest.raises(RuntimeError, match="out of step"),
+        ):
+            _ = [m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1)]
+
+    async def test_the_command_export_lists_each_state_on_its_message(self, real_adapter, clock, tmp_path):
+        await self._seed_history(real_adapter)
+        output = tmp_path / "export.json"
+        await BackupExporter(real_adapter).export_to_json(str(output), chat_id=CHAT_ID)
+        data = json.loads(output.read_text(encoding="utf-8"))
+        by_key = {(m["account_id"], m["id"]): m for m in data["messages"]}
+
+        assert [
+            (h["emoji"], h["count"], h["previous_count"], h["source"]) for h in by_key[(1, 1)]["reaction_history"]
+        ] == [
+            ("❤️", 7, None, "backup"),
+            ("❤️", 5, 7, "listener"),
+        ]
+        # Dates are written like every other date of that file.
+        assert by_key[(1, 1)]["reaction_history"][0]["observed_at"] == str(_at(1))
+        assert [h["emoji"] for h in by_key[(2, 1)]["reaction_history"]] == ["🎉"]
+        assert by_key[(1, 2)]["reaction_history"] == []
