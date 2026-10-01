@@ -19,6 +19,7 @@ Covers lines missing from the initial test_listener.py:
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1953,6 +1954,20 @@ class TestLogStats:
         # Should not raise
         await listener._log_stats()
 
+    async def test_log_stats_lists_edits_stored_as_new_messages(self, caplog):
+        """8.4C (9.0): edits of a message the archive had not stored count on a line
+        of their own in the stop statistics, apart from the skipped ones."""
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
+        listener.stats["start_time"] = datetime.now() - timedelta(minutes=5)
+        listener.stats["edits_skipped"] = 2
+        listener.stats["edits_stored_as_new"] = 3
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.listener"):
+            await listener._log_stats()
+
+        assert "Skipped:  2" in caplog.text
+        assert "Stored as new messages: 3" in caplog.text
+
     async def test_log_stats_shows_zero_errors_without_warning(self):
         """_log_stats with zero errors does not log the error warning."""
         listener = TelegramListener(_make_config(), _make_db(), account_id=1)
@@ -2245,11 +2260,13 @@ class TestDownloadMediaSymlinkFallback:
     @patch("os.path.lexists", return_value=False)
     @patch("os.symlink", side_effect=OSError("symlinks not supported"))
     @patch("os.path.relpath", return_value="../_shared/file.jpg")
+    @patch("shutil.copy2")
     @patch("shutil.move")
-    async def test_symlink_failure_falls_back_to_move(
-        self, mock_move, mock_relpath, mock_symlink, mock_lexists, mock_makedirs, mock_exists
+    async def test_symlink_failure_falls_back_to_a_copy_and_never_moves_the_blob(
+        self, mock_move, mock_copy, mock_relpath, mock_symlink, mock_lexists, mock_makedirs, mock_exists
     ):
-        """When symlink fails, falls back to shutil.move."""
+        """When symlink fails, the chat folder gets a copy. The published blob is
+        never moved out of _shared, since another chat may already link to it."""
         from telethon.tl.types import MessageMediaPhoto
 
         config = _make_config(deduplicate_media=True)
@@ -2285,7 +2302,8 @@ class TestDownloadMediaSymlinkFallback:
         ):
             result = await listener._download_media(msg, -100)
         assert result is not None
-        mock_move.assert_called_once()
+        mock_move.assert_not_called()
+        mock_copy.assert_called_once()
 
 
 # ===========================================================================

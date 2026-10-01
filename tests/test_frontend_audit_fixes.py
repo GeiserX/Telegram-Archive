@@ -1226,7 +1226,12 @@ def test_media_error_placeholder_is_rendered_by_vue_not_written_into_the_dom() -
     assert "const missing = !!media.file_path && !!msg.mediaLoadFailed" in html
     # An album draws its grid whatever its first picture's file says: a
     # missing first picture takes its own tile, beside its archived siblings.
-    assert "(msg.media?.file_path && !msg.mediaLoadFailed) || isFirstInAlbum(msg, index)" in html
+    # A metadata-only row (a location, a contact) draws its card, never a file,
+    # whatever path an older release left on it.
+    assert (
+        "(msg.media?.file_path && !msg.mediaLoadFailed && !isMetadataOnlyMedia(msg)) || isFirstInAlbum(msg, index)"
+        in html
+    )
     video_block = html[html.index("<!-- Videos - click to open in lightbox -->") :]
     video_block = video_block[: video_block.index("<!-- Stickers")]
     assert '<template v-if="!msg.mediaLoadFailed">' in video_block

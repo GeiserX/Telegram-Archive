@@ -18,7 +18,7 @@ With no media settings, the backup downloads every media type up to 100 MB per f
 | `document` | Any other file |
 | `webpage` | Link previews that carry a photo or a document |
 
-Some kinds of media have no file. The backup stores them as rows and never downloads anything for them: `contact`, `geo`, `venue`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `geo_live`, `game` and `unsupported`. Poll questions, answers and results live in the message data as first captured, and later votes and closing are kept beside them as [snapshots](../reference/api.md#poll-and-link-preview-snapshots).
+Some kinds of media have no file. The backup stores them as rows and never downloads anything for them: `contact`, `geo`, `venue`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `geo_live`, `game` and `unsupported`. What they hold lives in the message data, under a key named after the kind: a location's coordinates under `geo`, a contact's name, phone and vCard under `contact`, a poll's question, answers and results under `poll` as first captured, and so on. A poll's later votes and closing are kept beside it as [snapshots](../reference/api.md#poll-and-link-preview-snapshots). The backup and the listener both keep them, and a download filter never drops them. For messages archived before these details were kept, run [`backfill-details`](../operations/maintenance.md#fill-old-locations-contacts-polls-and-edit-flags).
 
 ## Reversible or not
 
@@ -73,11 +73,11 @@ DOWNLOAD_DOCUMENT_MIME_TYPES=application/pdf,application/zip
 
 A link preview for a YouTube video can carry the video file. The backup skips that file unless `DOWNLOAD_YOUTUBE_VIDEOS=true`, and writes no row for it. The message and its link card, with URL, site name, title and description, are archived either way. No file is saved for the preview, not even its thumbnail.
 
-On every run, `YOUTUBE_VIDEOS_DELETE_EXISTING=true` deletes the preview videos that earlier runs downloaded, with their rows and transcripts. While `DOWNLOAD_YOUTUBE_VIDEOS=true`, the backup ignores it and logs a warning. With deduplication on, a shared file is deleted only when no media row in any account still references its hash.
+On every run, `YOUTUBE_VIDEOS_DELETE_EXISTING=true` deletes the preview videos that earlier runs downloaded, with their rows and transcripts. While `DOWNLOAD_YOUTUBE_VIDEOS=true`, the backup ignores it and logs a warning. The rows go first, then the files. A chat-folder entry stays while a row of another account still names it. With deduplication on, a shared file is deleted only when nothing refers to it any more: no media row or earlier media of any account names the file or holds its hash, and no chat folder links to it.
 
 ### Skip media for some chats
 
-`SKIP_MEDIA_CHAT_IDS` lists chats whose text is archived without media. `SKIP_MEDIA_DELETE_EXISTING=true` also deletes the media rows and files these chats already have. It runs once per process for each chat and cannot be undone. The backup deletes the recorded files and symlinks in the chat folder, and removes the folder when it is empty. It keeps the files in `media/_shared`.
+`SKIP_MEDIA_CHAT_IDS` lists chats whose text is archived without media. `SKIP_MEDIA_DELETE_EXISTING=true` also deletes the media rows and files these chats already have. It runs once per process for each chat and cannot be undone. The backup deletes the rows first, then the recorded files and symlinks in the chat folder, and removes the folder when it is empty. A file or symlink that a row of another account still names stays, because every account's copy of a chat shares one chat folder. It keeps the files in `media/_shared`.
 
 ### Chat descriptions
 
@@ -103,7 +103,17 @@ media/
 - Each chat folder holds a relative symlink to it.
 - When a file with the same name already exists in `_shared`, the backup creates the symlink and downloads nothing.
 - A new download is hashed. If a file with identical content already exists for the same account, that file is reused and the new copy is deleted. Content deduplication never reuses files across accounts.
-- Where symlinks are not supported, the file is copied or moved into the chat folder instead.
+- Where symlinks are not supported, the file is copied into the chat folder instead. The shared file stays in `_shared`, since another chat may already link to it.
+
+### A missing shared file { #a-missing-shared-file }
+
+A chat folder link whose `_shared` file is gone is a broken link: the row says the file was downloaded, and nothing is behind it. A row can also point at a chat folder that never held its file. Archives from before 4.0.5 kept a channel's files under its plain id (`media/1234567890/`), and migration 013 moved the rows' paths to the marked id (`media/-1001234567890/`) without moving the files.
+
+The archive repairs both without asking Telegram when a copy is already on disk. It looks under the same name elsewhere in `_shared`, in the chat's other id-form folders (`N`, `-N` and `-100N`), and at any other row with the same content hash. A copy without a recorded hash counts only when the name carries a Telegram file id and the size matches. The copy is hardlinked, or copied where hardlinks are not supported, to the path the link names, and the link itself is never rewritten. Nothing that exists is replaced.
+
+With no copy on disk, the row is marked not downloaded and the next backup downloads it from Telegram. The download fills the `_shared` file under the name the link holds.
+
+Three places repair: [`check-media`](../reference/cli.md#check-media) checks every row and repairs with `--repair`, `VERIFY_MEDIA` repairs what it finds, and the transcription drain repairs a file before it sends it. A link into another store that this process cannot follow, such as a git-annex object outside the mount, is never touched. Locations, contacts, polls and the other metadata-only kinds have no file at all, so an old `.bin` path or link on such a row is never repaired or fetched.
 
 With `DEDUPLICATE_MEDIA=false`, files go straight into `media/<chat_id>/`. A file that already exists there is never downloaded again.
 
@@ -159,7 +169,8 @@ The run logs a warning with the number of files that gave up. Archive status in 
 `VERIFY_MEDIA=true` checks every downloaded file after the retry pass:
 
 - A file that is missing, empty, or more than 1% off its recorded size is downloaded again.
-- Symlinks are trusted and not checked.
+- A missing file, a broken link included, is first restored from a copy on disk. See [A missing shared file](#a-missing-shared-file).
+- A symlink into `_shared` whose shared file is gone is a missing file. Other symlinks are trusted and not checked.
 - A damaged file is moved aside to `.verify-bak` and put back if the new download fails.
 - A missing file whose download fails goes back to pending, so the retry pass picks it up.
 - Chats in `SKIP_MEDIA_CHAT_IDS` are skipped.

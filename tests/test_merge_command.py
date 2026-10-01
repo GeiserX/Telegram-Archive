@@ -30,7 +30,14 @@ from telegram_archive import merge
 from telegram_archive.__main__ import create_parser, main
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import MediaTranscript, MediaVersion, MessageSnapshot, MessageVersion, Reaction
+from telegram_archive.db.models import (
+    MediaTranscript,
+    MediaVersion,
+    MessageSnapshot,
+    MessageVersion,
+    Reaction,
+    ReactionHistory,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -206,6 +213,17 @@ async def seed_source(url: str, media: Path) -> None:
                 )
             )
             await session.execute(
+                sa.insert(ReactionHistory).values(
+                    account_id=account_a,
+                    message_id=1,
+                    chat_id=CHANNEL,
+                    emoji="👍",
+                    count=1,
+                    observed_at=datetime(2024, 1, 1, 9, 5),
+                    source="listener",
+                )
+            )
+            await session.execute(
                 sa.insert(MessageVersion).values(
                     account_id=account_a,
                     message_id=2,
@@ -234,7 +252,7 @@ async def seed_source(url: str, media: Path) -> None:
                     source="listener",
                 )
             )
-            # A later state of message two's poll (037).
+            # A later state of message two's poll (038).
             await session.execute(
                 sa.insert(MessageSnapshot).values(
                     account_id=account_a,
@@ -391,6 +409,7 @@ class TestMergeCopiesEverything(MergeCase):
             "media_versions": 1,
             "message_snapshots": 1,
             "reactions": 1,
+            "reaction_history": 1,
             "avatar_history": 1,
             "media_transcripts": 2,
             "metadata": 3,
@@ -434,6 +453,13 @@ class TestMergeCopiesEverything(MergeCase):
         self.assertEqual(
             [(2, "👍", NEW_USER)],
             self.target_rows("SELECT account_id, emoji, user_id FROM reactions WHERE chat_id = :chat", chat=CHANNEL),
+        )
+        self.assertEqual(
+            [(2, 1, "👍", 1, "listener")],
+            self.target_rows(
+                "SELECT account_id, message_id, emoji, count, source FROM reaction_history WHERE chat_id = :chat",
+                chat=CHANNEL,
+            ),
         )
         self.assertEqual(
             [(1, f"{CHANNEL}_1_photo"), (2, f"{CHANNEL}_1_photo")],

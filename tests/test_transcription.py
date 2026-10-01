@@ -46,6 +46,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 KEY = "test@value/here"
 URL = "http://akou.example.test:9000/base?token=" + KEY
 CHAT = -420300001
+# A channel's marked id; before v4.0.5 its media folder was the plain id 1234567890.
+CHANNEL = -1001234567890
 AUDIO = b"OggS fake voice note bytes"
 
 VERBOSE_JSON = {
@@ -178,6 +180,7 @@ def _stats(**counts: int) -> dict[str, int]:
             "reconciled",
             "polled",
             "copied",
+            "refetch",
         ),
         0,
     )
@@ -571,8 +574,70 @@ class TestDrain:
         )
         assert len(server.transcribe_requests) == 1
 
-    async def test_a_missing_file_is_a_failed_row_without_a_request(self, real_adapter, tmp_path):
+    async def test_a_missing_file_with_no_copy_goes_back_to_download_without_a_failed_row(self, real_adapter, tmp_path):
+        """No file and no copy on disk: the media is marked not downloaded so the
+        next backup fetches it again, and no failed row is spent on it."""
         await _media(real_adapter, tmp_path, "m_1_voice", on_disk=False)
+        server = FakeServer()
+        config = _config(str(tmp_path))
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+        assert stats == _stats(refetch=1)
+        assert server.transcribe_requests == []
+        assert await _rows(real_adapter, "m_1_voice") == []
+        media = await real_adapter.get_media_for_chat(CHAT, account_id=1)
+        assert [(m["id"], m["downloaded"]) for m in media] == [("m_1_voice", 0)]
+        # A second drain does not pick it up again until it is downloaded.
+        again = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+        assert again == _stats()
+
+    async def test_a_missing_file_with_a_copy_in_the_other_id_form_folder_is_restored_and_sent(
+        self, real_adapter, tmp_path
+    ):
+        """The file sits in the chat's legacy plain-id folder (the shape migration
+        013 left): it is put back where the row points and transcribed."""
+        file_name = "5000000000000000001.ogg"
+        legacy = tmp_path / "1234567890" / file_name
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(AUDIO)
+        await real_adapter.upsert_chat({"id": CHANNEL, "type": "channel", "title": "fixture channel"}, account_id=1)
+        await real_adapter.insert_message(
+            {"id": 1, "chat_id": CHANNEL, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}}, account_id=1
+        )
+        await real_adapter.insert_media(
+            {
+                "id": "m_1_voice",
+                "message_id": 1,
+                "chat_id": CHANNEL,
+                "type": "voice",
+                "file_name": file_name,
+                "file_path": str(tmp_path / str(CHANNEL) / file_name),
+                "file_size": len(AUDIO),
+                "downloaded": True,
+                "duration": 12,
+                "download_date": datetime(2026, 1, 2, 3, 4, 5),
+            },
+            account_id=1,
+        )
+        server = FakeServer()
+        config = _config(str(tmp_path))
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, server)
+        )
+        assert stats["done"] == 1
+        assert stats["refetch"] == 0
+        assert (tmp_path / str(CHANNEL) / file_name).read_bytes() == AUDIO
+        assert legacy.read_bytes() == AUDIO  # the copy it came from stays
+
+    async def test_an_entry_that_cannot_be_read_from_here_is_still_a_failed_row(self, real_adapter, tmp_path):
+        """A link out of the archive (an object store this process cannot see) is
+        not the archive's to repair: the old file_missing answer stands."""
+        row = await _media(real_adapter, tmp_path, "m_1_voice", on_disk=False)
+        os.makedirs(os.path.dirname(row["file_path"]), exist_ok=True)
+        os.symlink("/nonexistent-object-store/m_1_voice.ogg", row["file_path"])
         server = FakeServer()
         config = _config(str(tmp_path))
         stats = await drain_transcriptions(
@@ -2181,6 +2246,27 @@ class TestCopyAcrossAccounts:
         exported = await real_adapter.get_transcripts_for_export(account_id=2)
         assert [(r["id"], r["message_id"]) for r in exported] == [(copy["id"], 7)]
         assert "copied_from_id" not in exported[0], "the source's id may name a row the reader cannot see"
+
+    async def test_a_twin_answer_is_not_copied_onto_a_row_whose_file_is_gone(self, real_adapter, tmp_path):
+        """The copy never reads the file, so it used to answer first and leave the
+        row downloaded with nothing behind its path. The file is checked first:
+        with no copy on disk the row goes back to the download, and the twin's
+        answer is copied by a later drain, once the file is there again."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video")
+        await _done_source(real_adapter, 1, "m_1_video")
+        os.remove(tmp_path / "account2" / "m_7_video.mp4")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(refetch=1)
+        assert await real_adapter.list_media_transcripts("m_7_video", account_id=2) == []
+        [media] = await real_adapter.get_media_for_chat(CHAT, account_id=2)
+        assert media["downloaded"] == 0
 
     async def test_another_preset_or_the_same_media_asking_again_is_sent(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")

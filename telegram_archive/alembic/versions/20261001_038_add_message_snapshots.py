@@ -12,8 +12,8 @@ first capture. Live locations are not followed.
 Idempotent: the entrypoint stamping ladder is frozen at 018, a create_all()
 database already has the table, and every step is guarded by the inspector.
 
-Revision ID: 037
-Revises: 036
+Revision ID: 038
+Revises: 037
 Create Date: 2026-10-01
 """
 
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # The chain may be renumbered at merge time: these two lines are the only place.
-revision: str = "037"
-down_revision: str | None = "036"
+revision: str = "038"
+down_revision: str | None = "037"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

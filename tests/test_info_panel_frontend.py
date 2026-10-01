@@ -236,6 +236,12 @@ const a = { id: 3, media: { type: 'photo' } }, b = { id: 4, media: { type: 'vide
 albums.set(3, [a, b, c]);
 selectedMessage.value = a;
 assert.deepEqual(infoPanelMedia.value.map(m => m.id), [3, 4], 'every album item that has media, in album order');
+for (const type of ['geo', 'contact', 'poll', 'venue', 'geo_live']) {
+    selectedMessage.value = { id: 6, media: { type, file_path: '1/6.bin', file_name: '6.bin' } };
+    assert.deepEqual(infoPanelMedia.value, [], `a ${type} row lists no file, whatever an older release left in file_path`);
+}
+selectedMessage.value = { id: 7, media: { type: 'document', file_path: '1/7.bin' } };
+assert.deepEqual(infoPanelMedia.value.map(m => m.id), [7], 'a real file is still listed');
 
 assert.equal(isVideoMedia({ media: { type: 'video_note' } }), true, 'round videos are videos here too');
 assert.equal(isVideoMedia({ media: { type: 'animation' } }), true);

@@ -457,6 +457,9 @@ let changesTrigger = null
 let changesReturnFocus = null
 let changesReturnState = null
 const changesSinceIso = () => null
+const changesFeedPeriod = ref('7')
+const changesSince = ref('7')
+const changesKinds = ref({ deleted: true, edited: true, transcript: true, reaction: false })
 const shownChangeCount = () => 0
 const isAuthenticated = ref(true)
 const loadMoreChangesIfInView = () => {}

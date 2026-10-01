@@ -37,6 +37,7 @@ GETTING STARTED:
      telegram-archive list-chats   # List all backed up chats
      telegram-archive stats        # Show backup statistics
      telegram-archive status       # Is the archive healthy? (exit code 1 if not)
+     telegram-archive check-media  # Any media file missing? (--repair fixes them)
      telegram-archive export -o file.json  # Export to JSON
 
   5. Import Telegram Desktop exports:
@@ -127,6 +128,24 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         ),
     )
     status_parser.add_argument("--json", action="store_true", help="Print the status as JSON")
+
+    check_media_parser = subparsers.add_parser(
+        "check-media",
+        help="Find media files that are missing or behind a broken link, and repair them with --repair",
+        description=(
+            "Check every downloaded media row of every account: is its file where the row "
+            "says? A missing file is looked for on disk (under its name in _shared, in the "
+            "chat's other id-form folder, or at another row with the same content hash). "
+            "With --repair a copy found on disk is put back, never replacing anything, and "
+            "a file with no copy is marked not downloaded so the next backup fetches it "
+            "from Telegram again. Without --repair nothing is changed. Exit code 1 when "
+            "the dry run finds a file missing."
+        ),
+    )
+    check_media_parser.add_argument(
+        "--repair", action="store_true", help="Restore files from copies on disk and mark the rest to download again"
+    )
+    check_media_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat)")
 
     # List chats command
     list_parser = subparsers.add_parser(
@@ -261,6 +280,27 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
     round_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat with videos)")
     round_parser.add_argument("--dry-run", action="store_true", help="Report what would change without writing")
 
+    details_parser = subparsers.add_parser(
+        "backfill-details",
+        help="Fill from Telegram what older releases did not keep: old locations, contacts, polls and edit flags",
+        description=(
+            "Messages archived before locations, venues, live locations, "
+            "contacts and polls were kept have a media row and no payload, so "
+            "the viewer cannot draw their card. Messages archived before 9.0 "
+            "lack Telegram's flag for an edit time moved by a reaction, so "
+            "they show a pencil. This asks Telegram for those messages again, "
+            "in batches of 100, each message once, and adds only the missing "
+            "payload or flag: text, dates, reactions and every other stored "
+            "field stay as they are. It also clears the leftover .bin path "
+            "older releases left on these rows; files on disk are not "
+            "touched. Messages Telegram no longer serves are counted and "
+            "skipped. Run it again to resume; a second run fills nothing new. "
+            "It is a dry run unless given --apply."
+        ),
+    )
+    details_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat)")
+    details_parser.add_argument("--apply", action="store_true", help="Write the changes (default: dry run)")
+
     return parser
 
 
@@ -332,6 +372,34 @@ async def run_status(args) -> int:
     else:
         print(format_status(status, problems))
     return 1 if problems else 0
+
+
+async def run_check_media(args) -> int:
+    """Run check-media: 1 when a dry run finds a file missing or a repair fails."""
+    from .config import Config, setup_logging
+    from .db import DatabaseAdapter, close_database, init_database
+    from .media_integrity import check_media, format_media_check
+
+    try:
+        config = Config()
+        setup_logging(config)
+        config.log_summary()
+        try:
+            manager = await init_database()
+            report = await check_media(
+                DatabaseAdapter(manager), config.media_path, repair=args.repair, chat_id=args.chat_id
+            )
+        finally:
+            await close_database()
+    except Exception as e:
+        # The type only: a driver or filesystem error can quote a path.
+        print(f"Media check failed: {type(e).__name__}", file=sys.stderr)
+        return 1
+    for line in format_media_check(report, repair=args.repair):
+        print(line)
+    if args.repair:
+        return 1 if report["restore_failed"] or report["refetch_failed"] else 0
+    return 1 if report["broken_links"] or report["missing_files"] else 0
 
 
 async def run_list_chats(args) -> int:
@@ -516,6 +584,50 @@ def run_reclassify_round_videos(args) -> int:
     return 0
 
 
+def run_backfill_details(args) -> int:
+    """Re-read old messages and add the payload or edit flag older releases did not keep."""
+    from .config import Config, setup_logging
+    from .telegram_backup import run_backfill_details as backfill
+
+    try:
+        config = Config()
+        setup_logging(config)
+        config.log_summary()
+        summary = asyncio.run(backfill(config, chat_id=args.chat_id, apply=args.apply))
+    except Exception as e:
+        # The type only: Telethon error text can carry a peer or a phone.
+        print(f"Details backfill failed: {type(e).__name__}", file=sys.stderr)
+        return 1
+
+    prefix = "" if args.apply else "[DRY RUN] "
+    edits = summary["edits"]
+    print(f"\n{prefix}Details backfill complete:")
+    print(f"  {'Kind':<10}{'Filled':>8}{'Already there':>15}{'Not served':>12}")
+    for kind, counts in sorted(summary["kinds"].items()):
+        print(f"  {kind:<10}{counts['filled']:>8}{counts['already_present']:>15}{counts['not_served']:>12}")
+    print(f"  Edit flags filled, hidden:       {edits['hidden']}")
+    print(f"  Edit flags filled, shown:        {edits['shown']}")
+    print(f"  Edits with a later edit time:    {edits['date_changed']}")
+    print(f"  Edit flags filled meanwhile:     {edits['already_filled']}")
+    print(f"  Edits not served:                {edits['not_served']}")
+    print(f"  Chats scanned:                   {summary['chats_scanned']}")
+    print(f"  Chats Telegram no longer serves: {summary['chats_unavailable']}")
+    print(f"  Leftover paths cleared:          {summary['paths_cleared']}")
+    print(f"  Leftover paths kept:             {summary['paths_kept']}")
+    print(f"  Contacts read from vCard files:  {summary['vcards_recovered']}")
+    if summary["errors"]:
+        print(f"  Errors (run again to retry):     {summary['errors']}")
+    if summary.get("flood_wait_seconds"):
+        print(
+            f"Stopped after a FloodWait of {summary['flood_wait_seconds']} s. "
+            "The rest stays on the work list: run again later."
+        )
+    if not args.apply:
+        print("Nothing was written. Run again with --apply to write these changes.")
+    # A run a FloodWait cut short is not a finished run: a script must see that.
+    return 1 if summary.get("flood_wait_seconds") else 0
+
+
 def run_backfill_topics(args) -> int:
     """Reset one chat's cursor and resweep it text-only (topic backfill)."""
     # The documented recovery procedure for imported forum chats, minus its
@@ -589,6 +701,8 @@ def main() -> int:
         return run_reclassify_round_videos(args)
     elif args.command == "backfill-topics":
         return run_backfill_topics(args)
+    elif args.command == "backfill-details":
+        return run_backfill_details(args)
     elif args.command == "schedule":
         return run_schedule(args)
     elif args.command == "export":
@@ -597,6 +711,8 @@ def main() -> int:
         return asyncio.run(run_stats(args))
     elif args.command == "status":
         return asyncio.run(run_status(args))
+    elif args.command == "check-media":
+        return asyncio.run(run_check_media(args))
     elif args.command == "list-chats":
         return asyncio.run(run_list_chats(args))
     elif args.command == "import":

@@ -882,10 +882,11 @@ class TestMessageOperations:
 
         snapshot = await adapter.delete_message(chat_id=100, message_id=42, account_id=1)
 
-        # 1 snapshot select + 8 deletes: versions, the poll and preview states
-        # (037), the earlier media's transcripts, the earlier media (036), the
-        # media's transcripts, media, reactions, message
-        assert mock_session.execute.await_count == 9
+        # 1 snapshot select + 9 deletes: versions, the poll and preview states
+        # (038), the earlier media's transcripts, the earlier media (036), the
+        # media's transcripts, media, the reaction history (037), reactions,
+        # message
+        assert mock_session.execute.await_count == 10
         mock_session.commit.assert_awaited_once()
         assert snapshot is None
         # The snapshot SELECT locks the row (FOR UPDATE) so concurrent
@@ -1181,8 +1182,8 @@ class TestDeleteChatOperations:
     """Test delete_chat_and_related_data and related cleanup operations."""
 
     @pytest.mark.asyncio
-    async def test_delete_chat_issues_twelve_deletes(self):
-        """delete_chat_and_related_data deletes versions, poll and preview states, earlier media, transcripts, media, reactions, messages, sync, topics, folder members, and chat."""
+    async def test_delete_chat_issues_thirteen_deletes(self):
+        """delete_chat_and_related_data deletes versions, poll and preview states, earlier media, transcripts, media, reaction history, reactions, messages, sync, topics, folder members, and chat."""
         db_manager, mock_session = _make_mock_db_manager()
         # State the probe result explicitly instead of leaning on AsyncMock's
         # truthy default: the chat is still present in another account.
@@ -1191,14 +1192,14 @@ class TestDeleteChatOperations:
 
         await adapter.delete_chat_and_related_data(100, account_id=1)
 
-        # 1 cross-account row lock + 12 deletes: versions, the poll and preview
-        # states (037), the earlier media's transcripts and the earlier media
-        # (036), the media's
-        # transcripts, media, reactions, messages, sync_status, forum_topics,
+        # 1 cross-account row lock + 13 deletes: versions, the poll and preview
+        # states (038), the earlier media's transcripts and the earlier media
+        # (036), the media's transcripts, media, the reaction history (037),
+        # reactions, messages, sync_status, forum_topics,
         # chat_folder_members (explicit - SQLite runs with foreign_keys off, so
         # their CASCADEs never fire), chat — plus the push-subscription orphan
         # probe (still present in another account, so no purge delete fires here).
-        assert mock_session.execute.await_count == 14
+        assert mock_session.execute.await_count == 15
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1206,6 +1207,9 @@ class TestDeleteChatOperations:
         """delete_chat_and_related_data removes physical media directory."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
+        # No media row of any account still uses the folder once this
+        # account's rows are gone.
+        adapter.count_media_rows_in_folder = AsyncMock(return_value=0)
 
         with (
             patch("telegram_archive.db.adapter.os.path.exists", return_value=True),
@@ -1215,6 +1219,26 @@ class TestDeleteChatOperations:
             await adapter.delete_chat_and_related_data(100, media_base_path="/data/media", account_id=1)
 
         mock_rmtree.assert_called_once_with(os.path.join("/data/media", "100"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("count", [2, RuntimeError("db down")])
+    async def test_delete_chat_keeps_a_media_folder_still_in_use_or_on_doubt(self, count):
+        """Another account's rows still use the chat folder, or the count failed:
+        the folder stays whole."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+        adapter.count_media_rows_in_folder = (
+            AsyncMock(side_effect=count) if isinstance(count, Exception) else AsyncMock(return_value=count)
+        )
+
+        with (
+            patch("telegram_archive.db.adapter.os.path.exists", return_value=True),
+            patch("telegram_archive.db.adapter.shutil.rmtree") as mock_rmtree,
+            patch("telegram_archive.db.adapter.glob.glob", return_value=[]),
+        ):
+            await adapter.delete_chat_and_related_data(100, media_base_path="/data/media", account_id=1)
+
+        mock_rmtree.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_chat_skips_files_when_no_media_path(self):
@@ -2144,6 +2168,13 @@ class TestGetMessagesByDateRange:
 # ============================================================
 
 
+def _empty_history_result():
+    """The page's batched reaction_history read (037) with nothing kept."""
+    result = MagicMock()
+    result.scalars.return_value = []
+    return result
+
+
 def _owner_map_result(*rows):
     """The one `accounts` read `attach_sender_accounts` makes per adapter.
 
@@ -2248,7 +2279,7 @@ class TestGetMessagesPaginated:
         reactions_result = MagicMock()
         reactions_result.scalars.return_value = []
 
-        # The newest poll and preview states of the page (037): none.
+        # The newest poll and preview states of the page (038): none.
         snapshots_result = MagicMock()
         snapshots_result.all.return_value = []
 
@@ -2258,6 +2289,7 @@ class TestGetMessagesPaginated:
             versions_result,
             snapshots_result,
             reactions_result,
+            _empty_history_result(),
             _owner_map_result(),
         ]
 
@@ -2440,7 +2472,7 @@ class TestGetMessagesPaginated:
         reactions_result = MagicMock()
         reactions_result.scalars.return_value = []
 
-        # The newest poll and preview states of the page (037): none.
+        # The newest poll and preview states of the page (038): none.
         snapshots_result = MagicMock()
         snapshots_result.all.return_value = []
 
@@ -2451,6 +2483,7 @@ class TestGetMessagesPaginated:
             snapshots_result,
             reply_result,
             reactions_result,
+            _empty_history_result(),
             _owner_map_result(),
         ]
 
@@ -2485,7 +2518,10 @@ class TestGetMessagesPaginated:
             _mock_reaction("thumbsup", 2, 1),
             _mock_reaction("thumbsup", 1, 2),
         ]
-        mock_session.execute.return_value = mock_result
+        # The reaction history (037) is its own batched read: none kept here.
+        mock_session.execute.side_effect = lambda stmt, *args, **kwargs: (
+            _empty_history_result() if "reaction_history" in str(stmt) else mock_result
+        )
 
         result = await adapter.get_messages_paginated(chat_id=100)
         reactions = result[0]["reactions"]

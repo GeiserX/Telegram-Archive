@@ -41,7 +41,7 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 | Needs an authorized Telegram session | Database only, no Telegram credentials |
 |--------------------------------------|----------------------------------------|
-| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import`, `merge` |
+| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-details` | `migrate`, `export`, `stats`, `status`, `check-media`, `list-chats`, `import`, `merge` |
 
 !!! warning "One client per session"
     Stop the backup service before any command that connects to Telegram. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
@@ -114,7 +114,7 @@ telegram-archive [--data-dir PATH] export -o FILE [-c CHAT_ID] [-s YYYY-MM-DD] [
 | `-s` | `--start-date` | `YYYY-MM-DD` | no | Keep messages dated on or after midnight UTC of this day. |
 | `-e` | `--end-date` | `YYYY-MM-DD` | no | Keep messages dated on or before midnight UTC of this day. |
 
-Writes messages from the archive to one JSON file. It exports no media rows and no media files. For a full copy of the archive, see [Backing up the archive](../operations/backup-and-restore.md).
+Writes messages from the archive to one JSON file. It lists each message's media but exports no media files and no file paths. For a full copy of the archive, see [Backing up the archive](../operations/backup-and-restore.md).
 
 !!! warning "The end date is exclusive in practice"
     Both dates are compared as midnight UTC. `-e 2024-12-31` keeps messages up to 00:00 on 31 December and leaves out the rest of that day. To include the whole of 2024, use `-s 2024-01-01 -e 2025-01-01`.
@@ -125,12 +125,13 @@ The command writes the file with an indent of 2 and keeps non-ASCII text as UTF-
 |-----|---------|
 | `export_date` | The time of the export, UTC, ISO 8601. |
 | `filters` | `chat_id`, `start_date` and `end_date` as given, or `null`. |
-| `statistics` | `total_messages`, `total_chats`, `total_message_versions`, `total_transcripts` and `total_message_snapshots`. |
+| `statistics` | `total_messages`, `total_chats`, `total_message_versions` (the entries of every message's `versions`) `total_transcripts` and `total_message_snapshots` (the entries of every message's `snapshots`). |
 | `chats` | Every chat in the archive, even with `-c`. |
 | `messages` | The selected messages, ordered by date, oldest first. |
-| `message_versions` | Earlier texts of edited messages: `chat_id`, `message_id`, `text`, `date`, `captured_at`, `source`, `entities` and `rich_message`, as in [Message versions](api.md#message-versions). |
 
-Each message has `id`, `chat_id`, `sender_id`, `sender_name`, `date`, `text`, `reply_to_msg_id`, `reply_to_top_id`, `reply_to_text`, `forward_from_id`, `edit_date`, `edit_hide`, `raw_data`, `created_at`, `is_outgoing`, `is_pinned`, `is_deleted`, `deleted_at`, `account_id`, `versions` and `snapshots`. Messages deleted in soft mode are included, with `is_deleted` set to 1 and `deleted_at` set to when the archive noticed the deletion. `versions` lists every earlier text the archive kept of the message, oldest first, whatever its date: `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced), written in the same date format as the message's own dates. `snapshots` lists every later state of the message's poll or link preview the archive kept, oldest first: `kind` (`poll` or `preview`), `payload` (the whole state, in the shape of `raw_data.poll` or `raw_data.webpage`), `observed_at` and `source` (`listener`, `sync` or `backup`). `raw_data` keeps the first capture. See [Poll and link preview snapshots](api.md#poll-and-link-preview-snapshots). The messages, their `versions` and `snapshots`, and `message_versions` are read from one snapshot of the archive, so a backup running meanwhile cannot make them disagree. `edit_hide` is 1 when Telegram says the edit at `edit_date` is not to be shown, as it does when only the reactions changed: such a message was not edited unless `versions` or `message_versions` holds an earlier text of it. It is null when the source did not report the flag: a message archived before the archive kept it, or one from a Telegram export import. A null flag counts as shown. A message with voice or media transcripts also has a `transcripts` list.
+Before 9.0 the file also held a flat `message_versions` list, and `total_message_versions` counted it. The list is gone: every version is under its message. See [Upgrading to 9.0](../operations/upgrading.md#upgrading-to-90).
+
+Each message has `id`, `chat_id`, `sender_id`, `sender_name`, `date`, `text`, `reply_to_msg_id`, `reply_to_top_id`, `reply_to_text`, `forward_from_id`, `edit_date`, `edit_hide`, `raw_data`, `created_at`, `is_outgoing`, `is_pinned`, `is_deleted`, `deleted_at`, `account_id`, `media`, `versions`, `reaction_history` and `snapshots`. Messages deleted in soft mode are included, with `is_deleted` set to 1 and `deleted_at` set to when the archive noticed the deletion. `media` lists the message's current media and `versions` every earlier version the archive kept of it, oldest first, whatever its date. Both have the fields of the viewer's [Export](api.md#export): each version has `text`, `date` (when that text was current in Telegram), `captured_at` (when the archive saw it replaced), `source`, `entities` and `rich_message` as in [Message versions](api.md#message-versions), and `media`, the earlier media it was shown with, and `media_only` on an entry that holds earlier media and no text. The dates are written in the same format as the message's own dates. `reaction_history` lists every state of the message's reactions the archive kept, oldest first: `emoji`, `count` (0 when taken back), `previous_count`, `observed_at` and `source`, as in [the messages list](api.md#messages). `snapshots` lists every later state of the message's poll or link preview the archive kept, oldest first: `kind` (`poll` or `preview`), `payload` (the whole state, in the shape of `raw_data.poll` or `raw_data.webpage`), `observed_at` and `source` (`listener`, `sync` or `backup`). `raw_data` keeps the first capture. See [Poll and link preview snapshots](api.md#poll-and-link-preview-snapshots). Every transcript in the file names a media listed on its message or under one of its versions. Everything is read from one snapshot of the archive, so a backup running meanwhile cannot make a message disagree with its versions, its media or its transcripts. `edit_hide` is 1 when Telegram says the edit at `edit_date` is not to be shown, as it does when only the reactions changed: such a message was not edited unless `versions` holds an earlier text of it. It is null when the source did not report the flag: a message archived before the archive kept it, or one from a Telegram export import. A null flag counts as shown. A message with voice or media transcripts also has a `transcripts` list.
 
 It exits 0 on success. On any failure, a date in the wrong format included, it prints `Export failed: <error>` on stderr and exits 1.
 
@@ -204,6 +205,33 @@ Archive status: healthy
 With `--json` it prints the JSON that [`GET /api/status`](api.md#health-and-status) returns, with two more keys: `healthy`, true or false, and `problems`, the list of reasons. Log lines go to stderr, so stdout holds only the JSON.
 
 It exits 0 when the archive is healthy and 1 when it is unhealthy. When the configuration is invalid, the database cannot be reached or read, or `SCHEDULE` is not a valid cron expression, it prints `Status failed: <error>` on stderr and exits 1.
+
+## check-media { #check-media }
+
+```text
+telegram-archive [--data-dir PATH] check-media [--repair] [-c CHAT_ID]
+```
+
+| Short | Long | Argument | Required | Meaning |
+|-------|------|----------|----------|---------|
+| | `--repair` | | no | Restore files from copies on disk and mark the rest to download again. Without it nothing is changed. |
+| `-c` | `--chat-id` | `CHAT_ID` | no | Only this chat, by its marked id. Default: every chat. |
+
+Checks every downloaded media row of every account: is its file where the row says? It reads the database and stats each row's path, a few calls per row, and never walks the media folder. It prints counts only, never ids, paths or names.
+
+A row whose path holds no file is a broken link (a link into `media/_shared` whose shared file is gone) or a missing file (nothing at the path). For each one it looks for a copy on disk, as described in [A missing shared file](../configuration/media.md#a-missing-shared-file). With `--repair`, a copy found is put back where the row points, never replacing anything, and a row with no copy is marked not downloaded, so the next backup run downloads it from Telegram. An entry this process cannot follow, such as a link into a git-annex store, is left alone and counted. A location, contact, poll or other metadata-only row has no file: it is counted as a placeholder, never as broken, and never marked to download again. Older releases gave some of these rows a `.bin` path and a link into `_shared`; that path is a leftover and stays as it is.
+
+```text
+Media check (dry run, nothing changed; run with --repair to fix):
+  Rows checked:              <n>
+  Files in place:            <n>
+  Broken links:              <n>  (a link into _shared whose file is gone)
+  Missing files:             <n>  (nothing at the row's path)
+  Copy found on disk:        <n>  (--repair puts it back)
+  No copy on disk:           <n>  (--repair marks them to download again)
+```
+
+A dry run exits 1 when it finds a broken link or a missing file, and 0 otherwise. A repair exits 0, or 1 when a copy could not be put back or a row could not be marked; the log says why. A row marked to download again keeps its path, so the download fills the target of the link it names, even when the current Telegram file name differs. When the configuration is invalid or the database cannot be reached, it prints `Media check failed: <error type>` on stderr and exits 1. It needs no Telegram session, so the backup service can keep running.
 
 ## list-chats { #list-chats }
 
@@ -332,6 +360,56 @@ Round-video reclassification complete:
 A `Chats with errors:` line follows when some chats failed. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command. With `--dry-run` the heading starts with `[DRY RUN]`.
 
 It exits 0 on success. On failure it prints `Reclassification failed: <error>` on stderr and exits 1.
+
+## backfill-details { #backfill-details }
+
+```text
+telegram-archive [--data-dir PATH] backfill-details [-c CHAT_ID] [--apply]
+```
+
+| Short | Long | Argument | Required | Meaning |
+|-------|------|----------|----------|---------|
+| `-c` | `--chat-id` | `CHAT_ID` | no | Only this chat. Without it, every chat. |
+| | `--apply` | | no | Write the changes. Without it, the command reads and counts but writes nothing. |
+
+It reads old messages from Telegram again and fills in two things older releases did not keep:
+
+- **Locations, venues, live locations, contacts and polls.** Messages archived before the archive kept them have a media row of the kind and no details, so the viewer shows their card with `Details not archived`. The command adds only the missing details under `raw_data`.
+- **The hidden-edit flag.** Telegram moves a message's edit time when only its reactions change, and flags that edit as one not to show. Messages archived before 9.0 have the edit time and no flag, so a reaction shows as a pencil. The command reads the messages with an edit time, no flag, no kept earlier version and no deletion, and stores Telegram's flag in `edit_hide`. It writes the flag only when Telegram returns the edit time the archive holds. A later edit time means a new edit, which the next backup records with its own flag, so that message is counted and left alone. A message with a kept earlier version is not read: it was really edited and keeps its pencil either way.
+
+It never replaces text, dates, reactions, an edit time, a flag or any detail already stored.
+
+A message on both lists is asked for once. It reads up to 100 messages per request and pauses one second between requests, so a chat with N messages to read costs one request to find the chat and one per 100 of them. It waits out a FloodWait and retries on short network errors. A FloodWait longer than `MAX_FLOOD_WAIT_SECONDS` stops the run, since Telegram would refuse every further request. A chat Telegram no longer serves is skipped. So is a message Telegram no longer returns, or one that now holds another kind of media. All are counted.
+
+It also clears the leftover placeholder path that releases up to 7.28.0 left on location, contact and poll rows. A path is cleared when the details are stored, or when the file is missing, empty or a broken link. For a contact whose details Telegram no longer serves, a vCard file at that path is read into the contact's details first. A file that holds something else keeps its path. Paths are only cleared where the media folder is there: when it is missing or empty where the command runs, as on a host without the media volume, every path is kept. A file counts as missing only in a folder that exists inside the media folder. A message Telegram did not answer because of an error keeps its path until a later run reads it. Clearing keeps the row and sets `file_path`, `file_name` and `download_date` to empty and `downloaded` to 0. No file on disk is changed or deleted.
+
+The messages still missing their details or their flag are the work list, so there is nothing to store between runs. An interrupted run resumes when you run it again, and a second run fills nothing new. Messages Telegram no longer serves are asked for again on each run, at one request per 100 of them, and so are edits with a later edit time until a backup records them. No text, location, name or phone number is written to the logs.
+
+It prints:
+
+```text
+Details backfill complete:
+  Kind        Filled  Already there  Not served
+  contact        <n>            <n>         <n>
+  geo            <n>            <n>         <n>
+  geo_live       <n>            <n>         <n>
+  poll           <n>            <n>         <n>
+  venue          <n>            <n>         <n>
+  Edit flags filled, hidden:       <n>
+  Edit flags filled, shown:        <n>
+  Edits with a later edit time:    <n>
+  Edit flags filled meanwhile:     <n>
+  Edits not served:                <n>
+  Chats scanned:                   <n>
+  Chats Telegram no longer serves: <n>
+  Leftover paths cleared:          <n>
+  Leftover paths kept:             <n>
+  Contacts read from vCard files:  <n>
+```
+
+Without `--apply` the heading starts with `[DRY RUN]`, the counts say what a run with `--apply` would do, and a last line says nothing was written. `Already there` counts rows listed only for their leftover path. `Edit flags filled, hidden` counts the reactions whose pencil goes away, and `shown` the real edits, which keep it. `Edit flags filled meanwhile` counts flags a backup or the listener stored between the read and the write. An `Errors (run again to retry):` line follows when a request failed for another reason. When a long FloodWait stopped the run, a line says `Stopped after a FloodWait of <n> s` and the rest stays on the work list for a later run. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command.
+
+It exits 0 on success. When a FloodWait stops the run before the end, it prints the summary and exits 1. On failure it prints `Details backfill failed: <error type>` on stderr and exits 1.
 
 ## Other entry points
 

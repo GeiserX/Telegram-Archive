@@ -126,7 +126,7 @@ class TestReactionHandler:
         asyncio.run(listener._flush_reactions())
 
         db.reconcile_reactions.assert_awaited_once_with(
-            42, TRACKED, [{"emoji": "👍", "count": 3}], account_id=1, mark_removed=True
+            42, TRACKED, [{"emoji": "👍", "count": 3}], account_id=1, mark_removed=True, source="listener"
         )
         listener._notify_update.assert_awaited_once()
         args = listener._notify_update.await_args[0]
@@ -219,7 +219,7 @@ class TestEditVectorReactions:
         asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("🔥", 1)))))
         asyncio.run(listener._flush_reactions())
         db.reconcile_reactions.assert_awaited_once_with(
-            42, TRACKED, [{"emoji": "🔥", "count": 1}], account_id=1, mark_removed=True
+            42, TRACKED, [{"emoji": "🔥", "count": 1}], account_id=1, mark_removed=True, source="listener"
         )
 
     def test_edit_without_reactions_object_not_buffered(self):

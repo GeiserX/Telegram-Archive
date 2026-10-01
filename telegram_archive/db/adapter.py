@@ -49,8 +49,11 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
+    MEDIA_PAYLOAD_KEYS,
     METADATA_ONLY_MEDIA_TYPES,
+    PAYLOAD_BACKFILL_TYPES,
     compute_directory_size,
+    merge_geo_live,
     resolve_sender_display_name,
     stored_media_file_id,
     utcnow_naive,
@@ -86,6 +89,7 @@ from .models import (
     Metadata,
     PushSubscription,
     Reaction,
+    ReactionHistory,
     SyncStatus,
     User,
     ViewerAccount,
@@ -101,10 +105,49 @@ logger = logging.getLogger(__name__)
 # ids sit above it — the same constant migration 022 types placeholders with.
 SUPERGROUP_ID_CEILING = -(10**12)
 
-# The order the viewer's export lists messages in, unique per message within
-# a chat. Its messages query and its versions query both sort by it, so the
-# versions can be walked beside the messages; written once so they cannot drift.
-EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
+# The order both exports list messages in, unique per message across chats
+# and accounts. The messages query and the queries of their versions, media
+# and earlier media all sort by it, so those rows can be walked beside the
+# messages (``_ExportWalk``); written once so they cannot drift.
+EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.chat_id.asc(), Message.id.asc())
+
+
+class _ExportWalk:
+    """The rows of one statement, read beside the export's messages.
+
+    The statement sorts by ``EXPORT_MESSAGE_ORDER`` and names each row's
+    message by ``account_id``, ``chat_id`` and ``message_id``. ``take`` hands
+    over the rows of one message and reads no further than the next
+    message's first row, so only one message's rows are in memory at a time.
+    """
+
+    def __init__(self, result) -> None:
+        self._result = result
+        self.pending = None
+
+    @classmethod
+    async def open(cls, session, stmt) -> _ExportWalk:
+        walk = cls(await session.stream(stmt))
+        walk.pending = await anext(walk._result, None)
+        return walk
+
+    @staticmethod
+    def _key(row) -> tuple[int, int, int]:
+        return (row.account_id, row.chat_id, row.message_id)
+
+    async def take(self, key: tuple[int, int, int]) -> list:
+        rows = []
+        while self.pending is not None and self._key(self.pending) == key:
+            rows.append(self.pending)
+            self.pending = await anext(self._result, None)
+        return rows
+
+
+# Two accounts that saw one reaction drop record it a little apart: each one's
+# listener or backup notices it on its own clock. Within this many seconds, the
+# same emoji going from the same count to the same count is one event in What
+# changed; further apart, it is two.
+REACTION_EVENT_TOLERANCE_SECONDS = 900
 
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again. The drain query retries a media
@@ -191,8 +234,16 @@ def _clamp(value: str | None, max_length: int) -> str | None:
 
 
 def _has_raw_payload(value: Any) -> bool:
-    """True when a serialised raw_data blob carries anything worth keeping."""
-    return bool(value) and value != "{}"
+    """True when a serialised raw_data blob carries anything worth keeping.
+
+    An empty formatting list alone (``{"entities": []}``, a read of a message
+    with no formatting and no other extras, since 9.0) is no payload either:
+    it must not replace extras another writer archived, just as ``"{}"`` does not.
+    """
+    if not value or value == "{}":
+        return False
+    raw = _raw_data_dict(value)
+    return raw is None or any(key != "entities" or entity_list != [] for key, entity_list in raw.items())
 
 
 def parse_entitlement_column(raw: str | None, element_type: type) -> set | None:
@@ -516,6 +567,95 @@ def _raw_data_dict(raw_data: Any) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# The payload keys a reply quote names when the target has no media row, in
+# the order the viewer's cards pick them.
+_REPLY_CARD_KINDS = ("geo_live", "venue", "geo", "contact")
+
+
+def _reply_card_kind(raw_data: Any) -> tuple[str | None, str | None]:
+    """The card kind a reply target's ``raw_data`` holds, and a venue's title."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return None, None
+    for kind in _REPLY_CARD_KINDS:
+        payload = raw.get(kind)
+        if isinstance(payload, dict):
+            title = payload.get("title") if kind == "venue" else None
+            return kind, title if isinstance(title, str) and title else None
+    return None, None
+
+
+def _media_payloads_of(raw_data: Any) -> dict[str, Any]:
+    """The media payloads in ``raw_data`` (``MEDIA_PAYLOAD_KEYS``), keyed as stored."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return {}
+    return {key: raw[key] for key in MEDIA_PAYLOAD_KEYS if key in raw}
+
+
+# How much of a message the chat list's second line carries. The line shows
+# about forty characters on a phone; the rest is room for a wide sidebar.
+CHAT_PREVIEW_TEXT_LENGTH = 100
+
+
+def _preview_text(text: str | None) -> str | None:
+    """``text`` on one line, cut to ``CHAT_PREVIEW_TEXT_LENGTH`` with an ellipsis."""
+    if not isinstance(text, str):
+        return None
+    folded = " ".join(text.split())
+    if not folded:
+        return None
+    if len(folded) > CHAT_PREVIEW_TEXT_LENGTH:
+        return folded[:CHAT_PREVIEW_TEXT_LENGTH].rstrip() + "\u2026"
+    return folded
+
+
+def _chat_preview(row: Any, chat_type: str | None) -> dict[str, Any]:
+    """One chat-list preview from a row of ``_attach_chat_previews``' query."""
+    raw = _raw_data_dict(row.raw_data) or {}
+    text = _preview_text(row.text)
+    outgoing = bool(row.is_outgoing)
+    action = None
+    action_title = None
+    if raw.get("service_type") == "service":
+        kind = "service"
+        if text is None:
+            action = raw.get("action_type") if isinstance(raw.get("action_type"), str) else None
+            action_title = raw.get("new_title") if isinstance(raw.get("new_title"), str) else None
+    elif isinstance(raw.get("poll"), dict):
+        kind = "poll"
+        if text is None:
+            text = _preview_text(raw["poll"].get("question"))
+    elif row.media_type:
+        kind = row.media_type
+    elif _reply_card_kind(raw)[0] is not None:
+        # The listener writes no media row for a location or a contact; its
+        # payload names the kind, as it does for a reply quote.
+        kind = _reply_card_kind(raw)[0]
+    elif text is not None:
+        kind = "text"
+    else:
+        kind = "message"
+
+    sender = None
+    if kind != "service" and chat_type != "channel":
+        if outgoing:
+            sender = "You"
+        elif chat_type != PRIVATE_CHAT_TYPE:
+            first_name = row.first_name.strip() if isinstance(row.first_name, str) else ""
+            sender = first_name or resolve_sender_display_name(row.sender_name, None, row.last_name, row.username)
+    return {
+        "message_id": row.id,
+        "date": row.date,
+        "text": text,
+        "sender": sender,
+        "kind": kind,
+        "outgoing": outgoing,
+        "action": action,
+        "action_title": action_title,
+    }
+
+
 def _json_or_none(value: str | None) -> Any:
     """A JSON column's value, or None when it is empty or unreadable."""
     if not value:
@@ -587,18 +727,22 @@ def _keep_archived_formatting(archived_raw_data: Any, incoming_raw_data: str) ->
     For a write that is not an edit (an import that renders text its own way,
     an older read, an edit Telegram hides). The archived formatting keys win;
     a key the archive does not have is filled from the incoming payload.
+    An empty formatting list never fills one: a row archived before 9.0 has
+    its formatting unknown, and stays so until a read brings some.
     """
-    archived = _raw_data_dict(archived_raw_data)
+    archived = _raw_data_dict(archived_raw_data) or {}
     incoming = _raw_data_dict(incoming_raw_data)
-    if not archived or incoming is None:
+    if incoming is None:
         return incoming_raw_data
     merged = dict(incoming)
     for key in _FORMATTING_KEYS:
         if key in archived:
             merged[key] = archived[key]
+        elif key == "entities" and merged.get(key) == []:
+            merged.pop(key)
     if merged == incoming:
         return incoming_raw_data
-    return json.dumps(merged)
+    return json.dumps(merged) if merged else "{}"
 
 
 def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
@@ -621,13 +765,50 @@ def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
     return json.dumps(merged) if merged else "{}"
 
 
+def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str, *, incoming_wins: bool) -> str:
+    """``incoming_raw_data`` with every media payload the archive holds kept.
+
+    A payload key (a poll, a location, a contact, a venue, a live location,
+    ...; ``MEDIA_PAYLOAD_KEYS``) the archive holds and the incoming read lacks
+    stays: an ``import --merge`` read that carries only ``forward_from_name``
+    must not drop a poll. When both hold a key, ``incoming_wins`` decides.
+    A read from Telegram (``incoming_wins`` true) wins, and a live location
+    in both goes through ``merge_geo_live``, which keeps every position
+    either one saw. The poll and the link preview are pinned to their first
+    capture afterwards by ``_keep_archived_snapshot_keys``: a newer tally or
+    card becomes a ``message_snapshots`` row instead. Any other
+    writer (an import renders a thinner stand-in: no poll option bytes, no
+    vCard, no venue provider) only fills keys the archive lacks; the archived
+    value stays, a live location included. When the result is the archived
+    payload itself, the archived string comes back unchanged, so the upsert
+    sees no change to write.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if not archived or incoming is None:
+        return incoming_raw_data
+    merged = dict(incoming)
+    for key in MEDIA_PAYLOAD_KEYS:
+        if key not in archived:
+            continue
+        if key not in merged or not incoming_wins:
+            merged[key] = archived[key]
+        elif key == "geo_live":
+            merged[key] = merge_geo_live(archived[key], merged[key])
+    if merged == incoming:
+        return incoming_raw_data
+    if merged == archived and isinstance(archived_raw_data, str):
+        return archived_raw_data
+    return json.dumps(merged)
+
+
 # The writers whose upserts are reads of the message from Telegram, so a newer
 # edit_date with other formatting is an edit. An import renders text and
 # formatting its own way, so a difference there is not evidence of an edit.
 _TELEGRAM_READ_SOURCES = ("backup", "listener")
 
 
-# message_snapshots (037): each kind and the raw_data key its first capture
+# message_snapshots (038): each kind and the raw_data key its first capture
 # lives under. raw_data keeps that first capture; a later state goes to a row.
 SNAPSHOT_RAW_KEYS = {"poll": "poll", "preview": "webpage"}
 
@@ -1419,9 +1600,21 @@ class DatabaseAdapter:
                 and _has_raw_payload(archived_raw_data)
                 and _raw_data_dict(archived_raw_data) is not None
             ):
-                update_values["raw_data"] = _with_formatting_of(archived_raw_data, "{}")
+                # The read's empty formatting list, when it has one, says the
+                # new text has none, and stays known.
+                update_values["raw_data"] = _with_formatting_of(archived_raw_data, values.get("raw_data") or "{}")
         elif "raw_data" in update_values:
             update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
+        # Whatever wrote raw_data above, a media payload the archive holds and
+        # this read lacks stays (an import of a forward must not drop a poll).
+        # Only a read from Telegram replaces a payload the archive holds; an
+        # import's thinner stand-in never does.
+        if "raw_data" in update_values:
+            update_values["raw_data"] = _keep_archived_payloads(
+                existing.raw_data,
+                update_values["raw_data"],
+                incoming_wins=message_data.get("version_source") in _TELEGRAM_READ_SOURCES,
+            )
 
         # The poll and the link preview keep their first capture. A read that
         # carried nothing else leaves the archived payload as it is.
@@ -1921,6 +2114,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         scope: ChatScope | None = None,
         fold_shared: bool = False,
+        with_preview: bool = False,
     ) -> list[dict[str, Any]]:
         """Get chats with their last message date, with optional pagination and search.
 
@@ -1947,6 +2141,10 @@ class DatabaseAdapter:
                 the alternative (fold the filtered set) makes the same chat
                 appear and disappear depending on which account archived it,
                 and picks a different ref per view.
+            with_preview: Attach ``preview`` to every row: the chat's newest
+                message not deleted in Telegram, the way Telegram's own chat
+                list shows it (see ``_attach_chat_previews``). Only the viewer's
+                chat list asks for it.
         """
         async with self.db_manager.async_session_factory() as session:
             # Last message date, as a CORRELATED scalar subquery — one
@@ -2055,9 +2253,125 @@ class DatabaseAdapter:
                     "last_message_date": row.last_message_date,
                 }
                 chats.append(chat_dict)
+            if with_preview:
+                await self._attach_chat_previews(session, chats)
         if fold_shared:
             await self._attach_chat_accounts(chats, scope=scope)
         return chats
+
+    async def _attach_chat_previews(self, session, chats: list[dict[str, Any]]) -> None:
+        """Give every row in ``chats`` its ``preview``, in place, in ONE query.
+
+        The preview is the chat's newest message NOT deleted in Telegram, which
+        is what Telegram's own list shows; the chat itself still shows the
+        deletion. It is read from the row's own ``(account_id, id)`` copy, the
+        same copy the row's ref opens, so it can never show a message the
+        principal could not open in the chat: the page passed in is already cut
+        to the principal's scope and folded.
+
+        Cost: one statement per page, never per row. Each row costs one seek of
+        ``idx_messages_chat_date_desc`` for the newest kept message (the ORDER BY
+        rides the index, so the scan stops at the first row that is neither
+        another account's copy nor deleted), one primary-key lookup, one
+        ``idx_media_message`` probe for the media kind and primary-key probes of
+        ``users`` for the sender's names. A chat whose whole tail
+        was deleted walks back through that tail; the archive keeps no index on
+        ``is_deleted`` because every other read wants deleted rows too.
+
+        Shape (``None`` for a chat with no kept message)::
+
+            {"message_id", "date", "text", "sender", "kind", "outgoing",
+             "action", "action_title"}
+
+        * ``text``: whitespace folded to single spaces, cut to
+          ``CHAT_PREVIEW_TEXT_LENGTH`` characters with an ellipsis. A poll with
+          no text gives its question. None when there is nothing to quote.
+        * ``kind``: ``text``, ``service``, ``poll``, the media type the archive
+          stored (``photo``, ``voice``, ``geo``, ``contact`` ...) or ``message``
+          when a message has neither text nor a media row (media capture off).
+        * ``sender``: ``"You"`` for the account's own message in a private chat
+          or a group, the sender's first name for anyone else in a group, and
+          None in a channel, in a private chat for the other person, and for a
+          service row, whose sentence already names its actor.
+        * ``action`` / ``action_title``: a service row's ``action_type`` and
+          ``new_title`` when its text is empty (rows from before 7.28), so the
+          viewer can word it the way the chat does.
+        """
+        for chat in chats:
+            chat["preview"] = None
+        keys = sorted({(chat["account_id"], chat["id"]) for chat in chats})
+        if not keys:
+            return
+
+        newest_kept = aliased(Message)
+        newest_kept_id = (
+            select(newest_kept.id)
+            .where(
+                newest_kept.account_id == Chat.account_id,
+                newest_kept.chat_id == Chat.id,
+                or_(newest_kept.is_deleted == 0, newest_kept.is_deleted.is_(None)),
+            )
+            .order_by(newest_kept.date.desc(), newest_kept.id.desc())
+            .limit(1)
+            .correlate(Chat)
+            .scalar_subquery()
+        )
+        # No ORDER BY: SQLite answered ORDER BY id by walking the media primary
+        # key of the whole account, and min(type) by walking the chat's media in
+        # type order, instead of probing idx_media_message. A message has one
+        # media row in all but rare cases, so any of its rows names its kind.
+        media_type = (
+            select(Media.type)
+            .where(
+                Media.account_id == Message.account_id,
+                Media.chat_id == Message.chat_id,
+                Media.message_id == Message.id,
+            )
+            .limit(1)
+            .correlate(Message)
+            .scalar_subquery()
+        )
+
+        def sender_column(column):
+            # A primary-key probe per row, never a join: PostgreSQL estimates the
+            # page as one row and joined users by a sequential scan per preview,
+            # which grows with every person the archive has ever seen.
+            return select(column).where(User.id == Message.sender_id).correlate(Message).scalar_subquery()
+
+        stmt = (
+            select(
+                Message.account_id,
+                Message.chat_id,
+                Message.id,
+                Message.date,
+                # Enough characters to survive the whitespace fold, never the
+                # whole text: a long post must not travel to be cut to a line.
+                func.substr(Message.text, 1, CHAT_PREVIEW_TEXT_LENGTH * 4).label("text"),
+                Message.sender_name,
+                Message.is_outgoing,
+                Message.raw_data,
+                sender_column(User.first_name).label("first_name"),
+                sender_column(User.last_name).label("last_name"),
+                sender_column(User.username).label("username"),
+                media_type.label("media_type"),
+            )
+            .select_from(Chat)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Chat.account_id,
+                    Message.chat_id == Chat.id,
+                    Message.id == newest_kept_id,
+                ),
+            )
+            .where(tuple_(Chat.account_id, Chat.id).in_(keys))
+        )
+        result = await session.execute(stmt)
+        previews = {(row.account_id, row.chat_id): row for row in result}
+        for chat in chats:
+            row = previews.get((chat["account_id"], chat["id"]))
+            if row is not None:
+                chat["preview"] = _chat_preview(row, chat.get("type"))
 
     async def _attach_chat_accounts(self, chats: list[dict[str, Any]], *, scope: ChatScope | None) -> None:
         """Give every row in ``chats`` its ``accounts`` list, in place.
@@ -2304,53 +2618,50 @@ class DatabaseAdapter:
             conditions.append(Message.date <= end_date)
         return conditions
 
-    async def get_messages_and_versions_by_date_range(
+    async def get_messages_for_backup_export(
         self,
         chat_id: int | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         *,
         account_id: int | None = None,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> list[dict[str, Any]]:
         """What ``telegram-archive export`` writes, read from one snapshot.
 
-        First the messages ``get_messages_by_date_range`` returns, each with
-        ``versions``: every earlier text the archive kept of it, whatever the
-        version's date, oldest first, with ``text``, ``date`` and
-        ``captured_at``, and ``snapshots``: every later state of its poll or
-        link preview the archive kept (``message_snapshots``), oldest first,
-        with ``kind``, ``payload``, ``observed_at`` and ``source``. The dates
-        stay datetimes, as every other date of that file does. Then the flat
-        list ``get_message_versions_by_date_range``
-        returns, picked by the version's own date. One snapshot, so a backup
-        writing meanwhile cannot make a message and its versions disagree.
+        The messages ``get_messages_by_date_range`` picks, in
+        ``EXPORT_MESSAGE_ORDER``, each with ``media``, ``versions``,
+        ``reaction_history``, ``snapshots`` (the later states of its poll or
+        link preview) and, when it has any, ``transcripts``
+        (``_export_message_parts``). Dates stay
+        datetimes, as every other date of that file does. One snapshot, so a
+        backup writing meanwhile cannot make a message, its versions, its
+        media and its transcripts disagree: every transcript names a media
+        listed in the same file.
         """
         conditions = self._date_range_conditions(chat_id, start_date, end_date, account_id)
         async with self.db_manager.async_session_factory() as session:
             await self._read_one_snapshot(session)
-            versions: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-            for row in await session.execute(self._versions_of_messages_query(conditions)):
-                versions.setdefault((row.account_id, row.chat_id, row.message_id), []).append(
-                    {"text": row.text, "date": row.date, "captured_at": row.captured_at}
-                )
-            snapshots: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-            for row in await session.execute(self._snapshots_of_messages_query(conditions)):
-                snapshots.setdefault((row.account_id, row.chat_id, row.message_id), []).append(
-                    self._export_snapshot_dict(row, iso_dates=False)
-                )
-            result = await session.execute(select(Message).where(*conditions).order_by(Message.date.asc()))
-            messages = [
-                {
+            transcripts: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+            for row in await self._read_export_transcripts(session, chat_id, account_id=account_id):
+                transcripts.setdefault((row["account_id"], row["chat_id"], row["message_id"]), []).append(row)
+            result = await session.stream(select(Message).where(*conditions).order_by(*EXPORT_MESSAGE_ORDER))
+            messages = []
+            async for m, media, versions, reaction_history, snapshots in self._export_message_parts(
+                session, result.scalars(), conditions, iso=False
+            ):
+                message = {
                     **self._message_to_dict(m),
                     "account_id": m.account_id,
-                    "versions": versions.get((m.account_id, m.chat_id, m.id), []),
-                    "snapshots": snapshots.get((m.account_id, m.chat_id, m.id), []),
+                    "media": [self._export_media_dict(row) for row in media],
+                    "versions": versions,
+                    "reaction_history": reaction_history,
+                    "snapshots": snapshots,
                 }
-                for m in result.scalars()
-            ]
-            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
-            message_versions = [self._message_version_to_dict(row) for row in result.scalars()]
-        return messages, message_versions
+                rows = transcripts.get((m.account_id, m.chat_id, m.id))
+                if rows:
+                    message["transcripts"] = rows
+                messages.append(message)
+        return messages
 
     async def find_message_by_date(
         self, chat_id: int, target_date: datetime, *, account_id: int | None = None
@@ -2404,6 +2715,45 @@ class DatabaseAdapter:
             )
             result = await session.execute(stmt)
             return {row.id for row in result}
+
+    async def get_edit_hide_backfill_rows(self, chat_id: int, *, account_id: int) -> list[tuple[int, datetime]]:
+        """The work list of ``backfill-details`` for edit flags in one chat: ``(message_id, edit_date)``.
+
+        A row is listed when it has an ``edit_date``, no ``edit_hide`` and no
+        kept version, and is not deleted. A kept version means a real edit the
+        archive saw, whose pencil stays whatever the flag says; Telegram no
+        longer serves a deleted message. One chat at a time, so the query is
+        a range of the primary key and the list stays the size of one chat.
+        Filling the flag takes a row off the list.
+        """
+        has_version = (
+            select(MessageVersion.id)
+            .where(
+                and_(
+                    MessageVersion.account_id == Message.account_id,
+                    MessageVersion.chat_id == Message.chat_id,
+                    MessageVersion.message_id == Message.id,
+                )
+            )
+            .exists()
+        )
+        stmt = (
+            select(Message.id, Message.edit_date)
+            .where(
+                and_(
+                    Message.account_id == account_id,
+                    Message.chat_id == chat_id,
+                    Message.edit_date.isnot(None),
+                    Message.edit_hide.is_(None),
+                    or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
+                    ~has_version,
+                )
+            )
+            .order_by(Message.id)
+        )
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(stmt)
+            return [(row.id, row.edit_date) for row in result]
 
     @retry_on_locked()
     async def fill_edit_hide(
@@ -2657,7 +3007,16 @@ class DatabaseAdapter:
                     and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id)
                 )
             )
-            # Delete reactions
+            # Delete reactions and their history
+            await session.execute(
+                delete(ReactionHistory).where(
+                    and_(
+                        ReactionHistory.account_id == account_id,
+                        ReactionHistory.chat_id == chat_id,
+                        ReactionHistory.message_id == message_id,
+                    )
+                )
+            )
             await session.execute(
                 delete(Reaction).where(
                     and_(
@@ -2898,7 +3257,9 @@ class DatabaseAdapter:
         json; a row whose raw_data is unparseable is left untouched (never
         destroy unrelated capture payloads for a formatting refresh). None
         drops a key: an edit that no longer carries formatting, or no longer
-        is a Rich Text Editor message, must not keep the stale value.
+        is a Rich Text Editor message, must not keep the stale value. Entities
+        are the exception since 9.0: None becomes an empty list, so the text is
+        known to have no formatting and a later edit that adds some is an edit.
         """
         try:
             raw = json.loads(message.raw_data) if message.raw_data else {}
@@ -2907,7 +3268,7 @@ class DatabaseAdapter:
         if not isinstance(raw, dict):
             return False
         changed = False
-        for key, value in (("entities", entities), ("rich_message", rich_message)):
+        for key, value in (("entities", entities or []), ("rich_message", rich_message)):
             if value is None:
                 if key in raw:
                     raw.pop(key)
@@ -3040,50 +3401,242 @@ class DatabaseAdapter:
         }
 
     @staticmethod
-    def _export_version_dict(row) -> dict[str, Any]:
-        """One earlier version as the viewer's export lists it under its message.
+    def _export_media_dict(row) -> dict[str, Any]:
+        """One media as both exports list it: what a reader needs to tell it
+        apart and match its transcripts, never where the file lies on disk.
 
-        ``date`` is when that text was current in Telegram (the edit that
-        produced it, or the send), ``captured_at`` when the archive saw it
-        replaced. Both columns are NOT NULL. ISO 8601, like every other date
-        the viewer's export writes.
+        ``media_id`` is the id the transcripts of that media name: the media
+        row's id, or for earlier media the id the row had when an edit
+        replaced it (``media_versions.media_id``).
         """
         return {
-            "text": row.text,
-            "date": row.date.isoformat(),
-            "captured_at": row.captured_at.isoformat(),
+            "media_id": row.media_id,
+            "type": row.type,
+            "file_name": row.file_name,
+            "file_size": row.file_size,
+            "mime_type": row.mime_type,
+            "width": row.width,
+            "height": row.height,
+            "duration": row.duration,
         }
 
     @staticmethod
-    def _versions_of_messages_query(message_conditions: list):
-        """Every kept version of the messages ``message_conditions`` pick, in export order.
+    def _export_version_dict(row, *, iso: bool = True) -> dict[str, Any]:
+        """One earlier text version as both exports list it under its message.
+
+        ``date`` is when that text was current in Telegram (the edit that
+        produced it, or the send), ``captured_at`` when the archive saw it
+        replaced. Both columns are NOT NULL. ``iso`` writes them as ISO 8601,
+        like every other date of the viewer's export; the command's export
+        keeps datetimes. ``media`` is filled by ``_export_versions``.
+        """
+        return {
+            "text": row.text,
+            "date": row.date.isoformat() if iso else row.date,
+            "captured_at": row.captured_at.isoformat() if iso else row.captured_at,
+            "source": row.source,
+            "entities": _formatting_of({"entities": _json_or_none(row.entities)}),
+            "rich_message": _rich_message_of({"rich_message": _json_or_none(row.rich_message)}),
+            "media": [],
+        }
+
+    @classmethod
+    def _export_versions(cls, text_rows: list, media_rows: list, *, iso: bool = True) -> list[dict[str, Any]]:
+        """A message's earlier versions with the earlier media each was shown with, oldest first.
+
+        The pairing rule of ``get_message_versions``: an earlier media sits
+        under the text version with the same ``date``, the moment that text
+        and that media became current together, and of two text versions
+        with one date the last one stored. Earlier media with no text version
+        of its date is listed as its own version, with ``text`` null and
+        ``media_only`` true, so no kept media goes unlisted. ``text_rows``
+        and ``media_rows`` come oldest first, the order their queries sort in.
+        """
+        versions = [cls._export_version_dict(row, iso=iso) for row in text_rows]
+        by_date = {row.date: version for row, version in zip(text_rows, versions, strict=True)}
+        dated = list(zip((row.date for row in text_rows), versions, strict=True))
+        for row in media_rows:
+            version = by_date.get(row.date)
+            if version is None:
+                version = {
+                    "text": None,
+                    "date": row.date.isoformat() if iso else row.date,
+                    "captured_at": row.captured_at.isoformat() if iso else row.captured_at,
+                    "source": row.source,
+                    "entities": None,
+                    "rich_message": None,
+                    "media": [],
+                    "media_only": True,
+                }
+                by_date[row.date] = version
+                dated.append((row.date, version))
+            version["media"].append(cls._export_media_dict(row))
+        dated.sort(key=lambda pair: pair[0])
+        return [version for _, version in dated]
+
+    @staticmethod
+    def _message_keys_of(model):
+        """``model``'s account, chat and message columns, labelled as ``_ExportWalk`` reads them."""
+        return (
+            model.account_id.label("account_id"),
+            model.chat_id.label("chat_id"),
+            model.message_id.label("message_id"),
+        )
+
+    @staticmethod
+    def _joined_to_its_message(stmt, model, message_conditions: list):
+        """``stmt`` over ``model`` narrowed to the messages ``message_conditions`` pick."""
+        return stmt.join(
+            Message,
+            and_(
+                Message.account_id == model.account_id,
+                Message.chat_id == model.chat_id,
+                Message.id == model.message_id,
+            ),
+        ).where(*message_conditions)
+
+    @classmethod
+    def _versions_of_messages_query(cls, message_conditions: list):
+        """Every kept text version of the messages ``message_conditions`` pick, in export order.
 
         The conditions apply to the message (its chat, account and date), not
         to the version, so a message in a date window keeps all its versions.
-        Rows come in ``EXPORT_MESSAGE_ORDER``, the order the viewer's export
-        lists messages, each message's versions oldest first (the order they
-        were captured in when two share a date), so a reader can walk them
-        beside the messages.
+        Rows come in ``EXPORT_MESSAGE_ORDER``, each message's versions oldest
+        first (the order they were captured in when two share a date), so a
+        reader can walk them beside the messages.
+        """
+        stmt = select(
+            *cls._message_keys_of(MessageVersion),
+            MessageVersion.text,
+            MessageVersion.date,
+            MessageVersion.captured_at,
+            MessageVersion.source,
+            MessageVersion.entities,
+            MessageVersion.rich_message,
+        )
+        return cls._joined_to_its_message(stmt, MessageVersion, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc()
+        )
+
+    @classmethod
+    def _media_of_messages_query(cls, message_conditions: list):
+        """The current media rows of the messages ``message_conditions`` pick, in export order.
+
+        A message can hold more than one media row. Its rows come in the order
+        the viewer picks the one it shows: a downloaded row before a pending
+        one, then the lowest id. ``file_path`` is read for
+        ``scripts/restore_chat.py`` only (``include_media``); no export writes it.
+        """
+        stmt = select(
+            *cls._message_keys_of(Media),
+            Media.id.label("media_id"),
+            Media.type,
+            Media.file_path,
+            Media.file_name,
+            Media.file_size,
+            Media.mime_type,
+            Media.width,
+            Media.height,
+            Media.duration,
+        )
+        return cls._joined_to_its_message(stmt, Media, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, func.coalesce(Media.downloaded, 0).desc(), Media.id.asc()
+        )
+
+    @classmethod
+    def _media_versions_of_messages_query(cls, message_conditions: list):
+        """The earlier media (``media_versions``) of the messages ``message_conditions`` pick, in export order.
+
+        Each message's rows oldest first by ``date``, then in the order they were kept.
+        """
+        stmt = select(
+            *cls._message_keys_of(MediaVersion),
+            MediaVersion.media_id,
+            MediaVersion.type,
+            MediaVersion.file_name,
+            MediaVersion.file_size,
+            MediaVersion.mime_type,
+            MediaVersion.width,
+            MediaVersion.height,
+            MediaVersion.duration,
+            MediaVersion.date,
+            MediaVersion.captured_at,
+            MediaVersion.source,
+        )
+        return cls._joined_to_its_message(stmt, MediaVersion, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, MediaVersion.date.asc(), MediaVersion.id.asc()
+        )
+
+    async def _export_message_parts(self, session, messages, message_conditions: list, *, iso: bool):
+        """Yield each message of ``messages`` with its media rows, ``versions``, reaction history and snapshots.
+
+        ``messages`` is an async iterable of rows or ``Message`` objects in
+        ``EXPORT_MESSAGE_ORDER``, picked by ``message_conditions``; each has
+        ``account_id``, ``chat_id`` and ``id``. Its current media, text
+        versions and earlier media are three more statements in the same
+        session, walked beside it, and so is its ``reaction_history`` (one
+        dict per kept state, oldest first, ``observed_at`` in ISO 8601 when
+        ``iso``), so only the current message's rows are ever in memory,
+        however long the chat. Its ``snapshots`` (``message_snapshots``, the
+        later states of its poll or link preview, oldest first) walk beside
+        it too. Call ``_read_one_snapshot`` first, so all six read the same
+        archive state.
+
+        If rows are left over at the end, two statements stopped sorting
+        alike and some messages went out without them: the export fails
+        rather than write a file that drops them.
+        """
+        media = await _ExportWalk.open(session, self._media_of_messages_query(message_conditions))
+        texts = await _ExportWalk.open(session, self._versions_of_messages_query(message_conditions))
+        earlier = await _ExportWalk.open(session, self._media_versions_of_messages_query(message_conditions))
+        reactions = await _ExportWalk.open(session, self._reaction_history_of_messages_query(message_conditions))
+        snapshots = await _ExportWalk.open(session, self._snapshots_of_messages_query(message_conditions))
+        async for message in messages:
+            key = (message.account_id, message.chat_id, message.id)
+            states = [self._reaction_history_to_dict(row) for row in await reactions.take(key)]
+            if iso:
+                for state in states:
+                    state["observed_at"] = state["observed_at"].isoformat()
+            yield (
+                message,
+                await media.take(key),
+                self._export_versions(await texts.take(key), await earlier.take(key), iso=iso),
+                states,
+                [self._export_snapshot_dict(row, iso_dates=iso) for row in await snapshots.take(key)],
+            )
+        if any(walk.pending is not None for walk in (media, texts, earlier, reactions, snapshots)):
+            raise RuntimeError("Export versions fell out of step with the messages")
+
+    @staticmethod
+    def _reaction_history_of_messages_query(message_conditions: list):
+        """Every kept reaction state of the messages ``message_conditions`` pick, in export order.
+
+        Like ``_versions_of_messages_query``: the conditions pick the message,
+        so a message in a date window keeps its whole reaction history, and
+        rows come in ``EXPORT_MESSAGE_ORDER``, each message's states oldest
+        first, so a reader can walk them beside the messages.
         """
         return (
             select(
-                MessageVersion.account_id,
-                MessageVersion.chat_id,
-                MessageVersion.message_id,
-                MessageVersion.text,
-                MessageVersion.date,
-                MessageVersion.captured_at,
+                ReactionHistory.account_id,
+                ReactionHistory.chat_id,
+                ReactionHistory.message_id,
+                ReactionHistory.emoji,
+                ReactionHistory.count,
+                ReactionHistory.previous_count,
+                ReactionHistory.observed_at,
+                ReactionHistory.source,
             )
             .join(
                 Message,
                 and_(
-                    Message.account_id == MessageVersion.account_id,
-                    Message.chat_id == MessageVersion.chat_id,
-                    Message.id == MessageVersion.message_id,
+                    Message.account_id == ReactionHistory.account_id,
+                    Message.chat_id == ReactionHistory.chat_id,
+                    Message.id == ReactionHistory.message_id,
                 ),
             )
             .where(*message_conditions)
-            .order_by(*EXPORT_MESSAGE_ORDER, MessageVersion.date.asc(), MessageVersion.id.asc())
+            .order_by(*EXPORT_MESSAGE_ORDER, ReactionHistory.observed_at.asc(), ReactionHistory.id.asc())
         )
 
     @staticmethod
@@ -3137,12 +3690,11 @@ class DatabaseAdapter:
         the old text beside a version holding that same text. REPEATABLE READ
         gives the whole transaction one snapshot. SQLite's driver begins a
         transaction only before a write, so an explicit deferred BEGIN does
-        the same there. The command's export needs it on SQLite: it reads
-        each statement to the end before the next. The viewer's export keeps
-        its messages statement open while it reads the versions, which
-        already holds SQLite's read snapshot, so there the BEGIN only guards
-        a later change that closes it first. Call it before the session runs
-        anything.
+        the same there. Both exports need it on SQLite too: they read the
+        transcripts to the end before they open the messages, versions and
+        media statements, and without the BEGIN each read would see its own
+        state, so a transcript could name a media a backup removed in
+        between. Call it before the session runs anything.
         """
         if self._is_sqlite:
             await session.execute(text("BEGIN"))
@@ -3284,37 +3836,6 @@ class DatabaseAdapter:
                 "downloaded": row.downloaded,
             }
 
-    def _message_versions_query(
-        self,
-        chat_id: int | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        account_id: int | None = None,
-    ):
-        # No join to messages: versions already carry (chat_id, message_id), and
-        # referential integrity is owned by the explicit deletes in
-        # delete_message / delete_chat_and_related_data.
-        stmt = select(MessageVersion)
-
-        conditions = []
-        if account_id is not None:
-            conditions.append(MessageVersion.account_id == account_id)
-        if chat_id is not None:
-            conditions.append(MessageVersion.chat_id == chat_id)
-        if start_date:
-            conditions.append(MessageVersion.date >= start_date)
-        if end_date:
-            conditions.append(MessageVersion.date <= end_date)
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-
-        return stmt.order_by(
-            MessageVersion.chat_id.asc(),
-            MessageVersion.message_id.asc(),
-            MessageVersion.date.asc(),
-            MessageVersion.id.asc(),
-        )
-
     def _event_not_already_listed(
         self,
         scope: ChatScope | None,
@@ -3351,6 +3872,16 @@ class DatabaseAdapter:
             duplicate = duplicate.where(predicate)
         return or_(Chat.type == PRIVATE_CHAT_TYPE, ~duplicate.exists())
 
+    def _seconds_apart(self, first, second):
+        """SQL for how many seconds lie between two timestamp columns, on either engine.
+
+        SQLite stores them as text, which ``julianday`` reads (fractional
+        seconds included); PostgreSQL subtracts them into an interval.
+        """
+        if self._is_sqlite:
+            return func.abs(func.julianday(first) - func.julianday(second)) * 86400
+        return func.abs(func.extract("epoch", first - second))
+
     async def get_recent_changes(
         self,
         *,
@@ -3359,10 +3890,11 @@ class DatabaseAdapter:
         limit: int = 50,
         scope: ChatScope | None = None,
         with_transcripts: bool = True,
+        with_reactions: bool = False,
         chat_id: int | None = None,
         account_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """The what-changed feed: deletions, edits and transcripts the archive captured.
+        """The what-changed feed: deletions, edits, transcripts and reactions taken back.
 
         The archive's differentiator is that it KEEPS what disappeared; this
         is the query that finally lists it. Three streams share one shape:
@@ -3376,6 +3908,13 @@ class DatabaseAdapter:
           ``completed_at``, carrying the transcript text and its language, so
           a poller sees new transcripts (docs/TRANSCRIPTION.md). Left out
           when ``with_transcripts`` is False, for a no-download login.
+        * ``reaction`` — a reaction taken back: a ``reaction_history`` row
+          whose count is below the one before it, dated by ``observed_at``,
+          carrying the emoji, how many went (``count``), ``count_before``,
+          ``count_after`` and the message's current text. Only when
+          ``with_reactions`` is True: reactions come and go far more often
+          than the rest, and the viewer asks for them only when the reader
+          ticks the kind.
 
         Newest first. ``before`` is an exclusive keyset cursor over the
         per-row date: pass the last row's ``date`` back to page. Rows sharing
@@ -3465,23 +4004,55 @@ class DatabaseAdapter:
                 .join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
                 .where(MediaTranscript.status == "done", MediaTranscript.completed_at.isnot(None))
             )
+            reaction_stmt = (
+                select(
+                    ReactionHistory.message_id,
+                    ReactionHistory.observed_at.label("date"),
+                    ReactionHistory.emoji,
+                    ReactionHistory.count,
+                    ReactionHistory.previous_count,
+                    Message.text,
+                    Message.sender_name,
+                    Chat.ref,
+                    Chat.title,
+                    Chat.first_name,
+                    Chat.last_name,
+                    Chat.username,
+                    Chat.type.label("chat_type"),
+                )
+                .join(
+                    Message,
+                    and_(
+                        Message.account_id == ReactionHistory.account_id,
+                        Message.chat_id == ReactionHistory.chat_id,
+                        Message.id == ReactionHistory.message_id,
+                    ),
+                )
+                .join(Chat, and_(Chat.account_id == ReactionHistory.account_id, Chat.id == ReactionHistory.chat_id))
+                # The partial index's own predicate, so the feed reads only drops.
+                .where(ReactionHistory.count < ReactionHistory.previous_count)
+            )
             if since is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at >= since)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at >= since)
                 transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at >= since)
+                reaction_stmt = reaction_stmt.where(ReactionHistory.observed_at >= since)
             if before is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at < before)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at < before)
                 transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at < before)
+                reaction_stmt = reaction_stmt.where(ReactionHistory.observed_at < before)
             if scope is not None:
                 for predicate in scope.sql_predicates():
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
                     transcript_stmt = transcript_stmt.where(predicate)
+                    reaction_stmt = reaction_stmt.where(predicate)
             if chat_id is not None:
                 deleted_stmt = deleted_stmt.where(Message.chat_id == chat_id)
                 edited_stmt = edited_stmt.where(MessageVersion.chat_id == chat_id)
                 transcript_stmt = transcript_stmt.where(Message.chat_id == chat_id)
+                reaction_stmt = reaction_stmt.where(ReactionHistory.chat_id == chat_id)
             if chat_id is not None and account_id is not None:
                 # Only a private chat's id collides across accounts, so only
                 # there does the ref's account pick the conversation. The
@@ -3495,12 +4066,14 @@ class DatabaseAdapter:
                     deleted_stmt = deleted_stmt.where(Message.account_id == account_id)
                     edited_stmt = edited_stmt.where(MessageVersion.account_id == account_id)
                     transcript_stmt = transcript_stmt.where(Message.account_id == account_id)
+                    reaction_stmt = reaction_stmt.where(ReactionHistory.account_id == account_id)
                 else:
                     # Every non-private copy of a channel or group stays in,
                     # and the deduplication below lists each event once.
                     deleted_stmt = deleted_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
                     edited_stmt = edited_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
                     transcript_stmt = transcript_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
+                    reaction_stmt = reaction_stmt.where(Chat.type != PRIVATE_CHAT_TYPE)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -3552,14 +4125,33 @@ class DatabaseAdapter:
                 lower_transcript.completed_at.isnot(None),
                 lower_transcript.text.is_not_distinct_from(MediaTranscript.text),
             ]
+            # A drop is the same event in every account that saw it when the
+            # emoji went from the same count to the same count at about the
+            # same time. Each account's listener or backup notices it on its
+            # own clock, so the times differ a little; the same counts far
+            # apart are two drops (taken back, given again, taken back).
+            lower_reaction = aliased(ReactionHistory, name="lower_reaction_state")
+            lower_reaction_chat = aliased(Chat, name="lower_reaction_chat")
+            reaction_duplicate = [
+                lower_reaction.chat_id == ReactionHistory.chat_id,
+                lower_reaction.message_id == ReactionHistory.message_id,
+                lower_reaction.account_id < ReactionHistory.account_id,
+                lower_reaction.emoji == ReactionHistory.emoji,
+                lower_reaction.count == ReactionHistory.count,
+                lower_reaction.previous_count == ReactionHistory.previous_count,
+                self._seconds_apart(lower_reaction.observed_at, ReactionHistory.observed_at)
+                <= REACTION_EVENT_TOLERANCE_SECONDS,
+            ]
             if since is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at >= since)
                 edited_duplicate.append(lower_edited.captured_at >= since)
                 lower_transcript_match.append(lower_transcript.completed_at >= since)
+                reaction_duplicate.append(lower_reaction.observed_at >= since)
             if before is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at < before)
                 edited_duplicate.append(lower_edited.captured_at < before)
                 lower_transcript_match.append(lower_transcript.completed_at < before)
+                reaction_duplicate.append(lower_reaction.observed_at < before)
             transcript_duplicate = [
                 lower_media.chat_id == Message.chat_id,
                 lower_media.message_id == Message.id,
@@ -3590,9 +4182,18 @@ class DatabaseAdapter:
                 )
             )
 
+            reaction_stmt = reaction_stmt.where(
+                self._event_not_already_listed(
+                    scope, lower_rows=lower_reaction, lower_chat=lower_reaction_chat, event_match=reaction_duplicate
+                )
+            )
+
             deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
             edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
             transcript_stmt = transcript_stmt.order_by(MediaTranscript.completed_at.desc()).limit(per_stream)
+            reaction_stmt = reaction_stmt.order_by(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc()).limit(
+                per_stream
+            )
 
             changes: list[dict[str, Any]] = []
             for row in (await session.execute(deleted_stmt)).all():
@@ -3631,46 +4232,24 @@ class DatabaseAdapter:
                         "language": row.language,
                     }
                 )
+            reaction_rows = (await session.execute(reaction_stmt)).all() if with_reactions else []
+            for row in reaction_rows:
+                changes.append(
+                    {
+                        "kind": "reaction",
+                        "date": row.date.isoformat() if row.date else None,
+                        "chat": _chat_fields(row),
+                        "message_id": row.message_id,
+                        "sender_name": row.sender_name,
+                        "text": row.text,
+                        "emoji": row.emoji,
+                        "count": row.previous_count - row.count,
+                        "count_before": row.previous_count,
+                        "count_after": row.count,
+                    }
+                )
             changes.sort(key=lambda c: c["date"] or "", reverse=True)
             return changes[:per_stream]
-
-    async def get_message_versions_by_date_range(
-        self,
-        chat_id: int | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        *,
-        account_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Get previous message versions by version date/chat filter (None account_id = unscoped until phase 4)."""
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
-            return [self._message_version_to_dict(row) for row in result.scalars()]
-
-    async def iter_message_versions_for_export(
-        self,
-        chat_id: int,
-        *,
-        account_id: int | None = None,
-        from_date: datetime | None = None,
-        to_date: datetime | None = None,
-    ):
-        """Stream a chat's message versions one by one (async generator).
-
-        Mirrors get_messages_for_export so the export endpoint never
-        materializes an entire edit history in memory. The optional window
-        uses the export contract (>= from, < to) — deliberately NOT the shared
-        query's inclusive end_date, whose contract other callers own.
-        """
-        async with self.db_manager.async_session_factory() as session:
-            stmt = self._message_versions_query(chat_id, account_id=account_id)
-            if from_date is not None:
-                stmt = stmt.where(MessageVersion.date >= from_date)
-            if to_date is not None:
-                stmt = stmt.where(MessageVersion.date < to_date)
-            result = await session.stream(stmt)
-            async for row in result.scalars():
-                yield self._message_version_to_dict(row)
 
     @staticmethod
     def _marked_edited_predicate():
@@ -4663,6 +5242,85 @@ class DatabaseAdapter:
                         counts[content_hash] = counts.get(content_hash, 0) + count
         return counts
 
+    async def get_media_paths_by_content_hash(self, content_hash: str, *, limit: int = 20) -> list[str]:
+        """Stored paths of media rows and kept earlier media with this content hash, ALL accounts.
+
+        The places a copy of the same bytes may already sit, for repairing a row
+        whose own file is gone. Paths as stored: absolute, or relative to the
+        media root for imported rows.
+        """
+        if not content_hash:
+            return []
+        paths: list[str] = []
+        async with self.db_manager.async_session_factory() as session:
+            for model in (Media, MediaVersion):
+                stmt = (
+                    select(model.file_path)
+                    .where(and_(model.content_hash == content_hash, model.file_path.isnot(None)))
+                    .distinct()
+                    .limit(limit)
+                )
+                paths.extend(value for (value,) in (await session.execute(stmt)).all())
+        return list(dict.fromkeys(paths))[:limit]
+
+    async def count_shared_blob_references(self, blobs: Collection[tuple[str, str | None]]) -> dict[str, int]:
+        """How many rows, ALL accounts, still refer to each ``_shared`` blob, keyed by file name.
+
+        A row refers to a blob when it names the same file (``file_name``) or
+        holds the same bytes (``content_hash``). Both count, because neither is
+        complete alone: rows written before content hashing existed carry no
+        hash, and a blob reused for a duplicate under another name is named by
+        its hash only. Earlier media an edit replaced (``media_versions``) count
+        too. A blob with any reference must stay.
+        """
+        wanted = {name: content_hash for name, content_hash in blobs if name}
+        if not wanted:
+            return {}
+        counts: dict[str, int] = {}
+        async with self.db_manager.async_session_factory() as session:
+            for name, content_hash in wanted.items():
+                total = 0
+                for model in (Media, MediaVersion):
+                    match = model.file_name == name
+                    if content_hash:
+                        match = or_(match, model.content_hash == content_hash)
+                    total += (await session.execute(select(func.count()).select_from(model).where(match))).scalar_one()
+                if total:
+                    counts[name] = total
+        return counts
+
+    async def referenced_file_paths(self, values: Collection[str]) -> set[str]:
+        """The subset of ``values`` that some media row or kept earlier media, ALL accounts, names as its file_path."""
+        wanted = [value for value in dict.fromkeys(values) if value]
+        found: set[str] = set()
+        if not wanted:
+            return found
+        async with self.db_manager.async_session_factory() as session:
+            for start in range(0, len(wanted), 500):
+                chunk = wanted[start : start + 500]
+                for model in (Media, MediaVersion):
+                    stmt = select(model.file_path).where(model.file_path.in_(chunk)).distinct()
+                    found.update(value for (value,) in (await session.execute(stmt)).all())
+        return found
+
+    async def count_media_rows_in_folder(self, chat_id: int, folder_prefixes: Collection[str]) -> int:
+        """Rows of any account whose files sit in a chat's media folder.
+
+        A row belongs when it carries the chat id (every account's copy of a
+        chat shares ``<media>/<chat_id>/``) or when its stored path starts with
+        one of ``folder_prefixes`` (a legacy row of another id form can still
+        point there). Media rows and kept earlier media both count.
+        """
+        prefixes = [prefix for prefix in folder_prefixes if prefix]
+        total = 0
+        async with self.db_manager.async_session_factory() as session:
+            for model in (Media, MediaVersion):
+                match = or_(
+                    model.chat_id == chat_id, *(model.file_path.startswith(p, autoescape=True) for p in prefixes)
+                )
+                total += (await session.execute(select(func.count()).select_from(model).where(match))).scalar_one()
+        return total
+
     async def iter_media_for_verification(self, *, account_id: int, batch_size: int = 500):
         """Yield batches of one account's media records that should have files
         on disk (``downloaded=1`` OR ``file_path`` set). Used by VERIFY_MEDIA —
@@ -4689,6 +5347,7 @@ class DatabaseAdapter:
                         Media.file_name,
                         Media.file_size,
                         Media.downloaded,
+                        Media.content_hash,
                     )
                     .where(
                         and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None)))
@@ -4711,6 +5370,8 @@ class DatabaseAdapter:
                     "file_name": r[5],
                     "file_size": r[6],
                     "downloaded": r[7],
+                    "content_hash": r[8],
+                    "account_id": account_id,
                 }
                 for r in rows
             ]
@@ -4810,6 +5471,130 @@ class DatabaseAdapter:
                 select(Media.chat_id).where(and_(Media.account_id == account_id, Media.type == media_type)).distinct()
             )
             return [c for (c,) in rows if c is not None]
+
+    async def get_payload_backfill_rows(
+        self, *, account_id: int, chat_id: int | None = None
+    ) -> dict[int, list[dict[str, Any]]]:
+        """The work list of ``backfill-details``, grouped by chat, ordered by message id.
+
+        A media row of a ``PAYLOAD_BACKFILL_TYPES`` kind is listed when its
+        message's ``raw_data`` lacks the key of the same name, or when the row
+        still carries a ``file_path`` (the leftover of releases up to v7.28.0).
+        Each entry is ``{message_id, media_id, type, file_path, has_payload}``.
+        A row whose ``raw_data`` does not parse is left out: nothing may be
+        added to a payload the archive cannot read without destroying it.
+        Filling a key or clearing a path takes a row off the list, so an
+        interrupted run resumes by running again.
+        """
+        stmt = (
+            select(Media.chat_id, Media.message_id, Media.id, Media.type, Media.file_path, Message.raw_data)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Media.account_id,
+                    Message.chat_id == Media.chat_id,
+                    Message.id == Media.message_id,
+                ),
+            )
+            .where(and_(Media.account_id == account_id, Media.type.in_(PAYLOAD_BACKFILL_TYPES)))
+            .order_by(Media.chat_id, Media.message_id, Media.id)
+        )
+        if chat_id is not None:
+            stmt = stmt.where(Media.chat_id == chat_id)
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.stream(stmt.execution_options(yield_per=1000))
+            async for row_chat, message_id, media_id, media_type, file_path, raw_data in result:
+                raw = _raw_data_dict(raw_data)
+                if raw is None:
+                    continue
+                has_payload = media_type in raw
+                if has_payload and not file_path:
+                    continue
+                grouped.setdefault(row_chat, []).append(
+                    {
+                        "message_id": message_id,
+                        "media_id": media_id,
+                        "type": media_type,
+                        "file_path": file_path or None,
+                        "has_payload": has_payload,
+                    }
+                )
+        return grouped
+
+    @retry_on_locked()
+    async def add_missing_raw_data_keys(
+        self, chat_id: int, message_id: int, payload: dict[str, Any], *, account_id: int
+    ) -> bool:
+        """Add each key of ``payload`` the message's ``raw_data`` lacks; True if anything was added.
+
+        For ``backfill-details``. The row is locked first, so a writer that
+        stores the same key meanwhile wins and this adds nothing. A key the
+        row already holds is never replaced, and nothing else on the row
+        (text, dates, reactions, other keys) is touched: this is not the
+        upsert. A row whose ``raw_data`` does not parse is left as it is.
+        """
+        if not payload:
+            return False
+        async with self.db_manager.async_session_factory() as session:
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
+            if message is None:
+                await session.rollback()
+                return False
+            raw = _raw_data_dict(message.raw_data)
+            if raw is None:
+                await session.rollback()
+                return False
+            merged = dict(raw)
+            for key, value in payload.items():
+                if key not in merged:
+                    merged[key] = value
+            if merged == raw:
+                await session.rollback()
+                return False
+            message.raw_data = json.dumps(merged)
+            await session.commit()
+            return True
+
+    async def raw_data_has_key(self, chat_id: int, message_id: int, key: str, *, account_id: int) -> bool:
+        """True when the message exists and its ``raw_data`` parses and holds ``key``."""
+        async with self.db_manager.async_session_factory() as session:
+            raw_data = (
+                await session.execute(
+                    select(Message.raw_data).where(
+                        and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
+                    )
+                )
+            ).scalar_one_or_none()
+        raw = _raw_data_dict(raw_data)
+        return raw is not None and key in raw
+
+    @retry_on_locked()
+    async def clear_metadata_media_path(self, chat_id: int, media_id: str, *, account_id: int) -> bool:
+        """Clear the leftover file fields of a metadata-only media row; True if a row changed.
+
+        Sets ``file_path``, ``file_name`` and ``download_date`` to NULL and
+        ``downloaded`` to 0, so the row reads as what it is: a location, a
+        contact or a poll with no file. The row stays, and nothing on disk is
+        touched. Only a metadata-only row that still has a path matches, so a
+        second call changes nothing.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Media)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.chat_id == chat_id,
+                        Media.id == media_id,
+                        Media.type.in_(METADATA_ONLY_MEDIA_TYPES),
+                        Media.file_path.is_not(None),
+                    )
+                )
+                .values(file_path=None, file_name=None, download_date=None, downloaded=0)
+            )
+            await session.commit()
+            return (result.rowcount or 0) > 0
 
     async def retype_media_for_messages(
         self, chat_id: int, message_ids: Sequence[int], media_type: str, *, account_id: int
@@ -5392,18 +6177,23 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
-    async def mark_media_for_redownload(self, media_id: str, *, account_id: int) -> None:
+    async def mark_media_for_redownload(self, media_id: str, *, account_id: int, keep_path: bool = False) -> None:
         """Mark a media record as needing re-download.
 
         Also resets download_attempts so a row that previously hit the retry
         cap (#212) becomes eligible for the pending-download retry again.
+
+        ``keep_path`` keeps ``file_path``: the row still names the link whose
+        ``_shared`` file is gone, and the download puts the bytes back under
+        that link's own target (``_process_media``), so the link and every
+        other link to the same target resolve again even when the current
+        Telegram file name differs from the one the link holds.
         """
+        values: dict[str, Any] = {"downloaded": 0, "download_date": None, "download_attempts": 0}
+        if not keep_path:
+            values["file_path"] = None
         async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                update(Media)
-                .where(and_(Media.account_id == account_id, Media.id == media_id))
-                .values(downloaded=0, file_path=None, download_date=None, download_attempts=0)
-            )
+            stmt = update(Media).where(and_(Media.account_id == account_id, Media.id == media_id)).values(**values)
             await session.execute(stmt)
             await session.commit()
 
@@ -5517,6 +6307,7 @@ class DatabaseAdapter:
         *,
         account_id: int,
         mark_removed: bool = True,
+        source: str | None = None,
         _after_seq_reset: bool = False,
     ) -> str:
         """Reconcile a message's reactions against a fresh FULL snapshot (#219).
@@ -5542,7 +6333,13 @@ class DatabaseAdapter:
           deleted — this branch runs even when ``observed`` is empty;
         - is a no-op when the message is not archived (best-effort; never stubs a
           synthetic message row, which would render blank in the viewer and, with
-          the FK having no CASCADE, raise on PostgreSQL).
+          the FK having no CASCADE, raise on PostgreSQL);
+        - adds a ``reaction_history`` row for every emoji whose count differs
+          from the newest row kept for it (0 when it went), tagged with
+          ``source``, so a count that drops without reaching zero and an emoji
+          that comes back both keep their earlier state. An emoji with a
+          ``reactions`` row and no history first gets the baseline that row
+          stands for (``_reaction_baseline``), the same one migration 037 seeds.
 
         Returns ``"reconciled"`` | ``"noop"`` | ``"no_message"``.
         """
@@ -5574,6 +6371,12 @@ class DatabaseAdapter:
             by_emoji: dict[str, list[Reaction]] = {}
             for r in existing_rows:
                 by_emoji.setdefault(r.emoji, []).append(r)
+            # What each emoji's rows held before this reconcile changes them, for
+            # the baseline of an emoji that has no history yet.
+            baseline_rows = {
+                emoji: [(r.count, r.created_at, r.removed_at) for r in rows] for emoji, rows in by_emoji.items()
+            }
+            newest_kept = await self._newest_reaction_history(session, account_id, chat_id, message_id)
 
             # Authoritative per-emoji counts from the snapshot (later duplicates of an
             # emoji are summed defensively; the extractor yields one entry per emoji).
@@ -5644,7 +6447,39 @@ class DatabaseAdapter:
                         await session.delete(row)
                         changed = True
 
-            if not changed:
+            # The history: one row per emoji whose count moved.
+            history_written = False
+            for emoji in sorted(set(by_emoji) | set(desired)):
+                new_count = desired.get(emoji, 0)
+                kept = newest_kept.get(emoji)
+                if kept is None and emoji in by_emoji:
+                    for row in self._reaction_baseline(
+                        baseline_rows[emoji],
+                        account_id=account_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        emoji=emoji,
+                        now=now,
+                    ):
+                        session.add(row)
+                        kept = row.count
+                    history_written = True
+                if kept != new_count:
+                    session.add(
+                        ReactionHistory(
+                            account_id=account_id,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            emoji=emoji,
+                            count=new_count,
+                            previous_count=kept,
+                            observed_at=now,
+                            source=source,
+                        )
+                    )
+                    history_written = True
+
+            if not changed and not history_written:
                 return "noop"
 
             try:
@@ -5665,10 +6500,76 @@ class DatabaseAdapter:
                         observed,
                         account_id=account_id,
                         mark_removed=mark_removed,
+                        source=source,
                         _after_seq_reset=True,
                     )
                 raise
-            return "reconciled"
+            return "reconciled" if changed else "noop"
+
+    @staticmethod
+    async def _newest_reaction_history(session, account_id: int, chat_id: int, message_id: int) -> dict[str, int]:
+        """The count of the newest ``reaction_history`` row per emoji of one message."""
+        ranked = (
+            select(
+                ReactionHistory.emoji,
+                ReactionHistory.count,
+                func.row_number()
+                .over(
+                    partition_by=ReactionHistory.emoji,
+                    order_by=(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc()),
+                )
+                .label("rank"),
+            )
+            .where(
+                ReactionHistory.account_id == account_id,
+                ReactionHistory.chat_id == chat_id,
+                ReactionHistory.message_id == message_id,
+            )
+            .subquery()
+        )
+        result = await session.execute(select(ranked.c.emoji, ranked.c.count).where(ranked.c.rank == 1))
+        return {row.emoji: row.count for row in result}
+
+    @staticmethod
+    def _reaction_baseline(
+        rows: list[tuple[int | None, datetime | None, datetime | None]],
+        *,
+        account_id: int,
+        chat_id: int,
+        message_id: int,
+        emoji: str,
+        now: datetime,
+    ) -> list[ReactionHistory]:
+        """The history an emoji's ``reactions`` rows stand for, before it had any.
+
+        ``rows`` are (count, created_at, removed_at) as stored before this
+        reconcile. One row with the last count they held: the live rows' sum
+        when any is live, else every row's (the count it had when it went), a
+        tombstone without a positive count read as one, as the page read shows
+        it. It is dated when the archive first saw the
+        emoji. An emoji taken back gets a second row, count 0, dated by its
+        latest tombstone. Migration 037 seeds exactly this, in SQL.
+        """
+        live = [count or 0 for count, _created, removed in rows if removed is None]
+        if live:
+            total = sum(live)
+        else:
+            total = sum(count if count and count > 0 else 1 for count, _created, _removed in rows)
+        total = total if total > 0 else 1
+        first_seen = min((created or removed or now) for _count, created, removed in rows)
+        key = {"account_id": account_id, "chat_id": chat_id, "message_id": message_id, "emoji": emoji}
+        baseline = [ReactionHistory(**key, count=total, previous_count=None, observed_at=first_seen, source="baseline")]
+        if not live:
+            baseline.append(
+                ReactionHistory(
+                    **key,
+                    count=0,
+                    previous_count=total,
+                    observed_at=max(removed for _count, _created, removed in rows if removed is not None),
+                    source="baseline",
+                )
+            )
+        return baseline
 
     # ========== Sync Status Operations ==========
 
@@ -5938,10 +6839,13 @@ class DatabaseAdapter:
     async def delete_chat_and_related_data(self, chat_id: int, media_base_path: str = None, *, account_id: int) -> None:
         """Delete one account's copy of a chat and all related data.
 
-        The on-disk media directory below is chat-scoped, not account-scoped:
-        while the media layout stays ``<base>/<chat_id>`` this also removes any
-        files another account's copy of the chat still references. Single-account
-        (this stage) that set is empty; phase 5 owns the layout decision.
+        The on-disk media folder is chat-scoped, not account-scoped: every
+        account's copy of the chat keeps its files in ``<base>/<chat_id>``. The
+        folder is removed only when no media row of any account still uses it,
+        counted after this account's rows are gone. Otherwise it stays whole,
+        because removing it would leave the other account's rows marked
+        downloaded with nothing behind them. The folder holds links into
+        ``_shared`` and those are removed with it, never the shared files.
         """
         async with self.db_manager.async_session_factory() as session:
             # Serialize concurrent deletions of the same chat: on PostgreSQL two
@@ -5974,7 +6878,12 @@ class DatabaseAdapter:
             chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
             await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
             await session.execute(delete(Media).where(chat_media))
-            # Delete reactions
+            # Delete reactions and their history
+            await session.execute(
+                delete(ReactionHistory).where(
+                    and_(ReactionHistory.account_id == account_id, ReactionHistory.chat_id == chat_id)
+                )
+            )
             await session.execute(
                 delete(Reaction).where(and_(Reaction.account_id == account_id, Reaction.chat_id == chat_id))
             )
@@ -6015,7 +6924,22 @@ class DatabaseAdapter:
         # Delete physical files
         if media_base_path and os.path.exists(media_base_path):
             chat_media_dir = os.path.join(media_base_path, str(chat_id))
+            still_used = 0
             if os.path.exists(chat_media_dir):
+                folder_prefixes = {
+                    os.path.join(media_base_path, str(chat_id)) + os.sep,
+                    os.path.join(os.path.abspath(media_base_path), str(chat_id)) + os.sep,
+                    f"{chat_id}/",
+                }
+                try:
+                    still_used = await self.count_media_rows_in_folder(chat_id, folder_prefixes)
+                except Exception as e:
+                    # Unknown means in use: a folder is never removed on doubt.
+                    logger.error(f"Could not count the rows still using the chat's media folder: {type(e).__name__}")
+                    still_used = 1
+                if still_used:
+                    logger.info(f"Kept the chat's media folder: {still_used} media row(s) of another account use it")
+            if os.path.exists(chat_media_dir) and not still_used:
                 try:
                     shutil.rmtree(chat_media_dir)
                     logger.info("Deleted media folder for chat")
@@ -6091,6 +7015,7 @@ class DatabaseAdapter:
                 User.last_name,
                 User.username,
                 reply_media_type,
+                Message.raw_data,
             )
             .outerjoin(User, Message.sender_id == User.id)
             .where(and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed)))
@@ -6098,16 +7023,19 @@ class DatabaseAdapter:
         if account_id is not None:
             reply_stmt = reply_stmt.where(Message.account_id == account_id)
         reply_result = await session.execute(reply_stmt)
-        reply_rows: dict[int, dict[str, Any]] = {
-            row.id: {
+        reply_rows: dict[int, dict[str, Any]] = {}
+        for row in reply_result:
+            payload_kind, venue_title = _reply_card_kind(row.raw_data)
+            reply_rows[row.id] = {
                 "text": row.text,
                 "sender_name": resolve_sender_display_name(
                     row.sender_name, row.first_name, row.last_name, row.username
                 ),
-                "media_type": row.reply_media_type,
+                # The listener writes no media row for a location or a contact,
+                # so its payload names the kind when there is no row.
+                "media_type": row.reply_media_type or payload_kind,
+                "venue_title": venue_title,
             }
-            for row in reply_result
-        }
 
         for msg in messages:
             if not msg.get("reply_to_msg_id"):
@@ -6115,6 +7043,9 @@ class DatabaseAdapter:
             reply_row = reply_rows.get(msg["reply_to_msg_id"])
             msg["reply_to_sender_name"] = reply_row["sender_name"] if reply_row else None
             msg["reply_to_media_type"] = reply_row["media_type"] if reply_row else None
+            if reply_row and reply_row["venue_title"]:
+                # "Location, Demo Cafe" in the quote, as the Telegram apps write it.
+                msg["reply_to_media_title"] = reply_row["venue_title"]
             if reply_row and not msg.get("reply_to_text") and reply_row["text"]:
                 msg["reply_to_text"] = reply_row["text"][:100]
 
@@ -7105,6 +8036,23 @@ class DatabaseAdapter:
                         {"emoji": r.emoji, "user_id": r.user_id, "count": r.count}
                     )
 
+            # Every kept state of the page's reactions (reaction_history), oldest
+            # first, from the same chat, messages and account as the rows above.
+            history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+            if page_message_ids:
+                history_stmt = (
+                    select(ReactionHistory)
+                    .where(
+                        ReactionHistory.chat_id == chat_id,
+                        ReactionHistory.message_id.in_(page_message_ids),
+                    )
+                    .order_by(ReactionHistory.message_id, ReactionHistory.observed_at, ReactionHistory.id)
+                )
+                if account_id is not None:
+                    history_stmt = history_stmt.where(ReactionHistory.account_id == account_id)
+                for h in (await session.execute(history_stmt)).scalars():
+                    history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
+
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
 
@@ -7117,20 +8065,73 @@ class DatabaseAdapter:
                     if reaction.get("user_id"):
                         reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
                 msg["reactions"] = list(reactions_by_emoji.values())
-                # Newest removal first. An emoji that is live again is not listed:
-                # it has one row, and reconcile_reactions revived it.
-                msg["removed_reactions"] = sorted(
-                    (
-                        removed
-                        for emoji, removed in removed_by_message.get(msg["id"], {}).items()
-                        if emoji not in reactions_by_emoji
-                    ),
-                    key=lambda removed: (removed["removed_at"], removed["emoji"]),
-                    reverse=True,
+                history = history_by_message.get(msg["id"], [])
+                msg["reaction_history"] = history
+                msg["removed_reactions"] = self._removed_reactions(
+                    history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
                 )
 
             await self.attach_sender_accounts(messages)
             return messages
+
+    @staticmethod
+    def _reaction_history_to_dict(row) -> dict[str, Any]:
+        """One kept state of an emoji on a message, as the page read and both exports list it."""
+        return {
+            "emoji": row.emoji,
+            "count": row.count,
+            "previous_count": row.previous_count,
+            "observed_at": row.observed_at,
+            "source": row.source,
+        }
+
+    @staticmethod
+    def _removed_reactions(
+        history: list[dict[str, Any]], tombstones: dict[str, dict[str, Any]], live: set[str]
+    ) -> list[dict[str, Any]]:
+        """The reactions taken back the viewer lists, newest first, one entry per emoji.
+
+        From ``history`` (one message's ``reaction_history``, oldest first),
+        the latest drop of each emoji: a state whose count is below the one
+        before it. ``count`` is how many went, ``count_before`` the count
+        before the drop, so a partial drop reads "2 of 7", and ``removed_at``
+        when the archive saw it. A drop to zero followed by a state with a
+        count has ``back_at``, when the archive saw the emoji again.
+
+        An emoji with no history (a row written before 037 and not touched
+        since, if the baseline was ever skipped) falls back to its tombstone:
+        listed while it is not live, with the count it had when it went.
+        """
+        by_emoji: dict[str, list[dict[str, Any]]] = {}
+        for state in history:
+            by_emoji.setdefault(state["emoji"], []).append(state)
+        entries: list[dict[str, Any]] = []
+        for emoji, states in by_emoji.items():
+            drop_index = None
+            for index, state in enumerate(states):
+                before = state["previous_count"]
+                if before is not None and state["count"] < before:
+                    drop_index = index
+            if drop_index is None:
+                continue
+            drop = states[drop_index]
+            back_at = None
+            if drop["count"] == 0:
+                back_at = next((later["observed_at"] for later in states[drop_index + 1 :] if later["count"] > 0), None)
+            entries.append(
+                {
+                    "emoji": emoji,
+                    "count": drop["previous_count"] - drop["count"],
+                    "count_before": drop["previous_count"],
+                    "removed_at": drop["observed_at"],
+                    "back_at": back_at,
+                }
+            )
+        for emoji, removed in tombstones.items():
+            if emoji in by_emoji or emoji in live:
+                continue
+            entries.append({**removed, "count_before": removed["count"], "back_at": None})
+        return sorted(entries, key=lambda removed: (removed["removed_at"], removed["emoji"]), reverse=True)
 
     async def get_message_dates(
         self,
@@ -7511,32 +8512,28 @@ class DatabaseAdapter:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
     ):
+        """Stream a chat's messages for the viewer's export (async generator).
+
+        None account_id = unscoped until phase 4. ``from_date`` is a naive-UTC
+        inclusive lower bound on Message.date, ``to_date`` an EXCLUSIVE upper
+        bound.
+
+        Yields message dictionaries with sender info, deleted messages
+        included and marked by ``is_deleted``/``deleted_at``. Each carries
+        ``edit_date``, ``media`` (its current media, ``_export_media_dict``,
+        never a file path) and ``versions``, every earlier text and media the
+        archive kept of it (``_export_versions``, any date, oldest first). A
+        message whose media has transcripts carries them all under
+        ``transcripts``, newest first. Everything is read from one snapshot,
+        so every transcript names a media listed in the same file. A
+        location, a contact, a poll or another metadata-only kind is under
+        ``media_payload``, keyed as in ``raw_data``.
+
+        ``include_media`` is for ``scripts/restore_chat.py``, which uploads
+        the files again: each message also gets ``media_type`` and
+        ``media_path``, the stored path of its first media row, or None. The
+        viewer's export never passes it, so no file path leaves the archive.
         """
-        Get messages for export with user info.
-        Returns an async generator for streaming.
-        None account_id = unscoped until phase 4.
-
-        v6.0.0: Media info now comes from the media table via JOIN.
-
-        Args:
-            chat_id: Chat ID to export
-            include_media: If True, include media info from media table
-            from_date: naive-UTC inclusive lower bound on Message.date
-            to_date: naive-UTC EXCLUSIVE upper bound on Message.date
-
-        Yields:
-            Message dictionaries with user info, deleted messages included and
-            marked by ``is_deleted``/``deleted_at``. Each carries ``edit_date``
-            and ``versions``, every earlier text the archive kept of it (any
-            date, oldest first), and ``snapshots``, every later state of its
-            poll or link preview (oldest first). A message whose media has
-            transcripts carries them all under ``transcripts``, newest first.
-        """
-        transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
-        for row in await self.get_transcripts_for_export(
-            chat_id, account_id=account_id, from_date=from_date, to_date=to_date
-        ):
-            transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
         conditions = [Message.chat_id == chat_id]
         if account_id is not None:
             conditions.append(Message.account_id == account_id)
@@ -7544,92 +8541,39 @@ class DatabaseAdapter:
             conditions.append(Message.date >= from_date)
         if to_date is not None:
             conditions.append(Message.date < to_date)
+        stmt = (
+            select(
+                Message.id,
+                Message.account_id,
+                Message.chat_id,
+                Message.date,
+                Message.text,
+                Message.is_outgoing,
+                Message.reply_to_msg_id,
+                Message.sender_name,
+                Message.edit_date,
+                Message.is_deleted,
+                Message.deleted_at,
+                Message.raw_data,
+                User.first_name,
+                User.last_name,
+                User.username,
+            )
+            .outerjoin(User, Message.sender_id == User.id)
+            .where(*conditions)
+            .order_by(*EXPORT_MESSAGE_ORDER)
+        )
         async with self.db_manager.async_session_factory() as session:
-            if include_media:
-                stmt = (
-                    select(
-                        Message.id,
-                        Message.account_id,
-                        Message.date,
-                        Message.text,
-                        Message.is_outgoing,
-                        Message.reply_to_msg_id,
-                        Message.sender_name,
-                        Message.edit_date,
-                        Message.is_deleted,
-                        Message.deleted_at,
-                        Media.type.label("media_type"),
-                        Media.file_path.label("media_file_path"),
-                        User.first_name,
-                        User.last_name,
-                        User.username,
-                    )
-                    .outerjoin(User, Message.sender_id == User.id)
-                    .outerjoin(
-                        Media,
-                        and_(
-                            Media.account_id == Message.account_id,
-                            Media.message_id == Message.id,
-                            Media.chat_id == Message.chat_id,
-                        ),
-                    )
-                    .where(*conditions)
-                    .order_by(*EXPORT_MESSAGE_ORDER)
-                )
-            else:
-                stmt = (
-                    select(
-                        Message.id,
-                        Message.account_id,
-                        Message.date,
-                        Message.text,
-                        Message.is_outgoing,
-                        Message.reply_to_msg_id,
-                        Message.sender_name,
-                        Message.edit_date,
-                        Message.is_deleted,
-                        Message.deleted_at,
-                        User.first_name,
-                        User.last_name,
-                        User.username,
-                    )
-                    .outerjoin(User, Message.sender_id == User.id)
-                    .where(*conditions)
-                    .order_by(*EXPORT_MESSAGE_ORDER)
-                )
-
             await self._read_one_snapshot(session)
+            transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
+            for row in await self._read_export_transcripts(
+                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+            ):
+                transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
             result = await session.stream(stmt)
-            # The kept versions walk beside the messages, in the same order,
-            # so only the current message's versions are ever in memory,
-            # however long a chat's edit history is.
-            versions = await session.stream(self._versions_of_messages_query(conditions))
-            pending = await anext(versions, None)
-            # The later poll and preview states walk beside them the same way.
-            snapshots = await session.stream(self._snapshots_of_messages_query(conditions))
-            pending_snapshot = await anext(snapshots, None)
-            last_key: tuple[int, int] | None = None
-            last_versions: list[dict[str, Any]] = []
-            last_snapshots: list[dict[str, Any]] = []
-            async for row in result:
-                key = (row.account_id, row.id)
-                if key != last_key:
-                    # With media a message repeats once per media row, and
-                    # every copy carries the same versions.
-                    last_key, last_versions, last_snapshots = key, [], []
-                    while pending is not None and (pending.account_id, pending.message_id) == key:
-                        last_versions.append(self._export_version_dict(pending))
-                        pending = await anext(versions, None)
-                    while (
-                        pending_snapshot is not None
-                        and (
-                            pending_snapshot.account_id,
-                            pending_snapshot.message_id,
-                        )
-                        == key
-                    ):
-                        last_snapshots.append(self._export_snapshot_dict(pending_snapshot, iso_dates=True))
-                        pending_snapshot = await anext(snapshots, None)
+            async for row, media, versions, reaction_history, snapshots in self._export_message_parts(
+                session, result, conditions, iso=True
+            ):
                 msg = {
                     "id": row.id,
                     "date": row.date.isoformat() if row.date else None,
@@ -7649,22 +8593,22 @@ class DatabaseAdapter:
                     "is_deleted": bool(row.is_deleted),
                     "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
                     "edit_date": row.edit_date.isoformat() if row.edit_date else None,
+                    "media": [self._export_media_dict(media_row) for media_row in media],
                 }
                 if include_media:
-                    msg["media_type"] = row.media_type
-                    msg["media_path"] = row.media_file_path
+                    msg["media_type"] = media[0].type if media else None
+                    msg["media_path"] = media[0].file_path if media else None
+                # A location, a contact, a poll and the other metadata-only
+                # kinds are the message's content: the card the viewer draws.
+                media_payload = _media_payloads_of(row.raw_data)
+                if media_payload:
+                    msg["media_payload"] = media_payload
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
-                msg["versions"] = list(last_versions)
-                msg["snapshots"] = list(last_snapshots)
+                msg["versions"] = versions
+                msg["reaction_history"] = reaction_history
+                msg["snapshots"] = snapshots
                 yield msg
-            if pending is not None:
-                # A version left over means the two queries stopped sorting
-                # alike and some messages went out without their versions.
-                # Fail the export rather than write a file that drops them.
-                raise RuntimeError("Export versions fell out of step with the messages")
-            if pending_snapshot is not None:
-                raise RuntimeError("Export snapshots fell out of step with the messages")
 
     # ========== Forum Topic Operations (v6.2.0) ==========
 
@@ -8845,48 +9789,66 @@ class DatabaseAdapter:
         export reads only the rows of the messages it exports.
         """
         async with self.db_manager.async_session_factory() as session:
-            owners = self._transcribed_media_owners()
-            stmt = (
-                select(MediaTranscript, owners.c.chat_id, owners.c.message_id)
-                .join(
-                    owners,
-                    and_(
-                        owners.c.account_id == MediaTranscript.account_id,
-                        owners.c.media_id == MediaTranscript.media_id,
-                    ),
-                )
-                .order_by(MediaTranscript.id.desc())
+            return await self._read_export_transcripts(
+                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
             )
-            if chat_id is not None:
-                stmt = stmt.where(owners.c.chat_id == chat_id)
-            if account_id is not None:
-                stmt = stmt.where(MediaTranscript.account_id == account_id)
-            if from_date is not None or to_date is not None:
-                stmt = stmt.join(
-                    Message,
-                    and_(
-                        Message.account_id == owners.c.account_id,
-                        Message.chat_id == owners.c.chat_id,
-                        Message.id == owners.c.message_id,
-                    ),
-                )
-                if from_date is not None:
-                    stmt = stmt.where(Message.date >= from_date)
-                if to_date is not None:
-                    stmt = stmt.where(Message.date < to_date)
-            rows = []
-            for transcript, media_chat_id, message_id in await session.execute(stmt):
-                row = self._transcript_to_dict(transcript)
-                # The source of a copy may sit in an account the export's
-                # reader is not entitled to: its id stays out.
-                row.pop("copied_from_id", None)
-                for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
-                    if isinstance(row[key], datetime):
-                        row[key] = row[key].isoformat()
-                row["chat_id"] = media_chat_id
-                row["message_id"] = message_id
-                rows.append(row)
-            return rows
+
+    async def _read_export_transcripts(
+        self,
+        session,
+        chat_id: int | None = None,
+        *,
+        account_id: int | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """``get_transcripts_for_export`` in a session the caller holds.
+
+        The exports call it inside their snapshot, so each transcript they
+        write names a media they list from the same archive state.
+        """
+        owners = self._transcribed_media_owners()
+        stmt = (
+            select(MediaTranscript, owners.c.chat_id, owners.c.message_id)
+            .join(
+                owners,
+                and_(
+                    owners.c.account_id == MediaTranscript.account_id,
+                    owners.c.media_id == MediaTranscript.media_id,
+                ),
+            )
+            .order_by(MediaTranscript.id.desc())
+        )
+        if chat_id is not None:
+            stmt = stmt.where(owners.c.chat_id == chat_id)
+        if account_id is not None:
+            stmt = stmt.where(MediaTranscript.account_id == account_id)
+        if from_date is not None or to_date is not None:
+            stmt = stmt.join(
+                Message,
+                and_(
+                    Message.account_id == owners.c.account_id,
+                    Message.chat_id == owners.c.chat_id,
+                    Message.id == owners.c.message_id,
+                ),
+            )
+            if from_date is not None:
+                stmt = stmt.where(Message.date >= from_date)
+            if to_date is not None:
+                stmt = stmt.where(Message.date < to_date)
+        rows = []
+        for transcript, media_chat_id, message_id in await session.execute(stmt):
+            row = self._transcript_to_dict(transcript)
+            # The source of a copy may sit in an account the export's
+            # reader is not entitled to: its id stays out.
+            row.pop("copied_from_id", None)
+            for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
+                if isinstance(row[key], datetime):
+                    row[key] = row[key].isoformat()
+            row["chat_id"] = media_chat_id
+            row["message_id"] = message_id
+            rows.append(row)
+        return rows
 
     async def get_media_transcript(self, transcript_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
         """One transcript row by id, or None."""

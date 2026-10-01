@@ -64,6 +64,7 @@ When it finishes, the command prints `Import complete:` with the number of chats
 - It streams `result.json` one message at a time, so memory use stays flat on a large export.
 - If a JSON import stops partway, run the same command on the same file again. The importer skips the chats it finished and replays the interrupted one. You do not need `--merge` for this. An HTML import does not resume.
 - It refuses to import into a chat that already has messages, unless you pass `--merge`.
+- From a JSON export it keeps locations, venues, live locations, shared contacts and polls in the message data, under the same keys the backup uses, so the viewer shows them as cards. The export has no poll option ids, so an imported poll numbers its answers. An HTML export has none of these details.
 - It copies media files into `media/<chat_id>/` in the archive. The export must stay readable for the whole run, and the copies need free disk space of their own. Media the archive already holds for a message is skipped.
 - Everything is written under account 1, even when the install has several accounts.
 - Only a full-account JSON export tells the importer which messages you sent. HTML and single-chat exports leave that flag unset.
@@ -129,6 +130,23 @@ docker compose start telegram-backup
 !!! note "Reload open viewer tabs afterwards"
     An open viewer tab shows "missing from the archive disk" for a re-typed video until you reload the page.
 
+## Fill old locations, contacts, polls and edit flags
+
+Messages archived before the archive kept locations, venues, live locations and contacts show their card with `Details not archived`. Old polls archived by the backup can be in the same state. Messages archived before 9.0 also lack Telegram's flag for an edit time moved by a reaction, so a reaction shows as a pencil until a backup reads the message again. `backfill-details` asks Telegram for those messages again, each once, and adds only the missing details and flags. It never replaces text, dates, reactions or details already stored. It also clears the placeholder path older releases left on these rows when the file is empty, missing or no longer needed, and leaves every file on disk where it is. Run it where the media folder is mounted, as in the commands below: without it, every path is kept.
+
+It is a dry run unless you add `--apply`:
+
+```bash
+docker compose stop telegram-backup
+docker compose run --rm telegram-backup python -m telegram_archive backfill-details
+docker compose run --rm telegram-backup python -m telegram_archive backfill-details --apply
+docker compose start telegram-backup
+```
+
+It costs one request per 100 messages to read, plus one per chat, with a second between requests. An archive with 50,000 old edited messages takes at least 500 requests, so ten minutes or more. A dry run asks Telegram the same questions as a real run.
+
+`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the edit flags filled as hidden (the pencil goes) and as shown (a real edit keeps it), the edits with a later edit time, then the chats Telegram no longer serves and the placeholder paths cleared and kept. If the run stops, run it again: it picks up the messages still missing their details or their flag, and a second complete run fills nothing. For every flag and the full output, see [backfill-details](../reference/cli.md#backfill-details).
+
 ## Verify media files
 
 Media verification checks every downloaded file and downloads it again when it is missing, empty or the wrong size. You turn it on with a setting:
@@ -139,6 +157,13 @@ Media verification checks every downloaded file and downloads it again when it i
 4. Set `VERIFY_MEDIA=false` and run `docker compose up -d telegram-backup` again.
 
 See [Media downloads](../configuration/media.md) for what it checks.
+
+To check the files without downloading anything, run [`check-media`](../reference/cli.md#check-media). It counts broken links and missing files and, with `--repair`, puts back the ones with a copy on disk and marks the rest to download again at the next backup run:
+
+```bash
+docker compose exec telegram-backup python -m telegram_archive check-media
+docker compose exec telegram-backup python -m telegram_archive check-media --repair
+```
 
 ## Export to JSON
 
@@ -151,7 +176,7 @@ docker compose exec telegram-backup \
 
 `-o` names the output file, which must be under `/data`. `-c` exports one chat's messages. `-s` is the first day to include. `-e` is the first day to exclude: the command compares it as midnight at the start of that day. To include a whole last day, pass the day after it. The example above covers all of 2024. For every flag, see [export](../reference/cli.md#export).
 
-The `chats` list in the file always holds every chat in the archive, even with `-c`. The export leaves out media files. For the file layout, see [Command line and Python API](../reference/cli.md).
+The `chats` list in the file always holds every chat in the archive, even with `-c`. The export lists each message's media but leaves out the files. For the file layout, see [Command line and Python API](../reference/cli.md).
 
 ## Merge two archives
 
@@ -163,7 +188,7 @@ It reads the target from the same settings as every other command: `DATABASE_URL
 
 Each source Telegram account is added to the target under the next free account id. Every row the account owns follows it under that id:
 
-- its chats, messages, edit history, reactions, media rows and transcripts
+- its chats, messages, edit history, reactions and their history, media rows and transcripts
 - forum topics, folders and folder membership, its [positions](../reference/glossary.md#position) and avatar history
 - its per-account records: followed chat migrations, failed-message records and import progress
 

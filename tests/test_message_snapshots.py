@@ -1,4 +1,4 @@
-"""Later states of polls and link previews (``message_snapshots``, 037).
+"""Later states of polls and link previews (``message_snapshots``, 038).
 
 ``raw_data`` keeps a poll and a link preview as first captured. When a later
 read shows another state (votes, results, closing; the card's fields), a row
@@ -412,7 +412,7 @@ class TestReads:
 
     async def test_the_command_export_lists_every_state_per_message(self, real_adapter):
         await self._two_states(real_adapter)
-        messages, _ = await real_adapter.get_messages_and_versions_by_date_range(CHAT_ID, account_id=1)
+        messages = await real_adapter.get_messages_for_backup_export(CHAT_ID, account_id=1)
         (msg,) = messages
         assert [s["payload"]["results"]["total_voters"] for s in msg["snapshots"]] == [5, 7]
         assert isinstance(msg["snapshots"][0]["observed_at"], datetime)

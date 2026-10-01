@@ -140,11 +140,12 @@ class TestMessagesPageBatchingShape:
         assert len(rows) == 50
         select_count = sum(1 for s in statements if s.strip().upper().startswith("SELECT"))
         # Main page query + version-count query + batched reply-text query +
-        # batched reactions query == 4, plus the grouped read of the page's poll
-        # and preview snapshots (037), one statement whatever the page holds.
+        # batched reactions query + batched reaction history query == 5, plus
+        # the grouped read of the page's poll and preview snapshots (038), one
+        # statement whatever the page holds.
         # Anything approaching 50+ would mean the N+1 per-row pattern
         # (get_reactions/reply SELECT per row) came back.
-        assert select_count <= 7, f"expected a small constant query count, got {select_count}: {statements}"
+        assert select_count <= 8, f"expected a small constant query count, got {select_count}: {statements}"
 
 
 class TestPendingMediaDownloadsLimit:

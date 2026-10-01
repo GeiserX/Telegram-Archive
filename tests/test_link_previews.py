@@ -109,7 +109,7 @@ class TestViewerCard(unittest.TestCase):
 
     def test_card_renders_from_raw_data_and_guards_the_scheme(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        # The card draws the newest kept state (message_snapshots, 037) over
+        # The card draws the newest kept state (message_snapshots, 038) over
         # the first capture in raw_data.
         self.assertIn('v-if="currentPreview(msg)"', html)
         self.assertIn(

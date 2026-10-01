@@ -48,9 +48,9 @@ from .message_utils import (
     describe_exception,
     download_and_shard_media,
     downloadable_media_payload,
-    extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
+    extract_media_payload,
     extract_media_poll,
     extract_poll_state,
     extract_reactions,
@@ -66,6 +66,7 @@ from .message_utils import (
     message_entities,
     message_plain_text,
     message_rich_payload,
+    message_seen_at,
     sanitize_media_filename,
     sender_display_name,
     service_action_type,
@@ -79,6 +80,11 @@ from .transcription_contract import is_transcribable
 from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
+
+# The media fields an edit frame carries: the message API's nested media row.
+# The viewer turns the storage id into the URL key and the URL (the id's
+# ``_v{n}`` becomes the ``?v=`` cache key) and applies the login's download rule.
+_FRAME_MEDIA_KEYS = ("id", "type", "file_path", "file_name", "file_size", "mime_type", "width", "height", "duration")
 
 # The UpdateMessagePoll lookup cache (TelegramListener._poll_messages): how
 # many polls it holds, and how long a poll not found in the archive is not
@@ -354,7 +360,10 @@ class TelegramListener:
         self.stats = {
             "edits_received": 0,
             "edits_applied": 0,
-            "edits_skipped": 0,  # No-op edits (already current / not archived)
+            "edits_skipped": 0,  # No-op edits (already current / older evidence)
+            # Edits of a message the archive had not stored yet, stored through
+            # the new-message path. No webhook and no live frame for them.
+            "edits_stored_as_new": 0,
             "deletions_received": 0,
             "deletions_applied": 0,
             "deletions_skipped": 0,  # Skipped due to LISTEN_DELETIONS=false
@@ -655,7 +664,7 @@ class TelegramListener:
         for (chat_id, message_id), observed in pending.items():
             try:
                 outcome = await self.db.reconcile_reactions(
-                    message_id, chat_id, observed, account_id=self.account_id, mark_removed=True
+                    message_id, chat_id, observed, account_id=self.account_id, mark_removed=True, source="listener"
                 )
                 if outcome == "reconciled":
                     self.stats["reactions_applied"] += 1
@@ -1095,6 +1104,22 @@ class TelegramListener:
             return media_type
         return None
 
+    async def _current_media_row(self, chat_id: int, message_id: int, media_type: str) -> dict | None:
+        """The message's media row for a live frame, or None when it has none.
+
+        For an edit that replaced the media when the new file was not fetched
+        at once: the row is then empty (no file) under its new id, and the
+        viewer shows what the messages API would show for it.
+        """
+        try:
+            row = await self.db.get_media_for_message(chat_id, message_id, media_type, account_id=self.account_id)
+        except Exception as e:
+            logger.debug(f"Could not read the media row for a live edit: {describe_exception(e)}")
+            return None
+        if not isinstance(row, dict):
+            return None
+        return row
+
     def _message_media_lock(self, chat_id: int, message_id: int) -> asyncio.Lock:
         """One lock per message for the handlers that write its media.
 
@@ -1362,10 +1387,16 @@ class TelegramListener:
                     )
                     # The new file, beside the kept one, under the same rules as a
                     # new message's media (SKIP_MEDIA, size, type filters).
+                    frame_media = None
                     if replaced_media_type is not None:
                         capturable_type = self._capturable_media_type(message)
                         if capturable_type is not None:
-                            await self._store_message_media(message, chat_id, capturable_type)
+                            frame_media = await self._store_message_media(message, chat_id, capturable_type)
+                        if frame_media is None:
+                            # Not fetched now (not live, skipped, failed, or newer
+                            # media already stored): the frame carries the row the
+                            # archive holds, as the messages API shows it.
+                            frame_media = await self._current_media_row(chat_id, message.id, replaced_media_type)
                 # A poll's votes or closing, or a link preview Telegram filled
                 # in or changed: kept beside the first capture whatever the text
                 # did. A message not archived yet is stored below with both.
@@ -1386,10 +1417,12 @@ class TelegramListener:
                     # message now through the new-message path, with its current
                     # text and edit_date. That path makes its own scope checks.
                     # backfill=True stores it quietly: the message is not new, and
-                    # a reaction to an old message arrives as an edit too.
-                    self.stats["edits_skipped"] += 1
+                    # a reaction to an old message arrives as an edit too. It
+                    # counts in edits_stored_as_new, or here when nothing was
+                    # stored (LISTEN_NEW_MESSAGES off, out of scope, an error).
                     logger.debug("📝 Edit of a message not archived yet, storing it")
-                    await on_new_message(event, backfill=True)
+                    if not await on_new_message(event, backfill=True):
+                        self.stats["edits_skipped"] += 1
                     return
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
@@ -1400,18 +1433,22 @@ class TelegramListener:
                 logger.debug("📝 Edit applied")
 
                 # Notify viewer of the update
-                await self._notify_update(
-                    "edit",
-                    {
-                        "chat_id": chat_id,
-                        "message_id": message.id,
-                        "new_text": new_text,
-                        "edit_date": edit_date.isoformat() if edit_date else None,
-                        "edit_hide": edit_hide,
-                        # The edit may have changed only the formatting.
-                        "entities": entities,
-                    },
-                )
+                edit_frame = {
+                    "chat_id": chat_id,
+                    "message_id": message.id,
+                    "new_text": new_text,
+                    "edit_date": edit_date.isoformat() if edit_date else None,
+                    "edit_hide": edit_hide,
+                    # The edit may have changed only the formatting.
+                    "entities": entities,
+                }
+                # The edit replaced the photo or file: the frame carries the
+                # message's current media, in the new_message frame's nested
+                # shape, so an open chat swaps it in at once. No key: the
+                # media did not change, and the viewer keeps what it shows.
+                if frame_media is not None:
+                    edit_frame["media"] = {key: frame_media.get(key) for key in _FRAME_MEDIA_KEYS}
+                await self._notify_update("edit", edit_frame)
 
                 await self._fire_event_webhook(
                     "message_edited",
@@ -1502,7 +1539,7 @@ class TelegramListener:
                 self.stats["errors"] += 1
                 logger.error(f"Error processing deletion event: {e}", exc_info=True)
 
-        async def on_new_message(event: events.NewMessage.Event, *, backfill: bool = False) -> None:
+        async def on_new_message(event: events.NewMessage.Event, *, backfill: bool = False) -> bool:
             """
             Handle new messages.
 
@@ -1514,10 +1551,14 @@ class TelegramListener:
             message the archive has not stored yet. A back-fill stores the
             message exactly the same way but announces nothing: no NEW_MESSAGE
             notification (so no viewer row, Web Push or desktop alert for an old
-            message) and no new_messages_* counts. It is registered below the
-            definition, not by a decorator, so the name always holds this
-            function.
+            message) and no new_messages_* counts; it counts in
+            edits_stored_as_new instead. It is registered below the definition,
+            not by a decorator, so the name always holds this function.
+
+            Returns True when the message row was written (Telethon ignores it;
+            the edit handler counts with it).
             """
+            stored = False
             try:
                 chat_id = self._get_marked_id(event.chat_id)
 
@@ -1619,28 +1660,26 @@ class TelegramListener:
                 if webpage_preview is not None:
                     message_data["raw_data"]["webpage"] = webpage_preview
 
-                # Polls: the same raw_data shape the sweep writes, so a later
-                # vote or closing has a first capture to be compared with.
-                poll_state = extract_media_poll(message.media)
-                if poll_state is not None:
-                    message_data["raw_data"]["poll"] = poll_state
-                    self._remember_poll_message(poll_state, chat_id, message.id)
-
-                # Extended media kinds: same raw_data shape the sweep writes.
-                extended_media = extract_extended_media_details(message.media)
-                if extended_media is not None:
-                    extended_kind, extended_details = extended_media
-                    message_data["raw_data"][extended_kind] = extended_details
+                # Metadata-only media (location, contact, poll, venue, live
+                # location, ...): the same builder and raw_data key the sweep
+                # uses, so the WebSocket frame below carries the card too.
+                media_payload = extract_media_payload(message.media, seen_at=message_seen_at(message))
+                if media_payload is not None:
+                    payload_kind, payload = media_payload
+                    message_data["raw_data"][payload_kind] = payload
+                    if payload_kind == "poll":
+                        # A later poll update that names only the poll finds this message.
+                        self._remember_poll_message(payload, chat_id, message.id)
                 # Forward origin pointer: pure metadata off the event, no API
                 # cost — the sweep writer captures the same key.
                 forward_origin = extract_forward_origin(message)
                 if forward_origin:
                     message_data["raw_data"]["forward_origin"] = forward_origin
 
-                # Formatting entities — same contract as the sweep writer.
-                entities = message_entities(message)
-                if entities:
-                    message_data["raw_data"]["entities"] = entities
+                # Formatting entities — same contract as the sweep writer. An
+                # empty list says "no formatting", so a later edit that only
+                # adds some is an edit (an absent key reads as unknown).
+                message_data["raw_data"]["entities"] = message_entities(message) or []
 
                 # Rich Text Editor messages (#470): same raw_data key the sweep writes.
                 rich_payload = message_rich_payload(message)
@@ -1656,7 +1695,10 @@ class TelegramListener:
                 async with self._message_media_lock(chat_id, message.id):
                     # Insert the message FIRST (required for FK constraint on media table)
                     await self.db.insert_message(message_data, account_id=self.account_id)
-                    if not backfill:
+                    stored = True
+                    if backfill:
+                        self.stats["edits_stored_as_new"] += 1
+                    else:
                         self.stats["new_messages_saved"] += 1
 
                     # New messages can arrive already carrying reactions (fast reactors,
@@ -1701,6 +1743,7 @@ class TelegramListener:
                 # OSError would print the media path that describe_exception
                 # just removed. Type and (where safe) message are kept.
                 logger.error(f"Error in new message handler: {describe_exception(e)}")
+            return stored
 
         self.client.on(events.NewMessage)(on_new_message)
 
@@ -2170,6 +2213,7 @@ class TelegramListener:
             logger.info(f"      Received: {self.stats['edits_received']}")
             logger.info(f"      Applied:  {self.stats['edits_applied']}")
             logger.info(f"      Skipped:  {self.stats['edits_skipped']}")
+            logger.info(f"      Stored as new messages: {self.stats['edits_stored_as_new']}")
             logger.info("")
             logger.info("   🗑️ Deletions:")
             logger.info(f"      Received: {self.stats['deletions_received']}")

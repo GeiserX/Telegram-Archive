@@ -18,6 +18,7 @@ from telethon import TelegramClient
 from telethon.errors import (
     AuthKeyError,
     ChannelPrivateError,
+    ChatAdminRequiredError,
     ChatForbiddenError,
     ChatIdInvalidError,
     FileReferenceExpiredError,
@@ -35,10 +36,8 @@ from telethon.tl.types import (
     Message,
     MessageActionChannelMigrateFrom,
     MessageActionChatMigrateTo,
-    MessageMediaPoll,
     PeerChannel,
     PeerChat,
-    TextWithEntities,
     User,
 )
 from telethon.utils import get_peer_id
@@ -55,20 +54,26 @@ from .folder_utils import (
     resolve_include_folder_chat_ids,
 )
 from .media_errors import is_media_location_error
+from .media_integrity import PRESENT, RESTORED, repair_media_row
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
+    PAYLOAD_BACKFILL_TYPES,
+    VCARD_MAX_BYTES,
     _photo_size_bytes,
+    _text_with_entities_to_string,
+    broken_shared_link_target,
     build_media_filename,
     chat_title_for_log,
     classify_media_type,
     compute_file_hash_async,
+    contact_payload_from_vcard,
     describe_exception,
     download_and_shard_media,
     downloadable_media_payload,
-    extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
-    extract_poll_state,
+    extract_media_payload,
+    extract_media_poll,
     extract_reactions,
     extract_topic_id,
     extract_webpage_preview,
@@ -83,6 +88,8 @@ from .message_utils import (
     message_entities,
     message_plain_text,
     message_rich_payload,
+    message_seen_at,
+    place_copy,
     resolve_shared_file_path,
     sender_display_name,
     service_action_type,
@@ -138,6 +145,10 @@ FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
 # Bounded re-fetch+retry for transient media errors (expired reference / location
 # unavailable). After this many download attempts the item is left for the next
 # scheduled backup run instead of being retried indefinitely.
+# backfill-details: ids per get_messages call (Telegram's own cap) and the
+# pause between two calls, so a long run stays well under the flood limits.
+PAYLOAD_BACKFILL_BATCH = 100
+PAYLOAD_BACKFILL_PAUSE_SECONDS = 1.0
 MEDIA_REFRESH_MAX_ATTEMPTS = _get_int_env("MEDIA_REFRESH_MAX_ATTEMPTS", 3)
 # Upper bound on a single message-refresh round-trip so it can never hang.
 MEDIA_REFRESH_TIMEOUT_SECONDS = _get_int_env("MEDIA_REFRESH_TIMEOUT_SECONDS", 120)
@@ -1738,6 +1749,337 @@ class TelegramBackup:
         )
         return summary
 
+    def _fill_broken_row_path(self, existing: dict | None, result: dict | None) -> dict | None:
+        """Put a fresh download under the broken link the row already names.
+
+        A repair marks a row not downloaded and keeps its ``file_path``: the
+        link whose ``_shared`` file is gone. The download names its file after
+        the current Telegram file name, which can differ from the name that
+        link holds (legacy or renamed files), so the bytes are also placed at
+        the link's own target. That link, and every other link to the same
+        target, resolve again, and the row keeps the path it had.
+        """
+        if not isinstance(existing, dict) or not isinstance(result, dict) or not result.get("downloaded"):
+            return result
+        old_path = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
+        missing_target = self._broken_shared_link(old_path)
+        new_path = resolve_stored_media_path(result.get("file_path"), self.config.media_path)
+        if not missing_target or not new_path or not os.path.isfile(new_path):
+            return result
+        try:
+            place_copy(new_path, missing_target)
+        except FileExistsError:
+            pass  # restored meanwhile
+        except OSError as e:
+            # Type only: the path carries the chat-id folder.
+            logger.warning(f"Could not restore the file behind a broken media link: {type(e).__name__}")
+            return result
+        return {**result, "file_path": existing["file_path"]}
+
+    def _broken_shared_link(self, path: str | None) -> str | None:
+        """The missing ``_shared`` entry behind a broken chat-folder link, or None."""
+        if not path:
+            return None
+        return broken_shared_link_target(path, os.path.join(self.config.media_path, "_shared"))
+
+    def _visible_media_root(self) -> str | None:
+        """The real path of the media root when the archive's disk is visibly there, else None.
+
+        A missing, unreadable or empty media root means the command runs where
+        the media volume is not mounted (a host or PyPI install, a volume left
+        out, a root moved since capture). Every stored path would then read as
+        missing, so no path may be cleared on that evidence.
+        """
+        root = self.config.media_path
+        try:
+            if not os.path.isdir(root):
+                return None
+            with os.scandir(root) as entries:
+                if next(entries, None) is None:
+                    return None
+        except OSError:
+            return None
+        return os.path.realpath(root)
+
+    @staticmethod
+    def _missing_under_root(path: str, media_root: str) -> bool:
+        """True when ``path`` is missing (or a dangling link) inside a visible media root.
+
+        Only a definite "no such file" counts: a permission error or a path
+        component that is not a directory says nothing about the file. The
+        parent directory must exist and lie under the media root, so a path
+        from another mount, or under a directory that is gone, is never read
+        as missing.
+        """
+        try:
+            # stat() follows links: FileNotFoundError for a missing file and for a dangling link.
+            os.stat(path)
+            return False
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        parent = os.path.dirname(path)
+        try:
+            if not os.path.isdir(parent):
+                return False
+            real_parent = os.path.realpath(parent)
+            return os.path.commonpath([real_parent, media_root]) == media_root
+        except OSError, ValueError:
+            return False
+
+    def _leftover_path_action(self, row: dict, media_root: str | None) -> tuple[str, dict | None]:
+        """What to do with a metadata-only row's leftover ``file_path``: ("clear" | "keep", recovered contact).
+
+        Releases up to v7.28.0 gave geo, contact and poll rows a ``.bin``
+        path. For geo and poll the file was never written. For a contact,
+        Telethon wrote a vCard there, which may be the last copy of a contact
+        Telegram no longer serves. So the path is cleared when the payload is
+        kept, when the file is missing, empty or a dangling link, or when a
+        contact's vCard has just been read into a payload. A non-empty file
+        that does not parse keeps its path. ``media_root`` is
+        ``_visible_media_root()``: with no visible media root every path is
+        kept, and a file counts as missing only inside it
+        (``_missing_under_root``). Nothing on disk is changed, and nothing
+        read is logged.
+        """
+        if media_root is None:
+            return "keep", None
+        if row["has_payload"]:
+            return "clear", None
+        path = resolve_stored_media_path(row["file_path"], self.config.media_path)
+        if path is None:
+            return "keep", None
+        if self._missing_under_root(path, media_root):
+            return "clear", None
+        if not os.path.isfile(path):
+            return "keep", None
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return "keep", None
+        if size == 0:
+            return "clear", None
+        if row["type"] != "contact" or size > VCARD_MAX_BYTES:
+            return "keep", None
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(VCARD_MAX_BYTES + 1)
+        except OSError:
+            return "keep", None
+        contact = contact_payload_from_vcard(data)
+        if contact is None:
+            return "keep", None
+        return "clear", contact
+
+    async def backfill_details(self, chat_id: int | None = None, apply: bool = False) -> dict:
+        """Re-read from Telegram what older releases did not keep: media payloads and edit flags.
+
+        Two work lists, read in one pass per chat:
+
+        - Messages archived before locations, venues, live locations,
+          contacts and polls were kept have a media row of the kind and no
+          payload. Only the missing ``raw_data`` key is added, through
+          ``add_missing_raw_data_keys``: text, dates, reactions and every key
+          already there stay as they are. The leftover ``.bin`` path of these
+          rows is cleared too (``_leftover_path_action``); the disk is never
+          touched.
+        - Messages archived before migration 034 have an ``edit_date`` and no
+          ``edit_hide``, so a reaction Telegram hid shows as an edit. The flag
+          is filled through ``fill_edit_hide``, the write the sync uses, and
+          only when Telegram returns the ``edit_date`` the archive holds. A
+          later edit time is counted (``date_changed``) and left for the
+          sync, which records it as an edit.
+
+        A message on both lists is asked for once. Without ``apply`` it reads
+        and counts but writes nothing.
+
+        A row Telegram never answered (its batch failed, or its chat could
+        not be reached for a reason other than a refusal) stays on the work
+        list and keeps its path this run, so a transient error never turns
+        into a vCard read in place of the full payload. A FloodWait that
+        ``call_with_flood_retry`` could not sleep out stops the run for this
+        account (``flood_wait_seconds``) rather than send more requests
+        Telegram will refuse.
+
+        The rows still missing a key or a flag are the work list, so an
+        interrupted run resumes by running again and a second run fills
+        nothing new. Counts only are logged: a location or a phone number is
+        message content.
+        """
+        groups = await self.db.get_payload_backfill_rows(account_id=self.account_id, chat_id=chat_id)
+        if chat_id is not None:
+            chats = {chat_id}
+        else:
+            # The chats table drives the edit list, one bounded query per chat.
+            chats = set(await self.db.get_chats_with_messages(account_id=self.account_id))
+        summary = _empty_backfill_summary()
+        kinds, edits = summary["kinds"], summary["edits"]
+        prefix = "" if apply else "[DRY RUN] "
+        logger.info(f"{prefix}Backfilling details across {len(chats | set(groups))} chat(s)...")
+        media_root = self._visible_media_root()
+        if media_root is None:
+            logger.warning(
+                f"{prefix}The media folder is missing, unreadable or empty here; every leftover path is kept"
+            )
+        first_call = True
+
+        for chat in sorted(chats | set(groups)):
+            rows = groups.get(chat, [])
+            # {message_id: the edit_date the archive holds}
+            unflagged = dict(await self.db.get_edit_hide_backfill_rows(chat, account_id=self.account_id))
+            if not rows and not unflagged:
+                continue
+            summary["chats_scanned"] += 1
+            for row in rows:
+                if row["has_payload"]:
+                    kinds[row["type"]]["already_present"] += 1
+            missing = [row for row in rows if not row["has_payload"]]
+            payload_rows: dict[int, list[dict]] = {}
+            for row in missing:
+                payload_rows.setdefault(row["message_id"], []).append(row)
+            # Each message once, whichever lists it is on.
+            ids = sorted(set(payload_rows) | set(unflagged))
+            # Message ids Telegram never answered for: their paths stay this run.
+            unanswered: set[int] = set()
+            entity = None
+            if ids:
+                try:
+                    entity = await call_with_flood_retry(self.client.get_entity, chat)
+                except (FloodWaitError, FloodPremiumWaitError) as e:
+                    summary["flood_wait_seconds"] = e.seconds
+                    break
+                except (ChannelPrivateError, ChatAdminRequiredError) as e:
+                    # A refusal: Telegram answered that it no longer serves this chat.
+                    # Type name only: the error text can name the peer.
+                    summary["chats_unavailable"] += 1
+                    for row in missing:
+                        kinds[row["type"]]["not_served"] += 1
+                    edits["not_served"] += len(unflagged)
+                    logger.warning(f"A chat is no longer served by Telegram ({type(e).__name__}); skipped")
+                except Exception as e:
+                    summary["errors"] += 1
+                    unanswered.update(ids)
+                    logger.warning(f"Could not reach a chat ({type(e).__name__}); its rows stay for the next run")
+            if entity is not None:
+                for start in range(0, len(ids), PAYLOAD_BACKFILL_BATCH):
+                    batch = ids[start : start + PAYLOAD_BACKFILL_BATCH]
+                    if not first_call:
+                        await asyncio.sleep(PAYLOAD_BACKFILL_PAUSE_SECONDS)
+                    first_call = False
+                    try:
+                        messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch)
+                    except (FloodWaitError, FloodPremiumWaitError) as e:
+                        summary["flood_wait_seconds"] = e.seconds
+                        unanswered.update(ids[start:])
+                        break
+                    except Exception as e:
+                        # The rows stay on the work list for the next run.
+                        summary["errors"] += 1
+                        unanswered.update(batch)
+                        logger.warning(f"Could not read a batch of messages ({type(e).__name__})")
+                        continue
+                    # Matched by id, never by position.
+                    by_id = {getattr(m, "id", None): m for m in messages or [] if m is not None}
+                    for message_id in batch:
+                        message = by_id.get(message_id)
+                        for row in payload_rows.get(message_id, ()):
+                            await self._backfill_payload(chat, row, message, apply, kinds)
+                        if message_id in unflagged:
+                            await self._backfill_edit_hide(
+                                chat, message_id, unflagged[message_id], message, apply, edits
+                            )
+
+            for row in rows:
+                if not row["file_path"] or row["message_id"] in unanswered:
+                    continue
+                action, contact = self._leftover_path_action(row, media_root)
+                if action == "keep":
+                    summary["paths_kept"] += 1
+                    continue
+                if contact is not None:
+                    if apply and not await self._store_recovered_contact(chat, row["message_id"], contact):
+                        # The content is in neither raw_data nor anywhere else: the path stays.
+                        summary["paths_kept"] += 1
+                        continue
+                    summary["vcards_recovered"] += 1
+                if apply:
+                    if await self.db.clear_metadata_media_path(chat, row["media_id"], account_id=self.account_id):
+                        summary["paths_cleared"] += 1
+                else:
+                    summary["paths_cleared"] += 1
+
+            if summary["flood_wait_seconds"]:
+                break
+
+        if summary["flood_wait_seconds"]:
+            logger.warning(
+                f"{prefix}Details backfill stopped after a FloodWait of {summary['flood_wait_seconds']}s; "
+                "run again later"
+            )
+        filled = sum(k["filled"] for k in kinds.values())
+        not_served = sum(k["not_served"] for k in kinds.values())
+        logger.info(
+            f"{prefix}Details backfill done: {filled} payload(s) filled, {not_served} not served by Telegram; "
+            f"edit flags: {edits['hidden']} hidden, {edits['shown']} shown, {edits['date_changed']} with a later "
+            f"edit time, {edits['not_served']} not served; {summary['chats_unavailable']} chat(s) unavailable, "
+            f"{summary['paths_cleared']} leftover path(s) cleared, {summary['paths_kept']} kept, "
+            f"{summary['errors']} error(s)"
+        )
+        return summary
+
+    async def _backfill_payload(self, chat: int, row: dict, message: object | None, apply: bool, kinds: dict) -> None:
+        """Add the payload Telegram returned for one listed media row, and count it."""
+        built = extract_media_payload(message.media, seen_at=message_seen_at(message)) if message is not None else None
+        if built is None or built[0] != row["type"]:
+            kinds[row["type"]]["not_served"] += 1
+            return
+        key, payload = built
+        added = True
+        if apply:
+            added = await self.db.add_missing_raw_data_keys(
+                chat, row["message_id"], {key: payload}, account_id=self.account_id
+            )
+        kinds[row["type"]]["filled" if added else "already_present"] += 1
+        row["has_payload"] = True
+
+    async def _backfill_edit_hide(
+        self, chat: int, message_id: int, stored_edit_date: datetime, message: object | None, apply: bool, edits: dict
+    ) -> None:
+        """Fill the unknown edit flag of one listed row from Telegram's read, and count it.
+
+        Only for the edit_date the archive holds: a later one is a new edit
+        the sync records, and its flag belongs to that edit.
+        """
+        if message is None:
+            edits["not_served"] += 1
+            return
+        remote_edit_date = message.edit_date
+        if remote_edit_date is not None and remote_edit_date.tzinfo is not None:
+            remote_edit_date = remote_edit_date.replace(tzinfo=None)
+        if remote_edit_date != stored_edit_date:
+            edits["date_changed"] += 1
+            return
+        edit_hide = message_edit_hide(message)
+        if apply and not await self.db.fill_edit_hide(
+            chat, message_id, remote_edit_date, edit_hide, account_id=self.account_id
+        ):
+            # Another writer filled the flag or moved the edit since the list was read.
+            edits["already_filled"] += 1
+            return
+        edits["hidden" if edit_hide else "shown"] += 1
+
+    async def _store_recovered_contact(self, chat: int, message_id: int, contact: dict) -> bool:
+        """Add a contact read from its vCard file; True when the row now holds a ``contact`` key.
+
+        A concurrent writer that stored the key first also counts: the
+        content is in raw_data either way. Anything else (the message row is
+        gone, its raw_data does not parse) is False, and the path must stay.
+        """
+        if await self.db.add_missing_raw_data_keys(chat, message_id, {"contact": contact}, account_id=self.account_id):
+            return True
+        return await self.db.raw_data_has_key(chat, message_id, "contact", account_id=self.account_id)
+
     async def _verify_and_redownload_media(self) -> None:
         """
         Verify all media files on disk and re-download missing/corrupted ones.
@@ -1762,6 +2104,7 @@ class TelegramBackup:
         missing_files = []
         corrupted_files = []
         skipped_symlinks = 0
+        broken_links = 0
         checked = 0
 
         # Phase 1: stream batches and keep only the records needing a
@@ -1781,6 +2124,11 @@ class TelegramBackup:
                 record["_resolved_path"] = file_path
                 if not file_path:
                     continue
+                # A location, contact or poll has no file to check. Older
+                # releases gave some such rows a .bin path and a link; that
+                # path is a leftover, not a missing file.
+                if record.get("type") in METADATA_ONLY_MEDIA_TYPES:
+                    continue
 
                 # Detect "truly missing" via lexists so an existing symlink
                 # whose ultimate target is unreachable (e.g. git-annex object
@@ -1793,9 +2141,16 @@ class TelegramBackup:
 
                 # Trust symlinks: their content is managed externally and may
                 # be unreachable from this process. We cannot meaningfully
-                # check size or emptiness without following the link.
+                # check size or emptiness without following the link. A link
+                # into _shared whose _shared entry is gone is the one
+                # exception: nothing anywhere holds its bytes, and trusting it
+                # is how such links survived unnoticed for months.
                 if os.path.islink(file_path):
-                    skipped_symlinks += 1
+                    if self._broken_shared_link(file_path):
+                        broken_links += 1
+                        missing_files.append(record)
+                    else:
+                        skipped_symlinks += 1
                     continue
 
                 # Check if file is empty (interrupted download)
@@ -1812,6 +2167,23 @@ class TelegramBackup:
                         corrupted_files.append(record)
 
         logger.info(f"Checked {checked} media records to verify")
+
+        # A missing file is first looked for on disk: under its name elsewhere
+        # in _shared, in the chat's other id-form folder, or at another row
+        # with the same content hash. Only what has no copy goes to Telegram.
+        restored = 0
+        if missing_files:
+            still_missing = []
+            for record in missing_files:
+                outcome = await repair_media_row(
+                    self.db, record, self.config.media_path, account_id=self.account_id, refetch=False
+                )
+                if outcome in (RESTORED, PRESENT):
+                    restored += 1
+                else:
+                    still_missing.append(record)
+            missing_files = still_missing
+            logger.info(f"Restored {restored} missing media files from copies on disk ({broken_links} broken links)")
 
         total_issues = len(missing_files) + len(corrupted_files)
         if total_issues == 0:
@@ -1906,7 +2278,14 @@ class TelegramBackup:
                         file_path = record.get("_resolved_path") or resolve_stored_media_path(
                             record.get("file_path"), self.config.media_path
                         )
-                        if not replaced and file_path and os.path.lexists(file_path):
+                        # A broken link is not sidestepped: it holds nothing, and
+                        # the download fills its _shared entry in place.
+                        if (
+                            not replaced
+                            and file_path
+                            and os.path.lexists(file_path)
+                            and not self._broken_shared_link(file_path)
+                        ):
                             backup_path = file_path + ".verify-bak"
                             os.replace(file_path, backup_path)
 
@@ -1969,13 +2348,16 @@ class TelegramBackup:
         # not because the archive lost bytes. Flipping downloaded=0 here would
         # discard a good file's pointer and queue a pointless retry — which is
         # what every imported row got, since none of them ever resolved (#310).
-        if file_path and os.path.lexists(file_path):
+        if file_path and os.path.lexists(file_path) and not self._broken_shared_link(file_path):
             return
         media_id = record.get("id")
         if media_id is None:
             return
         try:
-            await self.db.mark_media_for_redownload(media_id, account_id=self.account_id)
+            # A broken link keeps its path, so the download fills its target.
+            await self.db.mark_media_for_redownload(
+                media_id, account_id=self.account_id, keep_path=bool(self._broken_shared_link(file_path))
+            )
         except Exception as e:
             logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
 
@@ -2513,7 +2895,7 @@ class TelegramBackup:
             elif not observed and msg["id"] not in stored_ids:
                 continue
             await self.db.reconcile_reactions(
-                msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id
+                msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id, source="backup"
             )
 
     async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
@@ -2826,7 +3208,12 @@ class TelegramBackup:
                         observed = extract_reactions(reactions_obj)
                         if observed is not None:
                             await self.db.reconcile_reactions(
-                                msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                                msg_id,
+                                chat_id,
+                                observed,
+                                mark_removed=True,
+                                account_id=self.account_id,
+                                source="backup",
                             )
 
             except Exception as e:
@@ -3092,7 +3479,7 @@ class TelegramBackup:
                         continue
                     if (
                         await self.db.reconcile_reactions(
-                            u.msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                            u.msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id, source="backup"
                         )
                         == "reconciled"
                     ):
@@ -3127,7 +3514,7 @@ class TelegramBackup:
                     continue
                 if (
                     await self.db.reconcile_reactions(
-                        msg.id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                        msg.id, chat_id, observed, mark_removed=True, account_id=self.account_id, source="backup"
                     )
                     == "reconciled"
                 ):
@@ -3262,26 +3649,6 @@ class TelegramBackup:
         except TypeError:
             return None
 
-    def _text_with_entities_to_string(self, text_obj) -> str:
-        """
-        Convert TextWithEntities or string to a plain string.
-
-        Args:
-            text_obj: TextWithEntities object or string
-
-        Returns:
-            Plain string representation
-        """
-        if text_obj is None:
-            return ""
-        if isinstance(text_obj, str):
-            return text_obj
-        if isinstance(text_obj, TextWithEntities):
-            # Extract the text from TextWithEntities
-            return text_obj.text if hasattr(text_obj, "text") else str(text_obj)
-        # Fallback for any other type
-        return str(text_obj)
-
     async def _resolve_display_name(self, user_id: int) -> str | None:
         """Display name for a user id: local users table first, then the API.
 
@@ -3359,13 +3726,13 @@ class TelegramBackup:
         if webpage_preview is not None:
             message_data["raw_data"]["webpage"] = webpage_preview
 
-        # Extended media kinds (venue/dice/invoice/story/giveaways/live
-        # location/game/unsupported): salient fields for the viewer's typed
-        # chip — official apps render these, the archive used to show nothing.
-        extended_media = extract_extended_media_details(message.media)
-        if extended_media is not None:
-            extended_kind, extended_details = extended_media
-            message_data["raw_data"][extended_kind] = extended_details
+        # Metadata-only media (location, contact, poll, venue, live location,
+        # dice, invoice, story, giveaways, game, unsupported): the payload the
+        # viewer draws, under raw_data[kind]. There is no file behind any of them.
+        media_payload = extract_media_payload(message.media, seen_at=message_seen_at(message))
+        if media_payload is not None:
+            payload_kind, payload = media_payload
+            message_data["raw_data"][payload_kind] = payload
 
         # Preserve service-action metadata (e.g. forum topic creations and
         # renames) so historical backfills carry the same raw_data *shape* AND
@@ -3380,7 +3747,7 @@ class TelegramBackup:
             message_data["raw_data"]["action_type"] = service_action_type(action)
             action_title = getattr(action, "title", None)
             if action_title is not None:
-                message_data["raw_data"]["new_title"] = self._text_with_entities_to_string(action_title)
+                message_data["raw_data"]["new_title"] = _text_with_entities_to_string(action_title)
 
             # Group ↔ supergroup migration pointers (#228). MessageActionChatMigrateTo
             # carries only ``.channel_id`` (no ``.title``), so the new supergroup id
@@ -3458,9 +3825,9 @@ class TelegramBackup:
         # Formatting entities (bold/italic/code/spoiler/blockquote/...): the
         # raw text above is what their UTF-16 offsets index into. Without them
         # spoilers arrive pre-revealed and code blocks flatten to body text.
-        entities = message_entities(message)
-        if entities:
-            message_data["raw_data"]["entities"] = entities
+        # An empty list says "no formatting", so a later edit that only adds
+        # some is an edit; an absent key (a row from before 9.0) is unknown.
+        message_data["raw_data"]["entities"] = message_entities(message) or []
 
         # Rich Text Editor messages (#470): text and entities above are rendered
         # from the block tree; keep the tree itself so nothing is discarded.
@@ -3486,15 +3853,10 @@ class TelegramBackup:
 
         # Handle media
         if message.media:
-            # Handle Polls specially (store structure in raw_data, do not download)
-            # v6.0.0: Poll type is detected by presence of raw_data['poll']
-            if isinstance(message.media, MessageMediaPoll):
-                # The listener stores the same shape (extract_poll_state); a
-                # later read with other votes or a closed poll adds a
-                # message_snapshots row and leaves this first capture alone.
-                message_data["raw_data"]["poll"] = extract_poll_state(message.media.poll, message.media.results)
-
-            elif self.config.should_download_media_for_chat(chat_id):
+            # A poll's payload is in raw_data above and it has no media row:
+            # there is nothing to download.
+            is_poll = media_payload is not None and media_payload[0] == "poll"
+            if not is_poll and self.config.should_download_media_for_chat(chat_id):
                 # v6.0.0: Download media and store data for later insertion
                 # (media is inserted AFTER message to satisfy FK constraint)
                 media_result = await self._process_media(message, chat_id)
@@ -3561,6 +3923,52 @@ class TelegramBackup:
         except Exception as e:
             logger.warning(f"Failed to download avatar: {describe_exception(e)}")
 
+    async def _paths_still_named(self, entries: list[tuple[str, str | None]]) -> set[str]:
+        """The resolved paths among ``entries`` that a media row of any account still names.
+
+        ``entries`` pairs a resolved path with the value as stored. A row may
+        store the same file absolutely or relative to the media root, so every
+        form is asked for. On a database error every path counts as named: a
+        file is never removed on doubt.
+        """
+        if not entries:
+            return set()
+        root = os.path.abspath(self.config.media_path)
+        forms: dict[str, str] = {}
+        for resolved, stored in entries:
+            forms[resolved] = resolved
+            if stored:
+                forms[stored] = resolved
+            relative = os.path.relpath(resolved, root)
+            if not relative.startswith(".."):
+                forms[relative.replace(os.sep, "/")] = resolved
+        try:
+            named = await self.db.referenced_file_paths(list(forms))
+        except Exception as e:
+            logger.warning(f"Could not check which media files are still in use: {describe_exception(e)}")
+            return {resolved for resolved, _ in entries}
+        return {forms[value] for value in named if value in forms}
+
+    def _chat_folder_links_to(self, blob_path: str, file_name: str) -> bool:
+        """Whether any chat folder holds a link named ``file_name`` that leads to ``blob_path``.
+
+        One ``lstat`` per chat folder, never a walk of the folders. A link that
+        is not described by any row still keeps its blob.
+        """
+        media_root = self.config.media_path
+        blob_real = os.path.realpath(blob_path)
+        try:
+            folders = [e.path for e in os.scandir(media_root) if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return True  # cannot tell: keep the blob
+        for folder in folders:
+            if os.path.basename(folder) == "_shared":
+                continue
+            entry = os.path.join(folder, file_name)
+            if os.path.islink(entry) and os.path.realpath(entry) == blob_real:
+                return True
+        return False
+
     async def _cleanup_youtube_videos(self) -> None:
         """Remove YouTube link-preview videos a previous run downloaded (#440).
 
@@ -3596,18 +4004,39 @@ class TelegramBackup:
         deleted_files = 0
         deleted_symlinks = 0
         freed_bytes = 0
-        # content_hash -> file_name, so a blob referenced by several of these rows
-        # is considered exactly once after the rows are gone.
+        # file_name -> content_hash of every blob these rows name. Only a row
+        # with both is a candidate, as it always was.
         candidate_blobs: dict[str, str] = {}
+        entries: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
 
         for record in targets:
             content_hash = record.get("content_hash")
             file_name = record.get("file_name")
             if content_hash and file_name:
-                candidate_blobs.setdefault(content_hash, file_name)
-
+                candidate_blobs.setdefault(file_name, content_hash)
             file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
-            if not file_path or not os.path.lexists(file_path):
+            # Several rows can name one entry (the same video posted twice).
+            if file_path and os.path.lexists(file_path) and file_path not in seen_paths:
+                seen_paths.add(file_path)
+                entries.append((file_path, record.get("file_path")))
+
+        # Rows first, files second. A file is removed only when no row of any
+        # account names it once these rows are gone; if the rows cannot be
+        # deleted nothing is removed, and the next run tries again.
+        try:
+            deleted_records = await self.db.delete_media_records(
+                [r["id"] for r in targets], account_id=self.account_id, with_transcripts=True
+            )
+        except Exception as e:
+            logger.error(f"Could not delete YouTube link-preview media rows: {describe_exception(e)}")
+            return
+
+        kept = 0
+        still_named = await self._paths_still_named(entries)
+        for file_path, _stored in entries:
+            if file_path in still_named:
+                kept += 1
                 continue
             try:
                 if os.path.islink(file_path):
@@ -3621,34 +4050,25 @@ class TelegramBackup:
                 # Type only: an OSError message carries the chat-id folder.
                 logger.warning(f"Failed to delete a YouTube preview video: {type(e).__name__}")
 
-        try:
-            deleted_records = await self.db.delete_media_records(
-                [r["id"] for r in targets], account_id=self.account_id, with_transcripts=True
-            )
-        except Exception as e:
-            # The files are already gone and the rows are not. Stop here rather
-            # than reaping blobs against a refcount the surviving rows make
-            # wrong, and let the exception die here rather than abort the whole
-            # backup run: the next run re-reads the same rows, finds the files
-            # already absent, and retries the delete.
-            logger.error(f"Could not delete YouTube link-preview media rows: {describe_exception(e)}")
-            return
-
-        # Now that the rows are gone, any hash still counted is referenced by
-        # something we must not touch.
+        # A blob goes only when nothing refers to it any more: no row of any
+        # account by name or by content hash, and no chat-folder link.
         deleted_blobs = 0
         if candidate_blobs:
             shared_dir = os.path.join(self.config.media_path, "_shared")
             try:
-                still_referenced = await self.db.count_media_by_content_hash(list(candidate_blobs))
+                still_referenced = await self.db.count_shared_blob_references(list(candidate_blobs.items()))
             except Exception as e:
                 logger.warning(f"Skipping shared-store cleanup: {describe_exception(e)}")
                 still_referenced = dict.fromkeys(candidate_blobs, 1)  # assume referenced; never delete on doubt
-            for content_hash, file_name in candidate_blobs.items():
-                if still_referenced.get(content_hash):
+            for file_name, content_hash in candidate_blobs.items():
+                if still_referenced.get(file_name):
+                    kept += 1
                     continue
                 blob_path = resolve_shared_file_path(shared_dir, file_name, content_hash)
                 if not blob_path or os.path.islink(blob_path) or not os.path.isfile(blob_path):
+                    continue
+                if self._chat_folder_links_to(blob_path, file_name):
+                    kept += 1
                     continue
                 try:
                     blob_size = os.path.getsize(blob_path)
@@ -3657,6 +4077,8 @@ class TelegramBackup:
                     deleted_blobs += 1
                 except Exception as e:
                     logger.warning(f"Failed to delete a shared YouTube preview video: {type(e).__name__}")
+        if kept:
+            logger.info(f"Kept {kept} YouTube preview file(s) another row or link still uses")
 
         if deleted_records or deleted_files or deleted_symlinks or deleted_blobs:
             logger.info(
@@ -3690,27 +4112,39 @@ class TelegramBackup:
             deleted_records = 0
             freed_bytes = 0
 
+            entries: list[tuple[str, str | None]] = []
+            seen_paths: set[str] = set()
             for record in media_records:
                 # Imported rows never resolved here either, so the file survived
                 # while delete_media_for_chat below still dropped its row —
                 # orphaning bytes nothing in this codebase ever reclaims (#310).
                 file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
-                if file_path and os.path.exists(file_path):
-                    try:
-                        if os.path.islink(file_path):
-                            os.unlink(file_path)
-                            deleted_symlinks += 1
-                        else:
-                            freed_bytes += os.path.getsize(file_path)
-                            os.remove(file_path)
-                            deleted_files += 1
-                    except Exception as e:
-                        # Type only: the path in an OSError message carries the
-                        # chat-id folder.
-                        logger.warning(f"Failed to delete media file: {type(e).__name__}")
+                # Several rows can name one entry (the same sticker sent twice).
+                if file_path and os.path.exists(file_path) and file_path not in seen_paths:
+                    seen_paths.add(file_path)
+                    entries.append((file_path, record.get("file_path")))
 
-            # Delete all media records from database for this chat
+            # Rows first, files second: an entry another account's copy of
+            # the chat still names stays (every account's copy shares the
+            # chat folder), and a failed delete removes nothing.
             deleted_records = await self.db.delete_media_for_chat(chat_id, account_id=self.account_id)
+            still_named = await self._paths_still_named(entries)
+
+            for file_path, _stored in entries:
+                if file_path in still_named:
+                    continue
+                try:
+                    if os.path.islink(file_path):
+                        os.unlink(file_path)
+                        deleted_symlinks += 1
+                    else:
+                        freed_bytes += os.path.getsize(file_path)
+                        os.remove(file_path)
+                        deleted_files += 1
+                except Exception as e:
+                    # Type only: the path in an OSError message carries the
+                    # chat-id folder.
+                    logger.warning(f"Failed to delete media file: {type(e).__name__}")
 
             # Clean up empty chat media directory
             chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
@@ -3926,8 +4360,9 @@ class TelegramBackup:
         """
         media = getattr(message, "media", None)
         observed = {}
-        if isinstance(media, MessageMediaPoll):
-            observed["poll"] = extract_poll_state(media.poll, media.results)
+        poll = extract_media_poll(media)
+        if poll is not None:
+            observed["poll"] = poll
         preview = extract_webpage_preview(media)
         if preview is not None:
             observed["preview"] = preview
@@ -4018,6 +4453,7 @@ class TelegramBackup:
             logger.debug("Media not processed: the archive holds newer media for this message")
             return None
         result = await self._media_row_for(message, chat_id, media, media_type, telegram_file_id, existing)
+        result = self._fill_broken_row_path(existing, result)
         if isinstance(existing, dict) and existing.get("replaced") is True:
             # Tells the message upsert that this read's edit replaced the media.
             # With no row to write (a YouTube preview video declined), the
@@ -4066,9 +4502,11 @@ class TelegramBackup:
         # adoption used to answer "downloaded: True" without ever looking at the
         # disk, so a verify pass counted a corrupted import as re-downloaded and
         # deleted the sidestepped original, destroying the only copy.
+        # A link whose _shared entry is gone holds no bytes, so it is not reused:
+        # the download below fills that entry under the name the link holds.
         if existing is not None and existing["downloaded"]:
             on_disk = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
-            if on_disk and os.path.lexists(on_disk):
+            if on_disk and os.path.lexists(on_disk) and not self._broken_shared_link(on_disk):
                 return existing
 
         # The video Telegram attaches to a YouTube link preview, when the archive
@@ -4177,16 +4615,22 @@ class TelegramBackup:
             else:
                 # No deduplication - download directly to chat directory.
                 # lexists short-circuits the download when a symlink is
-                # already recorded, even if its target is unreachable.
-                if not os.path.lexists(file_path):
+                # already recorded, even if its target is unreachable. A link
+                # left from a deduplicated period whose _shared entry is gone
+                # is the exception: the download lands under the name the link
+                # holds, and the link stays as it is.
+                missing_target = self._broken_shared_link(file_path)
+                if not os.path.lexists(file_path) or missing_target:
                     task_id = id(asyncio.current_task()) if asyncio.current_task() else 0
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     actual_path = await self._download_media_to_path(message, tmp_file_path, file_size, chat_id)
-                    file_path = finalize_atomic_download(
+                    landed = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,
-                        file_path,
+                        missing_target or file_path,
                     )
+                    if landed is None:
+                        file_path = None
                     if not file_path or not os.path.exists(file_path):
                         # Same retryable row as the dedup branch above.
                         logger.warning("Media download did not produce a file; recorded for retry")
@@ -5095,6 +5539,68 @@ async def run_reclassify_round_videos(config: Config, chat_id: int | None = None
     for summary in summaries:
         for key in ("chats_scanned", "round_videos_found", "rows_retyped", "errors"):
             total[key] += summary.get(key, 0)
+    return total
+
+
+async def _execute_backfill_details(backup: TelegramBackup, chat_id: int | None, apply: bool) -> dict:
+    """connect -> backfill_details -> teardown, for one account."""
+    try:
+        await backup.connect()
+        return await backup.backfill_details(chat_id=chat_id, apply=apply)
+    finally:
+        await backup.disconnect()
+        await backup.db.close()
+
+
+def _empty_backfill_summary() -> dict:
+    return {
+        "kinds": {kind: {"filled": 0, "already_present": 0, "not_served": 0} for kind in PAYLOAD_BACKFILL_TYPES},
+        "edits": {"hidden": 0, "shown": 0, "date_changed": 0, "already_filled": 0, "not_served": 0},
+        "chats_scanned": 0,
+        "chats_unavailable": 0,
+        "paths_cleared": 0,
+        "paths_kept": 0,
+        "vcards_recovered": 0,
+        "errors": 0,
+        "flood_wait_seconds": 0,
+    }
+
+
+def _add_backfill_summary(total: dict, summary: dict) -> None:
+    for kind, counts in summary.get("kinds", {}).items():
+        bucket = total["kinds"].setdefault(kind, {"filled": 0, "already_present": 0, "not_served": 0})
+        for key, value in counts.items():
+            bucket[key] = bucket.get(key, 0) + value
+    for key, value in summary.get("edits", {}).items():
+        total["edits"][key] = total["edits"].get(key, 0) + value
+    for key in ("chats_scanned", "chats_unavailable", "paths_cleared", "paths_kept", "vcards_recovered", "errors"):
+        total[key] += summary.get(key, 0)
+    total["flood_wait_seconds"] = max(total.get("flood_wait_seconds", 0), summary.get("flood_wait_seconds", 0))
+
+
+async def run_backfill_details(config: Config, chat_id: int | None = None, apply: bool = False) -> dict:
+    """Backfill media payloads and edit flags older releases did not keep, for every configured account.
+
+    Same account handling as run_reclassify_round_videos: each account
+    resolves its own accounts row, and with more than one account a single
+    failure counts into ``errors`` instead of stopping the others.
+    """
+    total = _empty_backfill_summary()
+    failed = 0
+    for account in config.accounts:
+        try:
+            backup = await TelegramBackup.create(
+                config.for_account(account.index), account=account, account_resolver=_account_row_resolver(account)
+            )
+            _add_backfill_summary(total, await _execute_backfill_details(backup, chat_id, apply))
+        except Exception as e:
+            if len(config.accounts) == 1:
+                raise
+            failed += 1
+            logger.error(f"account {account.index} failed: {type(e).__name__}")
+    if failed and failed == len(config.accounts):
+        raise RuntimeError(f"all {failed} configured accounts failed to backfill")
+    total["errors"] += failed
     return total
 
 

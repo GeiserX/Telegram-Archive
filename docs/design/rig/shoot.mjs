@@ -627,6 +627,19 @@ async function openEdited(page) {
         .evaluate((el) => { el.dataset.mockupAnchor = '1' })
 }
 
+// The location, venue, live location and contact cards in a private chat,
+// the venue at the top of the list so the four cards show together on a wide
+// screen. A phone shows two or three, so its second view starts lower.
+async function openLocationCards(page, from = 'Where is that bakery you keep talking about?') {
+    await open(page)
+    await page.locator('.cursor-pointer h3').filter({ hasText: 'Juniper Vale' }).first().click()
+    await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 20000 })
+    // The chat snaps to its newest message while its media load; centre after that.
+    await settle(page)
+    await centerOn(page, from, 'start')
+    await frameTopEdge(page)
+}
+
 // The demo's photo with live reactions and one taken back, its list opened
 // with the chip after the live ones. The row is anchored for editedFrame.
 const REMOVED_TEXT = 'Found this view on the way back'
@@ -823,11 +836,12 @@ const desktopViews = {
         return editedFrame
     },
     '37-replaced-media': (page) => openReplacedMediaHistory(page),
-    '38-poll-snapshot': async (page) => {
+    '38-location-cards': (page) => openLocationCards(page),
+    '40-poll-snapshot': async (page) => {
         await openPollSnapshot(page)
         return editedFrame
     },
-    '39-preview-snapshot': async (page) => {
+    '41-preview-snapshot': async (page) => {
         await openPreviewSnapshot(page)
         return editedFrame
     },
@@ -860,8 +874,10 @@ const mobileViews = {
     '34-changes-chat-mobile': (page) => openChangesForChat(page, true),
     '35-removed-reactions-mobile': (page) => openRemovedReactions(page),
     '36-removed-reactions-picture-mobile': (page) => openRemovedReactionsPicture(page),
-    '38-poll-snapshot-mobile': (page) => openPollSnapshot(page),
-    '39-preview-snapshot-mobile': (page) => openPreviewSnapshot(page),
+    '38-location-cards-mobile': (page) => openLocationCards(page),
+    '39-live-and-contact-cards-mobile': (page) => openLocationCards(page, 'I parked there, the bakery is two streets down.'),
+    '40-poll-snapshot-mobile': (page) => openPollSnapshot(page),
+    '41-preview-snapshot-mobile': (page) => openPreviewSnapshot(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the

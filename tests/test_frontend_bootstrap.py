@@ -3968,6 +3968,7 @@ const cases = [
     { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'voice' },
     { reply_to_msg_id: 1, reply_to_sender_name: null, reply_to_text: null, reply_to_media_type: null },
     { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'venue' },
+    { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'dice' },
     { reply_to_msg_id: 1 },
     {},
     undefined,
@@ -3982,8 +3983,10 @@ const cases = [
                 ["Ada L", "Voice message"],
                 # Target not in the archive: no name to show.
                 ["Reply", "Message"],
+                # A venue with no title from the backend: the kind in words.
+                ["Ada L", "Location"],
                 # Unmapped media kind: the raw type beats the bare word.
-                ["Ada L", "venue"],
+                ["Ada L", "dice"],
                 # Older backend, neither key present.
                 ["Reply", "Message"],
                 ["Reply", "Message"],
@@ -5676,7 +5679,7 @@ def test_poll_vote_count_shares_the_time_line():
     html = INDEX_HTML.read_text(encoding="utf-8")
     body = html[html.index('<div class="message-body" dir="auto">') :]
     body = body[: body.index('<span class="message-meta" dir="ltr">')]
-    # The count reads the poll's newest kept state (message_snapshots, 037).
+    # The count reads the poll's newest kept state (message_snapshots, 038).
     assert '<span v-if="currentPoll(msg)?.results" class="poll-votes text-tg-meta">' in body
     poll = html[html.index('<div v-if="currentPoll(msg)" class="poll') :]
     poll = poll[: poll.index("<!-- Extended media chip")]

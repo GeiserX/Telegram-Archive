@@ -1,0 +1,8 @@
+/* 10, B: the sender in the title colour, the text in the muted colour of
+   the line it replaces. */
+.chat-row .mockup-preview-who {
+    color: rgb(var(--tg-ink, 0 0 0));
+}
+.chat-row.is-active .mockup-preview-who {
+    color: inherit;
+}

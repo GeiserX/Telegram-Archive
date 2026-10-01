@@ -331,8 +331,8 @@ class TestExports:
         edge = await real_adapter.get_transcripts_for_export(CHAT, account_id=1, from_date=WHEN, to_date=WHEN)
         assert edge == []
 
-        read = real_adapter.get_transcripts_for_export
-        with patch.object(real_adapter, "get_transcripts_for_export", wraps=read) as spy:
+        read = real_adapter._read_export_transcripts
+        with patch.object(real_adapter, "_read_export_transcripts", wraps=read) as spy:
             exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, **window)]
         assert [(m["id"], [r["text"] for r in m["transcripts"]]) for m in exported] == [(1, ["inside the window"])]
         assert spy.await_args.kwargs == {"account_id": 1, **window}
@@ -419,7 +419,10 @@ def test_the_markup_uses_what_the_setup_returns() -> None:
         assert f"                    {name},\n" in returned, name
     # What changed renders the transcript kind with its own body, not as an edit:
     # its own header ("Transcribed in ..."), and a recording row over the text.
-    assert "const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed' }" in html
+    assert (
+        "const CHANGE_PILL_WORDS = { deleted: 'Deleted', edited: 'Edited', transcript: 'Transcribed',"
+        " reaction: 'Reaction taken back' }" in html
+    )
     assert '<div v-if="card.kind === \'transcript\'" class="flex items-center gap-2.5 mb-1.5">' in html
 
 

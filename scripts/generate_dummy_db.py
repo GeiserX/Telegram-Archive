@@ -4,7 +4,8 @@
 Every person, chat and message in it is invented. The archive holds two
 accounts, private chats, groups, a forum with topics and channels, with
 photos, an album, a sticker, voice notes with transcripts, a round video, a
-document, replies, forwards, reactions, edits with their earlier versions,
+document, a location, a venue, a live location and a shared contact, replies,
+forwards, reactions, edits with their earlier versions,
 messages deleted in Telegram that the archive kept, and pinned messages.
 
 It also holds every state the viewer draws for what the archive alone knows:
@@ -18,7 +19,9 @@ log entries. A few reactions were taken back: the archive keeps them as
 tombstones, and the viewer shows them after the live ones, folded into one
 quiet chip: on a photo beside live reactions, on a photo with no caption,
 on the only reaction of an outgoing message, on a message deleted later, and
-a day after the message. A poll gained votes after its first capture and was
+a day after the message. Every reaction has its history (reaction_history):
+on one photo seven hearts dropped to five, and a surprised face was taken
+back and given again. A poll gained votes after its first capture and was
 then closed, and a channel post's link card changed a day later: the archive
 keeps those later states beside the first (message_snapshots).
 
@@ -246,6 +249,9 @@ class ChatScript:
         # (message id, emoji, when it was removed): reactions the archive keeps
         # as tombstones after they were taken back.
         self.removed_reactions: list[tuple[int, str, datetime]] = []
+        # (message id, emoji) -> [(count, when)]: the states the archive saw,
+        # oldest first, for a reaction whose count moved after it first came.
+        self.reaction_states: dict[tuple[int, str], list[tuple[int, datetime]]] = {}
         # (message id, kind, payload, when the archive saw it, the path that saw
         # it): later states of a poll or link preview (message_snapshots).
         self.snapshots: list[tuple[int, str, dict, datetime, str]] = []
@@ -346,6 +352,16 @@ class ChatScript:
         emoji with no reactor and the count it had, tombstoned at ``when``."""
         self.reactions.append((mid, emoji, count, []))
         self.removed_reactions.append((mid, emoji, when))
+
+    def reaction_moves(self, mid: int, emoji: str, states: list[tuple[int, datetime]]) -> None:
+        """A reaction whose count moved: every state the archive saw, oldest
+        first. The live row holds the last count, or the tombstone when it is 0."""
+        self.reaction_states[(mid, emoji)] = states
+        *_, (last, when) = states
+        if last:
+            self.reactions.append((mid, emoji, last, []))
+        else:
+            self.take_back(mid, emoji, states[-2][0], when)
 
 
 FILLER = {
@@ -598,12 +614,16 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         KOFI,
         "Found this view on the way back",
         media={"type": "photo", "seed": 24, "replaced_seed": 27},
-        react={"❤️": 5, "🔥": 1},
+        react={"🔥": 1},
         edited_from="Found this view on the way back",
     )
-    # Someone took their 😮 back: the archive keeps it as a tombstone, and the
-    # viewer shows it after the live chips, folded into one quiet chip.
-    s.take_back(view, "😮", 1, t + timedelta(minutes=88))
+    # Seven hearts dropped to five, and someone took their 😮 back and gave it
+    # again: the history keeps both, and the list of reactions taken back reads
+    # "2 of 7" and "back".
+    s.reaction_moves(view, "❤️", [(7, t + timedelta(minutes=84)), (5, t + timedelta(minutes=91))])
+    s.reaction_moves(
+        view, "😮", [(1, t + timedelta(minutes=84)), (0, t + timedelta(minutes=88)), (1, t + timedelta(minutes=89))]
+    )
     s.add(
         t + timedelta(minutes=95),
         ORSON,
@@ -646,6 +666,82 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     )
     s = ChatScript(1, OWNER_PERSONAL, JUNIPER, first_id=880)
     filler(s, "casual", [JUNIPER, OWNER_PERSONAL], now - 40 * day, now - 2 * day, 30)
+    # A location, a venue, a live location that has ended and a shared
+    # contact, drawn as cards. Demo places and a fake number only. The venue
+    # and the location carry the media row the backup writes; the live
+    # location and the contact have none, as the listener stores them. The
+    # oldest location and the poll after it were archived by a release that
+    # kept no payload and left a path to an empty placeholder file, so they
+    # say "Details not archived".
+    t = today - day + timedelta(hours=8)
+    s.add(t - 5 * day, JUNIPER, "", media={"type": "geo", "legacy_bin": True})
+    s.add(t - 5 * day + timedelta(minutes=1), JUNIPER, "", media={"type": "poll", "legacy_bin": True})
+    bakery_q = s.add(t, OWNER_PERSONAL, "Where is that bakery you keep talking about?")
+    bakery = s.add(
+        t + timedelta(minutes=2),
+        JUNIPER,
+        "",
+        reply=bakery_q,
+        media={"type": "venue"},
+        raw={
+            "venue": {
+                "title": "Elm Street Bakery",
+                "address": "12 Elm Street, Demo Town",
+                "provider": "foursquare",
+                "venue_id": "demo-venue-0001",
+                "venue_type": "food/bakery",
+                "lat": 40.416775,
+                "long": -3.70379,
+            }
+        },
+    )
+    parked = s.add(
+        t + timedelta(minutes=3),
+        JUNIPER,
+        "",
+        media={"type": "geo"},
+        raw={"geo": {"lat": 40.41902, "long": -3.70091, "accuracy_radius": 25}},
+    )
+    s.add(t + timedelta(minutes=4), JUNIPER, "I parked there, the bakery is two streets down.", reply=parked)
+    live_start = t + timedelta(hours=1)
+    s.add(
+        live_start,
+        JUNIPER,
+        "",
+        raw={
+            "geo_live": {
+                "lat": 40.41702,
+                "long": -3.70322,
+                "period": 900,
+                "heading": 90,
+                "accuracy_radius": 10,
+                "at": (live_start + timedelta(minutes=14)).isoformat(),
+                "earlier": [
+                    {"lat": 40.41850, "long": -3.70150, "at": (live_start + timedelta(minutes=2)).isoformat()},
+                ],
+            }
+        },
+    )
+    s.add(
+        live_start + timedelta(minutes=15),
+        OWNER_PERSONAL,
+        "On my way. Here is the number of the owner, she sells the rolls wholesale.",
+        reply=bakery,
+    )
+    s.add(
+        live_start + timedelta(minutes=16),
+        OWNER_PERSONAL,
+        "",
+        raw={
+            "contact": {
+                "first_name": "Alex",
+                "last_name": "Demo",
+                "phone_number": "15555550100",
+                "vcard": "",
+                "user_id": 0,
+            }
+        },
+    )
     t = now - timedelta(hours=3)
     s.add(t, JUNIPER, "Did you get home okay?")
     s.add(t + timedelta(minutes=2), OWNER_PERSONAL, "Yes, thanks! My legs are still complaining 😅")
@@ -794,6 +890,35 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         )
         s = ChatScript(1, OWNER_PERSONAL, uid, first_id=first_id)
         filler(s, "casual", [uid, OWNER_PERSONAL], now - (days_ago + 30) * day, now - days_ago * day, 14)
+        # The chat list preview's cases. Kofi's newest message was deleted in
+        # Telegram, so the list shows the one before it. Tobias's newest is a
+        # location the listener stored (a payload and no media row) and
+        # Mirela's a contact the backup stored (both): the list names each with
+        # a word.
+        last = now - days_ago * day + timedelta(hours=1)
+        if uid == KOFI:
+            s.add(last, OWNER_PERSONAL, "See you at the trailhead at seven.")
+            s.add(
+                last + timedelta(minutes=3), KOFI, "Running ten minutes late, sorry", deleted_after=timedelta(minutes=1)
+            )
+        elif uid == TOBIAS:
+            s.add(last, TOBIAS, "", raw={"geo": {"lat": 40.42011, "long": -3.70562, "accuracy_radius": 15}})
+        elif uid == MIRELA:
+            s.add(
+                last,
+                MIRELA,
+                "",
+                media={"type": "contact"},
+                raw={
+                    "contact": {
+                        "first_name": "Sam",
+                        "last_name": "Demo",
+                        "phone_number": "15555550101",
+                        "vcard": "",
+                        "user_id": 0,
+                    }
+                },
+            )
         scripts.append(s)
 
     # --- Book Club: a basic group ---------------------------------------------------
@@ -839,6 +964,26 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
             ("Chapter 4 has the best line in the book.", None),
         ],
         edit_source="sync",
+    )
+    # A poll is the newest message: the list shows its question after the sender.
+    s.add(
+        now - timedelta(hours=20),
+        NOOR,
+        "",
+        raw={
+            "poll": {
+                "question": "Which book should we read in spring?",
+                "answers": [{"text": "The Salt Orchard", "option": "MA=="}, {"text": "Winter Lines", "option": "MQ=="}],
+                "closed": False,
+                "public_voters": True,
+                "multiple_choice": False,
+                "quiz": False,
+                "results": {
+                    "total_voters": 3,
+                    "results": [{"option": "MA==", "voters": 2}, {"option": "MQ==", "voters": 1}],
+                },
+            }
+        },
     )
     scripts.append(s)
 
@@ -1091,6 +1236,18 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
             folder = media_root / str(s.chat_id)
             kind = m["type"]
             file_id = int(hashlib.sha256(m["id"].encode()).hexdigest()[:8], 16)
+            if kind in ("geo", "venue", "geo_live", "contact", "poll"):
+                # A metadata-only row: no file. A release from 2025-12 to
+                # 2026-04 left a path to an empty .bin placeholder on these,
+                # which no longer exists on disk.
+                m["file_size"] = 0
+                m["downloaded"] = False
+                if m.pop("legacy_bin", False):
+                    m["file_name"] = f"{file_id}.bin"
+                    m["file_path"] = f"{s.chat_id}/{file_id}.bin"
+                    m["downloaded"] = True
+                    m["download_date"] = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+                continue
             skip = m.pop("skip", None)
             if skip in ("oversize", "filtered", "pending"):
                 # Never downloaded: the row says why, or nothing when it is only
@@ -1179,6 +1336,7 @@ async def seed(data_dir: Path) -> None:
         MessageSnapshot,
         MessageVersion,
         Reaction,
+        ReactionHistory,
     )
 
     backup = data_dir / "backups"
@@ -1287,6 +1445,31 @@ async def seed(data_dir: Path) -> None:
                         .where(Reaction.chat_id == s.chat_id, Reaction.message_id == mid, Reaction.emoji == emoji)
                         .values(removed_at=removed)
                     )
+                # The history the listener would have written: a reaction seen a
+                # minute after its message, and its removal when it went, unless
+                # the script gave its own states.
+                gone = {(mid, emoji): removed for mid, emoji, removed in s.removed_reactions}
+                for mid, emoji, count, _voters in s.reactions:
+                    states = s.reaction_states.get((mid, emoji))
+                    if states is None:
+                        states = [(count, s.by_id[mid]["date"] + timedelta(minutes=1))]
+                        if (mid, emoji) in gone:
+                            states.append((0, gone[(mid, emoji)]))
+                    previous = None
+                    for n, when in states:
+                        await session.execute(
+                            insert(ReactionHistory).values(
+                                account_id=account,
+                                chat_id=s.chat_id,
+                                message_id=mid,
+                                emoji=emoji,
+                                count=n,
+                                previous_count=previous,
+                                observed_at=when,
+                                source="listener",
+                            )
+                        )
+                        previous = n
                 for index, (mid, old_text, when, old_entities, source) in enumerate(s.versions):
                     digest = hashlib.sha256(f"{account}:{s.chat_id}:{mid}:{old_text}".encode()).hexdigest()
                     # Captured when the next text appeared: the next kept

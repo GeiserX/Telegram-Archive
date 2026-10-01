@@ -1,4 +1,4 @@
-"""A poll's and a link preview's newest state in the bubble (message_snapshots, 037).
+"""A poll's and a link preview's newest state in the bubble (message_snapshots, 038).
 
 The bubble draws the newest state the archive kept over the first capture in
 ``raw_data``: the poll's results, its total and "Final results" once closed,
