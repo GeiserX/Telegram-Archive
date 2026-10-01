@@ -1103,6 +1103,8 @@ class TelegramImporter:
                 "reply_to_msg_id": msg.get("reply_to_message_id"),
                 "edit_date": parse_edited_date(msg),
                 "raw_data": raw_data,
+                # The path named on any version this import writes.
+                "version_source": "import",
             }
 
             if self._owner_user_id and sender_id is not None:

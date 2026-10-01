@@ -445,6 +445,8 @@ async def handle_realtime_notification(payload: dict):
                 "message_id": data.get("message_id"),
                 "new_text": data.get("new_text"),
                 "edit_date": data.get("edit_date"),
+                "edit_hide": data.get("edit_hide"),
+                **({"entities": data["entities"]} if "entities" in data else {}),
             },
         )
     elif notification_type == "delete":
@@ -1641,6 +1643,43 @@ def _parse_media_key(media_key: str) -> tuple[int, str] | None:
     return message_id, type_part
 
 
+# The URL key's second part for an earlier media: ``v`` and its number among
+# the message's earlier media (1 for the first kept). No media type is spelled
+# that way, and a number too long for the key answers the uniform 404.
+_MEDIA_VERSION_KEY_RE = re.compile(r"^v([1-9][0-9]{0,8})$")
+
+
+def _media_version_number(type_part: str) -> int | None:
+    """The earlier-media number a URL key's second part names, or None for a media type."""
+    match = _MEDIA_VERSION_KEY_RE.match(type_part)
+    return int(match.group(1)) if match else None
+
+
+def _media_version_key(message_id: object, number: object) -> str | None:
+    """The chat-free URL key ``{message_id}_v{number}`` of an earlier media, or None."""
+    if message_id is None or number is None:
+        return None
+    return f"{message_id}_v{number}"
+
+
+# A media row an edit gave new media is re-keyed ``…_v{n}``
+# (``reconcile_media_row``), while its URL key stays ``{message_id}_{type}``.
+_REKEYED_MEDIA_ID_RE = re.compile(r"_v([0-9]+)$")
+
+
+def _current_media_url(chat_ref: str, media_key: str, storage_id: object, prefix: str = "/media/") -> str:
+    """The URL of a message's current media, which changes when an edit replaces it.
+
+    The URL key names the message and the type, so a photo replaced by
+    another photo keeps it, and a browser that cached the old bytes (the
+    thumbnail for a day) would keep showing them. The re-keyed row's number
+    rides along as ``?v=``, which the server ignores.
+    """
+    url = f"{prefix}{chat_ref}/{_encode_media_key(media_key)}"
+    match = _REKEYED_MEDIA_ID_RE.search(storage_id) if isinstance(storage_id, str) else None
+    return f"{url}?v={match.group(1)}" if match else url
+
+
 def _url_media_key(message_id: object, media_type: object) -> str | None:
     """The chat-free URL key ``{message_id}_{type}`` for a media row, or None.
 
@@ -1744,7 +1783,7 @@ def _resolve_media_file(relative_path: str):
     return resolved
 
 
-async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
+async def _entitled_media_row(chat: ChatContext, media_key: str, *, earlier_media: bool = True) -> dict:
     """Media row for an already-entitled chat + URL key, or the uniform 404.
 
     The row lookup IS the authorization for the bytes: the chat id comes from
@@ -1758,12 +1797,21 @@ async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
     ``import_{chat}_{msg}`` — the file was on disk and the viewer said "Media
     not found" (#423). Asking by column fixes both: the bound is explicit, and
     the row is found whatever its id spells.
+
+    An earlier media an edit replaced is addressed as ``{message_id}_v{n}``
+    (``_media_version_key``) and found the same way, bound to the same chat.
+    ``earlier_media=False`` refuses such a key, for routes that write.
     """
     parsed = _parse_media_key(media_key)
     row = None
     if parsed is not None:
         message_id, media_type = parsed
-        row = await db.get_media_for_message(chat.chat_id, message_id, media_type, account_id=chat.account_id)
+        number = _media_version_number(media_type)
+        if number is not None:
+            if earlier_media:
+                row = await db.get_media_version(chat.chat_id, message_id, number, account_id=chat.account_id)
+        else:
+            row = await db.get_media_for_message(chat.chat_id, message_id, media_type, account_id=chat.account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
     return row
@@ -2980,9 +3028,10 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
         # the chat id in front of the browser (and back in a cursor query string),
         # which the promise at the top of this docstring says never happens.
         media_key = _url_media_key(message.get("id"), media.get("type"))
+        storage_id = media.get("id")
         media["id"] = media_key
         if media_key and _media_relative_path(media.get("file_path")):
-            media["url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+            media["url"] = _current_media_url(chat.ref, media_key, storage_id)
         else:
             media["url"] = None
 
@@ -3194,8 +3243,8 @@ async def get_messages(
     it lists every deletion of the chat; with one it narrows the search.
 
     ``edited_only=true`` does the same for edits: the messages Telegram marks
-    as edited (``edit_date`` set) or with at least one earlier version kept in
-    ``message_versions``. The same read-only narrowing, inside the same chat.
+    as edited (``edit_date`` set and ``edit_hide`` not) or with at least one
+    earlier version kept in ``message_versions``. The same read-only narrowing, inside the same chat.
 
     Cursor-based pagination is preferred for infinite scroll.
     """
@@ -3355,13 +3404,33 @@ async def get_recent_changes(
 async def get_message_versions(
     message_id: int,
     chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
     limit: int = Query(100, ge=1, le=500),
 ):
-    """Get preserved previous versions for a message."""
+    """Get preserved previous versions for a message.
+
+    A version whose photo or file an edit replaced carries it as ``media``.
+    Each gets a ref-addressed ``url`` when its file was downloaded; the stored
+    path never leaves the server, and a no-download login gets no URL.
+    """
     try:
-        return await db.get_message_versions(
+        versions = await db.get_message_versions(
             chat_id=chat.chat_id, message_id=message_id, limit=limit, account_id=chat.account_id
         )
+        for version in versions:
+            for media in version.get("media") or ():
+                has_file = bool(media.pop("file_path", None)) and bool(media.get("downloaded"))
+                media.pop("id", None)
+                media_key = _media_version_key(message_id, media.pop("number", None))
+                if user.no_download:
+                    media["url"] = None
+                    media["downloaded"] = False
+                    media["no_download"] = True
+                elif has_file and media_key:
+                    media["url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+                else:
+                    media["url"] = None
+        return versions
     except Exception as e:
         logger.error(f"Error fetching message versions: {type(e).__name__}")
         if _is_db_connection_error(e):
@@ -3770,7 +3839,8 @@ async def ask_chat_media_transcript(
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     if not _transcription_on():
         raise HTTPException(status_code=409, detail="Transcription is off")
-    media = await _entitled_media_row(chat, media_key)
+    # An earlier media is read-only history: no transcript is asked for it.
+    media = await _entitled_media_row(chat, media_key, earlier_media=False)
     try:
         row = await _ask_transcript(media, chat.account_id, user, _transcript_ask_client(request, user, auth_cookie))
     except HTTPException:
@@ -3856,6 +3926,7 @@ async def get_chat_media(
             await _attach_media_transcripts(result["items"], chat)
         for item in result["items"]:
             media_key = _url_media_key(item.get("message_id"), item.get("type"))
+            storage_id = item.get("id")
             item["id"] = media_key
 
             relative = _media_relative_path(item.get("file_path", "") or "")
@@ -3867,7 +3938,7 @@ async def get_chat_media(
             filename = relative.rsplit("/", 1)[-1]
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             if ext in THUMBNAIL_EXTENSIONS:
-                item["thumb_url"] = f"/media/thumb/200/{chat.ref}/{_encode_media_key(media_key)}"
+                item["thumb_url"] = _current_media_url(chat.ref, media_key, storage_id, "/media/thumb/200/")
             else:
                 item["thumb_url"] = None
 
@@ -3878,7 +3949,7 @@ async def get_chat_media(
                 # lights up the gallery's own placeholder instead.
                 item["thumb_url"] = None
             else:
-                item["media_url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+                item["media_url"] = _current_media_url(chat.ref, media_key, storage_id)
 
         return result
     except Exception as e:
@@ -5327,22 +5398,31 @@ async def broadcast_new_message(chat_id: int, message: dict, account_id: int | N
 
 
 async def broadcast_message_edit(
-    chat_id: int, message_id: int, new_text: str, edit_date: str, account_id: int | None = None
+    chat_id: int,
+    message_id: int,
+    new_text: str,
+    edit_date: str,
+    account_id: int | None = None,
+    entities: list | None = None,
 ) -> None:
-    """Broadcast a message edit to subscribed clients (frames are ref-addressed)."""
+    """Broadcast a message edit to subscribed clients (frames are ref-addressed).
+
+    ``entities`` is the new text's formatting ([] for none); None leaves it out
+    of the frame, and the viewer keeps the formatting it has.
+    """
     chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
-    await ws_manager.broadcast_to_chat(
-        chat,
-        {
-            "type": "edit",
-            "chat_ref": chat["ref"],
-            "message_id": message_id,
-            "new_text": new_text,
-            "edit_date": edit_date,
-        },
-    )
+    frame = {
+        "type": "edit",
+        "chat_ref": chat["ref"],
+        "message_id": message_id,
+        "new_text": new_text,
+        "edit_date": edit_date,
+    }
+    if entities is not None:
+        frame["entities"] = entities
+    await ws_manager.broadcast_to_chat(chat, frame)
 
 
 async def broadcast_message_delete(

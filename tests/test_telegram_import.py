@@ -394,6 +394,8 @@ class TestTelegramImporterRun(unittest.TestCase):
         inserted = db.insert_messages_batch.call_args.args[0]
         self.assertEqual(inserted[0]["sender_name"], "Alice")
         self.assertEqual(inserted[1]["sender_name"], "Alice")
+        # A version an import writes says so: an import reads one state of the chat.
+        self.assertEqual({row["version_source"] for row in inserted}, {"import"})
 
     def test_service_message_uses_actor_snapshot_and_id(self):
         self._write_export(

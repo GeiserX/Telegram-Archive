@@ -457,6 +457,8 @@ class TestEventHandlers:
         assert listener.stats["new_messages_saved"] == 1
         listener.db.insert_message.assert_called_once()
         listener.db.upsert_chat.assert_called_once()
+        # A version this write makes (an edit read after an older capture) names the listener.
+        assert listener.db.insert_message.call_args.args[0]["version_source"] == "listener"
 
     def test_on_new_message_captures_forward_origin(self, listener_with_handlers, full_config):
         """A forwarded channel post stores the origin pointer in raw_data."""
@@ -868,9 +870,12 @@ class TestEventHandlers:
             new_text="Updated text",
             edit_date=msg.edit_date,
             account_id=1,
+            edit_hide=0,
             entities=None,
             update_entities=True,
             rich_message=None,
+            source="listener",
+            media_changed=False,
         )
 
     def test_on_message_edited_carries_rich_text_editor_content(self, listener_with_handlers):
@@ -940,6 +945,187 @@ class TestEventHandlers:
         asyncio.run(handler(event))
 
         assert listener.stats["errors"] == 1
+
+    @staticmethod
+    def _edit_event(*, text: str = "Edited later", edit_hide: bool | None = None) -> MagicMock:
+        """A MessageEdited event for a group message sent before its edit."""
+        from datetime import datetime
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 77
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, 9, 0, tzinfo=UTC)
+        msg.message = text
+        msg.reply_to_msg_id = None
+        msg.edit_date = datetime(2025, 1, 1, 9, 5, tzinfo=UTC)
+        msg.edit_hide = edit_hide
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        event.message = msg
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+        return event
+
+    def test_on_message_edited_stores_a_message_the_archive_has_not_stored_yet(self, listener_with_handlers):
+        """An edit of a message the archive does not hold yet used to come back
+        not_found and be dropped, losing the newest text. It now stores the
+        message through the new-message path, with its current text and edit_date."""
+        listener, handlers = listener_with_handlers
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+        event = self._edit_event()
+
+        asyncio.run(handlers[events.MessageEdited](event))
+
+        assert listener.stats["edits_applied"] == 0
+        assert listener.stats["edits_skipped"] == 1
+        listener.db.insert_message.assert_called_once()
+        stored = listener.db.insert_message.call_args.args[0]
+        assert stored["id"] == 77
+        assert stored["chat_id"] == -1001234567890
+        assert stored["text"] == "Edited later"
+        assert stored["edit_date"] == event.message.edit_date
+        assert stored["edit_hide"] == 0
+
+    def test_on_message_edited_not_found_keeps_listen_new_messages(self, listener_with_handlers, full_config):
+        """The new-message path keeps its own switch: with LISTEN_NEW_MESSAGES off
+        the listener stores no message, from an edit either."""
+        listener, handlers = listener_with_handlers
+        full_config.listen_new_messages = False
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event()))
+
+        listener.db.insert_message.assert_not_called()
+
+    def test_on_message_edited_already_current_stores_nothing_new(self, listener_with_handlers):
+        """Only not_found stores the message; an edit the archive already has does not."""
+        listener, handlers = listener_with_handlers
+        listener.db.update_message_text = AsyncMock(return_value=("noop", None))
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event()))
+
+        listener.db.insert_message.assert_not_called()
+        assert listener.stats["edits_skipped"] == 1
+
+    def test_on_message_edited_passes_telegrams_edit_hide(self, listener_with_handlers):
+        """The flag Telegram sends with an edit is written beside its edit_date."""
+        listener, handlers = listener_with_handlers
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event(edit_hide=True)))
+
+        assert listener.db.update_message_text.call_args.kwargs["edit_hide"] == 1
+
+    def test_on_message_edited_not_found_stores_quietly(self, listener_with_handlers):
+        """A message stored because an edit reached it is not new: a reaction to an
+        old message arrives as an edit too. It must not be announced as a new
+        message (viewer row, Web Push, desktop alert) nor counted as one."""
+        from telegram_archive.realtime import NotificationType
+
+        listener, handlers = listener_with_handlers
+        listener._notifier = MagicMock()
+        listener._notifier.notify = AsyncMock()
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event(text="Unchanged", edit_hide=True)))
+
+        listener.db.insert_message.assert_called_once()
+        assert listener.db.insert_message.call_args.args[0]["edit_hide"] == 1
+        sent = [call.args[0] for call in listener._notifier.notify.await_args_list]
+        assert NotificationType.NEW_MESSAGE not in sent
+        assert listener.stats["new_messages_received"] == 0
+        assert listener.stats["new_messages_saved"] == 0
+        assert listener.stats["edits_skipped"] == 1
+
+    def test_on_new_message_still_announces_a_new_message(self, listener_with_handlers):
+        """The quiet path is only for edits: a real new message is announced."""
+        from telegram_archive.realtime import NotificationType
+
+        listener, handlers = listener_with_handlers
+        listener._notifier = MagicMock()
+        listener._notifier.notify = AsyncMock()
+
+        asyncio.run(handlers[events.NewMessage](self._edit_event()))
+
+        assert listener._notifier.notify.await_args.args[0] == NotificationType.NEW_MESSAGE
+        assert listener.stats["new_messages_saved"] == 1
+
+    def test_on_message_edited_untracked_chat_in_scope_by_type_is_stored(self, listener_with_handlers, full_config):
+        """A first message of a chat never backed up can arrive while the listener
+        is away, so the chat is not tracked. Its edit carries the chat type like a
+        new message does, and a chat the backup's filter accepts is stored."""
+        listener, handlers = listener_with_handlers
+        full_config.should_backup_chat = MagicMock(return_value=True)
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+        event = self._edit_event()
+        event.chat_id = 5550100
+        event.is_private, event.is_group, event.is_channel = True, False, False
+
+        asyncio.run(handlers[events.MessageEdited](event))
+
+        full_config.should_backup_chat.assert_any_call(5550100, True, False, False)
+        listener.db.insert_message.assert_called_once()
+        assert listener.db.insert_message.call_args.args[0]["chat_id"] == 5550100
+
+    def test_on_message_edited_untracked_chat_out_of_scope_is_dropped(self, listener_with_handlers):
+        """The same edit in a chat the backup's filter rejects stays dropped."""
+        listener, handlers = listener_with_handlers
+        event = self._edit_event()
+        event.chat_id = 5550100
+        event.is_private, event.is_group, event.is_channel = True, False, False
+
+        asyncio.run(handlers[events.MessageEdited](event))
+
+        listener.db.update_message_text.assert_not_called()
+        listener.db.insert_message.assert_not_called()
+
+    def test_on_message_edited_broadcasts_edit_hide(self, listener_with_handlers):
+        """The viewer's live edit frame carries Telegram's flag, so a hidden edit
+        does not light the pencil until the next reload clears it."""
+        listener, handlers = listener_with_handlers
+        listener._notify_update = AsyncMock()
+
+        asyncio.run(handlers[events.MessageEdited](self._edit_event(edit_hide=True)))
+
+        kind, payload = listener._notify_update.await_args.args
+        assert kind == "edit"
+        assert payload["edit_hide"] == 1
+
+    def test_on_message_edited_broadcasts_the_new_entities(self, listener_with_handlers):
+        """An edit may change only the formatting, so the live frame carries the
+        new entities and the open viewer draws them without a reload."""
+        from telethon.tl.types import MessageEntityBold
+
+        listener, handlers = listener_with_handlers
+        listener._notify_update = AsyncMock()
+        event = self._edit_event()
+        event.message.entities = [MessageEntityBold(offset=0, length=6)]
+
+        asyncio.run(handlers[events.MessageEdited](event))
+
+        kind, payload = listener._notify_update.await_args.args
+        assert kind == "edit"
+        assert payload["entities"] == [{"type": "bold", "offset": 0, "length": 6}]
+        assert listener.db.update_message_text.await_args.kwargs["entities"] == payload["entities"]
+
+    def test_on_new_message_keeps_telegrams_edit_hide(self, listener_with_handlers):
+        """A message first seen after Telegram bumped its edit_date for a reaction
+        carries edit_hide, and the archive keeps it beside the date."""
+        listener, handlers = listener_with_handlers
+
+        asyncio.run(handlers[events.NewMessage](self._edit_event(text="Unchanged", edit_hide=True)))
+
+        stored = listener.db.insert_message.call_args.args[0]
+        assert stored["edit_date"] is not None
+        assert stored["edit_hide"] == 1
 
     # ----------------------------------------------------------------
     # on_message_deleted tests
@@ -1307,7 +1493,7 @@ class TestMassOperationProtector:
         """Test that operations under the threshold are allowed."""
         protector = MassOperationProtector(threshold=5, window_seconds=30)
         for _ in range(5):
-            allowed, reason = protector.check_operation(-100, "edit")
+            allowed, reason = protector.check_operation(-100, "deletion")
             assert allowed is True
             assert reason == "allowed"
 
@@ -1327,9 +1513,9 @@ class TestMassOperationProtector:
     def test_get_stats_returns_counts(self):
         """Test get_stats returns meaningful statistics."""
         protector = MassOperationProtector(threshold=2, window_seconds=30)
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")  # triggers rate limit
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")  # triggers rate limit
 
         stats = protector.get_stats()
         assert stats["operations_applied"] >= 2
@@ -1341,12 +1527,12 @@ class TestMassOperationProtector:
         protector = MassOperationProtector(threshold=2, window_seconds=30)
 
         # Fill up chat A
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")
-        protector.check_operation(-100, "edit")  # May trigger block for -100
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")
+        protector.check_operation(-100, "deletion")  # May trigger block for -100
 
         # Chat B should still be allowed
-        allowed, _ = protector.check_operation(-200, "edit")
+        allowed, _ = protector.check_operation(-200, "deletion")
         assert allowed is True
 
 

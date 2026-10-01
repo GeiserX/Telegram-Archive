@@ -1633,6 +1633,22 @@ class TestProcessMessage(unittest.TestCase):
         self.assertEqual(result["is_outgoing"], 0)
         self.assertEqual(result["is_pinned"], 0)
 
+    def test_telegrams_edit_hide_is_kept_beside_the_edit_date(self):
+        """Telegram bumps edit_date for a reaction and sets edit_hide; the sweep
+        keeps the flag so the viewer does not call the message edited."""
+        msg = self._make_message(4)
+        msg.edit_date = datetime(2024, 1, 2)
+        msg.edit_hide = True
+        self.assertEqual(self._run(self.backup._process_message(msg, 100))["edit_hide"], 1)
+        msg.edit_hide = False
+        self.assertEqual(self._run(self.backup._process_message(msg, 100))["edit_hide"], 0)
+
+    def test_a_read_names_the_backup_on_the_versions_it_writes(self):
+        """A version the backup's read writes says it came from the backup, which
+        reads only the text current at that moment (5kr)."""
+        result = self._run(self.backup._process_message(self._make_message(4), 100))
+        self.assertEqual(result["version_source"], "backup")
+
     def test_outgoing_message_sets_flag(self):
         """Outgoing message sets is_outgoing=1."""
         msg = self._make_message(2)

@@ -20,6 +20,7 @@ Only the paths where the two backends genuinely diverge live here:
 The PostgreSQL leg skips when no server is reachable; see conftest.
 """
 
+import json
 from datetime import datetime, timedelta
 
 from telegram_archive.db.models import SyncStatus
@@ -141,6 +142,593 @@ class TestMessageUpsertConflictRealEngine:
 
         assert (await real_adapter.get_messages_paginated(900005, limit=10))[0]["text"] == "in chat A"
         assert (await real_adapter.get_messages_paginated(900006, limit=10))[0]["text"] == "in chat B"
+
+
+class TestEditHideRealEngine:
+    """Telegram's edit_hide flag: kept beside edit_date, and a hidden edit with no
+    kept version is not an edit in the count, the "Edited only" list or the rows."""
+
+    async def test_a_hidden_edit_with_no_kept_version_is_not_counted(self, real_adapter):
+        chat = 900050
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        def captured(message_id: int, text: str, *, edit_hide: int | None) -> dict:
+            row = _message(chat, message_id, text=text, offset_minutes=message_id)
+            row["edit_date"] = edited_at
+            if edit_hide is not None:
+                row["edit_hide"] = edit_hide
+            return row
+
+        # 1: first captured after a reaction; Telegram bumped edit_date and hid it.
+        await real_adapter.insert_message(captured(1, "reacted to", edit_hide=1), account_id=1)
+        # 2: first captured after a real edit; Telegram shows it.
+        await real_adapter.insert_message(captured(2, "edited before capture", edit_hide=0), account_id=1)
+        # 3: a row with no flag (from before the column, or an import): shown, as before.
+        await real_adapter.insert_message(captured(3, "no flag", edit_hide=None), account_id=1)
+        # 4: hidden at first, then a real text edit arrives with the flag clear.
+        await real_adapter.insert_message(captured(4, "before", edit_hide=1), account_id=1)
+        outcome, _ = await real_adapter.update_message_text(
+            chat, 4, "after", edited_at + timedelta(minutes=1), account_id=1, edit_hide=0
+        )
+        assert outcome == "applied"
+        # 5: hidden, and an empty text later filled in: a kept version, so edited.
+        await real_adapter.insert_message(captured(5, "", edit_hide=1), account_id=1)
+        await real_adapter.insert_message(_message(chat, 5, text="filled", offset_minutes=5), account_id=1)
+        # 6: hidden; a re-scan with the same text and another flag writes nothing.
+        await real_adapter.insert_message(captured(6, "same", edit_hide=1), account_id=1)
+        rescan = captured(6, "same", edit_hide=0)
+        rescan["edit_date"] = edited_at + timedelta(minutes=9)
+        await real_adapter.insert_message(rescan, account_id=1)
+        # 7: never edited.
+        await real_adapter.insert_message(_message(chat, 7, text="plain", offset_minutes=7), account_id=1)
+
+        stats = await real_adapter.get_chat_stats(chat, account_id=1, with_kept_changes=True)
+        assert stats["edited_messages"] == 4
+        listed = await real_adapter.get_messages_paginated(chat, account_id=1, edited_only=True)
+        assert sorted(row["id"] for row in listed) == [2, 3, 4, 5]
+
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        # The raw fields stay as captured: the date is kept, the flag beside it.
+        assert rows[1]["edit_date"] == edited_at
+        assert rows[1]["edit_hide"] == 1
+        assert rows[3]["edit_hide"] is None
+        assert rows[4]["edit_hide"] == 0
+        assert rows[5]["edit_hide"] == 1
+        assert rows[6]["edit_hide"] == 1
+        assert rows[6]["edit_date"] == edited_at
+
+    async def test_a_later_read_of_the_same_edit_fills_an_unknown_flag(self, real_adapter):
+        """A row archived before 034 has edit_date and no flag, so a reaction
+        Telegram hid still counts as an edit. A backup read of the same edit
+        (same edit_date) fills the flag; it replaces no known flag and no text."""
+        chat = 900051
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        def legacy(message_id: int, text: str) -> dict:
+            row = _message(chat, message_id, text=text, offset_minutes=message_id)
+            row["edit_date"] = edited_at
+            return row
+
+        # 1: legacy row; a re-scan or gap fill reads the same edit with the flag.
+        await real_adapter.insert_message(legacy(1, "reacted"), account_id=1)
+        await real_adapter.insert_message({**legacy(1, "reacted"), "edit_hide": 1}, account_id=1)
+        # 2: legacy row; the sync pass fills it through fill_edit_hide.
+        await real_adapter.insert_message(legacy(2, "reacted too"), account_id=1)
+        assert await real_adapter.get_unflagged_edit_ids(chat, account_id=1) == {2}
+        assert await real_adapter.fill_edit_hide(chat, 2, edited_at, 1, account_id=1) is True
+        # 3: known flag; neither path replaces it beside the same date, and an
+        # import (no flag) that fills an empty text does not blank it either.
+        await real_adapter.insert_message({**legacy(3, ""), "edit_hide": 1}, account_id=1)
+        await real_adapter.insert_message({**legacy(3, "filled")}, account_id=1)
+        await real_adapter.insert_message({**legacy(3, "filled"), "edit_hide": 0}, account_id=1)
+        assert await real_adapter.fill_edit_hide(chat, 3, edited_at, 0, account_id=1) is False
+        # 4: legacy row; a read of ANOTHER edit_date is not the same edit: no fill.
+        await real_adapter.insert_message(legacy(4, "kept"), account_id=1)
+        assert await real_adapter.fill_edit_hide(chat, 4, edited_at + timedelta(minutes=1), 1, account_id=1) is False
+
+        assert await real_adapter.get_unflagged_edit_ids(chat, account_id=1) == {4}
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        assert (rows[1]["edit_hide"], rows[1]["text"], rows[1]["edit_date"]) == (1, "reacted", edited_at)
+        assert (rows[2]["edit_hide"], rows[2]["text"], rows[2]["edit_date"]) == (1, "reacted too", edited_at)
+        assert (rows[3]["edit_hide"], rows[3]["text"]) == (1, "filled")
+        assert rows[4]["edit_hide"] is None
+        stats = await real_adapter.get_chat_stats(chat, account_id=1, with_kept_changes=True)
+        # 3 (a filled empty text keeps a version) and 4 (still unknown) are edited.
+        assert stats["edited_messages"] == 2
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+        assert await real_adapter.get_message_versions(chat, 2, account_id=1) == []
+
+
+class TestOlderReadTextRealEngine:
+    """The backup reads a message, and before its batch is written an edit
+    reaches the listener, which stores the newer text first. The batch's older
+    text must not be thrown away: it is kept as a version."""
+
+    async def test_backup_batch_after_a_listener_edit_keeps_the_older_text(self, real_adapter):
+        chat = 900052
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        listener_row = _message(chat, 1, text="second text")
+        listener_row["edit_date"] = edited_at
+        await real_adapter.insert_message(listener_row, account_id=1)
+        backup_row = {**_message(chat, 1, text="first text"), "edit_date": None, "keeps_older_text": True}
+        await real_adapter.insert_messages_batch([backup_row], account_id=1)
+        # The same read written twice records one version (change_hash).
+        await real_adapter.insert_messages_batch([backup_row], account_id=1)
+
+        rows = await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)
+        assert (rows[0]["text"], rows[0]["edit_date"]) == ("second text", edited_at)
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["text"], v["date"]) for v in versions] == [("first text", BASE_DATE)]
+
+    async def test_an_import_does_not_turn_its_older_text_into_a_version(self, real_adapter):
+        """An import renders text its own way, so a differing older text from it
+        is refused and recorded nowhere, as before."""
+        chat = 900053
+        await _seed_chat(real_adapter, chat)
+
+        stored = _message(chat, 1, text="second text")
+        stored["edit_date"] = BASE_DATE + timedelta(minutes=5)
+        await real_adapter.insert_message(stored, account_id=1)
+        await real_adapter.insert_message(_message(chat, 1, text="first **text**"), account_id=1)
+
+        rows = await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)
+        assert rows[0]["text"] == "second text"
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+
+    async def test_a_read_as_new_as_the_archive_keeps_no_extra_version(self, real_adapter):
+        """Never-edited rows re-read with a differing text (both without an edit
+        date) are not a race: the archive has no evidence of a newer edit."""
+        chat = 900054
+        await _seed_chat(real_adapter, chat)
+
+        await real_adapter.insert_message(_message(chat, 1, text="as stored"), account_id=1)
+        await real_adapter.insert_messages_batch(
+            [{**_message(chat, 1, text="as rendered now"), "keeps_older_text": True}], account_id=1
+        )
+
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+
+
+BOLD = [{"type": "bold", "offset": 0, "length": 4}]
+ITALIC = [{"type": "italic", "offset": 8, "length": 4}]
+
+
+def _formatted(chat_id: int, message_id: int, text: str, entities: list | None, **extra) -> dict:
+    row = _message(chat_id, message_id, text=text)
+    row["raw_data"] = {"entities": entities} if entities else {}
+    row.update(extra)
+    return row
+
+
+async def _raw(adapter, chat_id: int, message_id: int) -> dict:
+    rows = await adapter.get_messages_paginated(chat_id, account_id=1, limit=10)
+    raw = next(row for row in rows if row["id"] == message_id)["raw_data"]
+    return raw if isinstance(raw, dict) else json.loads(raw or "{}")
+
+
+async def _raw_entities(adapter, chat_id: int, message_id: int) -> list | None:
+    return (await _raw(adapter, chat_id, message_id)).get("entities")
+
+
+# Rich Text Editor block trees (#470): a heading at level 1, then at level 2.
+# Both render as the same bold text, so only the tree tells them apart.
+TREE_1 = {"blocks": [{"_": "PageBlockHeader", "text": {"_": "TextPlain", "text": "Meet at nine"}, "level": 1}]}
+TREE_2 = {"blocks": [{"_": "PageBlockHeader", "text": {"_": "TextPlain", "text": "Meet at nine"}, "level": 2}]}
+
+
+class TestVersionFormattingRealEngine:
+    """Every version keeps its own formatting and names the path that saw it.
+
+    An edit that changes only the formatting is an edit: it writes a version
+    and moves edit_date. A reaction (an edit Telegram hides) is not. Nothing
+    replaces archived formatting except an edit, which first moves it into the
+    version it supersedes."""
+
+    async def test_a_formatting_only_edit_writes_a_version_with_the_old_formatting(self, real_adapter):
+        chat = 900060
+        await _seed_chat(real_adapter, chat)
+        await real_adapter.insert_message(_formatted(chat, 1, "Meet at nine", BOLD), account_id=1)
+
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        outcome, prior = await real_adapter.update_message_text(
+            chat,
+            1,
+            "Meet at nine",
+            edited_at,
+            account_id=1,
+            edit_hide=0,
+            entities=ITALIC,
+            update_entities=True,
+            source="listener",
+        )
+
+        assert outcome == "applied"
+        assert prior["text"] == "Meet at nine"
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["text"], v["date"], v["entities"], v["source"]) for v in versions] == [
+            ("Meet at nine", BASE_DATE, BOLD, "listener")
+        ]
+        assert isinstance(versions[0]["captured_at"], datetime)
+        rows = await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)
+        assert rows[0]["edit_date"] == edited_at
+        assert await _raw_entities(real_adapter, chat, 1) == ITALIC
+        stats = await real_adapter.get_chat_stats(chat, account_id=1, with_kept_changes=True)
+        assert stats["edited_messages"] == 1
+
+    async def test_a_text_edit_keeps_the_old_formatting_in_its_version(self, real_adapter):
+        chat = 900061
+        await _seed_chat(real_adapter, chat)
+        await real_adapter.insert_message(_formatted(chat, 1, "Meet at nine", BOLD), account_id=1)
+
+        outcome, _ = await real_adapter.update_message_text(
+            chat,
+            1,
+            "Meet at ten",
+            BASE_DATE + timedelta(minutes=5),
+            account_id=1,
+            edit_hide=0,
+            entities=None,
+            update_entities=True,
+            source="sync",
+        )
+
+        assert outcome == "applied"
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["text"], v["entities"], v["source"]) for v in versions] == [("Meet at nine", BOLD, "sync")]
+        assert await _raw_entities(real_adapter, chat, 1) is None
+
+    async def test_a_hidden_or_repeated_formatting_change_replaces_nothing(self, real_adapter):
+        chat = 900062
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+        # 1: formatted; an edit Telegram hides (a reaction) carries other entities.
+        await real_adapter.insert_message(_formatted(chat, 1, "Meet at nine", BOLD), account_id=1)
+        # 2: formatted and edited at edited_at; the sync reading the same edit_date
+        # again reads the same edit (a live event at the same second is covered below).
+        await real_adapter.insert_message(
+            _formatted(chat, 2, "Meet at nine", BOLD, edit_date=edited_at, edit_hide=0), account_id=1
+        )
+        # 3: archived before formatting was kept; a hidden edit fills the missing key.
+        await real_adapter.insert_message(_formatted(chat, 3, "Meet at nine", None), account_id=1)
+
+        for message_id, edit_hide, source in ((1, 1, "listener"), (2, 0, "sync"), (3, 1, "listener")):
+            outcome, _ = await real_adapter.update_message_text(
+                chat,
+                message_id,
+                "Meet at nine",
+                edited_at,
+                account_id=1,
+                edit_hide=edit_hide,
+                entities=ITALIC,
+                update_entities=True,
+                source=source,
+            )
+            assert outcome == "noop"
+
+        assert await _raw_entities(real_adapter, chat, 1) == BOLD
+        assert await _raw_entities(real_adapter, chat, 2) == BOLD
+        assert await _raw_entities(real_adapter, chat, 3) == ITALIC
+        for message_id in (1, 2, 3):
+            assert await real_adapter.get_message_versions(chat, message_id, account_id=1) == []
+
+    async def test_a_backup_read_of_a_formatting_edit_writes_a_version(self, real_adapter):
+        chat = 900063
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+        await real_adapter.insert_message(_formatted(chat, 1, "Meet at nine", BOLD), account_id=1)
+        # 2 carries other extras (a link preview): they stay when the formatting goes.
+        seeded = _formatted(chat, 2, "Meet at nine", BOLD)
+        seeded["raw_data"]["webpage"] = {"url": "https://keep.example"}
+        await real_adapter.insert_message(seeded, account_id=1)
+
+        # 1: a gap fill or re-scan reads the message edited, formatting only.
+        read = _formatted(chat, 1, "Meet at nine", ITALIC, edit_date=edited_at, edit_hide=0, version_source="backup")
+        await real_adapter.insert_messages_batch([read], account_id=1)
+        # 2: a read with no extras at all ("{}") is still the whole message: bold removed.
+        plain = _formatted(chat, 2, "Meet at nine", None, edit_date=edited_at, edit_hide=0, version_source="backup")
+        await real_adapter.insert_messages_batch([plain], account_id=1)
+
+        for message_id, now in ((1, ITALIC), (2, None)):
+            versions = await real_adapter.get_message_versions(chat, message_id, account_id=1)
+            assert [(v["text"], v["date"], v["entities"], v["source"]) for v in versions] == [
+                ("Meet at nine", BASE_DATE, BOLD, "backup")
+            ]
+            assert await _raw_entities(real_adapter, chat, message_id) == now
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        assert rows[1]["edit_date"] == edited_at
+        assert rows[2]["edit_date"] == edited_at
+        assert await _raw(real_adapter, chat, 2) == {"webpage": {"url": "https://keep.example"}}
+
+    async def test_a_backup_read_of_a_text_edit_with_no_extras_drops_the_old_formatting(self, real_adapter):
+        """A read of an edit that removed every formatting mark serialises to
+        "{}". The new text must not keep the old entities; they move into the
+        version, and the other archived extras stay."""
+        chat = 900065
+        await _seed_chat(real_adapter, chat)
+        seeded = _formatted(chat, 1, "Meet at nine", BOLD)
+        seeded["raw_data"]["webpage"] = {"url": "https://keep.example"}
+        await real_adapter.insert_message(seeded, account_id=1)
+
+        read = _formatted(
+            chat,
+            1,
+            "Plan at ten!",
+            None,
+            edit_date=BASE_DATE + timedelta(minutes=5),
+            edit_hide=0,
+            version_source="backup",
+        )
+        await real_adapter.insert_messages_batch([read], account_id=1)
+
+        rows = await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)
+        assert rows[0]["text"] == "Plan at ten!"
+        assert await _raw(real_adapter, chat, 1) == {"webpage": {"url": "https://keep.example"}}
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["text"], v["entities"], v["source"]) for v in versions] == [("Meet at nine", BOLD, "backup")]
+
+    async def test_a_read_that_is_not_a_formatting_edit_keeps_the_archived_formatting(self, real_adapter):
+        """A hidden edit (a reaction), a read at the same edit_date, and an
+        import with another block tree are not edits: no version, and the
+        archived formatting stays."""
+        chat = 900066
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+        await real_adapter.insert_message(_formatted(chat, 1, "Meet at nine", BOLD), account_id=1)
+        await real_adapter.insert_message(
+            _formatted(chat, 2, "Meet at nine", BOLD, edit_date=edited_at, edit_hide=0), account_id=1
+        )
+        tree_row = _formatted(chat, 3, "Meet at nine", BOLD)
+        tree_row["raw_data"]["rich_message"] = TREE_1
+        await real_adapter.insert_message(tree_row, account_id=1)
+
+        # 1: a newer edit_date Telegram hides, with other entities.
+        hidden = _formatted(chat, 1, "Meet at nine", ITALIC, edit_date=edited_at, edit_hide=1, version_source="backup")
+        # 2: the archived edit_date again, with other entities.
+        same_date = _formatted(
+            chat, 2, "Meet at nine", ITALIC, edit_date=edited_at, edit_hide=0, version_source="backup"
+        )
+        # 3: an import with another block tree and a newer date.
+        imported = _formatted(chat, 3, "Meet at nine", BOLD, edit_date=edited_at, version_source="import")
+        imported["raw_data"]["rich_message"] = TREE_2
+        await real_adapter.insert_messages_batch([hidden, same_date, imported], account_id=1)
+
+        for message_id in (1, 2, 3):
+            assert await _raw_entities(real_adapter, chat, message_id) == BOLD
+            assert await real_adapter.get_message_versions(chat, message_id, account_id=1) == []
+        assert (await _raw(real_adapter, chat, 3))["rich_message"] == TREE_1
+
+    async def test_an_edit_keeps_the_old_block_tree_in_its_version(self, real_adapter):
+        """A Rich Text Editor message's block tree is formatting too: a text
+        edit and an edit of the tree alone both keep the old tree in the
+        version, and the tree alone is an edit, not a silent drop."""
+        chat = 900067
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+        for message_id in (1, 2, 3):
+            row = _formatted(chat, message_id, "Meet at nine", BOLD)
+            row["raw_data"]["rich_message"] = TREE_1
+            await real_adapter.insert_message(row, account_id=1)
+        row = _formatted(chat, 4, "Meet at nine", BOLD, edit_date=edited_at, edit_hide=0)
+        row["raw_data"]["rich_message"] = TREE_1
+        await real_adapter.insert_message(row, account_id=1)
+
+        # 1: the listener sees a text edit with a new tree.
+        outcome, _ = await real_adapter.update_message_text(
+            chat,
+            1,
+            "Meet at ten",
+            edited_at,
+            account_id=1,
+            edit_hide=0,
+            entities=BOLD,
+            update_entities=True,
+            rich_message=TREE_2,
+            source="listener",
+        )
+        assert outcome == "applied"
+        # 2: the listener sees an edit of the tree alone: same text, same entities.
+        outcome, _ = await real_adapter.update_message_text(
+            chat,
+            2,
+            "Meet at nine",
+            edited_at,
+            account_id=1,
+            edit_hide=0,
+            entities=BOLD,
+            update_entities=True,
+            rich_message=TREE_2,
+            source="listener",
+        )
+        assert outcome == "applied"
+        # 3: a backup read of an edit of the tree alone.
+        read = _formatted(chat, 3, "Meet at nine", BOLD, edit_date=edited_at, edit_hide=0, version_source="backup")
+        read["raw_data"]["rich_message"] = TREE_2
+        await real_adapter.insert_messages_batch([read], account_id=1)
+        # 4: a tree alone at the archived edit_date is not an edit, even from the
+        # listener: a tree carries file references Telegram refreshes.
+        outcome, _ = await real_adapter.update_message_text(
+            chat,
+            4,
+            "Meet at nine",
+            edited_at,
+            account_id=1,
+            edit_hide=0,
+            entities=BOLD,
+            update_entities=True,
+            rich_message=TREE_2,
+            source="listener",
+        )
+        assert outcome == "noop"
+
+        for message_id in (1, 2, 3):
+            versions = await real_adapter.get_message_versions(chat, message_id, account_id=1)
+            assert [(v["text"], v["entities"], v["rich_message"]) for v in versions] == [("Meet at nine", BOLD, TREE_1)]
+            assert (await _raw(real_adapter, chat, message_id))["rich_message"] == TREE_2
+        assert (await _raw(real_adapter, chat, 4))["rich_message"] == TREE_1
+
+    async def test_a_version_after_a_hidden_edit_is_dated_at_the_send_time(self, real_adapter):
+        """A message first archived after a reaction carries the reaction's
+        hidden edit_date. The text was current since it was sent, so its
+        version is dated at the send time, not at the reaction."""
+        chat = 900068
+        await _seed_chat(real_adapter, chat)
+        row = _formatted(chat, 1, "Meet at nine", None, edit_date=BASE_DATE + timedelta(minutes=1), edit_hide=1)
+        await real_adapter.insert_message(row, account_id=1)
+        # The backup's older read of a hidden-edit row keeps the same rule.
+        await real_adapter.insert_message(
+            _formatted(chat, 2, "Meet at ten", None, edit_date=BASE_DATE + timedelta(minutes=9), edit_hide=0),
+            account_id=1,
+        )
+        older = _formatted(
+            chat,
+            2,
+            "Meet at nine",
+            None,
+            edit_date=BASE_DATE + timedelta(minutes=1),
+            edit_hide=1,
+            keeps_older_text=True,
+            version_source="backup",
+        )
+        await real_adapter.insert_messages_batch([older], account_id=1)
+
+        outcome, _ = await real_adapter.update_message_text(
+            chat, 1, "Meet at ten", BASE_DATE + timedelta(minutes=5), account_id=1, edit_hide=0, source="listener"
+        )
+
+        assert outcome == "applied"
+        for message_id in (1, 2):
+            versions = await real_adapter.get_message_versions(chat, message_id, account_id=1)
+            assert [(v["text"], v["date"]) for v in versions] == [("Meet at nine", BASE_DATE)]
+
+    async def test_a_live_formatting_edit_within_the_same_second_applies(self, real_adapter):
+        """edit_date has one-second resolution and a bot may edit twice in one
+        second. A live listener event at the archived edit_date with other
+        entities is the newer edit; the sync at the same date is not."""
+        chat = 900069
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+        for message_id in (1, 2):
+            await real_adapter.insert_message(
+                _formatted(chat, message_id, "Meet at nine!", ITALIC, edit_date=edited_at, edit_hide=0), account_id=1
+            )
+
+        outcomes = []
+        for message_id, source in ((1, "listener"), (2, "sync")):
+            outcome, _ = await real_adapter.update_message_text(
+                chat,
+                message_id,
+                "Meet at nine!",
+                edited_at,
+                account_id=1,
+                edit_hide=0,
+                entities=BOLD,
+                update_entities=True,
+                source=source,
+            )
+            outcomes.append(outcome)
+
+        assert outcomes == ["applied", "noop"]
+        assert await _raw_entities(real_adapter, chat, 1) == BOLD
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["text"], v["date"], v["entities"], v["source"]) for v in versions] == [
+            ("Meet at nine!", edited_at, ITALIC, "listener")
+        ]
+        assert await _raw_entities(real_adapter, chat, 2) == ITALIC
+        assert await real_adapter.get_message_versions(chat, 2, account_id=1) == []
+
+    async def test_three_formatting_edits_in_one_second_keep_every_formatting(self, real_adapter):
+        """The versions of the first two edits share text and date, so the
+        frozen hash gives both one identity. The second keeps its own row."""
+        chat = 900070
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        underline = [{"type": "underline", "offset": 0, "length": 4}]
+        await _seed_chat(real_adapter, chat)
+        await real_adapter.insert_message(
+            _formatted(chat, 1, "Meet at nine!", ITALIC, edit_date=edited_at, edit_hide=0), account_id=1
+        )
+
+        outcomes = []
+        for entities in (BOLD, underline, underline):
+            outcome, _ = await real_adapter.update_message_text(
+                chat,
+                1,
+                "Meet at nine!",
+                edited_at,
+                account_id=1,
+                edit_hide=0,
+                entities=entities,
+                update_entities=True,
+                source="listener",
+            )
+            outcomes.append(outcome)
+
+        assert outcomes == ["applied", "applied", "noop"]
+        assert await _raw_entities(real_adapter, chat, 1) == underline
+        versions = await real_adapter.get_message_versions(chat, 1, account_id=1)
+        assert [(v["date"], v["entities"]) for v in versions] == [(edited_at, BOLD), (edited_at, ITALIC)]
+
+    async def test_formatting_the_archive_never_had_is_filled_not_an_edit(self, real_adapter):
+        """Rows archived before formatting was captured have no entities key.
+        A newer edit date Telegram shows, with the same text and entities, is
+        no proof of a formatting edit: the key is filled, no version is
+        written and edit_date stays."""
+        chat = 900071
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+        for message_id in (1, 2):
+            await real_adapter.insert_message(_formatted(chat, message_id, "Meet at nine", None), account_id=1)
+
+        outcome, _ = await real_adapter.update_message_text(
+            chat,
+            1,
+            "Meet at nine",
+            edited_at,
+            account_id=1,
+            edit_hide=0,
+            entities=BOLD,
+            update_entities=True,
+            source="sync",
+        )
+        read = _formatted(chat, 2, "Meet at nine", BOLD, edit_date=edited_at, edit_hide=0, version_source="backup")
+        await real_adapter.insert_messages_batch([read], account_id=1)
+
+        assert outcome == "noop"
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        for message_id in (1, 2):
+            assert await _raw_entities(real_adapter, chat, message_id) == BOLD
+            assert rows[message_id]["edit_date"] is None
+            assert await real_adapter.get_message_versions(chat, message_id, account_id=1) == []
+
+    async def test_an_import_or_an_older_read_keeps_the_archived_formatting(self, real_adapter):
+        chat = 900064
+        edited_at = BASE_DATE + timedelta(minutes=5)
+        await _seed_chat(real_adapter, chat)
+
+        # 1: an import with other extras and no entities, same text, newer date.
+        await real_adapter.insert_message(_formatted(chat, 1, "Meet at nine", BOLD), account_id=1)
+        imported = _formatted(chat, 1, "Meet at nine", None, edit_date=edited_at, version_source="import")
+        imported["raw_data"] = {"forward_from_name": "Channel A"}
+        await real_adapter.insert_messages_batch([imported], account_id=1)
+        # 2: the listener stored a newer edit; the backup batch read before it arrives after.
+        newer = _formatted(chat, 2, "Meet at ten", ITALIC, edit_date=edited_at, edit_hide=0)
+        await real_adapter.insert_message(newer, account_id=1)
+        older = _formatted(chat, 2, "Meet at nine", BOLD, keeps_older_text=True, version_source="backup")
+        await real_adapter.insert_messages_batch([older], account_id=1)
+
+        rows = {row["id"]: row for row in await real_adapter.get_messages_paginated(chat, account_id=1, limit=10)}
+        assert await _raw_entities(real_adapter, chat, 1) == BOLD
+        raw_1 = rows[1]["raw_data"] if isinstance(rows[1]["raw_data"], dict) else json.loads(rows[1]["raw_data"])
+        assert raw_1["forward_from_name"] == "Channel A"
+        assert rows[1]["edit_date"] is None
+        assert await real_adapter.get_message_versions(chat, 1, account_id=1) == []
+
+        assert (rows[2]["text"], await _raw_entities(real_adapter, chat, 2)) == ("Meet at ten", ITALIC)
+        versions = await real_adapter.get_message_versions(chat, 2, account_id=1)
+        assert [(v["text"], v["entities"], v["source"]) for v in versions] == [("Meet at nine", BOLD, "backup")]
 
 
 class TestPaginationRealEngine:

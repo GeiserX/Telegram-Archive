@@ -30,7 +30,7 @@ from telegram_archive import merge
 from telegram_archive.__main__ import create_parser, main
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import MediaTranscript, MessageVersion, Reaction
+from telegram_archive.db.models import MediaTranscript, MediaVersion, MessageVersion, Reaction
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -48,6 +48,7 @@ PHOTO_BYTES = b"fake photo bytes, the same in both archives"
 DOC_BYTES = b"fake document bytes, only in the source"
 PLAIN_BYTES = b"fake plain file bytes"
 VOICE_BYTES = b"fake voice note bytes"
+EARLIER_PHOTO_BYTES = b"fake photo bytes an edit replaced"
 AVATAR_BYTES = b"fake avatar bytes"
 
 
@@ -214,6 +215,25 @@ async def seed_source(url: str, media: Path) -> None:
                     change_hash=sha(b"fake version"),
                 )
             )
+            # The photo an edit replaced: its row and its file come along too.
+            earlier = media / str(CHANNEL) / "earlier_photo_1.jpg"
+            write_file(earlier, EARLIER_PHOTO_BYTES)
+            await session.execute(
+                sa.insert(MediaVersion).values(
+                    account_id=account_a,
+                    chat_id=CHANNEL,
+                    message_id=1,
+                    media_id=f"{CHANNEL}_1_photo_earlier",
+                    type="photo",
+                    file_path=str(earlier),
+                    file_name="earlier_photo_1.jpg",
+                    content_hash=sha(EARLIER_PHOTO_BYTES),
+                    downloaded=1,
+                    date=datetime(2024, 1, 1, 9, 0),
+                    captured_at=datetime(2024, 1, 1, 9, 5),
+                    source="listener",
+                )
+            )
             await session.commit()
 
         await db.upsert_forum_topic({"id": 5, "chat_id": FORUM, "title": "Test Topic"}, account_id=account_a)
@@ -356,6 +376,7 @@ class TestMergeCopiesEverything(MergeCase):
             "chat_folder_members": 2,
             "media": 5,
             "message_versions": 1,
+            "media_versions": 1,
             "reactions": 1,
             "avatar_history": 1,
             "media_transcripts": 2,
@@ -375,6 +396,13 @@ class TestMergeCopiesEverything(MergeCase):
 
     def test_the_source_is_not_changed(self):
         self.assertEqual(self.source_before, sha(self.source_db.read_bytes()))
+
+    def test_a_replaced_photo_follows_its_message_with_its_file(self):
+        self.assertEqual(
+            [(2, f"{CHANNEL}/earlier_photo_1.jpg")],
+            self.target_rows("SELECT account_id, file_path FROM media_versions WHERE chat_id = :chat", chat=CHANNEL),
+        )
+        self.assertEqual(EARLIER_PHOTO_BYTES, (self.target_media / str(CHANNEL) / "earlier_photo_1.jpg").read_bytes())
 
     def test_a_messages_media_versions_and_reactions_follow_it(self):
         self.assertEqual(
@@ -488,10 +516,11 @@ class TestMergeCopiesEverything(MergeCase):
 
     def test_the_media_plan(self):
         media = self.report.media
+        # Files: the plain file, the voice note and the photo an edit replaced.
         self.assertEqual(
-            (2, 1, 2, 0, 0, 2), (media.files, media.blobs, media.links, media.present, media.missing, media.avatars)
+            (3, 1, 2, 0, 0, 2), (media.files, media.blobs, media.links, media.present, media.missing, media.avatars)
         )
-        size = len(DOC_BYTES) + len(PLAIN_BYTES) + len(VOICE_BYTES) + 2 * len(AVATAR_BYTES)
+        size = len(DOC_BYTES) + len(PLAIN_BYTES) + len(VOICE_BYTES) + len(EARLIER_PHOTO_BYTES) + 2 * len(AVATAR_BYTES)
         self.assertEqual(size, media.bytes)
 
     def test_the_report_lines(self):
@@ -514,7 +543,7 @@ class TestDryRun(MergeCase):
         self.assertEqual(files, tree(self.target_media))
         self.assertEqual(5, report.rows["messages"])
         self.assertEqual(
-            (2, 1, 2, 2), (report.media.files, report.media.blobs, report.media.links, report.media.avatars)
+            (3, 1, 2, 2), (report.media.files, report.media.blobs, report.media.links, report.media.avatars)
         )
         self.assertEqual("[DRY RUN] Merge plan, nothing written:", merge.format_report(report)[0])
 
@@ -762,7 +791,8 @@ class TestMergeEdges(MergeCase):
         write_file(self.target_media / "avatars" / "chats" / f"{CHANNEL}_5550001.jpg", AVATAR_BYTES)
         write_file(self.target_media / "avatars" / "users" / f"{NEW_USER}_5550002.jpg", b"fake other avatar")
         report = self.run_merge(source_media=str(moved))
-        self.assertEqual((1, 1, 1), (report.media.files, report.media.avatars_present, report.media.avatars_kept))
+        # Files: the plain file and the photo an edit replaced; the voice note is present.
+        self.assertEqual((2, 1, 1), (report.media.files, report.media.avatars_present, report.media.avatars_kept))
         self.assertEqual(1, report.media.present)
         self.assertEqual(
             b"fake other avatar", (self.target_media / "avatars" / "users" / f"{NEW_USER}_5550002.jpg").read_bytes()
@@ -800,8 +830,9 @@ class TestMergeEdges(MergeCase):
                 " FROM media WHERE file_path IS NOT NULL"
             )
         report = self.run_merge()
+        # Files: the plain file, the voice note and the photo an edit replaced (kept once).
         self.assertEqual(
-            (2, 1, 2, 4), (report.media.files, report.media.blobs, report.media.links, report.media.present)
+            (3, 1, 2, 4), (report.media.files, report.media.blobs, report.media.links, report.media.present)
         )
 
     def test_an_unusable_stored_path_is_kept_and_skipped(self):
@@ -879,7 +910,8 @@ class TestMergeEdges(MergeCase):
         alias = self.tmp / "alias"
         os.symlink(self.source_media.parent, alias)
         report = self.run_merge(source_media=str(alias / "media"))
-        self.assertEqual((2, 1, 2), (report.media.files, report.media.blobs, report.media.links))
+        # Files: the plain file, the voice note and the photo an edit replaced.
+        self.assertEqual((3, 1, 2), (report.media.files, report.media.blobs, report.media.links))
         doc = self.target_media / str(CHANNEL) / "doc_2.pdf"
         self.assertTrue(doc.is_symlink())
         self.assertEqual(self.target_media / "_shared" / sha(DOC_BYTES)[:2] / "doc_2.pdf", doc.resolve())

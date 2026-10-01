@@ -16,6 +16,7 @@ import json
 import unittest
 
 from test_deleted_messages_frontend import _MOMENT
+from test_entity_rendering_frontend import _renderer_bundle
 from test_frontend_bootstrap import (
     _PRODUCER_PRELUDE,
     INDEX_HTML,
@@ -43,6 +44,7 @@ const messageVersionsErrors = { value: {} }
 
 _MARK_DECLARATIONS = (
     "const editedCount = (msg) =>",
+    "const shownEditDate = (msg) =>",
     "const isEditedMessage = (msg) =>",
     "const editedMoment = (msg) =>",
     "const editedWhen = (msg) =>",
@@ -56,8 +58,14 @@ _TIMELINE_DECLARATIONS = (
     "const diffWords = (before, after) =>",
     "const versionWhen = (msg, dateStr) =>",
     "const versionGap = (fromStr, toStr) =>",
+    "const formattedSlice = (text, entityList, start, end) =>",
+    "const versionHtml = (entry, before) =>",
     "const VERSIONS_LIMIT = 100",
+    "const versionHistoryShape = (msg, kept) =>",
     "const versionEntries = computed(() =>",
+    "const versionMediaKind = (type) =>",
+    "const versionMediaItems = (list, keyBase, prefix) =>",
+    "const getMediaDisplayName = (media) =>",
     "const messageVersionsKey = (msg) =>",
     "const getMessageVersions = (msg) =>",
     "const isMessageVersionsLoading = (msg) =>",
@@ -73,10 +81,10 @@ _MSG = {
     "version_count": 2,
     "text": "The north lot. It fills up by 8, so get there early.",
 }
-# Newest first, as the versions endpoint returns them.
+# Newest first, as the versions endpoint returns them. The listener saw both edits.
 _KEPT = [
-    {"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00"},
-    {"text": "The north lot.", "date": _SENT},
+    {"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00", "source": "listener"},
+    {"text": "The north lot.", "date": _SENT, "source": "listener"},
 ]
 
 
@@ -128,6 +136,22 @@ class TestTheCountAndItsName(unittest.TestCase):
         )
         self.assertEqual(out["heads"][:3], ["Edited · 08:57"] * 3)
         self.assertEqual(out["heads"][3], "Edited")
+
+    def test_an_edit_telegram_hides_is_not_an_edit(self) -> None:
+        # Telegram bumps edit_date when only the reactions change and sets
+        # edit_hide: with no earlier text kept, no pencil. A kept version still
+        # counts, without the hidden time.
+        rows = [
+            {**_MSG, "version_count": 0, "edit_hide": 1},
+            {**_MSG, "version_count": 1, "edit_hide": 1},
+            {**_MSG, "version_count": 0, "edit_hide": 0},
+            {**_MSG, "version_count": 0, "edit_hide": None},
+        ]
+        out = self._labels(rows)
+        self.assertEqual(out["edited"], [False, True, True, True])
+        self.assertEqual(out["labels"][1], "Edited, 1 earlier version kept")
+        self.assertEqual(out["heads"][1], "Edited")
+        self.assertEqual(out["labels"][2], "Edited at 08:57. The archive did not see the earlier text")
 
     def test_an_edit_on_a_later_day_names_the_day(self) -> None:
         rows = [
@@ -183,6 +207,15 @@ class TestTheMarkInTheMetaRow(unittest.TestCase):
         meta = HTML[start : HTML.index("</span>\n                                    </div>", start)]
         self.assertLess(meta.index("meta-edited"), meta.index("formatTime(msg.date)"))
 
+    def test_every_edited_check_goes_through_the_one_rule(self) -> None:
+        # A bare edit_date test would mark a message Telegram hid the edit of
+        # (a reaction), so the bubble frame, the time tooltip and the info panel
+        # all ask isEditedMessage, and the frame follows the realtime flag.
+        self.assertNotIn("edit_date || Number(", HTML)
+        self.assertNotIn("msg.edit_date || versions", HTML)
+        self.assertIn('<component v-if="isEditedMessage(infoPanelMessage)"', HTML)
+        self.assertIn("editMsg.edit_hide = data.edit_hide ? 1 : 0", HTML)
+
     def test_a_long_press_does_not_select_or_open_the_system_menu(self) -> None:
         rule = HTML[HTML.index("        .message-meta .meta-edited {") :]
         rule = rule[: rule.index("}")]
@@ -197,13 +230,13 @@ class TestTheTimeline(unittest.TestCase):
     """E: Sent, Edit 1, Edit 2 current, each with its time and the gap before it."""
 
     def _entries(self, msg: dict, kept: list[dict]) -> list[dict]:
-        prelude = f"""
+        prelude = f"""{_renderer_bundle(HTML)}
 versionsMessage.value = {json.dumps(msg)}
 messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
 """
         return _run(
             "versionEntries.value.map(e => ({ what: e.what, when: e.when, gap: e.gap, current: e.current,"
-            " parts: e.parts === undefined ? 'none' : e.parts }))",
+            " parts: e.parts === undefined ? 'none' : e.parts, html: e.html, formattingOnly: !!e.formattingOnly }))",
             _TIMELINE_DECLARATIONS,
             prelude,
         )
@@ -251,7 +284,248 @@ messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
         self.assertIn(
             '<span class="version-what">{{ entry.what }}<template v-if="entry.gap"> · {{ entry.gap }}</template>', item
         )
-        self.assertIn("part.kind === 'ins' ? 'diff-ins' : part.kind === 'del' ? 'diff-del' : null", item)
+        self.assertIn('<template v-if="entry.formattingOnly"> · formatting only</template>', item)
+        # The card is the bubble's own renderer's output, the only v-html here.
+        self.assertIn('<span v-if="entry.html" v-html="entry.html"></span>', item)
+        self.assertEqual(item.count("v-html"), 1)
+
+    def test_the_marks_sit_on_the_formatted_words(self) -> None:
+        out = self._entries(_MSG, _KEPT)
+        self.assertEqual(out[0]["html"], "The north lot.")
+        self.assertIn('<span class="diff-ins"> It fills up by 9.</span>', out[1]["html"])
+        self.assertIn('<span class="diff-del">9.</span>', out[2]["html"])
+
+    def test_each_version_keeps_its_own_formatting(self) -> None:
+        """t2h: a version is drawn with the formatting it had, the way the bubble
+        draws it; a removed word keeps the formatting of the version it left."""
+        msg = {**_MSG, "text": "Meet at 8", "raw_data": {"entities": [{"type": "italic", "offset": 8, "length": 1}]}}
+        kept = [
+            {
+                "text": "Meet at 9",
+                "date": "2026-09-30T08:54:00",
+                "entities": [{"type": "bold", "offset": 8, "length": 1}],
+            },
+            {"text": "Meet at 9", "date": _SENT, "entities": None},
+        ]
+        out = self._entries(msg, kept)
+        self.assertEqual(out[0]["html"], "Meet at 9")
+        self.assertEqual(out[1]["html"], "Meet at <strong>9</strong>")
+        self.assertTrue(out[1]["formattingOnly"])
+        self.assertFalse(out[2]["formattingOnly"])
+        self.assertIn('<span class="diff-del"><strong>9</strong></span>', out[2]["html"])
+        self.assertIn('<span class="diff-ins"><em>8</em></span>', out[2]["html"])
+
+    def test_the_card_escapes_the_text(self) -> None:
+        kept = [{"text": "<img src=x onerror=alert(1)>", "date": _SENT, "entities": None}]
+        out = self._entries({**_MSG, "text": "<b>now</b> and then"}, kept)
+        self.assertNotIn("<img", out[0]["html"])
+        self.assertNotIn("<b>", out[1]["html"])
+        self.assertIn("&lt;b&gt;now&lt;/b&gt;", out[1]["html"])
+
+    def test_versions_from_the_sync_make_the_count_a_lower_bound(self) -> None:
+        """5kr: the sync, a backup and an import read only the current text, so
+        edits between two reads leave no version; the labels drop their numbers.
+        A version from before the archive named its paths (no source) is
+        unknown and counts the same way."""
+        for source in ("sync", "backup", "import", None):
+            with self.subTest(source=source):
+                # The oldest version is the sent text, so only the source says edits may be missing.
+                kept = [{**_KEPT[0], "source": source}, {**_KEPT[1], "source": "listener"}]
+                out = self._entries(_MSG, kept)
+                self.assertEqual([e["what"] for e in out], ["Sent", "Edit", "Current"])
+        # Versions all from the listener keep the numbers.
+        out = self._entries(_MSG, _KEPT)
+        self.assertEqual([e["what"] for e in out], ["Sent", "Edit 1", "Edit 2, current"])
+
+    def test_one_edit_seen_by_the_listener_is_edit_1(self) -> None:
+        """A message first archived with a reaction's hidden edit date, then edited
+        once: its version is dated at the send time, so it reads Sent / Edit 1."""
+        msg = {**_MSG, "version_count": 1}
+        kept = [{"text": "The north lot.", "date": _SENT, "source": "listener"}]
+        out = self._entries(msg, kept)
+        self.assertEqual([e["what"] for e in out], ["Sent", "Edit 1, current"])
+
+    def test_a_message_first_seen_already_edited_says_so(self) -> None:
+        kept = [{"text": "The north lot. It fills up by 9.", "date": "2026-09-30T08:54:00", "source": "backup"}]
+        out = self._entries(_MSG, kept)
+        self.assertEqual([e["what"] for e in out], ["First seen, already edited", "Current"])
+
+    def test_the_subtitle_says_at_least_when_edits_may_be_missing(self) -> None:
+        def subtitle(kept: list[dict]) -> str:
+            prelude = f"""
+const formatDatePill = () => 'September 30'
+const formatTime = () => '08:52'
+versionsMessage.value = {json.dumps(_MSG)}
+messageVersionsByMessage.value = {{ '7:5': {json.dumps(kept)} }}
+"""
+            return _run(
+                "versionsSubtitle.value", (*_TIMELINE_DECLARATIONS, "const versionsSubtitle = computed("), prelude
+            )
+
+        self.assertEqual(subtitle(_KEPT), "Sent September 30 at 08:52 · 2 earlier versions")
+        for source in ("sync", "backup", "import", None):
+            self.assertEqual(
+                subtitle([{**_KEPT[0], "source": source}, _KEPT[1]]), "Sent September 30 at 08:52 · at least 2 edits"
+            )
+        # First seen already edited: the oldest kept text was itself an edit.
+        self.assertEqual(
+            subtitle([{**_KEPT[0], "source": "listener"}]), "Sent September 30 at 08:52 · at least 2 edits"
+        )
+
+
+@unittest.skipUnless(NODE, "node is required to execute the helpers")
+class TestEarlierMedia(unittest.TestCase):
+    """b2v: a version whose photo or file an edit replaced shows it, and the current
+    entry shows the current media beside it; a version kept only as media has no
+    card and the diff runs past it."""
+
+    def _entries(self, msg: dict, kept: list[dict]) -> list[dict]:
+        prelude = f"""{_renderer_bundle(HTML)}
+versionsMessage.value = {json.dumps(msg)}
+messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
+"""
+        return _run(
+            "versionEntries.value.map(e => ({ what: e.what, media: e.media, mediaOnly: e.mediaOnly, html: e.html,"
+            " parts: e.parts === undefined ? 'none' : e.parts }))",
+            _TIMELINE_DECLARATIONS,
+            prelude,
+        )
+
+    def test_an_earlier_photo_sits_on_its_version_and_the_current_one_beside_it(self) -> None:
+        msg = {**_MSG, "text": "Look", "media": {"type": "photo", "url": "/media/r7/5_photo"}}
+        kept = [
+            {
+                "text": "Look",
+                "date": _SENT,
+                "source": "listener",
+                "media": [{"type": "photo", "url": "/media/r7/5_v3", "file_name": "111.jpg", "downloaded": True}],
+            }
+        ]
+        out = self._entries(msg, kept)
+        self.assertEqual(
+            out[0]["media"],
+            [
+                {
+                    "key": f"{_SENT}:0:m0",
+                    "url": "/media/r7/5_v3",
+                    "thumbUrl": "/media/thumb/200/r7/5_v3",
+                    "label": "Earlier photo",
+                }
+            ],
+        )
+        self.assertEqual(
+            out[1]["media"],
+            [
+                {
+                    "key": "current:m0",
+                    "url": "/media/r7/5_photo",
+                    "thumbUrl": "/media/thumb/200/r7/5_photo",
+                    "label": "Current photo",
+                }
+            ],
+        )
+
+    def test_without_earlier_media_the_current_entry_shows_none(self) -> None:
+        msg = {**_MSG, "media": {"type": "photo", "url": "/media/r7/5_photo"}}
+        out = self._entries(msg, _KEPT)
+        self.assertEqual([e["media"] for e in out], [[], [], []])
+
+    def test_a_file_is_named_and_a_file_not_downloaded_says_so(self) -> None:
+        kept = [
+            {
+                "text": "The north lot.",
+                "date": _SENT,
+                "media": [
+                    {"type": "document", "url": None, "file_name": "2222_report.pdf", "downloaded": False},
+                    {"type": "video", "url": None, "no_download": True},
+                ],
+            }
+        ]
+        out = self._entries(_MSG, kept)
+        self.assertEqual(
+            [(m["label"], m["url"], m["thumbUrl"]) for m in out[0]["media"]],
+            [("Earlier file · report.pdf · not downloaded", "", ""), ("Earlier video", "", "")],
+        )
+
+    def test_a_version_kept_only_as_media_has_no_card_and_the_diff_runs_past_it(self) -> None:
+        kept = [
+            {
+                "text": None,
+                "media_only": True,
+                "date": "2026-09-30T08:54:00",
+                "media": [{"type": "photo", "url": "/media/r7/5_v1"}],
+            },
+            {"text": "The north lot.", "date": _SENT, "source": "listener"},
+        ]
+        out = self._entries(_MSG, kept)
+        self.assertEqual([(e["what"], e["mediaOnly"]) for e in out[:2]], [("Sent", False), ("Earlier media", True)])
+        self.assertEqual((out[1]["html"], out[1]["parts"]), ("", "none"))
+        self.assertIn({"kind": "ins", "text": " It fills up by 8, so get there early."}, out[2]["parts"])
+
+    def test_the_template_draws_a_thumbnail_a_link_and_no_card_for_media_only(self) -> None:
+        start = HTML.index('<li v-for="entry in versionEntries" :key="entry.key"')
+        item = HTML[start : HTML.index("</li>", start)]
+        self.assertIn('<div v-for="media in entry.media" :key="media.key" class="version-media">', item)
+        self.assertIn('<a v-if="media.thumbUrl" :href="media.url" target="_blank" rel="noopener"', item)
+        self.assertIn('<img :src="media.thumbUrl" :alt="media.label" loading="lazy">', item)
+        self.assertIn('<span v-else class="version-media-caption">{{ media.label }}</span>', item)
+        self.assertIn('<div v-if="!entry.mediaOnly" class="version-bubble"', item)
+        # The label is text, never markup: the card stays the only v-html.
+        self.assertEqual(item.count("v-html"), 1)
+
+
+@unittest.skipUnless(NODE, "node is required to execute the handler")
+class TestTheLiveEditFrame(unittest.TestCase):
+    """An "edit" frame updates the open chat at once, a formatting-only edit too."""
+
+    def _handle(self, msg: dict, frame: dict) -> dict:
+        prelude = f"""
+const messages = {{ value: [{json.dumps(msg)}] }}
+const clearMessageVersionsCache = () => {{}}
+const isVersionsPanelOpenFor = () => false
+const isEditPeekFor = () => false
+const loadMessageVersions = () => {{}}
+const handle = (data) => {{
+    switch (data.type) {{
+        {_block("case 'edit':", "case 'reaction':")}
+    }}
+}}
+handle({json.dumps(frame)})
+"""
+        return _run("messages.value[0]", (), prelude)
+
+    def test_a_formatting_only_edit_takes_the_new_entities_and_counts_a_version(self) -> None:
+        bold = [{"type": "bold", "offset": 0, "length": 4}]
+        italic = [{"type": "italic", "offset": 8, "length": 4}]
+        msg = {
+            "id": 5,
+            "text": "Meet at nine",
+            "edit_date": None,
+            "version_count": 0,
+            "raw_data": {"entities": bold, "webpage": {"url": "https://keep.example"}},
+        }
+        frame = {
+            "type": "edit",
+            "chat_ref": "r7",
+            "message_id": 5,
+            "new_text": "Meet at nine",
+            "edit_date": "2026-09-30T08:54:00",
+            "edit_hide": 0,
+            "entities": italic,
+        }
+        out = self._handle(msg, frame)
+        self.assertEqual(out["raw_data"], {"entities": italic, "webpage": {"url": "https://keep.example"}})
+        self.assertEqual(out["version_count"], 1)
+        self.assertEqual(out["edit_date"], "2026-09-30T08:54:00")
+
+        # Formatting removed: the entities go, the rest stays.
+        out = self._handle(msg, {**frame, "entities": None})
+        self.assertEqual(out["raw_data"], {"webpage": {"url": "https://keep.example"}})
+        # A frame without entities (the text was cut to fit) keeps the formatting it had.
+        frame_without = {key: value for key, value in frame.items() if key != "entities"}
+        out = self._handle(msg, frame_without)
+        self.assertEqual(out["raw_data"]["entities"], bold)
+        self.assertEqual(out["version_count"], 1)
 
 
 class TestThePanelAndTheSheet(unittest.TestCase):

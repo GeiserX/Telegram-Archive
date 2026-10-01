@@ -35,7 +35,7 @@ This page lists what Telegram Archive does not do yet, written as what you will 
 - **Prometheus metrics.** A metrics endpoint reports backup health, message counts and media size for Prometheus and Grafana. Today the same figures come as JSON from the statistics routes, behind any viewer login, and from [Archive status](../operations/troubleshooting.md#archive-status), behind the master login.
 - **Scheduled database upkeep.** SQLite `VACUUM` and PostgreSQL `ANALYZE` run on a schedule. Today nothing runs them.
 - **Checksum verification of media.** Media verification compares file checksums. Today [`VERIFY_MEDIA`](../configuration/media.md#verify-files-on-disk) checks that each file exists, is not empty and is within 1% of its recorded size.
-- **An alert when mass-operation protection trips.** You get notified when [mass-operation protection](../configuration/listener.md#mass-operation-protection) blocks a burst of edits or deletions. Today it writes a log warning only.
+- **An alert when mass-operation protection trips.** You get notified when [mass-operation protection](../configuration/listener.md#mass-operation-protection) blocks a burst of deletions. Today it writes a log warning only.
 - **Backup reports and a Telegram bot.** A scheduled report of each backup run, or a Telegram bot that tells you the archive status and starts a backup. Today status is something you open and read.
 
 ## Integrations and export

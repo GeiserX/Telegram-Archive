@@ -178,6 +178,10 @@ class Message(Base):
     reply_to_text: Mapped[str | None] = mapped_column(Text)
     forward_from_id: Mapped[int | None] = mapped_column(BigInteger)
     edit_date: Mapped[datetime | None] = mapped_column(DateTime)
+    # Telegram's edit_hide flag for the edit_date beside it: 1 when Telegram says
+    # the edit must not be shown (it bumps edit_date for reaction-only changes),
+    # 0 when it shows, NULL when unknown (rows from before migration 034, imports).
+    edit_hide: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # v6.0.0: media_type, media_id, media_path REMOVED - normalized to media table
     raw_data: Mapped[str | None] = mapped_column(Text)  # JSON string
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
@@ -265,7 +269,19 @@ event.listen(
 
 
 class MessageVersion(Base):
-    """Historical text versions for edited messages."""
+    """Earlier versions of edited messages: the text, its formatting, and who saw it.
+
+    ``entities`` is the version's formatting as a JSON list, the same shape as
+    ``raw_data["entities"]`` (035; NULL for rows from before it and for a text
+    with no formatting). ``rich_message`` is a Rich Text Editor message's block
+    tree as JSON, the shape of ``raw_data["rich_message"]`` (035; NULL when the
+    version had none). ``source`` is the path that wrote the row (035):
+    ``listener``, ``sync``, ``backup`` or ``import``; NULL for older rows, which
+    is unknown. Only the listener sees each edit as it happens, and only while
+    it is connected: after it was away, Telegram hands it the latest state
+    only. The other paths read the text current at that moment, so edits
+    between two reads leave no row.
+    """
 
     __tablename__ = "message_versions"
 
@@ -277,6 +293,9 @@ class MessageVersion(Base):
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     change_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    entities: Mapped[str | None] = mapped_column(Text)  # JSON string
+    source: Mapped[str | None] = mapped_column(String(16))
+    rich_message: Mapped[str | None] = mapped_column(Text)  # JSON string
 
     message: Mapped[Message] = relationship(
         "Message",
@@ -478,6 +497,12 @@ class Media(Base):
     skip_reason: Mapped[str | None] = mapped_column(String(16))
     download_date: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    # Telegram's id of the photo or document this row holds (036). An edit
+    # that replaces the media changes it; the row then moves to media_versions
+    # and this row takes the new file. NULL for rows from before 036, whose id
+    # is read from the file name (stored_media_file_id), and for media with no
+    # file (polls, locations).
+    telegram_file_id: Mapped[str | None] = mapped_column(String(32))
 
     # Relationship to message
     message: Mapped[Message | None] = relationship(
@@ -505,6 +530,66 @@ class Media(Base):
         # keyset cursor and ORDER BY all live on this column order, so a page
         # costs O(page size) instead of sorting every media row in the chat.
         Index("idx_media_gallery", "chat_id", "downloaded", "message_id", "id"),
+    )
+
+
+class MediaVersion(Base):
+    """A message's earlier media, kept when an edit replaced the photo or file (036).
+
+    Telegram lets a sender replace a message's media on edit. The ``media``
+    row always holds the current media; before it takes a new file, its values
+    are copied here, so the old file and everything known about it stay.
+
+    ``media_id`` is the id the media row had, which transcripts still point
+    at; the media row is re-keyed to a fresh id for the new file. ``date`` is
+    when this media became current, the same value ``message_versions.date``
+    has for the text shown beside it, so the edit history pairs them.
+    ``captured_at`` is when the archive saw the replacement, and ``source``
+    the path that saw it (listener, sync or backup). ``first_seen`` is the
+    media row's ``created_at``, when the archive first recorded this media,
+    and ``skip_reason`` the row's reason for not downloading it. Rows are
+    never updated, except that a file whose download finished after the
+    replacement is filled in.
+    """
+
+    __tablename__ = "media_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    media_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    type: Mapped[str | None] = mapped_column(String(50))
+    telegram_file_id: Mapped[str | None] = mapped_column(String(32))
+    file_path: Mapped[str | None] = mapped_column(Text)
+    file_name: Mapped[str | None] = mapped_column(String(255))
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    mime_type: Mapped[str | None] = mapped_column(String(100))
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    duration: Mapped[int | None] = mapped_column(Integer)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    downloaded: Mapped[int] = mapped_column(Integer, nullable=False)
+    download_date: Mapped[datetime | None] = mapped_column(DateTime)
+    skip_reason: Mapped[str | None] = mapped_column(String(16))
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime)
+    date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    source: Mapped[str | None] = mapped_column(String(16))
+
+    __table_args__ = (
+        # Inert on SQLite like message_versions' CASCADE: the explicit deletes
+        # in delete_message and delete_chat_and_related_data do the work.
+        ForeignKeyConstraint(
+            ["account_id", "message_id", "chat_id"],
+            ["messages.account_id", "messages.id", "messages.chat_id"],
+            name="fk_media_versions_message",
+            ondelete="CASCADE",
+        ),
+        # A media row is versioned once: after that its id belongs to no
+        # media row, and the next id minted for the message is new.
+        UniqueConstraint("account_id", "media_id", name="uq_media_versions_media_id"),
+        Index("ix_media_versions_message", "account_id", "chat_id", "message_id"),
     )
 
 

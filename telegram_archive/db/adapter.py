@@ -29,8 +29,10 @@ from sqlalchemy import (
     exists,
     false,
     func,
+    insert,
     literal,
     literal_column,
+    not_,
     nulls_last,
     or_,
     select,
@@ -50,6 +52,7 @@ from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     compute_directory_size,
     resolve_sender_display_name,
+    stored_media_file_id,
     utcnow_naive,
 )
 from ..transcription_contract import TRANSCRIBABLE_DOCUMENT_MIME_PREFIXES, TRANSCRIBABLE_TYPES
@@ -76,6 +79,7 @@ from .models import (
     ForumTopic,
     Media,
     MediaTranscript,
+    MediaVersion,
     Message,
     MessageVersion,
     Metadata,
@@ -461,6 +465,167 @@ def _message_version_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _formatted_message_version_hash(
+    chat_id: int,
+    message_id: int,
+    text: str | None,
+    date: datetime,
+    entities: list | None,
+) -> str:
+    """The dedup identity of a version whose frozen hash is already taken by other formatting.
+
+    Two edits in one second that change only the formatting leave versions
+    with the same text and the same date, so ``_message_version_hash`` gives
+    both one identity. Only then is the version written under this hash,
+    which adds its entities. Rows written under the frozen hash keep it, so
+    its meaning for every stored row stays the same.
+    """
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "date": _datetime_hash_value(date),
+        "entities": entities or None,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_preview_refresh(row_type: str | None, new_type: str | None) -> bool:
+    """True when a message's archived media and the media read now are both link previews.
+
+    A preview's photo or document is Telegram's picture of the linked page.
+    Telegram crawls the page again and can serve another one for a message
+    nobody edited, so its id says nothing about an edit. A new preview comes
+    with a new link, which is an edit of the text and is kept as one.
+    """
+    return row_type == "webpage" and new_type == "webpage"
+
+
+def _raw_data_dict(raw_data: Any) -> dict | None:
+    """``raw_data`` as a dict, from its JSON string or a dict; None when it is not one."""
+    if isinstance(raw_data, dict):
+        return raw_data
+    if not raw_data:
+        return {}
+    try:
+        parsed = json.loads(raw_data)
+    except ValueError, TypeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _json_or_none(value: str | None) -> Any:
+    """A JSON column's value, or None when it is empty or unreadable."""
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except ValueError, TypeError:
+        return None
+
+
+def _formatting_of(raw_data: Any) -> list | None:
+    """The formatting entities in ``raw_data``, or None when it has none."""
+    raw = _raw_data_dict(raw_data)
+    entities = raw.get("entities") if raw else None
+    return entities if isinstance(entities, list) and entities else None
+
+
+def _rich_message_of(raw_data: Any) -> dict | None:
+    """The Rich Text Editor block tree in ``raw_data`` (#470), or None when it has none."""
+    raw = _raw_data_dict(raw_data)
+    rich = raw.get("rich_message") if raw else None
+    return rich if isinstance(rich, dict) and rich else None
+
+
+def _formatting_state(raw_data: Any) -> tuple[list | None, dict | None]:
+    """Everything in ``raw_data`` that describes the text's formatting: entities and block tree."""
+    return _formatting_of(raw_data), _rich_message_of(raw_data)
+
+
+def _known_formatting_changes(
+    archived_raw_data: Any, entities: list | None, rich_message: dict | None
+) -> tuple[bool, bool]:
+    """Whether a read's entities and block tree differ from what the archive knows.
+
+    Only a key the archived ``raw_data`` has is compared. An absent key is
+    unknown, not "no formatting": messages archived before formatting was
+    captured (``entities`` since 8.3.0, ``rich_message`` since #470) have
+    none, and a message without formatting has none either. A difference
+    against an unknown key is no edit; the key is filled instead.
+    """
+    raw = _raw_data_dict(archived_raw_data)
+    if raw is None:
+        return False, False
+    entities_changed = "entities" in raw and (entities or None) != _formatting_of(raw)
+    rich_changed = "rich_message" in raw and (rich_message or None) != _rich_message_of(raw)
+    return entities_changed, rich_changed
+
+
+def _version_date(date: datetime | None, edit_date: datetime | None, edit_hide: Any) -> datetime | None:
+    """When a text became current: its visible edit, or the send time.
+
+    An ``edit_date`` Telegram hides (``edit_hide``, a reaction, #219) is not
+    an edit of the text, so a text carrying one has been current since it
+    was sent.
+    """
+    if edit_hide:
+        return _strip_tz(date)
+    return _strip_tz(edit_date) or _strip_tz(date)
+
+
+# The keys of raw_data that describe a text's formatting. An edit moves them
+# into the version it supersedes; nothing else may replace them.
+_FORMATTING_KEYS = ("entities", "rich_message")
+
+
+def _keep_archived_formatting(archived_raw_data: Any, incoming_raw_data: str) -> str:
+    """``incoming_raw_data`` with the archived formatting kept in place.
+
+    For a write that is not an edit (an import that renders text its own way,
+    an older read, an edit Telegram hides). The archived formatting keys win;
+    a key the archive does not have is filled from the incoming payload.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if not archived or incoming is None:
+        return incoming_raw_data
+    merged = dict(incoming)
+    for key in _FORMATTING_KEYS:
+        if key in archived:
+            merged[key] = archived[key]
+    if merged == incoming:
+        return incoming_raw_data
+    return json.dumps(merged)
+
+
+def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
+    """The archived ``raw_data`` with its formatting keys taken from the incoming one.
+
+    For an edit read with no other extras (``"{}"``), of the text or of the
+    formatting only: the old formatting has gone into the version it
+    supersedes, and the rest of the archived payload stays as it was.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if archived is None or incoming is None:
+        return incoming_raw_data
+    merged = dict(archived)
+    for key in _FORMATTING_KEYS:
+        if key in incoming:
+            merged[key] = incoming[key]
+        else:
+            merged.pop(key, None)
+    return json.dumps(merged) if merged else "{}"
+
+
+# The writers whose upserts are reads of the message from Telegram, so a newer
+# edit_date with other formatting is an edit. An import renders text and
+# formatting its own way, so a difference there is not evidence of an edit.
+_TELEGRAM_READ_SOURCES = ("backup", "listener")
+
+
 def retry_on_locked(
     max_retries: int = 5, initial_delay: float = 0.1, max_delay: float = 2.0, backoff_factor: float = 2.0
 ):
@@ -610,6 +775,7 @@ class DatabaseAdapter:
             "reply_to_text": message_data.get("reply_to_text"),
             "forward_from_id": message_data.get("forward_from_id"),
             "edit_date": _strip_tz(message_data.get("edit_date")),
+            "edit_hide": message_data.get("edit_hide"),
             "raw_data": self._serialize_raw_data(message_data.get("raw_data", {})),
             "is_outgoing": message_data.get("is_outgoing", 0),
             "is_pinned": message_data.get("is_pinned", 0),
@@ -649,14 +815,26 @@ class DatabaseAdapter:
         message_id: int,
         text: str | None,
         date: datetime,
+        entities: list | None = None,
+        source: str | None = None,
+        rich_message: dict | None = None,
     ) -> bool:
-        """Best-effort capture of a superseded text into message_versions.
+        """Best-effort capture of a superseded version into message_versions.
 
-        Versioning is plain text only — formatting/entity-only edits produce the
-        same text and are intentionally not versioned. Runs inside a SAVEPOINT so
-        an unexpected failure here can never poison the transaction or abort the
-        message upsert/batch it belongs to (the expected duplicate case is already
-        silenced by ON CONFLICT DO NOTHING on change_hash).
+        A version is the text, its formatting (``entities``, the list that was
+        in ``raw_data["entities"]``, and ``rich_message``, the block tree of a
+        Rich Text Editor message) and the path that saw it (``source``:
+        listener, sync, backup or import). The formatting is not part of the
+        dedup hash, whose payload is frozen: a version is identified by its
+        text and the time it became current, and a formatting-only edit still
+        gets its own row because every edit moves the time. Two such edits in
+        one second do not: when the frozen hash is taken by a row with other
+        entities, the version is written under a hash that adds its entities
+        (``_formatting_collision_hash``), so neither formatting is lost. Runs inside a
+        SAVEPOINT so an unexpected failure here can never poison the
+        transaction or abort the message upsert/batch it belongs to (the
+        expected duplicate case is already silenced by ON CONFLICT DO NOTHING
+        on change_hash).
         """
         date = _strip_tz(date)
         if date is None:
@@ -678,17 +856,51 @@ class DatabaseAdapter:
             "date": date,
             "change_hash": change_hash,
             "captured_at": utcnow_naive(),
+            "entities": json.dumps(entities) if entities else None,
+            "source": source,
+            "rich_message": json.dumps(rich_message) if rich_message else None,
         }
         try:
             async with session.begin_nested():
                 result = await session.execute(self._insert_message_version_stmt(values))
+                if not result.rowcount:
+                    salted = await self._formatting_collision_hash(session, values, entities)
+                    if salted is not None:
+                        values["change_hash"] = salted
+                        result = await session.execute(self._insert_message_version_stmt(values))
         except Exception as e:
             logger.warning("Could not record a message version (%s); message update continues", type(e).__name__)
             return False
         return bool(result.rowcount)
 
+    @staticmethod
+    async def _formatting_collision_hash(session, values: dict[str, Any], entities: list | None) -> str | None:
+        """The hash to keep a version under when its frozen hash holds other formatting, else None.
+
+        None when the stored row is this very version (same entities), and
+        for a stored row from before migration 035 (``source`` NULL): it never
+        kept its formatting, so a difference against it is not one.
+        """
+        stored = (
+            await session.execute(
+                select(MessageVersion.entities, MessageVersion.source).where(
+                    and_(
+                        MessageVersion.account_id == values["account_id"],
+                        MessageVersion.change_hash == values["change_hash"],
+                    )
+                )
+            )
+        ).first()
+        if stored is None or stored.source is None:
+            return None
+        if (_json_or_none(stored.entities) or None) == (entities or None):
+            return None
+        return _formatted_message_version_hash(
+            values["chat_id"], values["message_id"], values["text"], values["date"], entities
+        )
+
     def _message_version_date(self, message: Message) -> datetime:
-        return _strip_tz(message.edit_date) or _strip_tz(message.date)
+        return _version_date(message.date, message.edit_date, message.edit_hide)
 
     def _should_apply_upsert_text(self, existing: Message, values: dict[str, Any]) -> bool:
         """Decide whether a re-scanned/imported message may replace archived text.
@@ -730,24 +942,45 @@ class DatabaseAdapter:
             return True
         return False
 
-    def _should_apply_edit_text(self, existing: Message, new_text: str, edit_date: datetime | None) -> bool:
+    def _should_apply_edit_text(
+        self,
+        existing: Message,
+        new_text: str,
+        edit_date: datetime | None,
+        formatting_changed: bool = False,
+        same_date_applies: bool = False,
+    ) -> bool:
         """Decide whether a live edit event (listener/sync) may replace archived text.
 
         Differs from the upsert policy on the no-edit_date case: a live event with
         ``edit_date=None`` is applied only when the archived row was never edited —
         an already-edited row is never rolled over on date-less evidence (rare
         bot-API edits may hit this; conservative by design, covered by tests).
+
+        ``formatting_changed`` says the event's formatting differs from the
+        archived one in an edit Telegram shows. Such an edit with the same text
+        applies with a newer ``edit_date``: every edit moves the date.
+        ``same_date_applies`` lets it apply with the same ``edit_date`` too:
+        the date has one-second resolution and a bot can edit twice within one
+        second, so a live event with other entities at the same date is the
+        newer edit. For any other caller the same date means the archive
+        already holds this edit.
         """
         old_edit_date = _strip_tz(existing.edit_date)
         edit_date = _strip_tz(edit_date)
 
         if existing.text == new_text:
-            # Text unchanged -> not a real text edit. Telegram bumps edit_date for
-            # reaction-only changes (server-side; message.edit_hide is documented as
-            # unreliable), so applying here would set edit_date with no version and
-            # surface a phantom "edited" marker (#219). Reactions are captured by the
-            # dedicated reaction path instead.
-            return False
+            if not formatting_changed:
+                # Text and formatting unchanged -> not an edit. Telegram bumps
+                # edit_date for reaction-only changes (#219), so applying here
+                # would set edit_date with no version and surface a phantom
+                # "edited" marker. Reactions are captured by the reaction path.
+                return False
+            if edit_date is None:
+                return False
+            if old_edit_date is None or edit_date > old_edit_date:
+                return True
+            return same_date_applies and edit_date == old_edit_date
         if edit_date is None:
             return old_edit_date is None
         if old_edit_date is None:
@@ -775,6 +1008,101 @@ class DatabaseAdapter:
         result = await session.execute(stmt.execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
+    @staticmethod
+    def _fills_unknown_edit_hide(existing: Message, edit_date: datetime | None, edit_hide: int | None) -> bool:
+        """True when ``edit_hide`` fills a flag the archive never knew.
+
+        Rows archived before migration 034 have ``edit_date`` and a NULL flag,
+        and NULL reads as shown, so a reaction Telegram hid still shows a
+        pencil. A later read of the same edit (same ``edit_date``) that carries
+        the flag fills it. That writes an unknown value beside the same date
+        and overwrites nothing the archive captured.
+        """
+        if edit_hide is None or existing.edit_hide is not None:
+            return False
+        edit_date = _strip_tz(edit_date)
+        return edit_date is not None and edit_date == _strip_tz(existing.edit_date)
+
+    def _should_write_edit_hide(self, existing: Message, values: dict[str, Any], update_values: dict[str, Any]) -> bool:
+        """edit_hide is Telegram's flag for the edit_date it came with.
+
+        It is written when that date is written and differs from the stored
+        one (a source with no flag, an import, writes NULL there: unknown, not
+        "shown"), or when it fills an unknown flag for the same date. A known
+        flag is never replaced beside an unchanged date.
+        """
+        if "edit_date" in update_values and _strip_tz(update_values["edit_date"]) != _strip_tz(existing.edit_date):
+            return True
+        return self._fills_unknown_edit_hide(existing, values.get("edit_date"), values.get("edit_hide"))
+
+    def _older_read_text_to_keep(self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]) -> bool:
+        """True when a read from Telegram saw text the archive already replaced.
+
+        The backup reads a message, then processes the rest of its batch
+        before writing. An edit in that window reaches the listener, which
+        stores the newer text with its edit_date first. The batch then brings
+        the older text with no edit_date (or an older one), and the upsert
+        rightly keeps the newer text. That older text is still something the
+        archive read from Telegram, so it is kept as a version.
+
+        Only writers that set ``keeps_older_text`` (the backup's own reads)
+        qualify: an import renders text its own way, and a rendering
+        difference must never become a version.
+        """
+        if not message_data.get("keeps_older_text"):
+            return False
+        new_text = values.get("text")
+        if new_text is None or new_text == existing.text:
+            return False
+        if self._should_apply_upsert_text(existing, values):
+            return False
+        old_edit_date = _strip_tz(existing.edit_date)
+        if old_edit_date is None:
+            return False
+        new_edit_date = _strip_tz(values.get("edit_date"))
+        return new_edit_date is None or new_edit_date < old_edit_date
+
+    def _is_upsert_formatting_edit(
+        self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
+    ) -> bool:
+        """True when a read from Telegram shows an edit that changed only the formatting.
+
+        Same text, other formatting, and an ``edit_date`` newer than the
+        archived one, in an edit Telegram shows (a hidden edit is a reaction).
+        Only formatting the archive knows is compared
+        (``_known_formatting_changes``): a row archived before formatting was
+        captured has its formatting filled, not versioned.
+        Only the backup's and the listener's reads qualify: an import renders
+        formatting its own way, and a rendering difference is not an edit.
+        """
+        if message_data.get("version_source") not in _TELEGRAM_READ_SOURCES:
+            return False
+        if values.get("text") != existing.text or values.get("edit_hide"):
+            return False
+        new_edit_date = _strip_tz(values.get("edit_date"))
+        old_edit_date = _strip_tz(existing.edit_date)
+        if new_edit_date is None or (old_edit_date is not None and new_edit_date <= old_edit_date):
+            return False
+        if _raw_data_dict(values.get("raw_data")) is None:
+            return False
+        entities, rich_message = _formatting_state(values.get("raw_data"))
+        return any(_known_formatting_changes(existing.raw_data, entities, rich_message))
+
+    @staticmethod
+    def _is_upsert_media_edit(existing: Message, message_data: dict[str, Any], values: dict[str, Any]) -> bool:
+        """True when this read's edit replaced the message's media (``media_replaced``).
+
+        The backup sets the flag when ``reconcile_media_row`` kept the old
+        media as a version for this read. The replacement already kept the
+        text shown beside the old media; the edit's date moves here, as the
+        listener and the sync move it with ``update_message_text(media_changed=True)``.
+        """
+        if not message_data.get("media_replaced"):
+            return False
+        new_edit_date = _strip_tz(values.get("edit_date"))
+        old_edit_date = _strip_tz(existing.edit_date)
+        return new_edit_date is not None and (old_edit_date is None or new_edit_date > old_edit_date)
+
     def _pending_update_values(
         self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
     ) -> dict[str, Any]:
@@ -788,14 +1116,25 @@ class DatabaseAdapter:
         snapshot is immutable.
         """
         update_values = _message_conflict_update_values(message_data, values)
-        if self._should_apply_upsert_text(existing, values):
+        text_applied = self._should_apply_upsert_text(existing, values)
+        formatting_edit = not text_applied and self._is_upsert_formatting_edit(existing, message_data, values)
+        media_edit = (
+            not text_applied and not formatting_edit and self._is_upsert_media_edit(existing, message_data, values)
+        )
+        if text_applied:
             if values.get("edit_date") is None and existing.edit_date is not None:
                 # Text change arrived without edit evidence (e.g. late hydration):
                 # keep the existing edit_date rather than nulling it.
                 update_values.pop("edit_date", None)
+        elif formatting_edit or media_edit:
+            # The text is the same; the edit's date moves, as for a text edit,
+            # so the version it supersedes keeps its own date.
+            update_values.pop("text", None)
         else:
             update_values.pop("text", None)
             update_values.pop("edit_date", None)
+        if not self._should_write_edit_hide(existing, values, update_values):
+            update_values.pop("edit_hide", None)
 
         # Sender names are capture-time snapshots. A missing/blank snapshot may
         # be hydrated once, but a nonblank archived value is immutable.
@@ -812,6 +1151,27 @@ class DatabaseAdapter:
         # information.
         if not _has_raw_payload(values.get("raw_data")) and _has_raw_payload(getattr(existing, "raw_data", None)):
             update_values.pop("raw_data", None)
+
+        # Formatting belongs to the text it came with. An edit moves the old
+        # formatting into the version it supersedes and writes the new one; any
+        # other write keeps the archived formatting and only fills a missing key.
+        # A read with no extras ("{}") still says the new text has no
+        # formatting: the archived extras stay and the old formatting goes.
+        if formatting_edit:
+            if _has_raw_payload(values.get("raw_data")):
+                update_values["raw_data"] = values["raw_data"]
+            else:
+                update_values["raw_data"] = _with_formatting_of(existing.raw_data, values["raw_data"])
+        elif text_applied:
+            archived_raw_data = getattr(existing, "raw_data", None)
+            if (
+                not _has_raw_payload(values.get("raw_data"))
+                and _has_raw_payload(archived_raw_data)
+                and _raw_data_dict(archived_raw_data) is not None
+            ):
+                update_values["raw_data"] = _with_formatting_of(archived_raw_data, "{}")
+        elif "raw_data" in update_values:
+            update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
 
         changed = {}
         for key, value in update_values.items():
@@ -837,7 +1197,9 @@ class DatabaseAdapter:
         if snapshot is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
-        if not self._pending_update_values(snapshot, message_data, values):
+        if not self._pending_update_values(snapshot, message_data, values) and not self._older_read_text_to_keep(
+            snapshot, message_data, values
+        ):
             return
 
         existing = await self._load_message_for_update(session, values["account_id"], values["chat_id"], values["id"])
@@ -845,10 +1207,27 @@ class DatabaseAdapter:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
 
+        source = message_data.get("version_source")
+        if self._older_read_text_to_keep(existing, message_data, values):
+            await self._record_message_version(
+                session=session,
+                account_id=existing.account_id,
+                chat_id=existing.chat_id,
+                message_id=existing.id,
+                text=values["text"],
+                date=_version_date(values["date"], values.get("edit_date"), values.get("edit_hide")),
+                entities=_formatting_of(values.get("raw_data")),
+                rich_message=_rich_message_of(values.get("raw_data")),
+                source=source,
+            )
+
+        formatting_edit = not self._should_apply_upsert_text(existing, values) and self._is_upsert_formatting_edit(
+            existing, message_data, values
+        )
         update_values = self._pending_update_values(existing, message_data, values)
         if not update_values:
             return
-        if "text" in update_values:
+        if "text" in update_values or formatting_edit:
             await self._record_message_version(
                 session=session,
                 account_id=existing.account_id,
@@ -856,6 +1235,9 @@ class DatabaseAdapter:
                 message_id=existing.id,
                 text=existing.text,
                 date=self._message_version_date(existing),
+                entities=_formatting_of(existing.raw_data),
+                rich_message=_rich_message_of(existing.raw_data),
+                source=source,
             )
         await session.execute(
             update(Message)
@@ -1703,6 +2085,56 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
 
+    async def get_unflagged_edit_ids(self, chat_id: int, *, account_id: int) -> set[int]:
+        """IDs of a chat's messages with ``edit_date`` set and no ``edit_hide`` flag.
+
+        These rows were archived before migration 034 kept the flag. The sync
+        pass fills the flag for them from the message it already fetched when
+        the edit_date matches, so a reaction Telegram hid stops showing as an
+        edit. The set shrinks to nothing as the flags are filled.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message.id).where(
+                and_(
+                    Message.account_id == account_id,
+                    Message.chat_id == chat_id,
+                    Message.edit_date.isnot(None),
+                    Message.edit_hide.is_(None),
+                    or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
+                )
+            )
+            result = await session.execute(stmt)
+            return {row.id for row in result}
+
+    @retry_on_locked()
+    async def fill_edit_hide(
+        self, chat_id: int, message_id: int, edit_date: datetime, edit_hide: int, *, account_id: int
+    ) -> bool:
+        """Fill an unknown ``edit_hide`` for the ``edit_date`` the archive holds.
+
+        Writes only when the stored flag is NULL and the stored edit_date is
+        this one, so it fills an unknown value beside the same date and
+        overwrites nothing. Text, edit_date and versions are left alone.
+        Returns True when a row changed.
+        """
+        edit_date = _strip_tz(edit_date)
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Message)
+                .where(
+                    and_(
+                        Message.account_id == account_id,
+                        Message.chat_id == chat_id,
+                        Message.id == message_id,
+                        Message.edit_date == edit_date,
+                        Message.edit_hide.is_(None),
+                    )
+                )
+                .values(edit_hide=edit_hide)
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
     async def get_message_ids_since(self, chat_id: int, cutoff: datetime, limit: int, *, account_id: int) -> list[int]:
         """Return the newest message IDs in a chat dated at or after ``cutoff`` (#221).
 
@@ -1854,6 +2286,24 @@ class DatabaseAdapter:
             )
         )
 
+    @staticmethod
+    async def _delete_media_versions_of(session, version_predicate, *, account_id: int) -> None:
+        """Delete the ``media_versions`` rows ``version_predicate`` selects, and their transcripts.
+
+        The flag-gated removal paths that delete a message's or a chat's media
+        delete its earlier media with it, in the same transaction. A kept
+        version's transcripts still point at the id the media row had then.
+        """
+        await session.execute(
+            delete(MediaTranscript).where(
+                and_(
+                    MediaTranscript.account_id == account_id,
+                    MediaTranscript.media_id.in_(select(MediaVersion.media_id).where(version_predicate)),
+                )
+            )
+        )
+        await session.execute(delete(MediaVersion).where(version_predicate))
+
     @retry_on_locked()
     async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> dict | None:
         """Delete a specific message and its media.
@@ -1875,6 +2325,16 @@ class DatabaseAdapter:
                         MessageVersion.message_id == message_id,
                     )
                 )
+            )
+            # Delete the earlier media an edit replaced, with their transcripts
+            await self._delete_media_versions_of(
+                session,
+                and_(
+                    MediaVersion.account_id == account_id,
+                    MediaVersion.chat_id == chat_id,
+                    MediaVersion.message_id == message_id,
+                ),
+                account_id=account_id,
             )
             # Delete the transcripts of the media below, then the media
             await session.execute(
@@ -2001,11 +2461,26 @@ class DatabaseAdapter:
         edit_date: datetime | None,
         *,
         account_id: int,
+        edit_hide: int | None = None,
         entities: list | None = None,
         update_entities: bool = False,
         rich_message: dict | None = None,
+        source: str | None = None,
+        media_changed: bool = False,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
+
+        ``edit_hide`` is Telegram's flag for that ``edit_date`` and is written
+        beside it (None: the caller does not know it). ``source`` names the
+        caller's path (``listener`` or ``sync``) on the version it writes.
+
+        An edit writes the version it supersedes first: the old text, its
+        formatting (entities and block tree) and its date. With
+        ``update_entities`` an edit that changed only the formatting is an edit
+        too, when Telegram shows it and its ``edit_date`` is newer (or, from
+        the listener, the same with other entities): it gets a version and
+        moves ``edit_date``. Only formatting the archive knows is compared: a
+        key the archived ``raw_data`` lacks is filled, with no version.
 
         Returns ``(outcome, prior)`` so callers can keep honest counters and
         only broadcast edits that actually changed the archive. ``outcome`` is
@@ -2019,6 +2494,11 @@ class DatabaseAdapter:
         (#470): ``rich_message`` replaces the stored block tree, None drops it,
         so an edit that rewrote a Rich Text Editor message never leaves the
         old tree beside the new text.
+
+        ``media_changed`` says the same edit replaced the message's photo or
+        file (``reconcile_media_row`` kept the old one): it is an edit even when
+        the caption stayed the same, so it moves ``edit_date`` like a
+        formatting-only edit does.
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
@@ -2027,12 +2507,29 @@ class DatabaseAdapter:
                 logger.debug("Edit no-op: message not found in archive")
                 return "not_found", None
 
-            if not self._should_apply_edit_text(message, new_text, edit_date):
-                # Formatting-only edits arrive with UNCHANGED text but different
-                # entities. Merge them silently — no edit_date bump, no version,
-                # no webhook — so formatting stays current without the phantom
-                # "edited" marker #219 removed.
-                if update_entities and self._merge_raw_data_entities(message, entities, rich_message):
+            archived_entities, archived_rich_message = _formatting_state(message.raw_data)
+            entities_changed, rich_changed = (
+                _known_formatting_changes(message.raw_data, entities, rich_message)
+                if update_entities and not edit_hide
+                else (False, False)
+            )
+            formatting_changed = entities_changed or rich_changed
+            # The same edit_date applies only to a live event with other
+            # entities. A block tree also carries file references, which
+            # Telegram refreshes, so a tree alone never counts at the same date.
+            same_date_applies = source == "listener" and entities_changed
+            if not self._should_apply_edit_text(
+                message, new_text, edit_date, formatting_changed or media_changed, same_date_applies
+            ):
+                # Not an edit: the same text and formatting (a reaction moves
+                # edit_date, #219), an edit Telegram hides, or older evidence.
+                # The archived formatting stays; a key the row never had is
+                # filled when the text is the same, since it describes that text.
+                if (
+                    update_entities
+                    and message.text == new_text
+                    and self._fill_missing_formatting(message, entities, rich_message)
+                ):
                     await session.execute(
                         update(Message)
                         .where(
@@ -2045,25 +2542,27 @@ class DatabaseAdapter:
                         .values(raw_data=message.raw_data)
                     )
                     await session.commit()
-                    logger.debug("Edit no-op text, entities refreshed")
+                    logger.debug("Edit no-op text, missing formatting filled")
                 else:
                     logger.debug("Edit no-op: message already current")
                 return "noop", None
 
             prior = {"text": message.text, "sender_id": message.sender_id, "sender_name": message.sender_name}
-            if message.text != new_text:
-                await self._record_message_version(
-                    session=session,
-                    account_id=account_id,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=message.text,
-                    date=self._message_version_date(message),
-                )
+            await self._record_message_version(
+                session=session,
+                account_id=account_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message.text,
+                date=self._message_version_date(message),
+                entities=archived_entities,
+                rich_message=archived_rich_message,
+                source=source,
+            )
             await session.execute(
                 update(Message)
                 .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
-                .values(text=new_text, edit_date=edit_date)
+                .values(text=new_text, edit_date=edit_date, edit_hide=edit_hide)
             )
             if update_entities and self._merge_raw_data_entities(message, entities, rich_message):
                 await session.execute(
@@ -2105,6 +2604,27 @@ class DatabaseAdapter:
                     raw.pop(key)
                     changed = True
             elif raw.get(key) != value:
+                raw[key] = value
+                changed = True
+        if not changed:
+            return False
+        message.raw_data = json.dumps(raw)
+        return True
+
+    def _fill_missing_formatting(self, message: Message, entities: list | None, rich_message: dict | None) -> bool:
+        """Add formatting keys the loaded row does not have; True if anything was added.
+
+        Rows archived before formatting was captured have no entities. A later
+        event that is not an edit may fill them, and never replaces a key the
+        archive already holds.
+        """
+        raw = _raw_data_dict(message.raw_data)
+        if raw is None:
+            return False
+        raw = dict(raw)
+        changed = False
+        for key, value in (("entities", entities), ("rich_message", rich_message)):
+            if value and key not in raw:
                 raw[key] = value
                 changed = True
         if not changed:
@@ -2171,6 +2691,9 @@ class DatabaseAdapter:
             deleted_at = None
         sender_name = getattr(message, "sender_name", None)
         sender_name = sender_name.strip() if _is_nonblank_text(sender_name) else None
+        edit_hide = getattr(message, "edit_hide", None)
+        if not isinstance(edit_hide, int):
+            edit_hide = None
 
         return {
             "id": message.id,
@@ -2184,6 +2707,7 @@ class DatabaseAdapter:
             "reply_to_text": message.reply_to_text,
             "forward_from_id": message.forward_from_id,
             "edit_date": message.edit_date,
+            "edit_hide": edit_hide,
             "raw_data": message.raw_data,
             "created_at": message.created_at,
             "is_outgoing": message.is_outgoing,
@@ -2193,11 +2717,17 @@ class DatabaseAdapter:
         }
 
     def _message_version_to_dict(self, row: MessageVersion) -> dict[str, Any]:
+        entities = _formatting_of({"entities": _json_or_none(row.entities)})
+        rich_message = _rich_message_of({"rich_message": _json_or_none(row.rich_message)})
         return {
             "chat_id": row.chat_id,
             "message_id": row.message_id,
             "text": row.text,
             "date": row.date,
+            "captured_at": row.captured_at,
+            "source": row.source,
+            "entities": entities,
+            "rich_message": rich_message,
         }
 
     @staticmethod
@@ -2271,7 +2801,15 @@ class DatabaseAdapter:
     async def get_message_versions(
         self, chat_id: int, message_id: int, limit: int = 100, *, account_id: int | None = None
     ) -> list[dict[str, Any]]:
-        """Get preserved previous text versions for a message (None account_id = unscoped until phase 4)."""
+        """Get preserved previous versions for a message (None account_id = unscoped until phase 4).
+
+        A version whose media an edit replaced carries it as ``media``, a list
+        of ``_media_version_to_dict`` rows: the media kept in ``media_versions``
+        with the same ``date``, which is when that text and that media became
+        current together. Earlier media with no text version of its date (the
+        text version could not be written) is listed as its own version, with
+        ``text`` None and ``media_only`` True, so no kept file goes unlisted.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(MessageVersion)
@@ -2282,7 +2820,118 @@ class DatabaseAdapter:
             if account_id is not None:
                 stmt = stmt.where(MessageVersion.account_id == account_id)
             result = await session.execute(stmt)
-            return [self._message_version_to_dict(row) for row in result.scalars()]
+            versions = [self._message_version_to_dict(row) for row in result.scalars()]
+
+            # Every earlier media of the message, in the order it was kept: its
+            # position (1, 2, 3...) is the number its URL key names
+            # (``get_media_version``). A message has a handful at most.
+            media_stmt = (
+                select(MediaVersion)
+                .where(and_(MediaVersion.chat_id == chat_id, MediaVersion.message_id == message_id))
+                .order_by(MediaVersion.id)
+            )
+            if account_id is not None:
+                media_stmt = media_stmt.where(MediaVersion.account_id == account_id)
+            media_rows = (await session.execute(media_stmt)).scalars().all()
+
+        if not media_rows:
+            return versions
+        numbers: dict[int, int] = {}
+        seen_per_account: dict[int, int] = {}
+        for media_row in media_rows:
+            seen_per_account[media_row.account_id] = seen_per_account.get(media_row.account_id, 0) + 1
+            numbers[media_row.id] = seen_per_account[media_row.account_id]
+        media_rows = sorted(media_rows, key=lambda row: (row.date, row.id), reverse=True)[:limit]
+        by_date: dict[datetime, dict[str, Any]] = {}
+        for version in versions:
+            by_date.setdefault(version["date"], version)
+        for media_row in media_rows:
+            media = self._media_version_to_dict(media_row)
+            media["number"] = numbers[media_row.id]
+            version = by_date.get(media_row.date)
+            if version is None:
+                version = {
+                    "chat_id": media_row.chat_id,
+                    "message_id": media_row.message_id,
+                    "text": None,
+                    "date": media_row.date,
+                    "captured_at": media_row.captured_at,
+                    "source": media_row.source,
+                    "entities": None,
+                    "rich_message": None,
+                    "media_only": True,
+                }
+                by_date[media_row.date] = version
+                versions.append(version)
+            version.setdefault("media", []).append(media)
+        versions.sort(key=lambda version: version["date"], reverse=True)
+        return versions[:limit]
+
+    @staticmethod
+    def _media_version_to_dict(row: MediaVersion) -> dict[str, Any]:
+        """An earlier media for the edit history. ``file_path`` is for the web
+        layer, which turns it into a URL and never sends it."""
+        return {
+            "id": row.id,
+            "type": row.type,
+            "file_name": row.file_name,
+            "file_path": row.file_path,
+            "file_size": row.file_size,
+            "mime_type": row.mime_type,
+            "width": row.width,
+            "height": row.height,
+            "duration": row.duration,
+            "downloaded": bool(row.downloaded),
+            "skip_reason": row.skip_reason,
+            "first_seen": row.first_seen,
+            "date": row.date,
+            "captured_at": row.captured_at,
+            "source": row.source,
+        }
+
+    async def get_media_version(
+        self, chat_id: int, message_id: int, number: int, *, account_id: int
+    ) -> dict[str, Any] | None:
+        """One earlier media of one message in one chat, for the bytes routes.
+
+        ``number`` is the media's position among the message's earlier media
+        in the order they were kept (1 for the first), as
+        ``get_message_versions`` numbers them: a URL names no archive-wide id.
+        Chat- and account-bound in SQL like ``get_media_for_message``: another
+        chat, account or message finds nothing.
+        """
+        if number < 1:
+            return None
+        async with self.db_manager.async_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(MediaVersion)
+                    .where(
+                        and_(
+                            MediaVersion.account_id == account_id,
+                            MediaVersion.chat_id == chat_id,
+                            MediaVersion.message_id == message_id,
+                        )
+                    )
+                    .order_by(MediaVersion.id)
+                    .offset(number - 1)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "id": row.media_id,
+                "account_id": row.account_id,
+                "message_id": row.message_id,
+                "chat_id": row.chat_id,
+                "type": row.type,
+                "file_path": row.file_path,
+                "file_name": row.file_name,
+                "file_size": row.file_size,
+                "mime_type": row.mime_type,
+                "downloaded": row.downloaded,
+            }
 
     def _message_versions_query(
         self,
@@ -2673,19 +3322,28 @@ class DatabaseAdapter:
                 yield self._message_version_to_dict(row)
 
     @staticmethod
+    def _marked_edited_predicate():
+        """Telegram marks a message edited: ``edit_date`` is set and its
+        ``edit_hide`` flag is not. Telegram bumps ``edit_date`` for a
+        reaction-only change and sets ``edit_hide`` to say the edit must not be
+        shown; NULL (a row from before the flag was kept) reads as shown."""
+        return and_(Message.edit_date.isnot(None), func.coalesce(Message.edit_hide, 0) == 0)
+
+    @staticmethod
     def _edited_predicate():
-        """A message counts as edited when Telegram marks it (``edit_date``) or
-        the archive kept an earlier version of it. Either alone happens: a
-        message first captured after its edit has ``edit_date`` and no version,
-        and a late-hydrated empty text keeps a version with no ``edit_date``.
-        It is the viewer's own rule for the pencil in a bubble, so the chat's
-        count, the "Edited only" list and the marked bubbles agree."""
+        """A message counts as edited when Telegram marks it
+        (``_marked_edited_predicate``) or the archive kept an earlier version of
+        it. Either alone happens: a message first captured after its edit is
+        marked and has no version, and a late-hydrated empty text keeps a
+        version with no mark. It is the viewer's own rule for the pencil in a
+        bubble, so the chat's count, the "Edited only" list and the marked
+        bubbles agree."""
         kept = exists().where(
             MessageVersion.account_id == Message.account_id,
             MessageVersion.chat_id == Message.chat_id,
             MessageVersion.message_id == Message.id,
         )
-        return or_(Message.edit_date.isnot(None), kept)
+        return or_(DatabaseAdapter._marked_edited_predicate(), kept)
 
     async def get_chat_stats(
         self, chat_id: int, *, account_id: int | None = None, with_kept_changes: bool = False
@@ -2746,7 +3404,7 @@ class DatabaseAdapter:
             kept_result = await session.execute(
                 select(
                     func.coalesce(func.sum(case((Message.is_deleted == 1, 1), else_=0)), 0),
-                    func.coalesce(func.sum(case((Message.edit_date.isnot(None), 1), else_=0)), 0),
+                    func.coalesce(func.sum(case((self._marked_edited_predicate(), 1), else_=0)), 0),
                 ).where(and_(*msg_where))
             )
             kept_row = kept_result.one()
@@ -2764,7 +3422,7 @@ class DatabaseAdapter:
                         Message.id == MessageVersion.message_id,
                     ),
                 )
-                .where(MessageVersion.chat_id == chat_id, Message.edit_date.is_(None))
+                .where(MessageVersion.chat_id == chat_id, not_(self._marked_edited_predicate()))
                 .distinct()
             )
             if account_id is not None:
@@ -2779,8 +3437,8 @@ class DatabaseAdapter:
     # ========== Media Operations ==========
 
     @retry_on_locked()
-    async def insert_media(self, media_data: dict[str, Any], *, account_id: int) -> None:
-        """Insert (or upsert) a media file record.
+    async def insert_media(self, media_data: dict[str, Any], *, account_id: int) -> str | None:
+        """Insert (or upsert) a media file record; the id written, or None.
 
         Contract for the ``downloaded`` key: include it whenever the caller
         actually observed the download outcome (True after a successful write,
@@ -2788,11 +3446,23 @@ class DatabaseAdapter:
         when the caller cannot know whether a file is on disk. An omitted key
         means "leave the stored flag alone" on conflict and 0 on a fresh insert —
         see the comment on the conflict clause below.
+
+        A row that names its file (``telegram_file_id``) is written only where
+        that file belongs, checked in the same transaction as the write
+        (``_media_write_id``): a download that was still running when an edit
+        replaced the media never lands in the new media's row. None means
+        nothing was written to the message's current media.
         """
         async with self.db_manager.async_session_factory() as session:
+            media_id = media_data["id"]
+            if media_data.get("telegram_file_id") is not None:
+                media_id = await self._media_write_id(session, media_data, account_id=account_id)
+                if media_id is None:
+                    await session.commit()
+                    return None
             values = {
                 "account_id": account_id,
-                "id": media_data["id"],
+                "id": media_id,
                 "message_id": media_data.get("message_id"),
                 "chat_id": media_data.get("chat_id"),
                 "type": media_data["type"],
@@ -2807,6 +3477,7 @@ class DatabaseAdapter:
                 "downloaded": 1 if media_data.get("downloaded") else 0,
                 "skip_reason": media_data.get("skip_reason"),
                 "download_date": media_data.get("download_date"),
+                "telegram_file_id": media_data.get("telegram_file_id"),
             }
 
             stmt = sqlite_insert(Media).values(**values) if self._is_sqlite else pg_insert(Media).values(**values)
@@ -2835,6 +3506,7 @@ class DatabaseAdapter:
                 "duration",
                 "content_hash",
                 "download_date",
+                "telegram_file_id",
             ):
                 update_values[column] = func.coalesce(getattr(stmt.excluded, column), getattr(Media, column))
             # ``downloaded`` is a flag, not a value: 0 is a real value, so COALESCE
@@ -2869,6 +3541,179 @@ class DatabaseAdapter:
 
             await session.execute(stmt)
             await session.commit()
+            return media_id
+
+    async def _media_write_id(self, session, media_data: dict[str, Any], *, account_id: int) -> str | None:
+        """The media id a downloaded file may be written under, or None.
+
+        The caller asked ``reconcile_media_row`` for the id before it started
+        the download. An edit can replace the media in the meantime: the row
+        under that id then moved to ``media_versions`` and the message's
+        current media has another id and another file. So the file decides:
+
+        - the row under the id holds this file, or an unknown one, or both
+          are link previews (``_is_preview_refresh``): write there;
+        - the id was kept as an earlier media of this very file: its file
+          values are filled in the ``media_versions`` row, which had none,
+          and nothing is written to the current media;
+        - the message has another current media: nothing is written to it.
+          A downloaded file is kept as an earlier media of the message
+          (``_keep_late_download``), so a file the archive read is never
+          forgotten when another writer stored other media first;
+        - the message has no media row: a new row, under the id unless a kept
+          version already holds it.
+        """
+        media_id = media_data["id"]
+        file_id = str(media_data["telegram_file_id"])
+        chat_id = media_data.get("chat_id")
+        message_id = media_data.get("message_id")
+        message = None
+        if chat_id is not None and message_id is not None:
+            # The lock _replace_media_row takes: the check below and the write
+            # after it cannot interleave with a replacement.
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
+        row = (
+            await session.execute(
+                select(Media.telegram_file_id, Media.file_name, Media.type).where(
+                    and_(Media.account_id == account_id, Media.id == media_id)
+                )
+            )
+        ).first()
+        if row is not None:
+            stored = stored_media_file_id(row.telegram_file_id, row.file_name)
+            if stored is None or stored == file_id or _is_preview_refresh(row.type, media_data.get("type")):
+                return media_id
+            logger.debug("Media changed while it was downloading; the current media is left as it is")
+            await self._keep_late_download(session, media_data, message, account_id=account_id)
+            return None
+        kept = (
+            await session.execute(
+                select(MediaVersion).where(
+                    and_(MediaVersion.account_id == account_id, MediaVersion.media_id == media_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if kept is not None and kept.telegram_file_id == file_id:
+            if media_data.get("downloaded") and not kept.downloaded:
+                await self._fill_media_version_file(session, kept.id, media_data)
+            return None
+        current = (
+            await session.execute(
+                select(Media.id)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.chat_id == chat_id,
+                        Media.message_id == message_id,
+                    )
+                )
+                .limit(1)
+            )
+        ).first()
+        if current is not None:
+            logger.debug("Media changed while it was downloading; the current media is left as it is")
+            await self._keep_late_download(session, media_data, message, account_id=account_id)
+            return None
+        if kept is not None:
+            return await self._free_media_id(session, account_id, media_id)
+        return media_id
+
+    async def _keep_late_download(
+        self, session, media_data: dict[str, Any], message: Message | None, *, account_id: int
+    ) -> None:
+        """Keep a downloaded file as an earlier media when another writer stored other media first.
+
+        A backup batch reads a message and downloads its file; before the
+        batch is written, the listener stores the message with other media
+        under the same id. The file the batch read is still part of the
+        message's history, so it is kept in ``media_versions``: a version
+        of this file with no file of its own is filled, and otherwise a new
+        version is added. ``version_date`` and ``version_source`` in
+        ``media_data`` date it and name the path that read it; without them
+        it is dated at the message's send time. A write that downloaded
+        nothing keeps nothing.
+        """
+        if not media_data.get("downloaded") or message is None:
+            return
+        file_id = str(media_data["telegram_file_id"])
+        versions = (
+            (
+                await session.execute(
+                    select(MediaVersion)
+                    .where(
+                        and_(
+                            MediaVersion.account_id == account_id,
+                            MediaVersion.chat_id == message.chat_id,
+                            MediaVersion.message_id == message.id,
+                            MediaVersion.telegram_file_id == file_id,
+                        )
+                    )
+                    .order_by(MediaVersion.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if any(version.downloaded for version in versions):
+            return
+        if versions:
+            await self._fill_media_version_file(session, versions[0].id, media_data)
+            return
+        now = utcnow_naive()
+        await session.execute(
+            insert(MediaVersion).values(
+                account_id=account_id,
+                chat_id=message.chat_id,
+                message_id=message.id,
+                media_id=await self._free_media_id(session, account_id, media_data["id"]),
+                type=media_data.get("type"),
+                telegram_file_id=file_id,
+                file_path=media_data.get("file_path"),
+                file_name=media_data.get("file_name"),
+                file_size=media_data.get("file_size"),
+                mime_type=media_data.get("mime_type"),
+                width=media_data.get("width"),
+                height=media_data.get("height"),
+                duration=media_data.get("duration"),
+                content_hash=media_data.get("content_hash"),
+                downloaded=1,
+                download_date=media_data.get("download_date"),
+                first_seen=now,
+                date=_strip_tz(media_data.get("version_date")) or _strip_tz(message.date),
+                captured_at=now,
+                source=media_data.get("version_source"),
+            )
+        )
+        logger.debug("Kept a late download as an earlier media")
+
+    @staticmethod
+    async def _fill_media_version_file(session, version_id: int, media_data: dict[str, Any]) -> None:
+        """Give a kept media version the file a late download fetched for it.
+
+        Only a version with no file (kept while its download was still
+        running) is filled. Each value falls back to what the version holds,
+        as ``insert_media`` does on conflict.
+        """
+        values: dict[str, Any] = {"downloaded": 1}
+        for column in (
+            "file_path",
+            "file_name",
+            "file_size",
+            "mime_type",
+            "width",
+            "height",
+            "duration",
+            "content_hash",
+            "download_date",
+        ):
+            if media_data.get(column) is not None:
+                values[column] = media_data[column]
+        await session.execute(
+            update(MediaVersion)
+            .where(and_(MediaVersion.id == version_id, MediaVersion.downloaded == 0))
+            .values(**values)
+        )
+        logger.debug("Filled the file of an earlier media")
 
     async def find_media_by_content_hash(self, content_hash: str, *, account_id: int) -> dict[str, Any] | None:
         """Find an existing downloaded media record with the given SHA-256 content hash.
@@ -2898,7 +3743,9 @@ class DatabaseAdapter:
         Get all media records for one account's copy of a chat.
 
         Feeds the chat-cleanup path that deletes files from disk, so it must
-        never surface another account's rows.
+        never surface another account's rows. The earlier media edits replaced
+        (``media_versions``) are listed too, with ``"version": True``:
+        ``delete_media_for_chat`` removes their rows as well.
 
         Args:
             chat_id: Chat identifier
@@ -2910,8 +3757,12 @@ class DatabaseAdapter:
             stmt = select(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id))
             result = await session.execute(stmt)
             media_records = result.scalars().all()
+            version_stmt = select(MediaVersion).where(
+                and_(MediaVersion.account_id == account_id, MediaVersion.chat_id == chat_id)
+            )
+            version_records = (await session.execute(version_stmt)).scalars().all()
 
-            return [
+            records = [
                 {
                     "id": m.id,
                     "message_id": m.message_id,
@@ -2923,6 +3774,20 @@ class DatabaseAdapter:
                 }
                 for m in media_records
             ]
+            records += [
+                {
+                    "id": v.media_id,
+                    "message_id": v.message_id,
+                    "chat_id": v.chat_id,
+                    "type": v.type,
+                    "file_path": v.file_path,
+                    "file_size": v.file_size,
+                    "downloaded": v.downloaded,
+                    "version": True,
+                }
+                for v in version_records
+            ]
+            return records
 
     async def get_media_paginated(
         self,
@@ -3258,6 +4123,11 @@ class DatabaseAdapter:
             Number of media records deleted
         """
         async with self.db_manager.async_session_factory() as session:
+            await self._delete_media_versions_of(
+                session,
+                and_(MediaVersion.account_id == account_id, MediaVersion.chat_id == chat_id),
+                account_id=account_id,
+            )
             chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
             await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
             result = await session.execute(delete(Media).where(chat_media))
@@ -3421,7 +4291,9 @@ class DatabaseAdapter:
 
         Deliberately not scoped to one account: the shared store is keyed by
         (file_name, content_hash) with no account in the path, so a blob another
-        account's row points at must survive this account's cleanup.
+        account's row points at must survive this account's cleanup. Earlier
+        media an edit replaced (``media_versions``) count too: a kept version
+        whose file is the same blob keeps it.
         """
         hashes = [h for h in dict.fromkeys(content_hashes) if h]
         if not hashes:
@@ -3430,13 +4302,14 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             for start in range(0, len(hashes), 500):
                 chunk = hashes[start : start + 500]
-                stmt = (
-                    select(Media.content_hash, func.count())
-                    .where(Media.content_hash.in_(chunk))
-                    .group_by(Media.content_hash)
-                )
-                for content_hash, count in (await session.execute(stmt)).all():
-                    counts[content_hash] = count
+                for model in (Media, MediaVersion):
+                    stmt = (
+                        select(model.content_hash, func.count())
+                        .where(model.content_hash.in_(chunk))
+                        .group_by(model.content_hash)
+                    )
+                    for content_hash, count in (await session.execute(stmt)).all():
+                        counts[content_hash] = counts.get(content_hash, 0) + count
         return counts
 
     async def iter_media_for_verification(self, *, account_id: int, batch_size: int = 500):
@@ -3622,10 +4495,39 @@ class DatabaseAdapter:
         return moved
 
     async def reconcile_media_row(
-        self, chat_id: int, message_id: int, media_type: str, *, account_id: int
+        self,
+        chat_id: int,
+        message_id: int,
+        media_type: str,
+        *,
+        account_id: int,
+        telegram_file_id: str | None = None,
+        source: str | None = None,
+        edit_date: datetime | None = None,
+        edit_hide: int | bool | None = None,
     ) -> dict[str, Any] | None:
         """The media row this message already has, re-typed to the current
         judgement, or None when the message has no media row yet.
+
+        ``telegram_file_id`` is the id of the photo or document the message
+        carries now (``media_file_id``). When the row holds a different known
+        id and the read shows an edit that can have made the change, the
+        media was replaced: the row is kept as a ``media_versions`` row and
+        comes back empty under a new id, with ``"replaced": True``, so the
+        caller downloads the new file into it (``_replace_media_row``).
+        ``source`` names the caller's path on the versions that writes, and
+        ``edit_date`` and ``edit_hide`` are the edit date and Telegram's
+        hidden-edit flag of the message the caller read.
+
+        When the row holds another file and was not replaced (the read shows
+        no such edit, or the row could not be kept), it comes back with
+        ``"superseded": True``: it holds other media than the caller's, and
+        the caller must not download into it.
+
+        A link preview's photo or document is not compared when the row holds
+        a link preview too: Telegram crawls the page again and can serve
+        another preview photo for a message nobody edited
+        (``_is_preview_refresh``).
 
         ``Media.id`` used to be minted fresh on every capture from
         ``{chat}_{msg}_{type}`` -- so it cached a JUDGEMENT (what kind of thing
@@ -3639,11 +4541,12 @@ class DatabaseAdapter:
 
         So the id stops being identity. A message's media row is found by its
         ``(account_id, chat_id, message_id)`` COLUMNS and keeps whatever id it
-        was first filed under -- opaque, stable, and never re-keyed. Nothing
-        reads its shape any more: the viewer builds URL keys from the message
-        and type columns, and ``get_media_for_message`` looks rows up the same
-        way. Only ``type`` is corrected, which is the value every reader
-        actually consults.
+        was first filed under: opaque and stable. A reclassification never
+        re-keys it; only a replacement does, and then the old id stays with
+        the old media in ``media_versions``. Nothing reads its shape any more:
+        the viewer builds URL keys from the message and type columns, and
+        ``get_media_for_message`` looks rows up the same way. Only ``type`` is
+        corrected, which is the value every reader actually consults.
 
         Ordered exactly like ``get_media_for_message`` (downloaded first, then
         lowest id) so the writer and the reader always agree on which row is
@@ -3670,6 +4573,34 @@ class DatabaseAdapter:
             )
             if row is None:
                 return None
+            if telegram_file_id is not None and not _is_preview_refresh(row.type, media_type):
+                stored = stored_media_file_id(row.telegram_file_id, row.file_name)
+                if stored is not None and stored != str(telegram_file_id):
+                    row_id = row.id
+                    await session.rollback()
+                    replaced = await self._replace_media_row(
+                        chat_id,
+                        message_id,
+                        row_id,
+                        media_type,
+                        str(telegram_file_id),
+                        account_id=account_id,
+                        source=source,
+                        edit_date=edit_date,
+                        edit_hide=edit_hide,
+                    )
+                    if replaced is not None:
+                        return replaced
+                    # Not replaced here. Either another writer replaced it
+                    # first (the row now holds this file), or the read shows
+                    # no edit that can have replaced the media, or the row
+                    # could not be kept. Only the first may take a download.
+                    current = await self.reconcile_media_row(chat_id, message_id, None, account_id=account_id)
+                    if current is not None:
+                        now = stored_media_file_id(current["telegram_file_id"], current["file_name"])
+                        if now is not None and now != str(telegram_file_id):
+                            current["superseded"] = True
+                    return current
             if media_type and row.type != media_type:
                 await session.execute(
                     update(Media)
@@ -3692,6 +4623,216 @@ class DatabaseAdapter:
                 "content_hash": row.content_hash,
                 "downloaded": bool(row.downloaded),
                 "download_date": row.download_date,
+                "telegram_file_id": row.telegram_file_id,
+            }
+
+    @staticmethod
+    def _shows_replacing_edit(message: Message, edit_date: datetime | None, edit_hide: int | bool | None) -> bool:
+        """True when a read shows an edit that can have replaced the media.
+
+        Telegram moves a message's edit date when its photo or file is
+        swapped, and shows that edit. So the read must carry an edit date,
+        not hidden (a hidden edit is a reaction, #219), and not older than
+        the archived edit. The same date is allowed: the date has one-second
+        resolution and a bot can edit twice within one second. A read without
+        this evidence replaces nothing, whatever id it carries: a link preview
+        crawled again, or a stored id that does not name the file.
+        """
+        read = _strip_tz(edit_date)
+        if read is None or edit_hide:
+            return False
+        archived = _strip_tz(message.edit_date)
+        return archived is None or read >= archived
+
+    @staticmethod
+    async def _free_media_id(session, account_id: int, base: str) -> str:
+        """``{base}_v{n}`` with the lowest n above every one in use.
+
+        Checked against both tables: a media row and a kept version must never
+        share an id, and a row-level cleanup can leave gaps that a count of
+        versions would walk back into. A base that is itself re-keyed counts
+        from its own stem, so ids never grow a second suffix.
+        """
+        base = re.sub(r"_v[0-9]+$", "", base)
+        pattern = base.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + r"\_v%"
+        taken = set(
+            (
+                await session.execute(
+                    select(Media.id).where(and_(Media.account_id == account_id, Media.id.like(pattern, escape="\\")))
+                )
+            ).scalars()
+        )
+        taken.update(
+            (
+                await session.execute(
+                    select(MediaVersion.media_id).where(
+                        and_(MediaVersion.account_id == account_id, MediaVersion.media_id.like(pattern, escape="\\"))
+                    )
+                )
+            ).scalars()
+        )
+        highest = 0
+        for taken_id in taken:
+            suffix = taken_id[len(base) + 2 :]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+        return f"{base}_v{highest + 1}"
+
+    @retry_on_locked()
+    async def _replace_media_row(
+        self,
+        chat_id: int,
+        message_id: int,
+        media_id: str,
+        media_type: str | None,
+        telegram_file_id: str,
+        *,
+        account_id: int,
+        source: str | None,
+        edit_date: datetime | None = None,
+        edit_hide: int | bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Keep a replaced media row as a version and free the row for the new file.
+
+        One transaction, under the message's row lock, so two paths that see
+        the same edit replace the row once:
+
+        1. the message's text as it was is kept as a ``message_versions`` row
+           (a no-op when that version is already there), dated like the media;
+        2. the media row's file and what is known about it (type, file id,
+           path, name, size, MIME type, dimensions, duration, content hash,
+           download state and date, skip reason, and its ``created_at`` as
+           ``first_seen``) are copied to ``media_versions``, with the id the
+           row had, so its file and its transcripts stay findable. Its
+           download attempt count is not kept;
+        3. the media row takes a new id and the new file's identity, with every
+           file value cleared, ``downloaded=0`` and ``created_at`` set to now,
+           so no later write can mix the old file into it. The caller
+           downloads the new file into it.
+
+        ``edit_date`` and ``edit_hide`` describe the message the caller read.
+        Only a read that shows an edit which can have replaced the media
+        replaces it (``_shows_replacing_edit``): a read with no edit date, a
+        hidden edit, or one older than the archived edit (the listener
+        applied a newer edit after the caller fetched the message) replaces
+        nothing.
+
+        Returns the row as the caller should use it, or None when nothing was
+        replaced: the row is gone or already holds this file (another path
+        replaced it first), the read shows no replacing edit, or the row
+        could not be kept.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
+            if message is None:
+                return None
+            row = (
+                await session.execute(
+                    select(Media)
+                    .where(and_(Media.account_id == account_id, Media.id == media_id))
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            stored = stored_media_file_id(row.telegram_file_id, row.file_name)
+            if stored is None or stored == telegram_file_id:
+                return None
+            if not self._shows_replacing_edit(message, edit_date, edit_hide):
+                logger.debug("Media replacement refused: the read shows no edit that replaced it")
+                return None
+
+            date = self._message_version_date(message)
+            entities, rich_message = _formatting_state(message.raw_data)
+            await self._record_message_version(
+                session=session,
+                account_id=account_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message.text,
+                date=date,
+                entities=entities,
+                rich_message=rich_message,
+                source=source,
+            )
+            new_type = media_type or row.type
+            new_id = await self._free_media_id(session, account_id, f"{chat_id}_{message_id}_{new_type}")
+            now = utcnow_naive()
+            try:
+                async with session.begin_nested():
+                    await session.execute(
+                        insert(MediaVersion).values(
+                            account_id=account_id,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            media_id=row.id,
+                            type=row.type,
+                            telegram_file_id=stored,
+                            file_path=row.file_path,
+                            file_name=row.file_name,
+                            file_size=row.file_size,
+                            mime_type=row.mime_type,
+                            width=row.width,
+                            height=row.height,
+                            duration=row.duration,
+                            content_hash=row.content_hash,
+                            downloaded=row.downloaded or 0,
+                            download_date=row.download_date,
+                            skip_reason=row.skip_reason,
+                            first_seen=row.created_at,
+                            date=date,
+                            captured_at=now,
+                            source=source,
+                        )
+                    )
+                    await session.execute(
+                        update(Media)
+                        .where(and_(Media.account_id == account_id, Media.id == row.id))
+                        .values(
+                            id=new_id,
+                            type=new_type,
+                            telegram_file_id=telegram_file_id,
+                            file_path=None,
+                            file_name=None,
+                            file_size=None,
+                            mime_type=None,
+                            width=None,
+                            height=None,
+                            duration=None,
+                            content_hash=None,
+                            downloaded=0,
+                            download_attempts=0,
+                            skip_reason=None,
+                            download_date=None,
+                            created_at=now,
+                        )
+                    )
+            except IntegrityError:
+                # A key already taken: nothing was changed. reconcile_media_row
+                # hands the row back as superseded, so no caller downloads the
+                # new media into it, and the next read of the message tries again.
+                await session.rollback()
+                logger.warning("Could not keep replaced media as a version; the row is unchanged")
+                return None
+            await session.commit()
+            logger.debug("Kept replaced media as a version")
+            return {
+                "id": new_id,
+                "type": new_type,
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "file_name": None,
+                "file_path": None,
+                "file_size": None,
+                "mime_type": None,
+                "width": None,
+                "height": None,
+                "duration": None,
+                "content_hash": None,
+                "downloaded": False,
+                "download_date": None,
+                "telegram_file_id": telegram_file_id,
+                "replaced": True,
             }
 
     @staticmethod
@@ -4466,6 +5607,12 @@ class DatabaseAdapter:
                     and_(MessageVersion.account_id == account_id, MessageVersion.chat_id == chat_id)
                 )
             )
+            # Delete the earlier media an edit replaced, with their transcripts
+            await self._delete_media_versions_of(
+                session,
+                and_(MediaVersion.account_id == account_id, MediaVersion.chat_id == chat_id),
+                account_id=account_id,
+            )
             # Delete the transcripts of the chat's media, then the media records
             chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
             await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
@@ -4950,17 +6097,48 @@ class DatabaseAdapter:
         )
 
     @staticmethod
-    def _transcript_hit_messages(stmt):
-        """Put ``media_transcripts`` in FROM and join it through ``media`` to the message that carries it."""
+    def _transcribed_media_owners():
+        """Every media id with the message it belongs to: current media and earlier media.
+
+        An edit that replaced a voice message or a video keeps the old media
+        in ``media_versions`` under the id its transcripts point at, so a
+        transcript reaches its message through either table.
+        """
+        return union_all(
+            select(
+                Media.account_id.label("account_id"),
+                Media.id.label("media_id"),
+                Media.chat_id.label("chat_id"),
+                Media.message_id.label("message_id"),
+            ),
+            select(
+                MediaVersion.account_id.label("account_id"),
+                MediaVersion.media_id.label("media_id"),
+                MediaVersion.chat_id.label("chat_id"),
+                MediaVersion.message_id.label("message_id"),
+            ),
+        ).subquery("transcribed_media")
+
+    @classmethod
+    def _transcript_hit_messages(cls, stmt):
+        """Put ``media_transcripts`` in FROM and join it through its media to the message that carries it.
+
+        The media is the current one or an earlier one an edit replaced
+        (``_transcribed_media_owners``).
+        """
+        owners = cls._transcribed_media_owners()
         return (
             stmt.select_from(MediaTranscript)
-            .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+            .join(
+                owners,
+                and_(owners.c.account_id == MediaTranscript.account_id, owners.c.media_id == MediaTranscript.media_id),
+            )
             .join(
                 Message,
                 and_(
-                    Message.account_id == Media.account_id,
-                    Message.chat_id == Media.chat_id,
-                    Message.id == Media.message_id,
+                    Message.account_id == owners.c.account_id,
+                    Message.chat_id == owners.c.chat_id,
+                    Message.id == owners.c.message_id,
                 ),
             )
         )
@@ -5314,7 +6492,7 @@ class DatabaseAdapter:
                         Message.chat_id == chat_id, fts_predicate
                     )
                     transcript_keys = self._transcript_hit_messages(select(Message.account_id, Message.id)).where(
-                        Media.chat_id == chat_id, transcript_predicate
+                        Message.chat_id == chat_id, transcript_predicate
                     )
                     if account_id is not None:
                         message_keys = message_keys.where(Message.account_id == account_id)
@@ -7219,29 +8397,38 @@ class DatabaseAdapter:
         """Every transcript row with the ``chat_id`` and ``message_id`` its media belongs to.
 
         For the two exports: every column, datetimes as ISO strings, newest
-        row first. A transcript whose media row is gone has no message to sit
-        under and is left out. ``None`` scopes mean every chat or account.
+        row first. A transcript of an earlier media an edit replaced
+        (``media_versions``) sits under its message too. A transcript whose
+        media is gone has no message to sit under and is left out. ``None``
+        scopes mean every chat or account.
         ``from_date`` (inclusive) and ``to_date`` (exclusive) bound the date
         of the message, as ``get_messages_for_export`` does, so a windowed
         export reads only the rows of the messages it exports.
         """
         async with self.db_manager.async_session_factory() as session:
+            owners = self._transcribed_media_owners()
             stmt = (
-                select(MediaTranscript, Media.chat_id, Media.message_id)
-                .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+                select(MediaTranscript, owners.c.chat_id, owners.c.message_id)
+                .join(
+                    owners,
+                    and_(
+                        owners.c.account_id == MediaTranscript.account_id,
+                        owners.c.media_id == MediaTranscript.media_id,
+                    ),
+                )
                 .order_by(MediaTranscript.id.desc())
             )
             if chat_id is not None:
-                stmt = stmt.where(Media.chat_id == chat_id)
+                stmt = stmt.where(owners.c.chat_id == chat_id)
             if account_id is not None:
                 stmt = stmt.where(MediaTranscript.account_id == account_id)
             if from_date is not None or to_date is not None:
                 stmt = stmt.join(
                     Message,
                     and_(
-                        Message.account_id == Media.account_id,
-                        Message.chat_id == Media.chat_id,
-                        Message.id == Media.message_id,
+                        Message.account_id == owners.c.account_id,
+                        Message.chat_id == owners.c.chat_id,
+                        Message.id == owners.c.message_id,
                     ),
                 )
                 if from_date is not None:

@@ -191,7 +191,7 @@ All of these need a login that can see the chat.
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
 | `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only` and `edited_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
-| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message |
+| `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message, newest first: `[{chat_id, message_id, text, date, captured_at, source, entities, rich_message}]`, with `media` on a version whose photo or file an edit replaced. See [Message versions](#message-versions) |
 | `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
 | `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
@@ -217,7 +217,7 @@ curl -s -b jar.txt \
   'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&deleted_only=true'
 ```
 
-`edited_only=true` keeps only the edited messages, newest first, the same way. A message counts as edited when Telegram marks it (`edit_date` is set) or the archive kept at least one earlier version of it (`version_count` above 0): either can hold without the other, for a message first archived after its edit or an earlier empty text the archive filled in. It is the rule the viewer's pencil follows, and `edited_messages` in `/api/chats/{chat_ref}/stats` counts the same rows. Like `deleted_only`, it is a read that combines with `search`, `topic_id` and the cursors and stays inside the chat the ref names.
+`edited_only=true` keeps only the edited messages, newest first, the same way. A message counts as edited when Telegram marks it (`edit_date` is set and `edit_hide` is not 1) or the archive kept at least one earlier version of it (`version_count` above 0): either can hold without the other, for a message first archived after its edit or an earlier empty text the archive filled in. `edit_hide` is Telegram's flag for that `edit_date`: 1 when Telegram says the edit is not to be shown, which it does when only the reactions changed, 0 when it shows, and null when the source did not report it: a message archived before the archive kept the flag, or one from a Telegram export import. A null flag counts as shown. It is the rule the viewer's pencil follows, and `edited_messages` in `/api/chats/{chat_ref}/stats` counts the same rows. Like `deleted_only`, it is a read that combines with `search`, `topic_id` and the cursors and stays inside the chat the ref names.
 
 ```bash
 curl -s -b jar.txt \
@@ -227,6 +227,23 @@ curl -s -b jar.txt \
 Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 
 In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
+
+### Message versions
+
+Each earlier version of an edited message has these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `text` | The text of that version. |
+| `date` | When that text became current, by Telegram's clock: the send time for the original, the edit time for each later one. An edit time Telegram hides (a reaction) is not an edit, so a text that carried one is dated at the send time. |
+| `captured_at` | When the archive saw it, by the archive's own clock. |
+| `source` | The path that saw it: `listener`, `sync`, `backup` or `import`. Null for a version archived before the archive kept it: unknown. |
+| `entities` | The formatting of that version, in the shape of the message's `raw_data.entities`: `[{type, offset, length, ...}]`. Null when it had none, or for a version archived before the archive kept it. |
+| `rich_message` | The block tree of a Rich Text Editor message, in the shape of the message's `raw_data.rich_message`. Null when that version had none. |
+| `media` | Present only when an edit replaced the message's photo or file: the media this version was shown with, as `[{type, file_name, file_size, mime_type, width, height, duration, downloaded, skip_reason, first_seen, date, captured_at, source, url}]`. `skip_reason` says why a file was not downloaded (`oversize` or `filtered`, or null), and `first_seen` is when the archive first recorded that media (null when unknown). `url` is `/media/{chat_ref}/{message_id}_v{n}`, where `n` counts the message's earlier media in the order they were kept, from 1. It is null when the file was not downloaded; a login without downloads gets `url` null and `no_download` true. |
+| `media_only` | True on an entry that holds only earlier media, when the text version of that moment could not be written. Its `text` is null. |
+
+Only the listener sees each edit as it happens, and only while it runs: edits made while it was away reach it as one. The sync, a backup and an import read the text current at that moment, so several edits between two reads leave one version. When any version has one of those sources, or no source, the number of versions is a lower bound on the number of edits. The same holds when the oldest version's `date` is later than the message's `date`: the archive first saw the message already edited.
 
 ## Search, tags and the change feed
 
@@ -264,7 +281,7 @@ curl -s -b jar.txt 'http://localhost:8000/api/changes?since=2026-09-28T00:00:00Z
 
 ## Media
 
-A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route.
+A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_video_note`. Get keys from message payloads or from the media gallery route. An earlier photo or file an edit replaced has the key `{message_id}_v{n}`, from the `url` of its [message version](#message-versions): `n` is its place among the message's earlier media, 1 for the first one kept. It works on the file, thumbnail and open routes, and the transcript routes read its transcripts; asking for a new transcript of it answers 404. A key for an earlier media the message does not have answers 404.
 
 | Method and path | Login | Purpose |
 |-----------------|-------|---------|
@@ -280,6 +297,8 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment.
 
 Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`, an `ETag` and a `Last-Modified`. The browser may keep a copy, but it asks the server before each reuse, and the viewer runs the same login and chat checks on that request. A session that still has access gets `304 Not Modified` and no body, so the file is not sent again. A logged-out browser gets 401, never the kept copy. Copies cached by an older release, which did not ask, can still be reused until their old lifetime runs out, up to a day for thumbnails and avatars; logging out once over HTTPS clears them. Editing a viewer, or changing a token's chats or downloads, ends its sessions, so that browser gets 401 too. A session that no longer sees the chat gets 404. Originals and thumbnails answer 403 to a login whose downloads are off; avatars stay available to it. When its session ends, the viewer page reloads itself at the same address, so the next login on the same tab does not see the chat that was open until the server allows it again. The files under `/static` are not behind a login and keep their own caching.
+
+After an edit replaced a message's media, the `url` of its current media carries `?v={n}`, so a browser never shows cached bytes of the old media under it. The routes ignore the parameter; add `download=1` with `&`.
 
 The gallery route takes `types` as a comma list, `limit` default 50, up to 200, and either `before_id` or `after_id`. Both take a media key; `before_id` pages to older items and `after_id` to newer ones. Sending both is a 400. It answers `{items, has_more}`, where each item has `id` set to the media key plus `thumb_url` and `media_url`, and the message's `text`, `is_deleted` and `deleted_at`.
 
@@ -323,7 +342,7 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
 | `versions` | Every earlier text the archive kept of the message, oldest first, whatever its date. Each has `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced). An empty list means the archive kept no earlier text. |
 
-A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions with `chat_id`, `message_id`, `text` and `date`, picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
+A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions, with the fields of [Message versions](#message-versions), picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
 
 The messages and their `versions` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
 
@@ -362,7 +381,7 @@ Event frames all carry `type` and `chat_ref`:
 | `type` | Fields |
 |--------|--------|
 | `new_message` | `message` |
-| `edit` | `message_id`, `new_text`, `edit_date` |
+| `edit` | `message_id`, `new_text`, `edit_date`, `edit_hide`, and `entities` when the frame carries the new formatting (left out when `new_text` was cut to fit) |
 | `delete` | `message_id`, `deletion_mode`, `deleted_at` |
 | `pin` | `message_ids`, `pinned` |
 | `reaction` | `message_id`, `reactions` (the live set; an emoji missing from it was taken back) |

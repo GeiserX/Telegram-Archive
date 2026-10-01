@@ -5,8 +5,10 @@ so ``**bold**`` markers leaked into archived text, spoilers arrived silently
 PRE-REVEALED (markdown.unparse drops them), and entity offsets never aligned
 with what was stored. Now both writers store ``message.raw_text`` (the wire
 text entity offsets actually index) plus ``raw_data["entities"]`` as JSON,
-and both edit paths refresh entities — including formatting-only edits, which
-merge silently without the phantom "edited" marker #219 removed.
+and both edit paths refresh entities. An edit moves the earlier formatting
+into the version it supersedes, and a formatting-only edit is an edit: it
+writes a version and moves edit_date. An event that is not an edit (a
+reaction, #219) replaces no formatting and only fills a missing key.
 """
 
 import asyncio
@@ -236,28 +238,68 @@ async def test_text_edit_stores_entities_and_preserves_raw_data(adapter):
 
 
 @pytest.mark.asyncio
-async def test_formatting_only_edit_merges_silently(adapter):
-    """Same text + different entities: entities refresh, but NO edit_date bump
-    (that would resurrect the phantom 'edited' marker #219 removed)."""
+async def test_formatting_only_edit_is_a_version(adapter):
+    """Same text + different entities + a newer edit_date: an edit. The old
+    formatting goes into a version and edit_date moves."""
+    await adapter.update_message_text(CHAT_ID, 1, "original", None, account_id=1, entities=BOLD, update_entities=True)
     outcome, _ = await adapter.update_message_text(
         CHAT_ID, 1, "original", datetime(2026, 1, 2), account_id=1, entities=ITALIC, update_entities=True
+    )
+    assert outcome == "applied"
+    row = await _row(adapter)
+    assert json.loads(row.raw_data)["entities"] == ITALIC
+    assert row.edit_date == datetime(2026, 1, 2)
+    versions = await adapter.get_message_versions(CHAT_ID, 1, account_id=1)
+    assert [(v["text"], v["entities"]) for v in versions] == [("original", BOLD)]
+
+
+@pytest.mark.asyncio
+async def test_formatting_the_archive_never_knew_is_filled_not_versioned(adapter):
+    """A row archived before formatting was captured has no entities key.
+    A visible, newer edit_date with the same text and entities is no proof of
+    a formatting edit (Telegram moves edit_date for other reasons), so the key
+    is filled, no version is written and edit_date stays."""
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID, 1, "original", datetime(2026, 1, 2), account_id=1, entities=ITALIC, update_entities=True, source="sync"
     )
     assert outcome == "noop"
     row = await _row(adapter)
     assert json.loads(row.raw_data)["entities"] == ITALIC
     assert row.edit_date is None
+    assert await adapter.get_message_versions(CHAT_ID, 1, account_id=1) == []
+
+
+@pytest.mark.asyncio
+async def test_formatting_without_an_edit_date_only_fills_a_missing_key(adapter):
+    """No edit_date is no evidence of an edit: a missing key is filled, an
+    archived one is never replaced or dropped."""
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID, 1, "original", None, account_id=1, entities=BOLD, update_entities=True
+    )
+    assert outcome == "noop"
+    for entities in (ITALIC, None):
+        outcome, _ = await adapter.update_message_text(
+            CHAT_ID, 1, "original", None, account_id=1, entities=entities, update_entities=True
+        )
+        assert outcome == "noop"
+    row = await _row(adapter)
+    assert json.loads(row.raw_data)["entities"] == BOLD
+    assert row.edit_date is None
+    assert await adapter.get_message_versions(CHAT_ID, 1, account_id=1) == []
 
 
 @pytest.mark.asyncio
 async def test_edit_that_dropped_formatting_removes_the_key(adapter):
     await adapter.update_message_text(CHAT_ID, 1, "original", None, account_id=1, entities=BOLD, update_entities=True)
     outcome, _ = await adapter.update_message_text(
-        CHAT_ID, 1, "original", None, account_id=1, entities=None, update_entities=True
+        CHAT_ID, 1, "original", datetime(2026, 1, 2), account_id=1, entities=None, update_entities=True
     )
-    assert outcome == "noop"
+    assert outcome == "applied"
     raw = json.loads((await _row(adapter)).raw_data)
     assert "entities" not in raw
     assert raw["webpage"] == {"url": "https://keep.example"}
+    versions = await adapter.get_message_versions(CHAT_ID, 1, account_id=1)
+    assert [(v["text"], v["entities"]) for v in versions] == [("original", BOLD)]
 
 
 @pytest.mark.asyncio
@@ -300,10 +342,16 @@ async def test_edit_back_to_plain_text_drops_the_rich_message_tree(adapter):
     await adapter.update_message_text(
         CHAT_ID, 1, "original", None, account_id=1, entities=None, update_entities=True, rich_message=RICH_TREE
     )
+    # The same text with no tree and no edit is not an edit: the tree stays.
     outcome, _ = await adapter.update_message_text(
         CHAT_ID, 1, "original", None, account_id=1, entities=None, update_entities=True, rich_message=None
     )
     assert outcome == "noop"
+    assert json.loads((await _row(adapter)).raw_data)["rich_message"] == RICH_TREE
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID, 1, "plain now", datetime(2026, 1, 2), account_id=1, entities=None, update_entities=True
+    )
+    assert outcome == "applied"
     raw = json.loads((await _row(adapter)).raw_data)
     assert "rich_message" not in raw
     assert raw["webpage"] == {"url": "https://keep.example"}
