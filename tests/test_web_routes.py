@@ -395,8 +395,17 @@ class TestChatsEndpoint(_WebTestBase):
             account_id=None,
             scope=None,
             fold_shared=False,
+            with_preview=False,
         ):
-            calls.append({"limit": limit, "offset": offset, "scope": scope, "fold_shared": fold_shared})
+            calls.append(
+                {
+                    "limit": limit,
+                    "offset": offset,
+                    "scope": scope,
+                    "fold_shared": fold_shared,
+                    "with_preview": with_preview,
+                }
+            )
             return []
 
         self.mock_db.get_all_chats = recording_get_all_chats
@@ -418,6 +427,8 @@ class TestChatsEndpoint(_WebTestBase):
         self.assertEqual(self.mock_db.get_chat_count.call_args.kwargs["scope"], scope)
         # ...and under the same folding rule, for exactly the same reason.
         self.assertTrue(calls[0]["fold_shared"])
+        # The rows carry their preview, read inside the same scoped page.
+        self.assertTrue(calls[0]["with_preview"])
         self.assertTrue(self.mock_db.get_chat_count.call_args.kwargs["fold_shared"])
 
     async def test_chats_search_parameter(self):

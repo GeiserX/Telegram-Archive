@@ -1,4 +1,4 @@
-"""backfill-payloads: old locations, venues, live locations, contacts and polls (docs/design/location-and-contact.md).
+"""backfill-details: old locations, venues, live locations, contacts and polls (docs/design/location-and-contact.md).
 
 Messages archived before these kinds were kept have a media row of the kind
 and ``raw_data`` "{}". The command re-reads them from Telegram in batches and
@@ -346,7 +346,7 @@ class TestBackfill:
         await _seed(real_adapter, CHAT_A, 9, "geo", file_path=str(tmp_path / "gone.bin"))
         served[(CHAT_A, 9)] = _media("geo")
 
-        summary = await _backup(real_adapter, FakeTelegram(served), tmp_path).backfill_media_payloads()
+        summary = await _backup(real_adapter, FakeTelegram(served), tmp_path).backfill_details()
 
         assert sum(k["filled"] for k in summary["kinds"].values()) == 6
         assert summary["paths_cleared"] == 1
@@ -359,9 +359,9 @@ class TestBackfill:
         client = FakeTelegram(served)
         backup = _backup(real_adapter, client, tmp_path)
 
-        first = await backup.backfill_media_payloads(apply=True)
+        first = await backup.backfill_details(apply=True)
         stored = {mid: (await _message(real_adapter, CHAT_A, mid))[0] for mid in range(1, 6)}
-        second = await backup.backfill_media_payloads(apply=True)
+        second = await backup.backfill_details(apply=True)
 
         assert {k: v["filled"] for k, v in first["kinds"].items()} == dict.fromkeys(
             ("contact", "geo", "geo_live", "poll", "venue"), 1
@@ -386,7 +386,7 @@ class TestBackfill:
         await real_adapter.add_missing_raw_data_keys(CHAT_A, 1, {"poll": archived}, account_id=1)
 
         with patch.object(real_adapter, "get_payload_backfill_rows", AsyncMock(return_value=groups)):
-            summary = await backup.backfill_media_payloads(apply=True)
+            summary = await backup.backfill_details(apply=True)
 
         assert summary["kinds"]["poll"] == {"filled": 0, "already_present": 1, "not_served": 0}
         assert (await _message(real_adapter, CHAT_A, 1))[0] == {"poll": archived}
@@ -399,7 +399,7 @@ class TestBackfill:
         # Message 1 is gone (None); 2 now holds a location and 3 a photo.
         served = {(CHAT_A, 2): _media("geo"), (CHAT_A, 3): MessageMediaPhoto(photo=None)}
 
-        summary = await _backup(real_adapter, FakeTelegram(served), tmp_path).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, FakeTelegram(served), tmp_path).backfill_details(apply=True)
 
         assert summary["kinds"]["geo"] == {"filled": 0, "already_present": 0, "not_served": 1}
         assert summary["kinds"]["contact"] == {"filled": 0, "already_present": 0, "not_served": 1}
@@ -415,7 +415,7 @@ class TestBackfill:
         await _seed(real_adapter, CHAT_B, 1, "geo")
         client = FakeTelegram({(CHAT_B, 1): _media("geo")}, refused={CHAT_A})
 
-        summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, client, tmp_path).backfill_details(apply=True)
 
         assert summary["chats_unavailable"] == 1
         assert summary["kinds"]["geo"] == {"filled": 1, "already_present": 0, "not_served": 2}
@@ -431,7 +431,7 @@ class TestBackfill:
             slept.append(seconds)
 
         with patch.object(telegram_backup.asyncio, "sleep", _fast_sleep):
-            summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+            summary = await _backup(real_adapter, client, tmp_path).backfill_details(apply=True)
 
         assert slept and slept[0] >= 3
         assert len(client.calls) == 2
@@ -448,7 +448,7 @@ class TestBackfill:
         flood = FloodWaitError(request=None, capture=telegram_backup.MAX_FLOOD_WAIT_SECONDS + 1)
         client = FakeTelegram({}, **({"batch_error": flood} if where == "get_messages" else {"entity_error": flood}))
 
-        summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, client, tmp_path).backfill_details(apply=True)
 
         assert summary["flood_wait_seconds"] == telegram_backup.MAX_FLOOD_WAIT_SECONDS + 1
         # One refused call, then nothing more: not the second batch, not the next chat.
@@ -472,7 +472,7 @@ class TestBackfill:
             ),
         }
 
-        await _backup(real_adapter, FakeTelegram(served, reverse=True), tmp_path).backfill_media_payloads(apply=True)
+        await _backup(real_adapter, FakeTelegram(served, reverse=True), tmp_path).backfill_details(apply=True)
 
         assert (await _message(real_adapter, CHAT_A, 1))[0]["contact"]["first_name"] == "One"
         assert (await _message(real_adapter, CHAT_A, 2))[0]["contact"]["first_name"] == "Two"
@@ -485,7 +485,7 @@ class TestBackfill:
             served[(CHAT_A, mid)] = _media("geo")
         client = FakeTelegram(served)
 
-        summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, client, tmp_path).backfill_details(apply=True)
 
         assert [len(c) for c in client.calls] == [100, 50]
         assert summary["kinds"]["geo"]["filled"] == 150
@@ -513,7 +513,7 @@ class TestLeftoverPaths:
         # Telegram serves none of them: the cleanup decides on its own.
         backup = _backup(real_adapter, FakeTelegram({}), media)
 
-        summary = await backup.backfill_media_payloads(apply=True)
+        summary = await backup.backfill_details(apply=True)
 
         assert summary["paths_cleared"] == 5
         assert summary["paths_kept"] == 1
@@ -527,7 +527,7 @@ class TestLeftoverPaths:
         # The disk is left alone: every file and link is still there.
         assert sorted(p.name for p in media.rglob("*")) == on_disk_before
 
-        again = await backup.backfill_media_payloads(apply=True)
+        again = await backup.backfill_details(apply=True)
         assert again["paths_cleared"] == 0
         assert again["paths_kept"] == 1
         assert again["vcards_recovered"] == 0
@@ -538,9 +538,7 @@ class TestLeftoverPaths:
         stale.write_bytes(b"leftover bytes")
         await _seed(real_adapter, CHAT_A, 1, "geo", file_path=str(stale))
 
-        await _backup(real_adapter, FakeTelegram({(CHAT_A, 1): _media("geo")}), tmp_path).backfill_media_payloads(
-            apply=True
-        )
+        await _backup(real_adapter, FakeTelegram({(CHAT_A, 1): _media("geo")}), tmp_path).backfill_details(apply=True)
 
         assert (await _media_row(real_adapter, CHAT_A, 1)).file_path is None
         assert stale.read_bytes() == b"leftover bytes"
@@ -551,7 +549,7 @@ class TestLeftoverPaths:
         (tmp_path / "chat" / "c.bin").write_text(TELETHON_VCARD)
         await _seed(real_adapter, CHAT_A, 1, "contact", file_path="chat/c.bin")
 
-        summary = await _backup(real_adapter, FakeTelegram({}), tmp_path).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, FakeTelegram({}), tmp_path).backfill_details(apply=True)
 
         assert summary["vcards_recovered"] == 1
         assert (await _message(real_adapter, CHAT_A, 1))[0]["contact"]["first_name"] == "Alex"
@@ -567,7 +565,7 @@ class TestLeftoverPaths:
         await _seed(real_adapter, CHAT_A, 2, "geo", raw_data={"geo": {"lat": 1.0}}, file_path=str(media / "2.bin"))
         await _seed(real_adapter, CHAT_A, 3, "poll", file_path="/data/backups/media/chat/3.bin")
 
-        summary = await _backup(real_adapter, FakeTelegram({}), media).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, FakeTelegram({}), media).backfill_details(apply=True)
 
         assert summary["paths_cleared"] == 0
         assert summary["paths_kept"] == 3
@@ -587,7 +585,7 @@ class TestLeftoverPaths:
         await _seed(real_adapter, CHAT_A, 2, "contact", file_path=str(media / "gone-folder" / "2.bin"))
         await _seed(real_adapter, CHAT_A, 3, "geo", file_path=str(media / "3.bin"))
 
-        summary = await _backup(real_adapter, FakeTelegram({}), media).backfill_media_payloads(apply=True)
+        summary = await _backup(real_adapter, FakeTelegram({}), media).backfill_details(apply=True)
 
         assert (await _media_row(real_adapter, CHAT_A, 1)).file_path == str(elsewhere / "1.bin")
         assert (await _media_row(real_adapter, CHAT_A, 2)).file_path == str(media / "gone-folder" / "2.bin")
@@ -609,7 +607,7 @@ class TestLeftoverPaths:
         )
 
         with patch.object(telegram_backup, "call_with_flood_retry", lambda fn, *a, **k: fn(*a, **k)):
-            summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+            summary = await _backup(real_adapter, client, tmp_path).backfill_details(apply=True)
 
         assert summary["errors"] == 1
         assert summary["chats_unavailable"] == 0
@@ -624,7 +622,7 @@ class TestLeftoverPaths:
         backup = _backup(real_adapter, FakeTelegram({}), tmp_path)
 
         with patch.object(real_adapter, "add_missing_raw_data_keys", AsyncMock(return_value=False)):
-            summary = await backup.backfill_media_payloads(apply=True)
+            summary = await backup.backfill_details(apply=True)
 
         assert summary["vcards_recovered"] == 0
         assert (summary["paths_cleared"], summary["paths_kept"]) == (0, 1)
@@ -642,7 +640,7 @@ class TestLeftoverPaths:
             return await real_add(chat, message_id, payload, account_id=account_id)
 
         with patch.object(real_adapter, "add_missing_raw_data_keys", _writer_wins):
-            summary = await backup.backfill_media_payloads(apply=True)
+            summary = await backup.backfill_details(apply=True)
 
         assert summary["vcards_recovered"] == 1
         assert (await _media_row(real_adapter, CHAT_A, 1)).file_path is None
@@ -661,6 +659,7 @@ def _summary(filled=0, errors=0):
     kinds["geo"]["filled"] = filled
     return {
         "kinds": kinds,
+        "edits": {"hidden": 0, "shown": 0, "date_changed": 0, "already_filled": 0, "not_served": 0},
         "chats_scanned": 1,
         "chats_unavailable": 0,
         "paths_cleared": 0,
@@ -688,9 +687,9 @@ class TestAccounts:
             backup.db = MagicMock(close=AsyncMock())
             outcome = outcomes[len(calls) - 1]
             if isinstance(outcome, Exception):
-                backup.backfill_media_payloads = AsyncMock(side_effect=outcome)
+                backup.backfill_details = AsyncMock(side_effect=outcome)
             else:
-                backup.backfill_media_payloads = AsyncMock(return_value=outcome)
+                backup.backfill_details = AsyncMock(return_value=outcome)
             return backup
 
         monkeypatch.setattr(telegram_backup.TelegramBackup, "create", _create)
@@ -698,21 +697,21 @@ class TestAccounts:
 
     async def test_each_account_runs_with_its_resolver_and_the_counts_add_up(self, monkeypatch):
         calls = self._patch(monkeypatch, [_summary(filled=2), _summary(filled=3)])
-        total = await telegram_backup.run_backfill_payloads(self._config(2), apply=True)
+        total = await telegram_backup.run_backfill_details(self._config(2), apply=True)
         assert total["kinds"]["geo"]["filled"] == 5
         assert total["chats_scanned"] == 2
         assert all(c["account"] is not None and c["account_resolver"] is not None for c in calls)
 
     async def test_one_failed_account_does_not_stop_the_other(self, monkeypatch):
         self._patch(monkeypatch, [RuntimeError("boom"), _summary(filled=1)])
-        total = await telegram_backup.run_backfill_payloads(self._config(2))
+        total = await telegram_backup.run_backfill_details(self._config(2))
         assert total["kinds"]["geo"]["filled"] == 1
         assert total["errors"] == 1
 
     async def test_a_single_account_failure_propagates(self, monkeypatch):
         self._patch(monkeypatch, [RuntimeError("boom")])
         with pytest.raises(RuntimeError):
-            await telegram_backup.run_backfill_payloads(self._config(1))
+            await telegram_backup.run_backfill_details(self._config(1))
 
 
 class TestCommandLine:
@@ -727,22 +726,22 @@ class TestCommandLine:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(telegram_backup, "run_backfill_payloads", _fake)
+        monkeypatch.setattr(telegram_backup, "run_backfill_details", _fake)
         monkeypatch.setattr("telegram_archive.config.Config", MagicMock())
         monkeypatch.setattr("telegram_archive.config.setup_logging", MagicMock())
         args = cli.create_parser().parse_args(argv)
-        return cli.run_backfill_payloads(args), seen
+        return cli.run_backfill_details(args), seen
 
     def test_it_is_a_dry_run_unless_given_apply(self, monkeypatch, capsys):
-        rc, seen = self._run(monkeypatch, ["backfill-payloads"], _summary(filled=4))
+        rc, seen = self._run(monkeypatch, ["backfill-details"], _summary(filled=4))
         out = capsys.readouterr().out
         assert rc == 0
         assert seen == {"chat_id": None, "apply": False}
-        assert "[DRY RUN] Media payload backfill complete:" in out
+        assert "[DRY RUN] Details backfill complete:" in out
         assert "Nothing was written" in out
 
     def test_apply_and_one_chat(self, monkeypatch, capsys):
-        rc, seen = self._run(monkeypatch, ["backfill-payloads", "--apply", "-c", "-1001"], _summary(filled=4))
+        rc, seen = self._run(monkeypatch, ["backfill-details", "--apply", "-c", "-1001"], _summary(filled=4))
         out = capsys.readouterr().out
         assert rc == 0
         assert seen == {"chat_id": -1001, "apply": True}
@@ -752,13 +751,13 @@ class TestCommandLine:
     def test_a_flood_wait_stop_is_printed(self, monkeypatch, capsys):
         summary = _summary(filled=1)
         summary["flood_wait_seconds"] = 7200
-        rc, _seen = self._run(monkeypatch, ["backfill-payloads", "--apply"], summary)
+        rc, _seen = self._run(monkeypatch, ["backfill-details", "--apply"], summary)
         out = capsys.readouterr().out
         assert rc == 1
         assert "Stopped after a FloodWait of 7200 s" in out
 
     def test_a_failure_exits_one_with_the_type_only(self, monkeypatch, capsys):
-        rc, _seen = self._run(monkeypatch, ["backfill-payloads"], RuntimeError("+15555550100"))
+        rc, _seen = self._run(monkeypatch, ["backfill-details"], RuntimeError("+15555550100"))
         err = capsys.readouterr().err
         assert rc == 1
         assert "RuntimeError" in err
@@ -767,7 +766,7 @@ class TestCommandLine:
     def test_main_dispatches_the_command(self, monkeypatch):
         import telegram_archive.__main__ as cli
 
-        monkeypatch.setattr(cli, "run_backfill_payloads", MagicMock(return_value=0))
-        monkeypatch.setattr(sys, "argv", ["telegram-archive", "backfill-payloads"])
+        monkeypatch.setattr(cli, "run_backfill_details", MagicMock(return_value=0))
+        monkeypatch.setattr(sys, "argv", ["telegram-archive", "backfill-details"])
         assert cli.main() == 0
-        cli.run_backfill_payloads.assert_called_once()
+        cli.run_backfill_details.assert_called_once()

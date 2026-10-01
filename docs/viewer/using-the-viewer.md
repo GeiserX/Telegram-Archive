@@ -36,7 +36,14 @@ The top of the sidebar shows folder tabs under the search field. **All Chats** c
 
     ![Archived Chats on a phone](../images/screenshots/archived-chats-mobile.png){ width="300" }
 
-Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message. Under the name, a group or a channel shows what kind of chat it is and its member count, for example `group · 24 members`, and a private chat shows the person's username, or `private chat` when there is none. A group's username and the chat's Telegram id are in the info panel.
+Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message. Under the name is the chat's newest message, the way Telegram's own list shows it:
+
+- In a group, the sender's first name comes first, for example `Esme: Perfect, save me a seat`.
+- Your own message starts with `You:`, in a group and in a private chat.
+- A message with no text is named by a word: `Photo`, `Video`, `Voice message`, `Video message`, `File`, `Sticker`, `GIF`, `Location`, `Contact` and so on. A caption shows instead of the word. A poll shows its question.
+- A message deleted in Telegram is skipped, so the line shows the newest message the chat still has in Telegram. The chat itself still shows the deleted one with its mark.
+
+The preview shows only what you could open in the chat: a viewer limited to some accounts or chats, a share link and a login without downloads see the preview of the chats they can open. A chat with no message to show keeps the line it had before 9.0: a group or a channel shows what kind of chat it is and its member count, for example `group · 24 members`, and a private chat shows the person's username, or `private chat` when there is none. On every other row that line is the tooltip of the preview, and the info panel shows the member count or the kind of chat under the chat's name. A group's username and the chat's Telegram id are in the info panel.
 
 When you can see more than one Telegram account, each row carries a tag with the account's label, in the style of Telegram's folder tags: each account keeps its own colour. The chat header names the account after the member count. When more than one archived account holds or writes in the open chat, an incoming message names its account at the right end of the sender's name, and an outgoing one before its time. See [Multiple accounts](../configuration/multiple-accounts.md).
 
@@ -131,7 +138,7 @@ A location, a venue, a live location and a shared contact each show as a card in
 
 Click a location, venue or live location card to open the place on [OpenStreetMap](https://www.openstreetmap.org) in a new tab. OpenStreetMap needs no account, its pages carry no ads or ad trackers, and its map data is open. The viewer loads no map tiles and sends nothing anywhere until you click, so the page you open is the only one that sees the coordinates. The copy button beside the card copies the coordinates instead.
 
-A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link, until [`backfill-payloads`](../operations/maintenance.md#fill-old-locations-contacts-and-polls) reads it from Telegram again. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download, and the same command clears the leftover path. A poll archived without its details shows a Poll chip with `Details not archived`, and the same command fills it in.
+A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link, until [`backfill-details`](../operations/maintenance.md#fill-old-locations-contacts-polls-and-edit-flags) reads it from Telegram again. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download, and the same command clears the leftover path. A poll archived without its details shows a Poll chip with `Details not archived`, and the same command fills it in.
 
 A login without downloads still sees the coordinates and phone numbers: they are the message's content, like its text.
 
@@ -173,7 +180,7 @@ A reaction taken back stays in the archive. After the live chips, a quieter chip
 
     ![The same chips on a phone, and an outgoing message whose only reactions were taken back](../images/screenshots/reactions-taken-back-mobile.png){ width="300" }
 
-An edited message shows a small pencil before its time, with the number of earlier texts the archive kept: a pencil and "2" before 08:52 means two earlier versions. The time is still the time it was sent. A message Telegram marks as edited but whose earlier text the archive never saw shows the pencil alone. The pencil's name, read by a screen reader and shown when you peek, gives the time of the last edit by Telegram's clock, for example "Edited at 08:57, 2 earlier versions kept", or "Edited on Oct 1 at 09:05" when the edit came on a later day.
+An edited message shows a small pencil before its time, with the number of earlier texts the archive kept: a pencil and "2" before 08:52 means two earlier versions. The time is still the time it was sent. A message Telegram marks as edited but whose earlier text the archive never saw shows the pencil alone. A message archived before 9.0 can show the pencil alone for a reaction, because Telegram moves the edit time when the reactions change; [`backfill-details`](../operations/maintenance.md#fill-old-locations-contacts-polls-and-edit-flags) removes those pencils. The pencil's name, read by a screen reader and shown when you peek, gives the time of the last edit by Telegram's clock, for example "Edited at 08:57, 2 earlier versions kept", or "Edited on Oct 1 at 09:05" when the edit came on a later day.
 
 Rest the pointer on the pencil, reach it with <kbd>Tab</kbd>, or press and hold it on a phone, to peek at the text before the last edit, with the time it was written and the words that edit removed struck through. **See all 3 versions** opens the history. The peek closes when you move away, tap elsewhere or press <kbd>Esc</kbd>.
 
