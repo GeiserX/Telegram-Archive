@@ -51,6 +51,7 @@ from sqlalchemy.orm import aliased
 from ..message_utils import (
     MEDIA_PAYLOAD_KEYS,
     METADATA_ONLY_MEDIA_TYPES,
+    PAYLOAD_BACKFILL_TYPES,
     compute_directory_size,
     merge_geo_live,
     resolve_sender_display_name,
@@ -4522,6 +4523,117 @@ class DatabaseAdapter:
                 select(Media.chat_id).where(and_(Media.account_id == account_id, Media.type == media_type)).distinct()
             )
             return [c for (c,) in rows if c is not None]
+
+    async def get_payload_backfill_rows(
+        self, *, account_id: int, chat_id: int | None = None
+    ) -> dict[int, list[dict[str, Any]]]:
+        """The work list of ``backfill-payloads``, grouped by chat, ordered by message id.
+
+        A media row of a ``PAYLOAD_BACKFILL_TYPES`` kind is listed when its
+        message's ``raw_data`` lacks the key of the same name, or when the row
+        still carries a ``file_path`` (the leftover of releases up to v7.28.0).
+        Each entry is ``{message_id, media_id, type, file_path, has_payload}``.
+        A row whose ``raw_data`` does not parse is left out: nothing may be
+        added to a payload the archive cannot read without destroying it.
+        Filling a key or clearing a path takes a row off the list, so an
+        interrupted run resumes by running again.
+        """
+        stmt = (
+            select(Media.chat_id, Media.message_id, Media.id, Media.type, Media.file_path, Message.raw_data)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Media.account_id,
+                    Message.chat_id == Media.chat_id,
+                    Message.id == Media.message_id,
+                ),
+            )
+            .where(and_(Media.account_id == account_id, Media.type.in_(PAYLOAD_BACKFILL_TYPES)))
+            .order_by(Media.chat_id, Media.message_id, Media.id)
+        )
+        if chat_id is not None:
+            stmt = stmt.where(Media.chat_id == chat_id)
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.stream(stmt.execution_options(yield_per=1000))
+            async for row_chat, message_id, media_id, media_type, file_path, raw_data in result:
+                raw = _raw_data_dict(raw_data)
+                if raw is None:
+                    continue
+                has_payload = media_type in raw
+                if has_payload and not file_path:
+                    continue
+                grouped.setdefault(row_chat, []).append(
+                    {
+                        "message_id": message_id,
+                        "media_id": media_id,
+                        "type": media_type,
+                        "file_path": file_path or None,
+                        "has_payload": has_payload,
+                    }
+                )
+        return grouped
+
+    @retry_on_locked()
+    async def add_missing_raw_data_keys(
+        self, chat_id: int, message_id: int, payload: dict[str, Any], *, account_id: int
+    ) -> bool:
+        """Add each key of ``payload`` the message's ``raw_data`` lacks; True if anything was added.
+
+        For ``backfill-payloads``. The row is locked first, so a writer that
+        stores the same key meanwhile wins and this adds nothing. A key the
+        row already holds is never replaced, and nothing else on the row
+        (text, dates, reactions, other keys) is touched: this is not the
+        upsert. A row whose ``raw_data`` does not parse is left as it is.
+        """
+        if not payload:
+            return False
+        async with self.db_manager.async_session_factory() as session:
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
+            if message is None:
+                await session.rollback()
+                return False
+            raw = _raw_data_dict(message.raw_data)
+            if raw is None:
+                await session.rollback()
+                return False
+            merged = dict(raw)
+            for key, value in payload.items():
+                if key not in merged:
+                    merged[key] = value
+            if merged == raw:
+                await session.rollback()
+                return False
+            message.raw_data = json.dumps(merged)
+            await session.commit()
+            return True
+
+    @retry_on_locked()
+    async def clear_metadata_media_path(self, chat_id: int, media_id: str, *, account_id: int) -> bool:
+        """Clear the leftover file fields of a metadata-only media row; True if a row changed.
+
+        Sets ``file_path``, ``file_name`` and ``download_date`` to NULL and
+        ``downloaded`` to 0, so the row reads as what it is: a location, a
+        contact or a poll with no file. The row stays, and nothing on disk is
+        touched. Only a metadata-only row that still has a path matches, so a
+        second call changes nothing.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Media)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.chat_id == chat_id,
+                        Media.id == media_id,
+                        Media.type.in_(METADATA_ONLY_MEDIA_TYPES),
+                        Media.file_path.is_not(None),
+                    )
+                )
+                .values(file_path=None, file_name=None, download_date=None, downloaded=0)
+            )
+            await session.commit()
+            return (result.rowcount or 0) > 0
 
     async def retype_media_for_messages(
         self, chat_id: int, message_ids: Sequence[int], media_type: str, *, account_id: int

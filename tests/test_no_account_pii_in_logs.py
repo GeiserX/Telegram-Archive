@@ -873,6 +873,61 @@ async def test_the_writers_never_log_a_location_or_a_contact(caplog):
     _assert_no_card_values(caplog)
 
 
+async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, tmp_path, monkeypatch):
+    """backfill-payloads with demo cards from Telegram, a demo vCard file, a refused chat and a failing batch."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from telethon.errors import ChannelPrivateError
+
+    import telegram_archive.telegram_backup as telegram_backup
+    from telegram_archive.telegram_backup import TelegramBackup
+
+    monkeypatch.setattr(telegram_backup, "PAYLOAD_BACKFILL_PAUSE_SECONDS", 0)
+    caplog.set_level(logging.DEBUG)
+    vcard = tmp_path / "contact.bin"
+    vcard.write_text("BEGIN:VCARD\nN:Alexdemo;Demosurname;;;\nTEL;TYPE=cell;VALUE=uri:tel:+15555550100\nEND:VCARD\n")
+    media = _demo_media()
+
+    def row(mid, kind, path=None):
+        return {"message_id": mid, "media_id": f"m{mid}", "type": kind, "file_path": path, "has_payload": False}
+
+    groups = {
+        -1001: [row(1, "geo"), row(2, "contact"), row(3, "venue"), row(4, "contact", str(vcard))],
+        -1002: [row(1, "geo")],
+        -1003: [row(1, "contact")],
+    }
+    served = {1: media[0], 2: media[1], 3: media[2]}
+
+    async def get_entity(chat):
+        if chat == -1002:
+            raise ChannelPrivateError(request=None)
+        return chat
+
+    async def get_messages(entity, ids):
+        if entity == -1003:
+            raise ValueError("Alexdemo +15555550100 at 40.416775,-3.70379")
+        return [SimpleNamespace(id=i, media=served.get(i), date=None, edit_date=None) for i in ids]
+
+    backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
+    backup.config = MagicMock(media_path=str(tmp_path))
+    backup.client = SimpleNamespace(get_entity=get_entity, get_messages=get_messages)
+    backup.db = MagicMock()
+    backup.db.get_payload_backfill_rows = AsyncMock(return_value=groups)
+    backup.db.add_missing_raw_data_keys = AsyncMock(return_value=True)
+    backup.db.clear_metadata_media_path = AsyncMock(return_value=True)
+
+    summary = await backup.backfill_media_payloads(apply=True)
+
+    assert summary["vcards_recovered"] == 1
+    assert summary["chats_unavailable"] == 1
+    assert summary["errors"] == 1
+    assert caplog.records, "the backfill logged nothing, so this check proves nothing"
+    _assert_no_card_values(caplog)
+
+
 def test_the_card_check_can_fail(caplog):
     """Positive control: a record that does carry the phone is caught."""
     import logging

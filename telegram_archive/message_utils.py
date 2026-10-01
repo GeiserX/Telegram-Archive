@@ -1386,6 +1386,73 @@ def _contact_payload(media: object) -> dict:
     return payload
 
 
+# The kinds backfill-payloads re-reads, each stored under the raw_data key
+# of the same name. Releases up to v7.28.0 also left a file_path on geo,
+# contact and poll rows (docs/design/location-and-contact.md).
+PAYLOAD_BACKFILL_TYPES = ("contact", "geo", "geo_live", "poll", "venue")
+
+# A vCard Telethon wrote is a few hundred bytes. Anything far larger is not
+# one of those files, so it is not read at all.
+VCARD_MAX_BYTES = 64 * 1024
+
+
+def contact_payload_from_vcard(data: bytes) -> dict | None:
+    """raw_data["contact"] from a vCard file Telethon wrote, or None when it does not parse.
+
+    Releases up to v7.28.0 asked Telethon to "download" a shared contact,
+    and Telethon wrote this file in place of a payload (``_download_contact``):
+
+        BEGIN:VCARD / VERSION:4.0 / N:{first};{last};;; / FN:{first} {last} /
+        TEL;TYPE=cell;VALUE=uri:tel:+{phone} / END:VCARD
+
+    Telethon puts the first name first in N, against the vCard standard, and
+    it wrote every one of these files, so N is read in Telethon's order. It
+    also put a "+" in front of the number Telegram sent; that one "+" comes
+    off, so the stored number matches a live capture. The whole text is kept
+    under ``vcard``. Nothing here is logged: a name and a phone are message
+    content.
+    """
+    if not isinstance(data, (bytes, bytearray)) or not data or len(data) > VCARD_MAX_BYTES:
+        return None
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # Unfold continuation lines (RFC 6350 3.2) before reading properties.
+    lines: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line[:1] in (" ", "\t") and lines:
+            lines[-1] += line[1:]
+        elif line:
+            lines.append(line)
+    if not lines or lines[0].strip().upper() != "BEGIN:VCARD":
+        return None
+    names: list[str] | None = None
+    full_name: str | None = None
+    phone: str | None = None
+    for line in lines:
+        prop, sep, value = line.partition(":")
+        if not sep:
+            continue
+        name = prop.split(";", 1)[0].strip().upper()
+        if name == "N" and names is None:
+            names = value.split(";")
+        elif name == "FN" and full_name is None:
+            full_name = value.strip()
+        elif name == "TEL" and phone is None:
+            number = value.strip()
+            if number.lower().startswith("tel:"):
+                number = number[4:]
+            if number.startswith("+"):
+                number = number[1:]
+            phone = number
+    first = names[0].strip() if names else (full_name or "")
+    last = names[1].strip() if names and len(names) > 1 else ""
+    if not first and not last and not phone:
+        return None
+    return {"first_name": first, "last_name": last, "phone_number": phone or "", "vcard": text}
+
+
 _PAYLOAD_BUILDERS = {
     "MessageMediaGeo": ("geo", _geo_payload),
     "MessageMediaContact": ("contact", _contact_payload),
