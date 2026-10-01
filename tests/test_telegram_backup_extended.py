@@ -490,7 +490,10 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
 
         _run(self.backup._verify_and_redownload_media())
 
-        self.backup.db.mark_media_for_redownload.assert_awaited_once_with("m3", account_id=self.backup.account_id)
+        # A truly missing file (no link) clears its path; only a broken link keeps it.
+        self.backup.db.mark_media_for_redownload.assert_awaited_once_with(
+            "m3", account_id=self.backup.account_id, keep_path=False
+        )
 
     def test_successful_redownload_discards_the_sidestepped_backup(self):
         corrupted = os.path.join(self.temp_dir, "corrupt3.jpg")

@@ -295,15 +295,13 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
 
         file_name = "video_xyz.mp4"
 
-        # Reproduce the user's git-annex-style layout: chat dir holds a
-        # symlink pointing at a target that is unreachable from this process.
-        old_target = os.path.join(shared_dir, "old_deleted_file.mp4")
+        # Reproduce the user's git-annex-style layout: the _shared entry is
+        # itself a link into an object store this process cannot see.
+        annex_entry = os.path.join(shared_dir, "old_deleted_file.mp4")
         chat_link = os.path.join(chat_dir, file_name)
-        with open(old_target, "w") as f:
-            f.write("old")
-        os.symlink(os.path.relpath(old_target, chat_dir), chat_link)
+        os.symlink("/nonexistent-annex/objects/old_deleted_file.mp4", annex_entry)
+        os.symlink(os.path.relpath(annex_entry, chat_dir), chat_link)
         original_target = os.readlink(chat_link)
-        os.remove(old_target)
 
         # Confirm the symlink is present but its target is unreachable.
         self.assertTrue(os.path.lexists(chat_link))
@@ -331,6 +329,108 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         # rewritten or replaced.
         self.assertTrue(os.path.islink(chat_link))
         self.assertEqual(os.readlink(chat_link), original_target)
+
+    def test_process_media_fills_a_broken_link_under_its_own_name(self):
+        """A chat link whose _shared entry is gone holds nothing: the media is
+        downloaded again and lands under the name the link already holds, so the
+        link itself is never rewritten."""
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, "300")
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+        file_name = "video_xyz.mp4"
+        gone = os.path.join(shared_dir, "old_deleted_file.mp4")
+        chat_link = os.path.join(chat_dir, file_name)
+        os.symlink(os.path.relpath(gone, chat_dir), chat_link)
+        original_target = os.readlink(chat_link)
+
+        async def fake_download(message, path, *args, **kwargs):
+            with open(path, "wb") as f:
+                f.write(b"fresh bytes")
+            return path
+
+        download_mock = AsyncMock(side_effect=fake_download)
+        self.backup.client.download_media = download_mock
+        self.backup._get_media_type = MagicMock(return_value="video")
+        self.backup._get_media_filename = MagicMock(return_value=file_name)
+        self.backup._get_media_size = MagicMock(return_value=1024)
+
+        result = self._run(self.backup._process_media(self._make_message(msg_id=20, file_id="xyz"), 300))
+
+        self.assertTrue(result["downloaded"])
+        download_mock.assert_awaited_once()
+        self.assertEqual(os.readlink(chat_link), original_target)
+        with open(chat_link, "rb") as f:
+            self.assertEqual(f.read(), b"fresh bytes")
+
+    def test_a_refetch_fills_the_legacy_named_link_the_row_keeps(self):
+        """A repair marks the row not downloaded and keeps its path: a link with an
+        older name than the one the current Telegram file gets. The download fills
+        that link's own target, so it and every other link to the same target
+        resolve again, and the row keeps the path it had."""
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, "300")
+        other_dir = os.path.join(self.media_path, "400")
+        for folder in (shared_dir, chat_dir, other_dir):
+            os.makedirs(folder)
+        legacy_name = "legacy_old_name.mp4"
+        old_link = os.path.join(chat_dir, legacy_name)
+        other_link = os.path.join(other_dir, legacy_name)
+        os.symlink(os.path.join("..", "_shared", legacy_name), old_link)
+        os.symlink(os.path.join("..", "_shared", legacy_name), other_link)
+        self.backup.db.reconcile_media_row = AsyncMock(
+            return_value={"id": "300_20_video", "downloaded": 0, "file_path": old_link}
+        )
+
+        async def fake_download(message, path, *args, **kwargs):
+            with open(path, "wb") as f:
+                f.write(b"fresh bytes")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+        self.backup._get_media_type = MagicMock(return_value="video")
+        self.backup._get_media_filename = MagicMock(return_value="video_xyz.mp4")
+        self.backup._get_media_size = MagicMock(return_value=1024)
+
+        result = self._run(self.backup._process_media(self._make_message(msg_id=20, file_id="xyz"), 300))
+
+        self.assertTrue(result["downloaded"])
+        self.assertEqual(result["file_path"], old_link)
+        for link in (old_link, other_link):
+            with open(link, "rb") as f:
+                self.assertEqual(f.read(), b"fresh bytes")
+
+    def test_an_existing_downloaded_row_behind_a_broken_link_is_fetched_again(self):
+        """The reuse branch keeps a row whose file is on disk. A broken link is
+        not a file on disk: the retry after a re-fetch mark must download."""
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, "300")
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+        file_name = "video_xyz.mp4"
+        chat_link = os.path.join(chat_dir, file_name)
+        os.symlink(os.path.join("..", "_shared", file_name), chat_link)
+        self.backup.db.reconcile_media_row = AsyncMock(
+            return_value={"id": "300_20_video", "downloaded": 1, "file_path": chat_link}
+        )
+
+        async def fake_download(message, path, *args, **kwargs):
+            with open(path, "wb") as f:
+                f.write(b"fresh bytes")
+            return path
+
+        download_mock = AsyncMock(side_effect=fake_download)
+        self.backup.client.download_media = download_mock
+        self.backup._get_media_type = MagicMock(return_value="video")
+        self.backup._get_media_filename = MagicMock(return_value=file_name)
+        self.backup._get_media_size = MagicMock(return_value=1024)
+
+        result = self._run(self.backup._process_media(self._make_message(msg_id=20, file_id="xyz"), 300))
+
+        self.assertTrue(result["downloaded"])
+        download_mock.assert_awaited_once()
+        with open(chat_link, "rb") as f:
+            self.assertEqual(f.read(), b"fresh bytes")
 
 
 class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
@@ -382,14 +482,15 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         os.makedirs(chat_dir)
         os.makedirs(shared_dir)
 
-        # Reproduce the dangling-symlink layout.
-        old_target = os.path.join(shared_dir, "deleted.jpg")
+        # Reproduce the git-annex layout: the _shared entry is present, as a
+        # link into an object store that is not mounted here. (A _shared entry
+        # that is GONE is a broken link, which verify repairs; see
+        # test_shared_media_integrity.py.)
+        annex_entry = os.path.join(shared_dir, "deleted.jpg")
         dangling_link = os.path.join(chat_dir, "photo.jpg")
-        with open(old_target, "w") as f:
-            f.write("old")
-        os.symlink(os.path.relpath(old_target, chat_dir), dangling_link)
+        os.symlink("/nonexistent-annex/objects/deleted.jpg", annex_entry)
+        os.symlink(os.path.relpath(annex_entry, chat_dir), dangling_link)
         original_target = os.readlink(dangling_link)
-        os.remove(old_target)
 
         self.assertTrue(os.path.lexists(dangling_link))
         self.assertFalse(os.path.exists(dangling_link))
@@ -507,12 +608,15 @@ class TestShutilMoveFallback(unittest.TestCase):
         msg.reply_to = None
         return msg
 
-    def test_shutil_move_fallback_only_when_symlink_unsupported(self):
-        """shutil.move is called when os.symlink raises a non-EEXIST OSError (e.g., Windows).
+    def test_symlink_unsupported_copies_and_never_moves_the_blob(self):
+        """When os.symlink raises a non-EEXIST OSError (e.g., Windows) the chat
+        folder gets a copy, and the published blob stays in _shared.
 
-        This exercises the first-download branch (Path B) where the shared file does NOT
-        exist initially. download_media creates it, then os.symlink fails with EPERM,
-        triggering the shutil.move fallback.
+        This exercises the first-download branch (Path B) where the shared file
+        does NOT exist initially. The blob is published under its final name
+        before the link is attempted, so another chat may already point at it:
+        moving it into this chat's folder (what the 2026-03 era code did) left
+        every such link pointing at nothing.
         """
         shared_dir = os.path.join(self.media_path, "_shared")
         chat_dir = os.path.join(self.media_path, "400")
@@ -546,12 +650,12 @@ class TestShutilMoveFallback(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertTrue(result["downloaded"])
-        # shutil.move should have been called with the sharded path as source
-        mock_move.assert_called_once()
-        call_args = mock_move.call_args[0]
-        self.assertTrue(call_args[0].startswith(shared_dir))
-        self.assertIn("fallback_file.jpg", call_args[0])
-        self.assertEqual(call_args[1], chat_file)
+        mock_move.assert_not_called()
+        self.assertFalse(os.path.islink(chat_file))
+        with open(chat_file, "rb") as f:
+            self.assertEqual(f.read(), b"image data for fallback test")
+        blobs = [os.path.join(root, name) for root, _dirs, names in os.walk(shared_dir) for name in names]
+        self.assertEqual([os.path.basename(b) for b in blobs], ["fallback_file.jpg"])
 
     def test_no_shutil_move_when_symlink_succeeds(self):
         """shutil.move is NOT called when os.symlink succeeds normally."""
@@ -627,12 +731,12 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         return msg
 
     def test_listener_dedup_preserves_dangling_when_shared_exists(self):
-        """An existing chat-dir symlink is preserved as-is, even if dangling.
+        """A chat link whose _shared entry is gone is repaired, never rewritten.
 
-        Even when a candidate shared file is present at the expected path, the
-        listener trusts the chat-dir symlink that was already recorded. This
-        avoids rewriting symlink targets across runs (issue #143) when content
-        is managed by an external system like git-annex.
+        The link's own text is kept byte for byte (issue #143: symlink targets
+        are never rewritten across runs). The shared file of the same media,
+        already present under its clean name, is placed under the name the link
+        holds, so the link resolves again without a download.
         """
         chat_id = 100
         shared_dir = os.path.join(self.media_path, "_shared")
@@ -668,6 +772,9 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(os.path.islink(chat_file))
         self.assertEqual(os.readlink(chat_file), original_target)
+        with open(chat_file, "rb") as f:
+            self.assertEqual(f.read(), b"shared data")
+        self.listener.client.download_media.assert_not_awaited()
 
     def test_listener_dedup_copy2_fallback_when_symlink_fails(self):
         """Listener uses shutil.copy2 when symlink fails on shared-exists path."""
@@ -746,12 +853,11 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         file_name = "doc_abc.pdf"
         chat_file = os.path.join(chat_dir, file_name)
 
-        old_target = os.path.join(shared_dir, "old.pdf")
-        with open(old_target, "w") as f:
-            f.write("old")
-        os.symlink(os.path.relpath(old_target, chat_dir), chat_file)
+        # The _shared entry is a link into an object store not mounted here.
+        annex_entry = os.path.join(shared_dir, "old.pdf")
+        os.symlink("/nonexistent-annex/objects/old.pdf", annex_entry)
+        os.symlink(os.path.relpath(annex_entry, chat_dir), chat_file)
         original_target = os.readlink(chat_file)
-        os.remove(old_target)
 
         self.assertTrue(os.path.lexists(chat_file))
         self.assertFalse(os.path.exists(chat_file))
