@@ -280,6 +280,24 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
     round_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat with videos)")
     round_parser.add_argument("--dry-run", action="store_true", help="Report what would change without writing")
 
+    payloads_parser = subparsers.add_parser(
+        "backfill-payloads",
+        help="Fill old locations, venues, live locations, contacts and polls from Telegram",
+        description=(
+            "Messages archived before these kinds were kept have a media row "
+            "and no payload, so the viewer cannot draw their card. This asks "
+            "Telegram for those messages again, in batches of 100, and adds "
+            "only the missing payload: text, dates, reactions and every other "
+            "stored field stay as they are. It also clears the leftover .bin "
+            "path older releases left on these rows; files on disk are not "
+            "touched. Messages Telegram no longer serves are counted and "
+            "skipped. Run it again to resume; a second run adds nothing new. "
+            "It is a dry run unless given --apply."
+        ),
+    )
+    payloads_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat)")
+    payloads_parser.add_argument("--apply", action="store_true", help="Write the changes (default: dry run)")
+
     return parser
 
 
@@ -563,6 +581,44 @@ def run_reclassify_round_videos(args) -> int:
     return 0
 
 
+def run_backfill_payloads(args) -> int:
+    """Re-read old location, venue, live location, contact and poll messages and add their payload."""
+    from .config import Config, setup_logging
+    from .telegram_backup import run_backfill_payloads as backfill
+
+    try:
+        config = Config()
+        setup_logging(config)
+        config.log_summary()
+        summary = asyncio.run(backfill(config, chat_id=args.chat_id, apply=args.apply))
+    except Exception as e:
+        # The type only: Telethon error text can carry a peer or a phone.
+        print(f"Payload backfill failed: {type(e).__name__}", file=sys.stderr)
+        return 1
+
+    prefix = "" if args.apply else "[DRY RUN] "
+    print(f"\n{prefix}Media payload backfill complete:")
+    print(f"  {'Kind':<10}{'Filled':>8}{'Already there':>15}{'Not served':>12}")
+    for kind, counts in sorted(summary["kinds"].items()):
+        print(f"  {kind:<10}{counts['filled']:>8}{counts['already_present']:>15}{counts['not_served']:>12}")
+    print(f"  Chats scanned:                   {summary['chats_scanned']}")
+    print(f"  Chats Telegram no longer serves: {summary['chats_unavailable']}")
+    print(f"  Leftover paths cleared:          {summary['paths_cleared']}")
+    print(f"  Leftover paths kept:             {summary['paths_kept']}")
+    print(f"  Contacts read from vCard files:  {summary['vcards_recovered']}")
+    if summary["errors"]:
+        print(f"  Errors (run again to retry):     {summary['errors']}")
+    if summary.get("flood_wait_seconds"):
+        print(
+            f"Stopped after a FloodWait of {summary['flood_wait_seconds']} s. "
+            "The rest stays on the work list: run again later."
+        )
+    if not args.apply:
+        print("Nothing was written. Run again with --apply to write these changes.")
+    # A run a FloodWait cut short is not a finished run: a script must see that.
+    return 1 if summary.get("flood_wait_seconds") else 0
+
+
 def run_backfill_topics(args) -> int:
     """Reset one chat's cursor and resweep it text-only (topic backfill)."""
     # The documented recovery procedure for imported forum chats, minus its
@@ -636,6 +692,8 @@ def main() -> int:
         return run_reclassify_round_videos(args)
     elif args.command == "backfill-topics":
         return run_backfill_topics(args)
+    elif args.command == "backfill-payloads":
+        return run_backfill_payloads(args)
     elif args.command == "schedule":
         return run_schedule(args)
     elif args.command == "export":

@@ -5914,6 +5914,138 @@
             font-size: 13px;
         }
 
+        /* Location, venue, live location and contact cards: a static card on
+           the side's quote tint (bg-tg-quote-bg), as the Telegram apps draw a
+           shared place or contact, with no map tiles and no request to anyone
+           until the reader clicks. The text is the side's own text and meta
+           colours and the controls the quote colour, the pairs the palette
+           test measures on the quote tint at 4.5:1. The disc is the quote
+           colour with the bubble's fill as its glyph, like the play disc. */
+        .geo-card,
+        .contact-card {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            width: 100%;
+            min-width: 240px;
+            max-width: 320px;
+            padding-block: 8px;
+            padding-inline: 10px 6px;
+            border-radius: 10px;
+        }
+        @media (max-width: 379px) {
+            .geo-card,
+            .contact-card {
+                min-width: 0;
+            }
+        }
+        .geo-card-main {
+            display: flex;
+            flex: 1;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            border-radius: 6px;
+            color: inherit;
+            text-decoration: none;
+        }
+        .geo-card-main:focus-visible,
+        .geo-card-action:focus-visible {
+            outline: 2px solid rgb(var(--tg-focus));
+            outline-offset: 2px;
+        }
+        .geo-card-pin,
+        .contact-card-disc {
+            display: flex;
+            flex-shrink: 0;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 44px;
+            border-radius: 9999px;
+        }
+        .geo-card-pin {
+            background: rgb(var(--tg-quote));
+            color: rgb(var(--tg-bubble-fill, var(--tg-other)));
+        }
+        .geo-card-pin svg {
+            width: 24px;
+            height: 24px;
+        }
+        /* A live location holds the sender's picture in the disc, as all four
+           official apps draw it; the disc's quote colour stays as a ring. */
+        .geo-card-avatar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            height: 38px;
+            overflow: hidden;
+            border-radius: 9999px;
+            color: rgb(var(--tg-avatar-fg));
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .geo-card-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .contact-card-disc {
+            color: rgb(var(--tg-avatar-fg));
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .geo-card-text,
+        .contact-card-text {
+            display: flex;
+            flex: 1;
+            flex-direction: column;
+            min-width: 0;
+            font-size: 14px;
+            line-height: 19px;
+        }
+        .geo-card-title,
+        .contact-card-name {
+            overflow: hidden;
+            font-weight: 600;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .geo-card-address {
+            display: -webkit-box;
+            overflow: hidden;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow-wrap: anywhere;
+        }
+        .geo-card-meta {
+            color: rgb(var(--tg-meta));
+            font-size: 13px;
+            line-height: 18px;
+            font-variant-numeric: tabular-nums;
+        }
+        .contact-card-text {
+            margin-inline-start: 6px;
+        }
+        .geo-card-action {
+            display: flex;
+            flex-shrink: 0;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 9999px;
+            color: rgb(var(--tg-quote));
+        }
+        .geo-card-action:hover {
+            background: rgb(var(--tg-quote) / 0.12);
+        }
+        .geo-card-action svg {
+            width: 20px;
+            height: 20px;
+        }
+
         /* Album Grid Styles: 2px seams, no rounding inside. */
         .album-grid {
             max-width: 400px;
@@ -7284,7 +7416,7 @@
                             @click="handlePinnedClick">
                             <span class="block text-[13px] leading-[18px] text-tg-accent-soft font-semibold">Pinned message<template v-if="pinnedMessages.length > 1"> #{{ pinnedMessages.length - currentPinnedIndex }}</template></span>
                             <span class="block text-sm text-tg-n300 truncate" dir="auto">
-                                {{ pinnedMessage.text || (pinnedMessage.media?.type ? (MEDIA_TYPE_WORDS[pinnedMessage.media.type] || 'Media') : 'Message') }}
+                                {{ pinnedMessage.text || pinnedKindWord(pinnedMessage) }}
                             </span>
                         </button>
                         <!-- View all pinned, on the right. No time here, as in the
@@ -7700,7 +7832,64 @@
                                         </ul>
                                     </div>
 
-                                    <!-- Extended media chip (dice, venue, invoice, story, giveaway, live location, game, ...) -->
+                                    <!-- A location, a venue or a live location: a static card with
+                                         a pin, as the Telegram apps draw one, keyed on raw_data first
+                                         (the listener writes no media row for these). The card opens
+                                         the place on OpenStreetMap in a new tab; nothing is requested
+                                         from anyone until the reader clicks. A row with the type and no
+                                         payload yet says so, with no link. -->
+                                    <template v-for="card in [locationCard(msg)]" :key="'location-card'">
+                                    <div v-if="card" class="geo-card bg-tg-quote-bg mb-1.5" :class="'is-' + card.kind">
+                                        <component :is="card.url ? 'a' : 'div'" class="geo-card-main"
+                                            :href="card.url" :target="card.url ? '_blank' : null"
+                                            :rel="card.url ? 'noopener noreferrer' : null"
+                                            :title="card.url ? 'Open on OpenStreetMap' : null"
+                                            :aria-label="card.url ? `${card.label}. Open on OpenStreetMap` : null">
+                                            <span class="geo-card-pin" aria-hidden="true">
+                                                <span v-if="card.kind === 'geo_live'" class="geo-card-avatar avatar-initials" :style="{ background: getAvatarFill(msg) }">
+                                                    <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url" alt="" loading="lazy" @error="msg.sender_avatar_url = null">
+                                                    <template v-else>{{ getSenderInitials(msg) }}</template>
+                                                </span>
+                                                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+                                            </span>
+                                            <span class="geo-card-text">
+                                                <span class="geo-card-title" dir="auto">{{ card.title }}</span>
+                                                <span v-for="(line, lineIndex) in card.lines" :key="lineIndex" :class="line.address ? 'geo-card-address' : 'geo-card-meta'" dir="auto">{{ line.text }}</span>
+                                            </span>
+                                        </component>
+                                        <button v-if="card.point" type="button" class="geo-card-action"
+                                            @click.stop="copyText(card.coordinates, 'Coordinates copied')"
+                                            aria-label="Copy coordinates" title="Copy coordinates">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                        </button>
+                                    </div>
+                                    </template>
+
+                                    <!-- A shared contact: the initials in the peer colour, the name
+                                         and the phone, with call (a tel: link of "+" and digits only)
+                                         and copy, as the Telegram apps draw a contact card. The call
+                                         link opts out of the bubble's full-width anchor rule
+                                         (bubble-icon-action), or it eats the row. -->
+                                    <template v-for="card in [contactCard(msg)]" :key="'contact-card'">
+                                    <div v-if="card" class="contact-card bg-tg-quote-bg mb-1.5">
+                                        <span class="contact-card-disc avatar-initials" :style="{ background: card.fill }" aria-hidden="true">{{ card.initials }}</span>
+                                        <span class="contact-card-text">
+                                            <span class="contact-card-name" dir="auto">{{ card.title }}</span>
+                                            <span v-if="card.line" class="geo-card-meta" dir="auto">{{ card.line }}</span>
+                                        </span>
+                                        <a v-if="card.tel" :href="card.tel" class="geo-card-action bubble-icon-action"
+                                            :aria-label="`Call ${card.phone}`" title="Call">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2Z"/></svg>
+                                        </a>
+                                        <button v-if="card.phone" type="button" class="geo-card-action"
+                                            @click.stop="copyText(card.phone, 'Phone copied')"
+                                            aria-label="Copy phone number" title="Copy phone number">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                        </button>
+                                    </div>
+                                    </template>
+
+                                    <!-- Extended media chip (dice, invoice, story, giveaway, game, a poll with no details, ...) -->
                                     <div v-if="getExtendedMediaChip(msg)"
                                         class="mb-2 inline-flex items-start gap-2 bg-tg-quote-bg rounded-lg px-3 py-2 text-sm max-w-full">
                                         <span class="text-lg leading-none">{{ getExtendedMediaChip(msg).icon }}</span>
@@ -7745,7 +7934,7 @@
                                         </div>
                                     </div>
                                     </template>
-                                    <div v-if="(msg.media?.file_path && !msg.mediaLoadFailed) || isFirstInAlbum(msg, index) || isLockedAudio(msg)" class="media-block space-y-1" :class="{ 'is-edge': isEdgeMedia(msg) || isFirstInAlbum(msg, index) }">
+                                    <div v-if="(msg.media?.file_path && !msg.mediaLoadFailed && !isMetadataOnlyMedia(msg)) || isFirstInAlbum(msg, index) || isLockedAudio(msg)" class="media-block space-y-1" :class="{ 'is-edge': isEdgeMedia(msg) || isFirstInAlbum(msg, index) }">
                                         <!-- Album Grid (multiple photos/videos grouped together) -->
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
                                             <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
@@ -9708,17 +9897,30 @@
                     nextTick(() => infoMessageSection.value?.scrollIntoView?.({ block: 'start' }))
                 }
 
+                // The media types that are a Telegram payload, not a file: the
+                // mirror of METADATA_ONLY_MEDIA_TYPES in message_utils.py (a test
+                // keeps the two equal). A row of one of these never draws a file
+                // or a "Not downloaded yet" placeholder, even when an older
+                // release left a file_path on it, and is not listed as a file in
+                // the info panel.
+                const METADATA_ONLY_TYPES = new Set([
+                    'contact', 'geo', 'poll', 'venue', 'dice', 'invoice', 'story',
+                    'giveaway', 'giveaway_results', 'geo_live', 'game', 'unsupported',
+                ])
                 // Every file of the message the panel shows; an album contributes each item.
+                // A location, a contact or a poll has no file, whatever an older
+                // release left in file_path.
                 const infoPanelMedia = computed(() => {
                     const msg = infoPanelMessage.value
                     if (!msg) return []
                     const album = getAlbumForMessage(msg)
-                    return (album && album.length ? album : [msg]).filter(m => m.media)
+                    return (album && album.length ? album : [msg]).filter(m => m.media && !METADATA_ONLY_TYPES.has(m.media.type))
                 })
                 // Media types in words, for the file line and the placeholders.
                 const MEDIA_TYPE_WORDS = {
                     photo: 'Photo', video: 'Video', video_note: 'Round video', voice: 'Voice message',
                     audio: 'Audio', animation: 'GIF', sticker: 'Sticker', document: 'File',
+                    geo: 'Location', venue: 'Location', geo_live: 'Live location', contact: 'Contact', poll: 'Poll',
                 }
                 // The file's line: what it is in words (the MIME type for a document,
                 // where it says more), then its length, size and dimensions.
@@ -15347,6 +15549,11 @@
                     animation: 'GIF',
                     sticker: 'Sticker',
                     document: 'File',
+                    geo: 'Location',
+                    venue: 'Location',
+                    geo_live: 'Live location',
+                    contact: 'Contact',
+                    poll: 'Poll',
                 }
 
                 // The quote names the replied-to sender only, as the Telegram apps
@@ -15372,6 +15579,8 @@
                     // A media-only reply has no text to quote; naming the media beats
                     // the bare word "Message", which said nothing at all.
                     const type = msg?.reply_to_media_type
+                    // A venue reads "Location, Demo Cafe", as the Telegram apps write it.
+                    if (type === 'venue' && msg.reply_to_media_title) return `Location, ${msg.reply_to_media_title}`
                     if (type) return replyMediaLabels[type] || type
                     return 'Message'
                 }
@@ -15629,14 +15838,15 @@
 
                 const EXTENDED_MEDIA_CHIP_META = {
                     dice: { icon: '\u{1F3B2}', label: 'Dice' },
-                    venue: { icon: '\u{1F4CD}', label: 'Venue' },
                     invoice: { icon: '\u{1F9FE}', label: 'Invoice' },
                     story: { icon: '\u{1F4D6}', label: 'Story' },
                     giveaway: { icon: '\u{1F381}', label: 'Giveaway' },
                     giveaway_results: { icon: '\u{1F3C6}', label: 'Giveaway results' },
-                    geo_live: { icon: '\u{1F4E1}', label: 'Live location' },
                     game: { icon: '\u{1F3AE}', label: 'Game' },
                     unsupported: { icon: '\u26A0\uFE0F', label: 'Unsupported media' },
+                    // Only for a poll row whose details are not archived; the
+                    // poll block draws one that is.
+                    poll: { icon: '\u{1F4CA}', label: 'Poll' },
                 }
 
                 const formatInvoiceAmount = (amount, currency) => {
@@ -15655,6 +15865,7 @@
                     const kind = msg.media?.type
                     const meta = EXTENDED_MEDIA_CHIP_META[kind]
                     if (!meta) return null
+                    if (kind === 'poll' && msg.raw_data?.poll) return null
                     const data = msg.raw_data?.[kind] || {}
                     let icon = meta.icon
                     let label = meta.label
@@ -15662,9 +15873,6 @@
                     if (kind === 'dice') {
                         if (typeof data.emoticon === 'string' && data.emoticon) icon = data.emoticon
                         if (Number.isFinite(data.value)) detail = `Rolled ${data.value}`
-                    } else if (kind === 'venue') {
-                        if (data.title) label = data.title
-                        detail = data.address || ''
                     } else if (kind === 'invoice') {
                         if (data.title) label = data.title
                         if (Number.isFinite(data.total_amount) && typeof data.currency === 'string' && data.currency) {
@@ -15682,17 +15890,152 @@
                         if (Number.isFinite(data.winners_count)) {
                             detail = `${data.winners_count} winner${data.winners_count === 1 ? '' : 's'}`
                         }
-                    } else if (kind === 'geo_live') {
-                        if (Number.isFinite(data.lat) && Number.isFinite(data.long)) {
-                            detail = `${data.lat.toFixed(5)}, ${data.long.toFixed(5)}`
-                        }
                     } else if (kind === 'game') {
                         if (data.title) label = data.title
                         detail = data.description || ''
                     } else if (kind === 'unsupported') {
                         detail = 'Sent with a newer Telegram feature this archive version cannot decode'
+                    } else if (kind === 'poll') {
+                        detail = 'Details not archived'
                     }
                     return { icon, label, detail }
+                }
+
+                // Location, venue, live location and contact cards
+                // (docs/design/location-and-contact.md). The kind comes from the
+                // raw_data payload first, since the listener writes no media row
+                // for these, and from media.type second, for an old row whose
+                // payload is not archived yet. A live location wins over the
+                // plain kinds, as the writers never store both.
+                const PAYLOAD_CARD_KINDS = ['geo_live', 'venue', 'geo', 'contact']
+                const payloadCardKind = (msg) => {
+                    const raw = msg?.raw_data
+                    if (raw && typeof raw === 'object') {
+                        for (const kind of PAYLOAD_CARD_KINDS) {
+                            if (raw[kind] && typeof raw[kind] === 'object') return kind
+                        }
+                    }
+                    const type = msg?.media?.type
+                    return PAYLOAD_CARD_KINDS.includes(type) ? type : null
+                }
+
+                const isMetadataOnlyMedia = (msg) => METADATA_ONLY_TYPES.has(msg?.media?.type)
+
+                // A point the card may link to: two real numbers inside the
+                // globe's range, never stored text.
+                const cardPoint = (data) => {
+                    const lat = data?.lat
+                    const long = data?.long
+                    if (typeof lat !== 'number' || typeof long !== 'number') return null
+                    if (!Number.isFinite(lat) || !Number.isFinite(long)) return null
+                    if (lat < -90 || lat > 90 || long < -180 || long > 180) return null
+                    return { lat, long }
+                }
+
+                // OpenStreetMap at zoom 16, the zoom Telegram Desktop and Web
+                // open: no account, no ads or ad trackers, open data. The URL is
+                // built from the checked numbers only.
+                const openStreetMapUrl = (point) => {
+                    if (!point) return null
+                    const lat = point.lat.toFixed(6)
+                    const long = point.long.toFixed(6)
+                    return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${long}#map=16/${lat}/${long}`
+                }
+
+                // Telegram Desktop's absolute forms: "today at 14:05", "yesterday
+                // at 09:10", "3 Mar 2025 at 18:00", in the viewer's timezone.
+                const formatCardStamp = (iso, nowMs = Date.now()) => {
+                    if (!iso) return ''
+                    const when = moment.utc(iso).tz(viewerTimezone.value)
+                    if (!when.isValid()) return ''
+                    const now = moment(nowMs).tz(viewerTimezone.value)
+                    const time = when.format('HH:mm')
+                    if (when.isSame(now, 'day')) return `today at ${time}`
+                    if (when.isSame(now.clone().subtract(1, 'day'), 'day')) return `yesterday at ${time}`
+                    return `${when.format('D MMM YYYY')} at ${time}`
+                }
+
+                // The period Telegram sends for a share "until I turn it off".
+                const LIVE_LOCATION_FOREVER = 2147483647
+
+                // The card of a location, a venue or a live location, or null.
+                // Lines under the title: the address (a venue), the coordinates to
+                // 6 decimals and the accuracy (a location), or when the last
+                // position was taken and, while the share's period is still
+                // ahead, until when it runs (a live location). It never says a
+                // share is live now: the archive does not follow its updates.
+                const locationCard = (msg, nowMs = Date.now()) => {
+                    const kind = payloadCardKind(msg)
+                    if (!kind || kind === 'contact') return null
+                    const data = msg.raw_data?.[kind]
+                    const archived = !!data && typeof data === 'object'
+                    const point = archived ? cardPoint(data) : null
+                    const coordinates = point ? `${point.lat.toFixed(6)}, ${point.long.toFixed(6)}` : ''
+                    let title = kind === 'geo_live' ? 'Live location' : 'Location'
+                    if (kind === 'venue' && archived && typeof data.title === 'string' && data.title.trim()) title = data.title
+                    const lines = []
+                    if (!archived) {
+                        lines.push({ text: 'Details not archived' })
+                    } else if (kind === 'venue') {
+                        if (typeof data.address === 'string' && data.address.trim()) lines.push({ text: data.address, address: true })
+                        else if (point) lines.push({ text: coordinates })
+                        if (!point) lines.push({ text: 'Location unavailable' })
+                    } else if (!point) {
+                        lines.push({ text: 'Location unavailable' })
+                    } else if (kind === 'geo') {
+                        lines.push({ text: coordinates })
+                        const radius = data.accuracy_radius
+                        if (typeof radius === 'number' && Number.isFinite(radius) && radius > 0) {
+                            lines.push({ text: `± ${Math.round(radius)} m` })
+                        }
+                    }
+                    if (archived && kind === 'geo_live') {
+                        const updated = formatCardStamp(data.at || msg.edit_date || msg.date, nowMs)
+                        if (point) lines.push({ text: updated ? `Last position, updated ${updated}` : 'Last position' })
+                        const period = data.period
+                        if (period === LIVE_LOCATION_FOREVER) {
+                            lines.push({ text: 'Sharing until turned off' })
+                        } else if (typeof period === 'number' && Number.isFinite(period) && period > 0 && msg.date) {
+                            const end = moment.utc(msg.date).add(period, 'seconds')
+                            if (end.isValid() && end.valueOf() > nowMs) {
+                                lines.push({ text: `Sharing until ${formatCardStamp(end.toISOString(), nowMs)}` })
+                            }
+                        }
+                    }
+                    const label = [title, ...lines.map(line => line.text)].join('. ')
+                    return { kind, archived, point, coordinates, url: openStreetMapUrl(point), title, lines, label }
+                }
+
+                // The card of a shared contact, or null. The name falls back to
+                // the phone and then to "Contact"; the phone is shown as stored,
+                // with a "+" in front when it is all digits, and its tel: link
+                // keeps only "+" and digits.
+                const contactCard = (msg) => {
+                    if (payloadCardKind(msg) !== 'contact') return null
+                    const data = msg.raw_data?.contact
+                    const archived = !!data && typeof data === 'object'
+                    const text = (value) => (typeof value === 'string' ? value.trim() : '')
+                    const name = archived ? [text(data.first_name), text(data.last_name)].filter(Boolean).join(' ') : ''
+                    const stored = archived ? text(data.phone_number) : ''
+                    const phone = /^\d+$/.test(stored) ? `+${stored}` : stored
+                    const dialled = phone.replace(/[^+\d]/g, '')
+                    const tel = /\d/.test(dialled) ? `tel:${dialled}` : null
+                    const title = name || phone || 'Contact'
+                    let line = ''
+                    if (!archived) line = 'Details not archived'
+                    else if (!phone) line = 'Unknown number'
+                    else if (name) line = phone
+                    const initials = name ? name.split(/\s+/).map(part => part[0]).join('').substring(0, 2).toUpperCase() : '?'
+                    const userId = archived && typeof data.user_id === 'number' && data.user_id > 0 ? data.user_id : 0
+                    const seed = userId || [...(name || phone)].reduce((sum, ch) => sum + ch.charCodeAt(0), 0)
+                    return { archived, title, line, phone, tel, initials, fill: `var(--tg-avatar-${getPeerIndex(seed)})` }
+                }
+
+                // The pinned bar's line for a message with no text: a location
+                // or a contact by its card, which may have no media row.
+                const pinnedKindWord = (msg) => {
+                    const kind = payloadCardKind(msg) || msg?.media?.type
+                    return kind ? (MEDIA_TYPE_WORDS[kind] || 'Media') : 'Message'
                 }
 
                 const getSenderStyle = (msg) => {
@@ -15801,10 +16144,14 @@
                     sticker: 'Deleted sticker',
                     document: 'Deleted file',
                     audio: 'Deleted file',
+                    geo: 'Deleted location',
+                    venue: 'Deleted location',
+                    geo_live: 'Deleted live location',
+                    contact: 'Deleted contact',
                 }
                 const deletedKindLabel = (msg) => {
                     if (msg.raw_data?.grouped_id && isAlbumPicture(msg) && (getAlbumForMessage(msg) || []).length > 1) return 'Deleted album'
-                    return DELETED_KIND[msg.media?.type] || 'Deleted message'
+                    return DELETED_KIND[payloadCardKind(msg) || msg.media?.type] || 'Deleted message'
                 }
                 // When the archive noticed a change to a message (a deletion, a
                 // reaction taken back): "21:59" the day the message was sent, "Sep
@@ -16798,6 +17145,9 @@
                 const mediaPlaceholder = (msg) => {
                     const media = msg.media
                     if (!media?.type || media.type === 'webpage') return null
+                    // A location, a contact, a poll: no file, whatever an older
+                    // release left in file_path. The card draws it instead.
+                    if (METADATA_ONLY_TYPES.has(media.type)) return null
                     const missing = !!media.file_path && !!msg.mediaLoadFailed
                     if (media.file_path && !missing) return null
                     if (!media.file_path && getExtendedMediaChip(msg)) return null
@@ -19453,6 +19803,10 @@
                     isMediaOnlyMessage,
                     getPollPercentage,
                     pollKindLabel,
+                    locationCard,
+                    contactCard,
+                    isMetadataOnlyMedia,
+                    pinnedKindWord,
                     getExtendedMediaChip,
                     isDeletedChat,
                     isAudioFile,

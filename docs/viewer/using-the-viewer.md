@@ -116,8 +116,36 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 - **GIFs** loop while they are on screen and pause when you scroll away.
 - **Stickers** in `.webp` show as images up to 200 px wide. Other stickers show the text "Animated Sticker".
 - **Polls and quizzes** show each answer with a percentage bar and the total votes.
-- **Dice, venues, invoices, stories, giveaways, live locations and games** show as a chip.
+- **Locations, venues, live locations and shared contacts** show as cards. See [Locations and contacts](#locations-and-contacts).
+- **Dice, invoices, stories, giveaways and games** show as a chip.
 - **Link previews** show the archived card with site name, title, description and image.
+
+#### Locations and contacts
+
+A location, a venue, a live location and a shared contact each show as a card in the bubble, the way the Telegram apps draw them.
+
+- **Location.** A pin, the word Location, the coordinates to six decimals and, when Telegram sent it, how accurate the point is (`± 25 m`).
+- **Venue.** The place's name on one line and its address on up to two.
+- **Live location.** The sender's picture in the pin and when the archive last saw a position, for example `Last position, updated yesterday at 20:14`. While the sharing period has not run out, a second line says until when, or `Sharing until turned off`. The archive does not follow a live share as it moves, so the card never says the share is live now.
+- **Contact.** The initials in a coloured circle, the name and the phone number. The phone button calls the number on a device that can, and the copy button copies it.
+
+Click a location, venue or live location card to open the place on [OpenStreetMap](https://www.openstreetmap.org) in a new tab. OpenStreetMap needs no account, its pages carry no ads or ad trackers, and its map data is open. The viewer loads no map tiles and sends nothing anywhere until you click, so the page you open is the only one that sees the coordinates. The copy button beside the card copies the coordinates instead.
+
+A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link, until [`backfill-payloads`](../operations/maintenance.md#fill-old-locations-contacts-and-polls) reads it from Telegram again. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download, and the same command clears the leftover path. A poll archived without its details shows a Poll chip with `Details not archived`, and the same command fills it in.
+
+A login without downloads still sees the coordinates and phone numbers: they are the message's content, like its text.
+
+=== "Desktop"
+
+    ![A venue, a location, a live location that has ended and a shared contact in a private chat](../images/screenshots/location-cards.png)
+
+=== "Night"
+
+    ![The same cards in Telegram Night](../images/screenshots/location-cards-night.png)
+
+=== "Phone"
+
+    ![A live location and a shared contact on a phone](../images/screenshots/location-cards-mobile.png){ width="300" }
 
 When a file is not in the archive, a placeholder takes its place in the same shape: a photo or a video keeps its proportions, a round video its circle, and a voice message, an audio or a document its file row. A ring in the middle holds a sign for the reason, and two lines say what it is and why, with its size when the archive knows it, for example `24 MB · over the download limit`. The ring is not a button: nothing downloads from here. A file missing from the archive disk, the one fault among the reasons, shows an amber disc instead. [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer) lists each reason and the setting behind it.
 
