@@ -19,7 +19,12 @@ import re
 
 from test_frontend_audit_fixes import INDEX_HTML, _run_node
 
-VUE_JS = INDEX_HTML.parents[1] / "static" / "vendor" / "vue-3.5.41.global.prod.js"
+# Load the build the viewer's script tag names, so a Vue bump never edits this file.
+_VUE_TAG = re.search(
+    r'<script src="/static/(vendor/vue-[^"]+\.global\.prod\.js)"', INDEX_HTML.read_text(encoding="utf-8")
+)
+assert _VUE_TAG, "index.html no longer loads a vendored Vue build"
+VUE_JS = INDEX_HTML.parents[1] / "static" / _VUE_TAG.group(1)
 
 BLOCK_START = "                const THUMB_CONCURRENCY = 4\n"
 BLOCK_END = "                const mediaTabs = [\n"
