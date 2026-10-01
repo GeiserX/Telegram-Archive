@@ -321,9 +321,13 @@ class TestPostgres:
     async def test_each_side_of_the_global_query_reads_its_gin_index(self, real_adapter):
         """EXPLAIN the two key sets the union is built from.
 
-        Sequential scans are priced out so a near-empty table still shows
-        whether the predicate CAN use the index; an OR or an EXISTS folded
-        into the message predicate would leave a sequential scan here.
+        Sequential scans, plain index scans and nested loops are priced out,
+        so a near-empty table still shows whether the predicate CAN use the
+        index: what is left is a bitmap scan, and the GIN index is the only
+        one with a usable condition. A full b-tree walk with the predicate as
+        a filter, or a nested-loop probe of the account index, is cheap on
+        three rows and used to win the tie now and then. An OR or an EXISTS
+        folded into the message predicate would leave a sequential scan here.
         """
         await _seed_three(real_adapter)
         dialect = real_adapter.db_manager.engine.dialect
@@ -333,7 +337,8 @@ class TestPostgres:
             sides = real_adapter._global_search_sides(predicate, transcripts, UNRESTRICTED, fold_shared=False)
             assert len(sides) == 2, "the transcript side is part of the union"
             connection = await session.connection()
-            await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+            for path in ("enable_seqscan", "enable_indexscan", "enable_nestloop"):
+                await connection.exec_driver_sql(f"SET LOCAL {path} = off")
             plans = []
             for side in sides:
                 sql = str(side.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
