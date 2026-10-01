@@ -4402,6 +4402,85 @@ class DatabaseAdapter:
                         counts[content_hash] = counts.get(content_hash, 0) + count
         return counts
 
+    async def get_media_paths_by_content_hash(self, content_hash: str, *, limit: int = 20) -> list[str]:
+        """Stored paths of media rows and kept earlier media with this content hash, ALL accounts.
+
+        The places a copy of the same bytes may already sit, for repairing a row
+        whose own file is gone. Paths as stored: absolute, or relative to the
+        media root for imported rows.
+        """
+        if not content_hash:
+            return []
+        paths: list[str] = []
+        async with self.db_manager.async_session_factory() as session:
+            for model in (Media, MediaVersion):
+                stmt = (
+                    select(model.file_path)
+                    .where(and_(model.content_hash == content_hash, model.file_path.isnot(None)))
+                    .distinct()
+                    .limit(limit)
+                )
+                paths.extend(value for (value,) in (await session.execute(stmt)).all())
+        return list(dict.fromkeys(paths))[:limit]
+
+    async def count_shared_blob_references(self, blobs: Collection[tuple[str, str | None]]) -> dict[str, int]:
+        """How many rows, ALL accounts, still refer to each ``_shared`` blob, keyed by file name.
+
+        A row refers to a blob when it names the same file (``file_name``) or
+        holds the same bytes (``content_hash``). Both count, because neither is
+        complete alone: rows written before content hashing existed carry no
+        hash, and a blob reused for a duplicate under another name is named by
+        its hash only. Earlier media an edit replaced (``media_versions``) count
+        too. A blob with any reference must stay.
+        """
+        wanted = {name: content_hash for name, content_hash in blobs if name}
+        if not wanted:
+            return {}
+        counts: dict[str, int] = {}
+        async with self.db_manager.async_session_factory() as session:
+            for name, content_hash in wanted.items():
+                total = 0
+                for model in (Media, MediaVersion):
+                    match = model.file_name == name
+                    if content_hash:
+                        match = or_(match, model.content_hash == content_hash)
+                    total += (await session.execute(select(func.count()).select_from(model).where(match))).scalar_one()
+                if total:
+                    counts[name] = total
+        return counts
+
+    async def referenced_file_paths(self, values: Collection[str]) -> set[str]:
+        """The subset of ``values`` that some media row or kept earlier media, ALL accounts, names as its file_path."""
+        wanted = [value for value in dict.fromkeys(values) if value]
+        found: set[str] = set()
+        if not wanted:
+            return found
+        async with self.db_manager.async_session_factory() as session:
+            for start in range(0, len(wanted), 500):
+                chunk = wanted[start : start + 500]
+                for model in (Media, MediaVersion):
+                    stmt = select(model.file_path).where(model.file_path.in_(chunk)).distinct()
+                    found.update(value for (value,) in (await session.execute(stmt)).all())
+        return found
+
+    async def count_media_rows_in_folder(self, chat_id: int, folder_prefixes: Collection[str]) -> int:
+        """Rows of any account whose files sit in a chat's media folder.
+
+        A row belongs when it carries the chat id (every account's copy of a
+        chat shares ``<media>/<chat_id>/``) or when its stored path starts with
+        one of ``folder_prefixes`` (a legacy row of another id form can still
+        point there). Media rows and kept earlier media both count.
+        """
+        prefixes = [prefix for prefix in folder_prefixes if prefix]
+        total = 0
+        async with self.db_manager.async_session_factory() as session:
+            for model in (Media, MediaVersion):
+                match = or_(
+                    model.chat_id == chat_id, *(model.file_path.startswith(p, autoescape=True) for p in prefixes)
+                )
+                total += (await session.execute(select(func.count()).select_from(model).where(match))).scalar_one()
+        return total
+
     async def iter_media_for_verification(self, *, account_id: int, batch_size: int = 500):
         """Yield batches of one account's media records that should have files
         on disk (``downloaded=1`` OR ``file_path`` set). Used by VERIFY_MEDIA —
@@ -4428,6 +4507,7 @@ class DatabaseAdapter:
                         Media.file_name,
                         Media.file_size,
                         Media.downloaded,
+                        Media.content_hash,
                     )
                     .where(
                         and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None)))
@@ -4450,6 +4530,8 @@ class DatabaseAdapter:
                     "file_name": r[5],
                     "file_size": r[6],
                     "downloaded": r[7],
+                    "content_hash": r[8],
+                    "account_id": account_id,
                 }
                 for r in rows
             ]
@@ -5255,18 +5337,23 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
-    async def mark_media_for_redownload(self, media_id: str, *, account_id: int) -> None:
+    async def mark_media_for_redownload(self, media_id: str, *, account_id: int, keep_path: bool = False) -> None:
         """Mark a media record as needing re-download.
 
         Also resets download_attempts so a row that previously hit the retry
         cap (#212) becomes eligible for the pending-download retry again.
+
+        ``keep_path`` keeps ``file_path``: the row still names the link whose
+        ``_shared`` file is gone, and the download puts the bytes back under
+        that link's own target (``_process_media``), so the link and every
+        other link to the same target resolve again even when the current
+        Telegram file name differs from the one the link holds.
         """
+        values: dict[str, Any] = {"downloaded": 0, "download_date": None, "download_attempts": 0}
+        if not keep_path:
+            values["file_path"] = None
         async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                update(Media)
-                .where(and_(Media.account_id == account_id, Media.id == media_id))
-                .values(downloaded=0, file_path=None, download_date=None, download_attempts=0)
-            )
+            stmt = update(Media).where(and_(Media.account_id == account_id, Media.id == media_id)).values(**values)
             await session.execute(stmt)
             await session.commit()
 
@@ -5801,10 +5888,13 @@ class DatabaseAdapter:
     async def delete_chat_and_related_data(self, chat_id: int, media_base_path: str = None, *, account_id: int) -> None:
         """Delete one account's copy of a chat and all related data.
 
-        The on-disk media directory below is chat-scoped, not account-scoped:
-        while the media layout stays ``<base>/<chat_id>`` this also removes any
-        files another account's copy of the chat still references. Single-account
-        (this stage) that set is empty; phase 5 owns the layout decision.
+        The on-disk media folder is chat-scoped, not account-scoped: every
+        account's copy of the chat keeps its files in ``<base>/<chat_id>``. The
+        folder is removed only when no media row of any account still uses it,
+        counted after this account's rows are gone. Otherwise it stays whole,
+        because removing it would leave the other account's rows marked
+        downloaded with nothing behind them. The folder holds links into
+        ``_shared`` and those are removed with it, never the shared files.
         """
         async with self.db_manager.async_session_factory() as session:
             # Serialize concurrent deletions of the same chat: on PostgreSQL two
@@ -5872,7 +5962,22 @@ class DatabaseAdapter:
         # Delete physical files
         if media_base_path and os.path.exists(media_base_path):
             chat_media_dir = os.path.join(media_base_path, str(chat_id))
+            still_used = 0
             if os.path.exists(chat_media_dir):
+                folder_prefixes = {
+                    os.path.join(media_base_path, str(chat_id)) + os.sep,
+                    os.path.join(os.path.abspath(media_base_path), str(chat_id)) + os.sep,
+                    f"{chat_id}/",
+                }
+                try:
+                    still_used = await self.count_media_rows_in_folder(chat_id, folder_prefixes)
+                except Exception as e:
+                    # Unknown means in use: a folder is never removed on doubt.
+                    logger.error(f"Could not count the rows still using the chat's media folder: {type(e).__name__}")
+                    still_used = 1
+                if still_used:
+                    logger.info(f"Kept the chat's media folder: {still_used} media row(s) of another account use it")
+            if os.path.exists(chat_media_dir) and not still_used:
                 try:
                     shutil.rmtree(chat_media_dir)
                     logger.info("Deleted media folder for chat")
