@@ -249,3 +249,74 @@ class TestRemovedReactionsOnThePage:
 
         page = await _page(real_adapter)
         assert [(r["emoji"], r["count"]) for r in page[1]["removed_reactions"]] == [("👍", 1)]
+
+
+class TestThePageCapsTheHistory:
+    """A busy post can hold hundreds of reaction states. The page returns its
+    newest PAGE_REACTION_HISTORY_LIMIT, plus each emoji's newest state, latest
+    drop and return, says how many it left out, and the reactions taken back
+    read exactly as from the whole history. Both exports keep every state."""
+
+    async def _busy_post(self, adapter) -> None:
+        """❤️ drops 7 to 5, 👍 is taken back and given again, and 🎉 climbs 1 to 2,
+        all long ago; then 🔥 climbs through 30 states, so they fall outside the cap."""
+        await _seed(adapter, 1)
+        snapshots = [
+            [("❤️", 7), ("👍", 4), ("🎉", 1)],
+            [("❤️", 5), ("👍", 4), ("🎉", 1)],
+            [("❤️", 5), ("🎉", 1)],
+            [("❤️", 5), ("👍", 2), ("🎉", 1)],
+            [("❤️", 5), ("👍", 2), ("🎉", 2)],
+        ]
+        snapshots += [[("❤️", 5), ("👍", 2), ("🎉", 2), ("🔥", n)] for n in range(1, 31)]
+        for observed in snapshots:
+            await adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": e, "count": n} for e, n in observed], account_id=1)
+        await adapter.reconcile_reactions(2, CHAT_ID, [{"emoji": "😮", "count": 1}], account_id=1)
+
+    async def test_more_states_than_the_cap_are_cut_and_the_page_says_how_many(self, real_adapter):
+        from telegram_archive.db.adapter import PAGE_REACTION_HISTORY_LIMIT
+
+        await self._busy_post(real_adapter)
+        page = await _page(real_adapter)
+        history = page[1]["reaction_history"]
+
+        # 2 ❤️ + 3 👍 + 2 🎉 + 30 🔥 kept; the newest 20 are 🔥 11 to 30, and
+        # the viewer's states ride along: ❤️'s newest (its drop), 👍's drop and
+        # return, and 🎉's newest, so an emoji with history is never left out.
+        assert PAGE_REACTION_HISTORY_LIMIT == 20
+        assert [(h["emoji"], h["count"], h["previous_count"]) for h in history] == [
+            ("❤️", 5, 7),
+            ("👍", 0, 4),
+            ("👍", 2, 0),
+            ("🎉", 2, 1),
+        ] + [("🔥", n, n - 1) for n in range(11, 31)]
+        assert page[1]["reaction_history_omitted"] == 37 - 24
+        assert page[2]["reaction_history_omitted"] == 0
+        assert [h["count"] for h in page[2]["reaction_history"]] == [1]
+
+    async def test_the_reactions_taken_back_read_as_from_the_whole_history(self, real_adapter):
+        await self._busy_post(real_adapter)
+        page = await _page(real_adapter)
+        exported = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1)}
+        whole = [
+            {**state, "observed_at": datetime.fromisoformat(state["observed_at"])}
+            for state in exported[1]["reaction_history"]
+        ]
+
+        removed = page[1]["removed_reactions"]
+        assert [(r["emoji"], r["count"], r["count_before"], r["back_at"] is not None) for r in removed] == [
+            ("👍", 4, 4, True),
+            ("❤️", 2, 7, False),
+        ]
+        live = {r["emoji"] for r in page[1]["reactions"]}
+        assert removed == real_adapter._removed_reactions(whole, {}, live)
+
+    async def test_both_exports_keep_every_state(self, real_adapter):
+        await self._busy_post(real_adapter)
+        viewer = {m["id"]: m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1)}
+        command = {m["id"]: m for m in await real_adapter.get_messages_for_backup_export(CHAT_ID, account_id=1)}
+
+        assert len(viewer[1]["reaction_history"]) == 37
+        assert len(command[1]["reaction_history"]) == 37
+        assert "reaction_history_omitted" not in viewer[1]
+        assert "reaction_history_omitted" not in command[1]
