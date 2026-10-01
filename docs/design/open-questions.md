@@ -1,6 +1,6 @@
 # Open questions from the fix lanes
 
-> **Status: open, waiting for the owner's picks.** Answer with one letter per question, for example `1C 2A 3B 4C 5C 6A 7B 8.1B 8.2A 8.3A 8.4C 8.5A 9C 10C`. Nothing here is implemented yet.
+> **Decided 2026-10-01: `1C 2A 3B 4C 5C 6A 7C 8.1B 8.2A 8.3A 8.4C 8.5A 9C 10C`.** Everything targets 9.0. 7C drops the flat `message_versions` list from both exports in 9.0 instead of deprecating it first. 3B extends the backfill command the location and contact work adds, so the archive has one command that reads messages again from Telegram. 8.2, 8.3 and 8.5 keep today's behaviour.
 
 The fix lanes merged as [#517](https://github.com/GeiserX/Telegram-Archive/pull/517) to [#522](https://github.com/GeiserX/Telegram-Archive/pull/522) left decisions only the owner can make. This page lists them, each with what happens today, the options and a recommendation. Ten questions remain after checking each candidate against the code on `main`. [Dropped candidates](#dropped) lists the ones the code or the roadmap already answers.
 
