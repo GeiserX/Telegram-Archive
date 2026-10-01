@@ -39,6 +39,7 @@ _DECLARATIONS = (
     "const replyMediaLabels = {",
     "const replyToSnippet = (msg) =>",
     "const EXTENDED_MEDIA_CHIP_META = {",
+    "const currentPoll = (msg) =>",
     "const getExtendedMediaChip = (msg) =>",
 )
 

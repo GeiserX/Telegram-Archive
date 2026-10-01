@@ -86,6 +86,7 @@ class BackupExporter:
                 "total_chats": len(chats_dict),
                 "total_message_versions": sum(len(message["versions"]) for message in messages),
                 "total_transcripts": sum(len(message.get("transcripts", ())) for message in messages),
+                "total_message_snapshots": sum(len(message.get("snapshots", ())) for message in messages),
             },
             "chats": chats,
             "messages": messages,
