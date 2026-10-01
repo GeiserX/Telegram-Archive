@@ -181,16 +181,17 @@ Never point two installs at the same session file.
 
 If the login cannot write the session file, the data directory usually does not belong to uid 1000. Change its owner as shown in [Create the data directory](docker.md#3-create-the-data-directory). You can also run the container as your own user with `--user <uid>:<gid>`.
 
-## SOCKS5 proxy
+## SOCKS5 or MTProxy transport
 
-The backup can reach Telegram through a SOCKS5 proxy. Setting any of `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT`, `TELEGRAM_PROXY_USERNAME` or `TELEGRAM_PROXY_PASSWORD` turns the proxy on. Startup then checks these rules and stops if one fails:
+The backup can reach Telegram through a SOCKS5 proxy or a Telegram MTProxy. Setting any of `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT`, `TELEGRAM_PROXY_USERNAME`, `TELEGRAM_PROXY_PASSWORD` or `TELEGRAM_PROXY_SECRET` turns the proxy on. From then on these rules apply, and startup stops if one is broken:
 
 - `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR` and `TELEGRAM_PROXY_PORT` are required.
-- `TELEGRAM_PROXY_TYPE` must be `socks5`, in any letter case.
+- `TELEGRAM_PROXY_TYPE` must be `socks5` or `mtproxy`, in any letter case.
 - `TELEGRAM_PROXY_PORT` must be a number from 1 to 65535.
-- `TELEGRAM_PROXY_USERNAME` and `TELEGRAM_PROXY_PASSWORD` must be set together, or not at all.
+- For SOCKS5, `TELEGRAM_PROXY_USERNAME` and `TELEGRAM_PROXY_PASSWORD` must be set together, or not at all. `TELEGRAM_PROXY_SECRET` is invalid.
+- For MTProxy, `TELEGRAM_PROXY_SECRET` is required. Username and password are invalid, and `TELEGRAM_PROXY_RDNS` must be unset or false.
 
-`TELEGRAM_PROXY_RDNS=true` makes the proxy look up host names. It has no effect unless the proxy is on. When the proxy is on, the variable accepts `1`, `true`, `yes`, `on`, `0`, `false`, `no` and `off`. Any other value stops startup.
+For SOCKS5, `TELEGRAM_PROXY_RDNS=true` makes the proxy look up host names. It has no effect unless the proxy is already on. When the proxy is on, it accepts 1/true/yes/on and 0/false/no/off, and any other value stops startup.
 
 ```ini
 TELEGRAM_PROXY_TYPE=socks5
@@ -200,4 +201,15 @@ TELEGRAM_PROXY_USERNAME=proxyuser
 TELEGRAM_PROXY_PASSWORD=proxypassword
 ```
 
-The proxy applies to every Telegram connection: the login, the scheduled backup, the real-time listener and the helper scripts. The `python-socks` library it needs ships in the image and in the PyPI package.
+For MTProxy, use:
+
+```ini
+TELEGRAM_PROXY_TYPE=mtproxy
+TELEGRAM_PROXY_ADDR=proxy.example.com
+TELEGRAM_PROXY_PORT=1443
+TELEGRAM_PROXY_SECRET=your-mtproxy-secret
+```
+
+MTProxy uses Telethon's `ConnectionTcpMTProxyRandomizedIntermediate`. Use a 16-byte secret written as 32 hexadecimal characters, optionally prefixed with `dd`. This mode does not provide FakeTLS support for `ee` secrets.
+
+The selected transport applies to every Telegram connection: the login, the scheduled backup, the real-time listener and the helper scripts. The `python-socks` library needed by SOCKS5 ships in the image and in the PyPI package. Keep proxy secrets in a protected `.env`; do not put them in command arguments or logs.

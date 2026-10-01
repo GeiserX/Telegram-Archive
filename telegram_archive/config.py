@@ -120,6 +120,7 @@ def build_telegram_proxy_from_env() -> dict | None:
     proxy_port = os.getenv("TELEGRAM_PROXY_PORT", "").strip()
     proxy_username = os.getenv("TELEGRAM_PROXY_USERNAME", "").strip()
     proxy_password = os.getenv("TELEGRAM_PROXY_PASSWORD", "").strip()
+    proxy_secret = os.getenv("TELEGRAM_PROXY_SECRET", "").strip()
     proxy_rdns = os.getenv("TELEGRAM_PROXY_RDNS", "").strip()
 
     # ``rdns`` is a modifier of an already-requested proxy, never an enabler on
@@ -128,7 +129,7 @@ def build_telegram_proxy_from_env() -> dict | None:
     # it were part of the gate, that literal "false" string (truthy in Python)
     # would make every default install think a proxy was half-configured and
     # raise the "incomplete proxy configuration" error (issue #193).
-    has_proxy_config = any([proxy_type, proxy_addr, proxy_port, proxy_username, proxy_password])
+    has_proxy_config = any([proxy_type, proxy_addr, proxy_port, proxy_username, proxy_password, proxy_secret])
     if not has_proxy_config:
         return None
 
@@ -143,8 +144,8 @@ def build_telegram_proxy_from_env() -> dict | None:
         missing = ", ".join(missing_fields)
         raise ValueError(f"Telegram proxy configuration is incomplete. Missing required settings: {missing}")
 
-    if proxy_type != "socks5":
-        raise ValueError("TELEGRAM_PROXY_TYPE must be 'socks5'")
+    if proxy_type not in {"socks5", "mtproxy"}:
+        raise ValueError("TELEGRAM_PROXY_TYPE must be 'socks5' or 'mtproxy'")
 
     try:
         parsed_port = int(proxy_port)
@@ -158,6 +159,18 @@ def build_telegram_proxy_from_env() -> dict | None:
         parsed_rdns = _parse_bool(proxy_rdns, default=False, name="TELEGRAM_PROXY_RDNS")
     except ValueError as e:
         raise ValueError(f"TELEGRAM_PROXY_RDNS must be a boolean value: {e}") from e
+
+    if proxy_type == "mtproxy":
+        if not proxy_secret:
+            raise ValueError("TELEGRAM_PROXY_SECRET is required for MTProxy")
+        if proxy_username or proxy_password:
+            raise ValueError("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD are invalid for MTProxy")
+        if parsed_rdns:
+            raise ValueError("TELEGRAM_PROXY_RDNS must be false for MTProxy")
+        return {"proxy_type": "mtproxy", "addr": proxy_addr, "port": parsed_port, "secret": proxy_secret}
+
+    if proxy_secret:
+        raise ValueError("TELEGRAM_PROXY_SECRET is invalid for SOCKS5")
 
     if bool(proxy_username) != bool(proxy_password):
         raise ValueError(
@@ -176,6 +189,20 @@ def build_telegram_proxy_from_env() -> dict | None:
         proxy["password"] = proxy_password
 
     return proxy
+
+
+def _telegram_proxy_client_kwargs(proxy: dict | None) -> dict:
+    """Translate the validated proxy into Telethon kwargs without importing Telethon in the viewer."""
+    if proxy is None:
+        return {}
+    if proxy["proxy_type"] == "mtproxy":
+        from telethon.network.connection.tcpmtproxy import ConnectionTcpMTProxyRandomizedIntermediate
+
+        return {
+            "connection": ConnectionTcpMTProxyRandomizedIntermediate,
+            "proxy": (proxy["addr"], proxy["port"], proxy["secret"]),
+        }
+    return {"proxy": dict(proxy)}
 
 
 # The name this app shows under Telegram's Settings, Devices. Without it
@@ -227,8 +254,7 @@ def build_telegram_client_kwargs() -> dict:
     """
     kwargs: dict = {"flood_sleep_threshold": 0, **telegram_device_kwargs(telegram_device_model_from_env())}
     proxy = build_telegram_proxy_from_env()
-    if proxy is not None:
-        kwargs["proxy"] = dict(proxy)
+    kwargs.update(_telegram_proxy_client_kwargs(proxy))
     return kwargs
 
 
@@ -1337,7 +1363,10 @@ class Config:
             total_topics = sum(len(t) for t in self.skip_topic_ids.values())
             logger.info(f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)")
         if self.telegram_proxy:
-            logger.info("Telegram proxy enabled (type=socks5, rdns=%s)", self.telegram_proxy["rdns"])
+            if self.telegram_proxy["proxy_type"] == "mtproxy":
+                logger.info("Telegram proxy enabled (type=mtproxy)")
+            else:
+                logger.info("Telegram proxy enabled (type=socks5, rdns=%s)", self.telegram_proxy["rdns"])
             logger.debug(
                 "Telegram proxy endpoint: %s:%s",
                 self.telegram_proxy["addr"],
@@ -2091,8 +2120,7 @@ class Config:
         keeps 0 so floods stay visible in app logs (#124).
         """
         kwargs: dict = {"flood_sleep_threshold": 0, **telegram_device_kwargs(self.telegram_device_model)}
-        if self.telegram_proxy is not None:
-            kwargs["proxy"] = dict(self.telegram_proxy)
+        kwargs.update(_telegram_proxy_client_kwargs(self.telegram_proxy))
         return kwargs
 
 
