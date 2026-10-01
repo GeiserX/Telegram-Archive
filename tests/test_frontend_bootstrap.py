@@ -1398,55 +1398,38 @@ def test_sender_details_dialog_shows_a_large_avatar():
     assert "<a " not in avatar
 
 
-def test_private_chat_header_avatar_opens_sender_details():
-    """#240: the 1:1 header photo is the counterpart, so it opens the same popup."""
+def _chat_header_info_button(html: str) -> str:
+    """The header button that holds the photo, the name and the status line (#538)."""
+    header = html[html.index("<!-- Chat Header -->") : html.index('<div class="flex items-center gap-0.5 min-w-0">')]
+    start = header.index('<button type="button" @click="openChatInfo($event)"')
+    return header[start : header.index("</button>", start)]
+
+
+def test_chat_header_avatar_is_decoration_inside_the_info_button():
+    """#538: the phone's header photo sits inside the name's button, which opens the info panel."""
     html = INDEX_HTML.read_text(encoding="utf-8")
+    body = _chat_header_info_button(html)
 
-    start = html.index('<button v-if="selectedChat?.type === \'private\'" type="button"')
-    body = html[start : html.index("</button>", start)]
+    avatar = body[body.index('<span aria-hidden="true"') : body.index("</span>")]
+    assert "md:hidden avatar-initials" in avatar
+    assert 'alt=""' in avatar, "the name follows the photo, so the photo says nothing"
+    assert "getChatAvatarFill(selectedChat)" in avatar
+    # One photo for every kind of chat: no private-only button beside a plain circle.
+    assert "<button" not in body[1:]
+    assert "Show details for" not in html
 
-    # Real <button> => native Enter/Space activation.
-    assert body.startswith('<button v-if="selectedChat?.type === \'private\'" type="button"')
-    # $event must be forwarded or openSenderInfo cannot restore focus on close.
-    assert '@click="openSenderInfoFromChat(selectedChat, $event)"' in body
-    assert ":aria-label=" in body
-    assert "getChatName(selectedChat)" in body
-    assert "focus:ring-2 focus:ring-tg-accent-soft" in body
-
-    # Groups/channels keep the non-interactive circle (that photo is the group, not a sender).
-    assert "<div v-else" in html[html.index("</button>", start) :][:400]
-
-    # The original message-row call site stays an independent second trigger.
+    # The message rows keep their own trigger of the sender popup.
     assert '@click="openSenderInfo(msg, $event)"' in html
-
-
-def test_chat_header_sender_trigger_maps_chat_fields_to_message_shape():
-    """#240: chats carry id/avatar_url, the dialog reads sender_id/sender_avatar_url."""
-    html = INDEX_HTML.read_text(encoding="utf-8")
-
-    start = html.index("const openSenderInfoFromChat = (chat, event) =>")
-    body = html[start : html.index("}, event)", start)]
-
-    assert "sender_id: chat.id" in body
-    assert "sender_avatar_url: chat.avatar_url" in body
-    assert "sender_name: null" in body
-    assert "first_name: chat.first_name" in body
-    assert "last_name: chat.last_name" in body
-    assert "username: chat.username" in body
-
-    # Must be exposed to the template.
-    assert "openSenderInfoFromChat," in html
 
 
 def test_chat_header_avatar_button_is_not_a_tap_target():
     """.tap-target forces 44px minimums on mobile and would deform the 40px circle."""
     html = INDEX_HTML.read_text(encoding="utf-8")
+    body = _chat_header_info_button(html)
+    avatar = body[body.index('<span aria-hidden="true"') : body.index("</span>")]
 
-    start = html.index('<button v-if="selectedChat?.type === \'private\'" type="button"')
-    body = html[start : html.index("</button>", start)]
-
-    assert "tap-target" not in body
-    assert "aspect-square" in body
+    assert "tap-target" not in avatar
+    assert "aspect-square" in avatar
 
 
 # --- Global audio player (#250) -------------------------------------------------
