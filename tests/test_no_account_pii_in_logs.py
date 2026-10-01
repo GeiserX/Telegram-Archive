@@ -874,8 +874,9 @@ async def test_the_writers_never_log_a_location_or_a_contact(caplog):
 
 
 async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, tmp_path, monkeypatch):
-    """backfill-payloads with demo cards from Telegram, a demo vCard file, a refused chat and a failing batch."""
+    """backfill-details with demo cards from Telegram, a demo vCard file, an edit flag, a refused chat and a failing batch."""
     import logging
+    from datetime import UTC, datetime
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
@@ -899,6 +900,7 @@ async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, t
         -1003: [row(1, "contact")],
     }
     served = {1: media[0], 2: media[1], 3: media[2]}
+    edited = datetime(2026, 3, 1, 12, 5)
 
     async def get_entity(chat):
         if chat == -1002:
@@ -908,7 +910,16 @@ async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, t
     async def get_messages(entity, ids):
         if entity == -1003:
             raise ValueError("Alexdemo +15555550100 at 40.416775,-3.70379")
-        return [SimpleNamespace(id=i, media=served.get(i), date=None, edit_date=None) for i in ids]
+        return [
+            SimpleNamespace(
+                id=i,
+                media=served.get(i),
+                date=None,
+                edit_date=edited.replace(tzinfo=UTC) if i == 5 else None,
+                edit_hide=i == 5,
+            )
+            for i in ids
+        ]
 
     backup = TelegramBackup.__new__(TelegramBackup)
     backup.account_id = 1
@@ -918,10 +929,16 @@ async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, t
     backup.db.get_payload_backfill_rows = AsyncMock(return_value=groups)
     backup.db.add_missing_raw_data_keys = AsyncMock(return_value=True)
     backup.db.clear_metadata_media_path = AsyncMock(return_value=True)
+    backup.db.get_chats_with_messages = AsyncMock(return_value=list(groups))
+    backup.db.get_edit_hide_backfill_rows = AsyncMock(
+        side_effect=lambda chat, account_id: [(5, edited)] if chat == -1001 else []
+    )
+    backup.db.fill_edit_hide = AsyncMock(return_value=True)
 
-    summary = await backup.backfill_media_payloads(apply=True)
+    summary = await backup.backfill_details(apply=True)
 
     assert summary["vcards_recovered"] == 1
+    assert summary["edits"]["hidden"] == 1
     assert summary["chats_unavailable"] == 1
     assert summary["errors"] == 1
     assert caplog.records, "the backfill logged nothing, so this check proves nothing"

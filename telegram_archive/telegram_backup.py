@@ -144,7 +144,7 @@ FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
 # Bounded re-fetch+retry for transient media errors (expired reference / location
 # unavailable). After this many download attempts the item is left for the next
 # scheduled backup run instead of being retried indefinitely.
-# backfill-payloads: ids per get_messages call (Telegram's own cap) and the
+# backfill-details: ids per get_messages call (Telegram's own cap) and the
 # pause between two calls, so a long run stays well under the flood limits.
 PAYLOAD_BACKFILL_BATCH = 100
 PAYLOAD_BACKFILL_PAUSE_SECONDS = 1.0
@@ -1871,43 +1871,51 @@ class TelegramBackup:
             return "keep", None
         return "clear", contact
 
-    async def backfill_media_payloads(self, chat_id: int | None = None, apply: bool = False) -> dict:
-        """Re-read old locations, venues, live locations, contacts and polls from Telegram.
+    async def backfill_details(self, chat_id: int | None = None, apply: bool = False) -> dict:
+        """Re-read from Telegram what older releases did not keep: media payloads and edit flags.
 
-        Messages archived before these kinds were kept have a media row of
-        the kind and no payload. This asks Telegram for those messages again,
-        in batches, and adds only the missing ``raw_data`` key through
-        ``add_missing_raw_data_keys``: text, dates, reactions and every key
-        already there stay as they are. It also clears the leftover ``.bin``
-        path of these rows (``_leftover_path_action``), and never touches the
-        disk. Without ``apply`` it reads and counts but writes nothing.
+        Two work lists, read in one pass per chat:
+
+        - Messages archived before locations, venues, live locations,
+          contacts and polls were kept have a media row of the kind and no
+          payload. Only the missing ``raw_data`` key is added, through
+          ``add_missing_raw_data_keys``: text, dates, reactions and every key
+          already there stay as they are. The leftover ``.bin`` path of these
+          rows is cleared too (``_leftover_path_action``); the disk is never
+          touched.
+        - Messages archived before migration 034 have an ``edit_date`` and no
+          ``edit_hide``, so a reaction Telegram hid shows as an edit. The flag
+          is filled through ``fill_edit_hide``, the write the sync uses, and
+          only when Telegram returns the ``edit_date`` the archive holds. A
+          later edit time is counted (``date_changed``) and left for the
+          sync, which records it as an edit.
+
+        A message on both lists is asked for once. Without ``apply`` it reads
+        and counts but writes nothing.
 
         A row Telegram never answered (its batch failed, or its chat could
-        not be reached for a reason other than a refusal) keeps its path
-        this run, so a transient error never turns into a vCard read in
-        place of the full payload. A FloodWait that ``call_with_flood_retry``
-        could not sleep out stops the run for this account
-        (``flood_wait_seconds``) rather than send more requests Telegram
-        will refuse.
+        not be reached for a reason other than a refusal) stays on the work
+        list and keeps its path this run, so a transient error never turns
+        into a vCard read in place of the full payload. A FloodWait that
+        ``call_with_flood_retry`` could not sleep out stops the run for this
+        account (``flood_wait_seconds``) rather than send more requests
+        Telegram will refuse.
 
-        The rows still missing a key are the work list, so an interrupted run
-        resumes by running again and a second run adds nothing new. Counts
-        only are logged: a location or a phone number is message content.
+        The rows still missing a key or a flag are the work list, so an
+        interrupted run resumes by running again and a second run fills
+        nothing new. Counts only are logged: a location or a phone number is
+        message content.
         """
         groups = await self.db.get_payload_backfill_rows(account_id=self.account_id, chat_id=chat_id)
-        kinds = {kind: {"filled": 0, "already_present": 0, "not_served": 0} for kind in PAYLOAD_BACKFILL_TYPES}
-        summary = {
-            "kinds": kinds,
-            "chats_scanned": 0,
-            "chats_unavailable": 0,
-            "paths_cleared": 0,
-            "paths_kept": 0,
-            "vcards_recovered": 0,
-            "errors": 0,
-            "flood_wait_seconds": 0,
-        }
+        if chat_id is not None:
+            chats = {chat_id}
+        else:
+            # The chats table drives the edit list, one bounded query per chat.
+            chats = set(await self.db.get_chats_with_messages(account_id=self.account_id))
+        summary = _empty_backfill_summary()
+        kinds, edits = summary["kinds"], summary["edits"]
         prefix = "" if apply else "[DRY RUN] "
-        logger.info(f"{prefix}Backfilling media payloads across {len(groups)} chat(s)...")
+        logger.info(f"{prefix}Backfilling details across {len(chats | set(groups))} chat(s)...")
         media_root = self._visible_media_root()
         if media_root is None:
             logger.warning(
@@ -1915,16 +1923,26 @@ class TelegramBackup:
             )
         first_call = True
 
-        for chat, rows in groups.items():
+        for chat in sorted(chats | set(groups)):
+            rows = groups.get(chat, [])
+            # {message_id: the edit_date the archive holds}
+            unflagged = dict(await self.db.get_edit_hide_backfill_rows(chat, account_id=self.account_id))
+            if not rows and not unflagged:
+                continue
             summary["chats_scanned"] += 1
             for row in rows:
                 if row["has_payload"]:
                     kinds[row["type"]]["already_present"] += 1
             missing = [row for row in rows if not row["has_payload"]]
+            payload_rows: dict[int, list[dict]] = {}
+            for row in missing:
+                payload_rows.setdefault(row["message_id"], []).append(row)
+            # Each message once, whichever lists it is on.
+            ids = sorted(set(payload_rows) | set(unflagged))
             # Message ids Telegram never answered for: their paths stay this run.
             unanswered: set[int] = set()
             entity = None
-            if missing:
+            if ids:
                 try:
                     entity = await call_with_flood_retry(self.client.get_entity, chat)
                 except (FloodWaitError, FloodPremiumWaitError) as e:
@@ -1936,51 +1954,40 @@ class TelegramBackup:
                     summary["chats_unavailable"] += 1
                     for row in missing:
                         kinds[row["type"]]["not_served"] += 1
+                    edits["not_served"] += len(unflagged)
                     logger.warning(f"A chat is no longer served by Telegram ({type(e).__name__}); skipped")
                 except Exception as e:
                     summary["errors"] += 1
-                    unanswered.update(row["message_id"] for row in missing)
+                    unanswered.update(ids)
                     logger.warning(f"Could not reach a chat ({type(e).__name__}); its rows stay for the next run")
             if entity is not None:
-                for start in range(0, len(missing), PAYLOAD_BACKFILL_BATCH):
-                    batch = missing[start : start + PAYLOAD_BACKFILL_BATCH]
+                for start in range(0, len(ids), PAYLOAD_BACKFILL_BATCH):
+                    batch = ids[start : start + PAYLOAD_BACKFILL_BATCH]
                     if not first_call:
                         await asyncio.sleep(PAYLOAD_BACKFILL_PAUSE_SECONDS)
                     first_call = False
                     try:
-                        messages = await call_with_flood_retry(
-                            self.client.get_messages, entity, ids=[row["message_id"] for row in batch]
-                        )
+                        messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch)
                     except (FloodWaitError, FloodPremiumWaitError) as e:
                         summary["flood_wait_seconds"] = e.seconds
-                        unanswered.update(row["message_id"] for row in missing[start:])
+                        unanswered.update(ids[start:])
                         break
                     except Exception as e:
                         # The rows stay on the work list for the next run.
                         summary["errors"] += 1
-                        unanswered.update(row["message_id"] for row in batch)
+                        unanswered.update(batch)
                         logger.warning(f"Could not read a batch of messages ({type(e).__name__})")
                         continue
                     # Matched by id, never by position.
                     by_id = {getattr(m, "id", None): m for m in messages or [] if m is not None}
-                    for row in batch:
-                        message = by_id.get(row["message_id"])
-                        built = (
-                            extract_media_payload(message.media, seen_at=message_seen_at(message))
-                            if message is not None
-                            else None
-                        )
-                        if built is None or built[0] != row["type"]:
-                            kinds[row["type"]]["not_served"] += 1
-                            continue
-                        key, payload = built
-                        added = True
-                        if apply:
-                            added = await self.db.add_missing_raw_data_keys(
-                                chat, row["message_id"], {key: payload}, account_id=self.account_id
+                    for message_id in batch:
+                        message = by_id.get(message_id)
+                        for row in payload_rows.get(message_id, ()):
+                            await self._backfill_payload(chat, row, message, apply, kinds)
+                        if message_id in unflagged:
+                            await self._backfill_edit_hide(
+                                chat, message_id, unflagged[message_id], message, apply, edits
                             )
-                        kinds[row["type"]]["filled" if added else "already_present"] += 1
-                        row["has_payload"] = True
 
             for row in rows:
                 if not row["file_path"] or row["message_id"] in unanswered:
@@ -2006,17 +2013,60 @@ class TelegramBackup:
 
         if summary["flood_wait_seconds"]:
             logger.warning(
-                f"{prefix}Media payload backfill stopped after a FloodWait of {summary['flood_wait_seconds']}s; "
+                f"{prefix}Details backfill stopped after a FloodWait of {summary['flood_wait_seconds']}s; "
                 "run again later"
             )
         filled = sum(k["filled"] for k in kinds.values())
         not_served = sum(k["not_served"] for k in kinds.values())
         logger.info(
-            f"{prefix}Media payload backfill done: {filled} filled, {not_served} not served by Telegram, "
-            f"{summary['chats_unavailable']} chat(s) unavailable, {summary['paths_cleared']} leftover path(s) "
-            f"cleared, {summary['paths_kept']} kept, {summary['errors']} error(s)"
+            f"{prefix}Details backfill done: {filled} payload(s) filled, {not_served} not served by Telegram; "
+            f"edit flags: {edits['hidden']} hidden, {edits['shown']} shown, {edits['date_changed']} with a later "
+            f"edit time, {edits['not_served']} not served; {summary['chats_unavailable']} chat(s) unavailable, "
+            f"{summary['paths_cleared']} leftover path(s) cleared, {summary['paths_kept']} kept, "
+            f"{summary['errors']} error(s)"
         )
         return summary
+
+    async def _backfill_payload(self, chat: int, row: dict, message: object | None, apply: bool, kinds: dict) -> None:
+        """Add the payload Telegram returned for one listed media row, and count it."""
+        built = extract_media_payload(message.media, seen_at=message_seen_at(message)) if message is not None else None
+        if built is None or built[0] != row["type"]:
+            kinds[row["type"]]["not_served"] += 1
+            return
+        key, payload = built
+        added = True
+        if apply:
+            added = await self.db.add_missing_raw_data_keys(
+                chat, row["message_id"], {key: payload}, account_id=self.account_id
+            )
+        kinds[row["type"]]["filled" if added else "already_present"] += 1
+        row["has_payload"] = True
+
+    async def _backfill_edit_hide(
+        self, chat: int, message_id: int, stored_edit_date: datetime, message: object | None, apply: bool, edits: dict
+    ) -> None:
+        """Fill the unknown edit flag of one listed row from Telegram's read, and count it.
+
+        Only for the edit_date the archive holds: a later one is a new edit
+        the sync records, and its flag belongs to that edit.
+        """
+        if message is None:
+            edits["not_served"] += 1
+            return
+        remote_edit_date = message.edit_date
+        if remote_edit_date is not None and remote_edit_date.tzinfo is not None:
+            remote_edit_date = remote_edit_date.replace(tzinfo=None)
+        if remote_edit_date != stored_edit_date:
+            edits["date_changed"] += 1
+            return
+        edit_hide = message_edit_hide(message)
+        if apply and not await self.db.fill_edit_hide(
+            chat, message_id, remote_edit_date, edit_hide, account_id=self.account_id
+        ):
+            # Another writer filled the flag or moved the edit since the list was read.
+            edits["already_filled"] += 1
+            return
+        edits["hidden" if edit_hide else "shown"] += 1
 
     async def _store_recovered_contact(self, chat: int, message_id: int, contact: dict) -> bool:
         """Add a contact read from its vCard file; True when the row now holds a ``contact`` key.
@@ -5461,35 +5511,20 @@ async def run_reclassify_round_videos(config: Config, chat_id: int | None = None
     return total
 
 
-async def _execute_backfill_payloads(backup: TelegramBackup, chat_id: int | None, apply: bool) -> dict:
-    """connect -> backfill_media_payloads -> teardown, for one account."""
+async def _execute_backfill_details(backup: TelegramBackup, chat_id: int | None, apply: bool) -> dict:
+    """connect -> backfill_details -> teardown, for one account."""
     try:
         await backup.connect()
-        return await backup.backfill_media_payloads(chat_id=chat_id, apply=apply)
+        return await backup.backfill_details(chat_id=chat_id, apply=apply)
     finally:
         await backup.disconnect()
         await backup.db.close()
 
 
-def _add_backfill_summary(total: dict, summary: dict) -> None:
-    for kind, counts in summary.get("kinds", {}).items():
-        bucket = total["kinds"].setdefault(kind, {"filled": 0, "already_present": 0, "not_served": 0})
-        for key, value in counts.items():
-            bucket[key] = bucket.get(key, 0) + value
-    for key in ("chats_scanned", "chats_unavailable", "paths_cleared", "paths_kept", "vcards_recovered", "errors"):
-        total[key] += summary.get(key, 0)
-    total["flood_wait_seconds"] = max(total.get("flood_wait_seconds", 0), summary.get("flood_wait_seconds", 0))
-
-
-async def run_backfill_payloads(config: Config, chat_id: int | None = None, apply: bool = False) -> dict:
-    """Backfill location, venue, live location, contact and poll payloads, for every configured account.
-
-    Same account handling as run_reclassify_round_videos: each account
-    resolves its own accounts row, and with more than one account a single
-    failure counts into ``errors`` instead of stopping the others.
-    """
-    total = {
+def _empty_backfill_summary() -> dict:
+    return {
         "kinds": {kind: {"filled": 0, "already_present": 0, "not_served": 0} for kind in PAYLOAD_BACKFILL_TYPES},
+        "edits": {"hidden": 0, "shown": 0, "date_changed": 0, "already_filled": 0, "not_served": 0},
         "chats_scanned": 0,
         "chats_unavailable": 0,
         "paths_cleared": 0,
@@ -5498,13 +5533,35 @@ async def run_backfill_payloads(config: Config, chat_id: int | None = None, appl
         "errors": 0,
         "flood_wait_seconds": 0,
     }
+
+
+def _add_backfill_summary(total: dict, summary: dict) -> None:
+    for kind, counts in summary.get("kinds", {}).items():
+        bucket = total["kinds"].setdefault(kind, {"filled": 0, "already_present": 0, "not_served": 0})
+        for key, value in counts.items():
+            bucket[key] = bucket.get(key, 0) + value
+    for key, value in summary.get("edits", {}).items():
+        total["edits"][key] = total["edits"].get(key, 0) + value
+    for key in ("chats_scanned", "chats_unavailable", "paths_cleared", "paths_kept", "vcards_recovered", "errors"):
+        total[key] += summary.get(key, 0)
+    total["flood_wait_seconds"] = max(total.get("flood_wait_seconds", 0), summary.get("flood_wait_seconds", 0))
+
+
+async def run_backfill_details(config: Config, chat_id: int | None = None, apply: bool = False) -> dict:
+    """Backfill media payloads and edit flags older releases did not keep, for every configured account.
+
+    Same account handling as run_reclassify_round_videos: each account
+    resolves its own accounts row, and with more than one account a single
+    failure counts into ``errors`` instead of stopping the others.
+    """
+    total = _empty_backfill_summary()
     failed = 0
     for account in config.accounts:
         try:
             backup = await TelegramBackup.create(
                 config.for_account(account.index), account=account, account_resolver=_account_row_resolver(account)
             )
-            _add_backfill_summary(total, await _execute_backfill_payloads(backup, chat_id, apply))
+            _add_backfill_summary(total, await _execute_backfill_details(backup, chat_id, apply))
         except Exception as e:
             if len(config.accounts) == 1:
                 raise

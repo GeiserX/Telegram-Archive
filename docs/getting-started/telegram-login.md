@@ -167,7 +167,7 @@ Nothing in the code stops two processes from using the same session file at once
 
 While `schedule` runs, do not run any of these against the same session:
 
-- `backup`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` or `backfill-payloads`
+- `backup`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos` or `backfill-details`
 - `auth`
 - `python -m telegram_archive.listener`
 - `scripts/auth_noninteractive.py`
