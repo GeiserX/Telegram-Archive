@@ -46,9 +46,9 @@ from .message_utils import (
     describe_exception,
     download_and_shard_media,
     downloadable_media_payload,
-    extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
+    extract_media_payload,
     extract_reactions,
     extract_topic_id,
     extract_webpage_preview,
@@ -62,6 +62,7 @@ from .message_utils import (
     message_entities,
     message_plain_text,
     message_rich_payload,
+    message_seen_at,
     sanitize_media_filename,
     sender_display_name,
     service_action_type,
@@ -1551,11 +1552,13 @@ class TelegramListener:
                 if webpage_preview is not None:
                     message_data["raw_data"]["webpage"] = webpage_preview
 
-                # Extended media kinds: same raw_data shape the sweep writes.
-                extended_media = extract_extended_media_details(message.media)
-                if extended_media is not None:
-                    extended_kind, extended_details = extended_media
-                    message_data["raw_data"][extended_kind] = extended_details
+                # Metadata-only media (location, contact, poll, venue, live
+                # location, ...): the same builder and raw_data key the sweep
+                # uses, so the WebSocket frame below carries the card too.
+                media_payload = extract_media_payload(message.media, seen_at=message_seen_at(message))
+                if media_payload is not None:
+                    payload_kind, payload = media_payload
+                    message_data["raw_data"][payload_kind] = payload
                 # Forward origin pointer: pure metadata off the event, no API
                 # cost — the sweep writer captures the same key.
                 forward_origin = extract_forward_origin(message)

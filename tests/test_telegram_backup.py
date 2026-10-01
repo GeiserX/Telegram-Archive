@@ -26,7 +26,7 @@ from telethon.tl.types import (
     User,
 )
 
-from telegram_archive.message_utils import extract_topic_id, service_action_type
+from telegram_archive.message_utils import _text_with_entities_to_string, extract_topic_id, service_action_type
 from telegram_archive.telegram_backup import TelegramBackup
 
 
@@ -1238,32 +1238,26 @@ class TestExtractForwardFromId(unittest.TestCase):
 
 
 class TestTextWithEntitiesToString(unittest.TestCase):
-    """Test _text_with_entities_to_string conversion."""
-
-    def setUp(self):
-        self.backup = TelegramBackup.__new__(TelegramBackup)
-        self.backup.account_id = 1
+    """Test _text_with_entities_to_string conversion (moved to message_utils for both writers)."""
 
     def test_returns_empty_string_for_none(self):
         """Returns empty string when input is None."""
-        self.assertEqual(self.backup._text_with_entities_to_string(None), "")
+        self.assertEqual(_text_with_entities_to_string(None), "")
 
     def test_returns_string_as_is(self):
         """Returns plain string unchanged."""
-        self.assertEqual(self.backup._text_with_entities_to_string("hello"), "hello")
+        self.assertEqual(_text_with_entities_to_string("hello"), "hello")
 
     def test_extracts_text_from_text_with_entities(self):
-        """Extracts .text from a TextWithEntities object."""
+        """Extracts .text from a TextWithEntities object, real or spec'd."""
         twe = MagicMock(spec=TextWithEntities)
         twe.text = "poll question"
-        # Make isinstance check work
-        with unittest.mock.patch("telegram_archive.telegram_backup.TextWithEntities", new=type(twe)):
-            result = self.backup._text_with_entities_to_string(twe)
-        self.assertEqual(result, "poll question")
+        self.assertEqual(_text_with_entities_to_string(twe), "poll question")
+        self.assertEqual(_text_with_entities_to_string(TextWithEntities(text="real", entities=[])), "real")
 
     def test_falls_back_to_str_for_unknown_type(self):
         """Falls back to str() for unknown types."""
-        self.assertEqual(self.backup._text_with_entities_to_string(42), "42")
+        self.assertEqual(_text_with_entities_to_string(42), "42")
 
 
 class TestGetMediaType(unittest.TestCase):

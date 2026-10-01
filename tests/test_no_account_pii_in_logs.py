@@ -813,5 +813,78 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
             self.assertTrue((REPO / rel).is_file(), f"allowlisted path missing: {rel}")
 
 
+# ---------------------------------------------------------------------------
+# A location and a contact are message content (docs/design/location-and-contact.md)
+# ---------------------------------------------------------------------------
+#
+# The scans above read logging calls; they cannot see a payload builder that
+# logs what it built. These run the real writers with a demo phone, demo names
+# and demo coordinates at DEBUG and fail if any of them reaches a log record,
+# including the path where the builder fails and logs a warning.
+
+DEMO_CARD_VALUES = ("15555550100", "Alexdemo", "Demosurname", "40.416775", "-3.70379", "40.41677", "Demo Cafe")
+
+
+def _demo_media():
+    from telethon.tl.types import GeoPoint, MessageMediaContact, MessageMediaGeo, MessageMediaVenue
+
+    geo = GeoPoint(long=-3.70379, lat=40.416775, access_hash=1, accuracy_radius=25)
+    return [
+        MessageMediaGeo(geo=geo),
+        MessageMediaContact(
+            phone_number="15555550100", first_name="Alexdemo", last_name="Demosurname", vcard="", user_id=0
+        ),
+        MessageMediaVenue(geo=geo, title="Demo Cafe", address="Demo Street", provider="", venue_id="", venue_type=""),
+    ]
+
+
+def _assert_no_card_values(caplog) -> None:
+    text = "\n".join(f"{record.getMessage()} {record.args!r}" for record in caplog.records)
+    for value in DEMO_CARD_VALUES:
+        assert value not in text, f"a log record carries card content ({value!r})"
+
+
+async def test_the_writers_never_log_a_location_or_a_contact(caplog):
+    import logging
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock, MagicMock
+
+    from telethon import events
+    from test_listener_extended import _make_listener_with_handlers
+    from test_location_contact_capture import _backup, _telegram_message
+
+    from telegram_archive.message_utils import extract_media_payload
+
+    caplog.set_level(logging.DEBUG)
+    for media in _demo_media():
+        await _backup()._process_message(_telegram_message(1, media), -1001)
+        listener, handlers, _db, _config = _make_listener_with_handlers(listen_new_messages_media=False)
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.message = _telegram_message(2, media, date=datetime(2026, 3, 1, tzinfo=UTC))
+        event.get_chat = AsyncMock(return_value=MagicMock())
+        await handlers[events.NewMessage](event)
+    # The failure path: a builder that raises logs only the kind and the error type.
+    broken = MagicMock()
+    broken.__class__ = type("MessageMediaContact", (), {})
+    type(broken).phone_number = property(lambda self: (_ for _ in ()).throw(ValueError("15555550100")))
+    assert extract_media_payload(broken) is None
+    assert any("contact" in record.getMessage() for record in caplog.records)
+    _assert_no_card_values(caplog)
+
+
+def test_the_card_check_can_fail(caplog):
+    """Positive control: a record that does carry the phone is caught."""
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("telegram_archive.demo").info("phone %s", "15555550100")
+    try:
+        _assert_no_card_values(caplog)
+    except AssertionError:
+        return
+    raise AssertionError("the card-content check passed a record holding the demo phone")
+
+
 if __name__ == "__main__":
     unittest.main()

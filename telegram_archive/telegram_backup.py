@@ -4,7 +4,6 @@ Handles Telegram client connection, message fetching, and incremental backup log
 """
 
 import asyncio
-import base64
 import inspect
 import json
 import logging
@@ -36,10 +35,8 @@ from telethon.tl.types import (
     Message,
     MessageActionChannelMigrateFrom,
     MessageActionChatMigrateTo,
-    MessageMediaPoll,
     PeerChannel,
     PeerChat,
-    TextWithEntities,
     User,
 )
 from telethon.utils import get_peer_id
@@ -59,6 +56,7 @@ from .media_errors import is_media_location_error
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
+    _text_with_entities_to_string,
     build_media_filename,
     chat_title_for_log,
     classify_media_type,
@@ -66,9 +64,9 @@ from .message_utils import (
     describe_exception,
     download_and_shard_media,
     downloadable_media_payload,
-    extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
+    extract_media_payload,
     extract_reactions,
     extract_topic_id,
     extract_webpage_preview,
@@ -83,6 +81,7 @@ from .message_utils import (
     message_entities,
     message_plain_text,
     message_rich_payload,
+    message_seen_at,
     resolve_shared_file_path,
     sender_display_name,
     service_action_type,
@@ -3257,26 +3256,6 @@ class TelegramBackup:
         except TypeError:
             return None
 
-    def _text_with_entities_to_string(self, text_obj) -> str:
-        """
-        Convert TextWithEntities or string to a plain string.
-
-        Args:
-            text_obj: TextWithEntities object or string
-
-        Returns:
-            Plain string representation
-        """
-        if text_obj is None:
-            return ""
-        if isinstance(text_obj, str):
-            return text_obj
-        if isinstance(text_obj, TextWithEntities):
-            # Extract the text from TextWithEntities
-            return text_obj.text if hasattr(text_obj, "text") else str(text_obj)
-        # Fallback for any other type
-        return str(text_obj)
-
     async def _resolve_display_name(self, user_id: int) -> str | None:
         """Display name for a user id: local users table first, then the API.
 
@@ -3354,13 +3333,13 @@ class TelegramBackup:
         if webpage_preview is not None:
             message_data["raw_data"]["webpage"] = webpage_preview
 
-        # Extended media kinds (venue/dice/invoice/story/giveaways/live
-        # location/game/unsupported): salient fields for the viewer's typed
-        # chip — official apps render these, the archive used to show nothing.
-        extended_media = extract_extended_media_details(message.media)
-        if extended_media is not None:
-            extended_kind, extended_details = extended_media
-            message_data["raw_data"][extended_kind] = extended_details
+        # Metadata-only media (location, contact, poll, venue, live location,
+        # dice, invoice, story, giveaways, game, unsupported): the payload the
+        # viewer draws, under raw_data[kind]. There is no file behind any of them.
+        media_payload = extract_media_payload(message.media, seen_at=message_seen_at(message))
+        if media_payload is not None:
+            payload_kind, payload = media_payload
+            message_data["raw_data"][payload_kind] = payload
 
         # Preserve service-action metadata (e.g. forum topic creations and
         # renames) so historical backfills carry the same raw_data *shape* AND
@@ -3375,7 +3354,7 @@ class TelegramBackup:
             message_data["raw_data"]["action_type"] = service_action_type(action)
             action_title = getattr(action, "title", None)
             if action_title is not None:
-                message_data["raw_data"]["new_title"] = self._text_with_entities_to_string(action_title)
+                message_data["raw_data"]["new_title"] = _text_with_entities_to_string(action_title)
 
             # Group ↔ supergroup migration pointers (#228). MessageActionChatMigrateTo
             # carries only ``.channel_id`` (no ``.title``), so the new supergroup id
@@ -3481,51 +3460,10 @@ class TelegramBackup:
 
         # Handle media
         if message.media:
-            # Handle Polls specially (store structure in raw_data, do not download)
-            # v6.0.0: Poll type is detected by presence of raw_data['poll']
-            if isinstance(message.media, MessageMediaPoll):
-                poll = message.media.poll
-                results = message.media.results
-
-                # Parse results if available
-                results_data = None
-                if results:
-                    try:
-                        results_list = []
-                        if results.results:
-                            for r in results.results:
-                                results_list.append(
-                                    {
-                                        "option": base64.b64encode(r.option).decode("ascii"),
-                                        "voters": r.voters,
-                                        "correct": r.correct,
-                                    }
-                                )
-                        results_data = {"total_voters": results.total_voters, "results": results_list}
-                    except Exception as e:
-                        logger.warning(f"Error parsing poll results: {e}")
-
-                # Store poll structure
-                # Convert TextWithEntities to strings for JSON serialization
-                question_text = self._text_with_entities_to_string(getattr(poll, "question", ""))
-                message_data["raw_data"]["poll"] = {
-                    "id": getattr(poll, "id", None),
-                    "question": question_text,
-                    "answers": [
-                        {
-                            "text": self._text_with_entities_to_string(getattr(a, "text", "")),
-                            "option": base64.b64encode(a.option).decode("ascii"),
-                        }
-                        for a in poll.answers
-                    ],
-                    "closed": poll.closed,
-                    "public_voters": poll.public_voters,
-                    "multiple_choice": poll.multiple_choice,
-                    "quiz": poll.quiz,
-                    "results": results_data,
-                }
-
-            elif self.config.should_download_media_for_chat(chat_id):
+            # A poll's payload is in raw_data above and it has no media row:
+            # there is nothing to download.
+            is_poll = media_payload is not None and media_payload[0] == "poll"
+            if not is_poll and self.config.should_download_media_for_chat(chat_id):
                 # v6.0.0: Download media and store data for later insertion
                 # (media is inserted AFTER message to satisfy FK constraint)
                 media_result = await self._process_media(message, chat_id)

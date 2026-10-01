@@ -49,8 +49,10 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
+    MEDIA_PAYLOAD_KEYS,
     METADATA_ONLY_MEDIA_TYPES,
     compute_directory_size,
+    merge_geo_live,
     resolve_sender_display_name,
     stored_media_file_id,
     utcnow_naive,
@@ -515,6 +517,32 @@ def _raw_data_dict(raw_data: Any) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# The payload keys a reply quote names when the target has no media row, in
+# the order the viewer's cards pick them.
+_REPLY_CARD_KINDS = ("geo_live", "venue", "geo", "contact")
+
+
+def _reply_card_kind(raw_data: Any) -> tuple[str | None, str | None]:
+    """The card kind a reply target's ``raw_data`` holds, and a venue's title."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return None, None
+    for kind in _REPLY_CARD_KINDS:
+        payload = raw.get(kind)
+        if isinstance(payload, dict):
+            title = payload.get("title") if kind == "venue" else None
+            return kind, title if isinstance(title, str) and title else None
+    return None, None
+
+
+def _media_payloads_of(raw_data: Any) -> dict[str, Any]:
+    """The media payloads in ``raw_data`` (``MEDIA_PAYLOAD_KEYS``), keyed as stored."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return {}
+    return {key: raw[key] for key in MEDIA_PAYLOAD_KEYS if key in raw}
+
+
 def _json_or_none(value: str | None) -> Any:
     """A JSON column's value, or None when it is empty or unreadable."""
     if not value:
@@ -618,6 +646,37 @@ def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
         else:
             merged.pop(key, None)
     return json.dumps(merged) if merged else "{}"
+
+
+def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str) -> str:
+    """``incoming_raw_data`` with every media payload the archive holds kept.
+
+    A payload key (a poll, a location, a contact, a venue, a live location,
+    ...; ``MEDIA_PAYLOAD_KEYS``) the archive holds and the incoming read lacks
+    stays: an ``import --merge`` read that carries only ``forward_from_name``
+    must not drop a poll. A key the incoming read carries wins, so a newer
+    poll tally replaces the old one. A live location in both goes through
+    ``merge_geo_live``, which keeps every position either one saw. When the
+    result is the archived payload itself, the archived string comes back
+    unchanged, so the upsert sees no change to write.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if not archived or incoming is None:
+        return incoming_raw_data
+    merged = dict(incoming)
+    for key in MEDIA_PAYLOAD_KEYS:
+        if key not in archived:
+            continue
+        if key not in merged:
+            merged[key] = archived[key]
+        elif key == "geo_live":
+            merged[key] = merge_geo_live(archived[key], merged[key])
+    if merged == incoming:
+        return incoming_raw_data
+    if merged == archived and isinstance(archived_raw_data, str):
+        return archived_raw_data
+    return json.dumps(merged)
 
 
 # The writers whose upserts are reads of the message from Telegram, so a newer
@@ -1172,6 +1231,10 @@ class DatabaseAdapter:
                 update_values["raw_data"] = _with_formatting_of(archived_raw_data, "{}")
         elif "raw_data" in update_values:
             update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
+        # Whatever wrote raw_data above, a media payload the archive holds and
+        # this read lacks stays (an import of a forward must not drop a poll).
+        if "raw_data" in update_values:
+            update_values["raw_data"] = _keep_archived_payloads(existing.raw_data, update_values["raw_data"])
 
         changed = {}
         for key, value in update_values.items():
@@ -5734,6 +5797,7 @@ class DatabaseAdapter:
                 User.last_name,
                 User.username,
                 reply_media_type,
+                Message.raw_data,
             )
             .outerjoin(User, Message.sender_id == User.id)
             .where(and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed)))
@@ -5741,16 +5805,19 @@ class DatabaseAdapter:
         if account_id is not None:
             reply_stmt = reply_stmt.where(Message.account_id == account_id)
         reply_result = await session.execute(reply_stmt)
-        reply_rows: dict[int, dict[str, Any]] = {
-            row.id: {
+        reply_rows: dict[int, dict[str, Any]] = {}
+        for row in reply_result:
+            payload_kind, venue_title = _reply_card_kind(row.raw_data)
+            reply_rows[row.id] = {
                 "text": row.text,
                 "sender_name": resolve_sender_display_name(
                     row.sender_name, row.first_name, row.last_name, row.username
                 ),
-                "media_type": row.reply_media_type,
+                # The listener writes no media row for a location or a contact,
+                # so its payload names the kind when there is no row.
+                "media_type": row.reply_media_type or payload_kind,
+                "venue_title": venue_title,
             }
-            for row in reply_result
-        }
 
         for msg in messages:
             if not msg.get("reply_to_msg_id"):
@@ -5758,6 +5825,9 @@ class DatabaseAdapter:
             reply_row = reply_rows.get(msg["reply_to_msg_id"])
             msg["reply_to_sender_name"] = reply_row["sender_name"] if reply_row else None
             msg["reply_to_media_type"] = reply_row["media_type"] if reply_row else None
+            if reply_row and reply_row["venue_title"]:
+                # "Location, Demo Cafe" in the quote, as the Telegram apps write it.
+                msg["reply_to_media_title"] = reply_row["venue_title"]
             if reply_row and not msg.get("reply_to_text") and reply_row["text"]:
                 msg["reply_to_text"] = reply_row["text"][:100]
 
@@ -7108,7 +7178,9 @@ class DatabaseAdapter:
             marked by ``is_deleted``/``deleted_at``. Each carries ``edit_date``
             and ``versions``, every earlier text the archive kept of it (any
             date, oldest first). A message whose media has transcripts carries
-            them all under ``transcripts``, newest first.
+            them all under ``transcripts``, newest first. A location, a
+            contact, a poll or another metadata-only kind is under
+            ``media_payload``, keyed as in ``raw_data``.
         """
         transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for row in await self.get_transcripts_for_export(
@@ -7136,6 +7208,7 @@ class DatabaseAdapter:
                         Message.edit_date,
                         Message.is_deleted,
                         Message.deleted_at,
+                        Message.raw_data,
                         Media.type.label("media_type"),
                         Media.file_path.label("media_file_path"),
                         User.first_name,
@@ -7167,6 +7240,7 @@ class DatabaseAdapter:
                         Message.edit_date,
                         Message.is_deleted,
                         Message.deleted_at,
+                        Message.raw_data,
                         User.first_name,
                         User.last_name,
                         User.username,
@@ -7217,6 +7291,11 @@ class DatabaseAdapter:
                 if include_media:
                     msg["media_type"] = row.media_type
                     msg["media_path"] = row.media_file_path
+                # A location, a contact, a poll and the other metadata-only
+                # kinds are the message's content: the card the viewer draws.
+                media_payload = _media_payloads_of(row.raw_data)
+                if media_payload:
+                    msg["media_payload"] = media_payload
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 msg["versions"] = list(last_versions)
