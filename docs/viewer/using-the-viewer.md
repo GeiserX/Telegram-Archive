@@ -36,7 +36,14 @@ The top of the sidebar shows folder tabs under the search field. **All Chats** c
 
     ![Archived Chats on a phone](../images/screenshots/archived-chats-mobile.png){ width="300" }
 
-Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message. Under the name, a group or a channel shows what kind of chat it is and its member count, for example `group · 24 members`, and a private chat shows the person's username, or `private chat` when there is none. A group's username and the chat's Telegram id are in the info panel.
+Chats load 50 at a time. Scroll down and the next 50 load. Each row shows the chat's name and the date of its last message. Under the name is the chat's newest message, the way Telegram's own list shows it:
+
+- In a group, the sender's first name comes first, for example `Esme: Perfect, save me a seat`.
+- Your own message starts with `You:`, in a group and in a private chat.
+- A message with no text is named by a word: `Photo`, `Video`, `Voice message`, `Video message`, `File`, `Sticker`, `GIF`, `Location`, `Contact` and so on. A caption shows instead of the word. A poll shows its question.
+- A message deleted in Telegram is skipped, so the line shows the newest message the chat still has in Telegram. The chat itself still shows the deleted one with its mark.
+
+The preview shows only what you could open in the chat: a viewer limited to some accounts or chats, a share link and a login without downloads see the preview of the chats they can open. A chat with no message to show keeps the line it had before 9.0: a group or a channel shows what kind of chat it is and its member count, for example `group · 24 members`, and a private chat shows the person's username, or `private chat` when there is none. On every other row that line is the tooltip of the preview, and the info panel shows the member count or the kind of chat under the chat's name. A group's username and the chat's Telegram id are in the info panel.
 
 When you can see more than one Telegram account, each row carries a tag with the account's label, in the style of Telegram's folder tags: each account keeps its own colour. The chat header names the account after the member count. When more than one archived account holds or writes in the open chat, an incoming message names its account at the right end of the sender's name, and an outgoing one before its time. See [Multiple accounts](../configuration/multiple-accounts.md).
 
