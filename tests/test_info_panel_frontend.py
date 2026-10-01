@@ -230,6 +230,7 @@ const focused = [];
 const toggle = { focus() { focused.push('toggle'); } };
 infoPanelToggleBtn.value = toggle;
 const title = { isConnected: true, focus() { focused.push('title'); } };
+const time = { isConnected: true, focus() { focused.push('time'); } };
 
 openInfoPanel({ currentTarget: title });
 assert.equal(showInfoPanel.value, true);
@@ -245,10 +246,49 @@ openInfoPanel({ currentTarget: title });
 title.isConnected = false;
 closeInfoPanel();
 assert.deepEqual(focused, ['title', 'toggle', 'toggle'], 'a name gone from the page gives way to the toggle');
+title.isConnected = true;
+
+openMessageInfo({ id: 3 }, { currentTarget: time });
+closeInfoPanel();
+assert.deepEqual(focused.slice(3), ['time'], "a message's time that opened the panel gets focus back");
 
 openMessageInfo({ id: 3 });
 closeInfoPanel();
-assert.deepEqual(focused, ['title', 'toggle', 'toggle', 'toggle'], 'a message opening the panel still returns to the toggle');
+assert.deepEqual(focused.slice(4), ['toggle'], 'without an event the toggle gets it');
+
+openInfoPanel({ currentTarget: title });
+toggleInfoPanel();
+assert.equal(showInfoPanel.value, false);
+assert.deepEqual(focused.slice(5), ['toggle'], 'closing with the "i" button keeps focus on it, whoever opened the panel');
+""")
+    )
+
+
+def test_the_name_brings_the_chat_forward_in_an_open_panel() -> None:
+    """#538: with the panel open on a message, the name scrolls to the chat and moves focus in."""
+    _run_node(
+        _script("""
+const focused = [];
+infoPanelCloseBtn.value = { focus() { focused.push('close'); } };
+const scrolls = [];
+infoPanelScroller.value = { scrollTo(options) { scrolls.push(options); } };
+const title = { isConnected: true, focus() { focused.push('title'); } };
+
+openChatInfo({ currentTarget: title });
+assert.equal(showInfoPanel.value, true, 'a closed panel opens');
+assert.deepEqual(focused, ['close']);
+assert.deepEqual(scrolls, [], 'a panel that just opened is at its top already');
+
+const msg = { id: 7 };
+openMessageInfo(msg);
+openChatInfo({ currentTarget: title });
+assert.equal(showInfoPanel.value, true, 'the name never closes the panel');
+assert.deepEqual(scrolls, [{ top: 0 }], 'the panel scrolls up to the chat');
+assert.deepEqual(focused, ['close', 'close'], 'focus moves into the panel');
+assert.equal(selectedMessage.value, msg, 'the selected message stays selected');
+
+closeInfoPanel();
+assert.equal(focused.at(-1), 'title', 'the name that first opened the panel gets focus back');
 """)
     )
 
@@ -258,17 +298,23 @@ def test_header_name_is_one_button_that_opens_the_info_panel() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     header = html[html.index("<!-- Chat Header -->") : html.index('<div class="flex items-center gap-0.5 min-w-0">')]
     assert "selectedChat?.type === 'private'" not in header, "no chat type gets a different header"
-    start = header.index('<button type="button" @click="openInfoPanel($event)"')
+    start = header.index('<button type="button" @click="openChatInfo($event)"')
     button = header[start : header.index("</button>", start)]
+    assert re.search(r'<h2 class="[^"]*">\s*$', header[:start]), "the open chat's name stays a heading"
+    assert re.search(r"</button>\s*</h2>", header[start:]), "the heading closes right after the button"
     assert 'aria-controls="info-panel"' in button
+    assert ":aria-expanded=\"showInfoPanel ? 'true' : 'false'\"" in button
     assert ':title="infoPanelTitle"' in button, "the hover hint says User info, Group info or Channel info"
     assert "focus-visible:ring-2 focus-visible:ring-tg-focus" in button
+    assert "text-start" in button, "a right-to-left name lines up on the right"
+    assert "text-left" not in button
     assert 'class="chat-header-title block truncate"' in button
     assert 'class="chat-header-status flex items-center' in button
     assert re.findall(r"<(?:h[1-6]|p|div)[\s>]", button) == [], "a button holds phrasing content only"
     assert 'role="button"' not in header
     assert "openSenderInfoFromChat" not in html, "the chat is never dressed up as a message sender"
-    assert "openInfoPanel," in html
+    assert "openChatInfo," in html
+    assert '@click.stop="openMessageInfo(msg, $event)"' in html, "the message's time is an opener too"
 
 
 def test_files_come_from_the_album_and_the_row_alike() -> None:

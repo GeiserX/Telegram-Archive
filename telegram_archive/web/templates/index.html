@@ -7158,59 +7158,66 @@
                             </button>
                             <!-- The photo, the name and the status line are one button that
                                  opens the info panel, for every kind of chat, as a tap on the
-                                 title does in Telegram (#538). It only opens: the "i" button
-                                 is the toggle. On a desktop there is no photo (the chat list
-                                 row beside it has one). A <button> holds phrasing content
-                                 only, so the name and the status line are spans. The photo
-                                 is decorative here (the name follows it) and carries no
-                                 .tap-target: its 44px mobile minimum would stretch the fixed
-                                 40px aspect-square circle into an ellipse. The padding gives the
-                                 focus ring room, and the negative margin keeps the name where
-                                 it was. -->
-                            <button type="button" @click="openInfoPanel($event)"
-                                aria-controls="info-panel" :title="infoPanelTitle"
-                                class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 -mx-1.5 px-1.5 py-1 text-left rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
-                                <span aria-hidden="true"
-                                    class="md:hidden avatar-initials w-10 h-10 min-w-[2.5rem] aspect-square rounded-full flex items-center justify-center font-semibold text-tg-avatar-fg overflow-hidden shrink-0"
-                                    :style="{ background: getChatAvatarFill(selectedChat) }">
-                                    <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
-                                        class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
-                                        alt="">
-                                    <template v-else-if="isDeletedChat(selectedChat)">
-                                        <svg class="w-6 h-6" fill="none" stroke="currentColor"
-                                            viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
-                                        </svg>
-                                    </template>
-                                    <template v-else>
-                                        {{ getInitials(selectedChat) }}
-                                    </template>
-                                </span>
-                                <!-- The title and the status line: the member count, or what the
-                                     chat is, and the topic inside a forum. On an archive of more
-                                     than one account the account follows as muted text, on every
-                                     width, like the apps' status line; the chat list keeps the
-                                     chips. The chat's archive figures are in the info panel. -->
-                                <span class="min-w-0 flex-1 block">
-                                    <!-- Inside a topic the topic is the title, as in Telegram, and
-                                         the forum and the topic's size are the status line. -->
-                                    <span class="chat-header-title block truncate" dir="auto">{{ selectedPaneTopic?.title || getChatName(selectedChat) }}</span>
-                                    <!-- The status, then the account after a dot with 4px on each
-                                         side. On a narrow header the account gives way first (it
-                                         shrinks a hundred times faster), so the member count stays
-                                         readable, and on a line under 120px it leaves (a container
-                                         query); the info panel names the account in full. -->
-                                    <span class="chat-header-status flex items-center min-w-0 text-tg-muted">
-                                        <span class="min-w-0 truncate">
-                                            <template v-if="selectedPaneTopic?.title"><bdi>{{ getChatName(selectedChat) }}</bdi><template v-if="selectedPaneTopic.message_count != null"> · {{ formatCount(selectedPaneTopic.message_count) }} {{ Number(selectedPaneTopic.message_count) === 1 ? 'message' : 'messages' }}</template></template>
-                                            <template v-else>{{ chatStatusLine(selectedChat) }}</template>
-                                        </span>
-                                        <template v-if="multiAccount && chatAccountLabels(selectedChat).length">
-                                            <span aria-hidden="true" class="chat-header-account mx-1 shrink-0">·</span>
-                                            <span class="chat-header-account min-w-0 truncate shrink-[100]">{{ chatAccountLabels(selectedChat).map((chip) => chip.label).join(', ') }}</span>
+                                 title does in Telegram (#538). It never closes: the "i" button
+                                 is the toggle, and with the panel open the name brings the
+                                 chat's part of it forward. On a desktop there is no photo
+                                 (the chat list row beside it has one). The h2 around the
+                                 button keeps the open chat's name a heading, like every other
+                                 pane's title; a heading may hold a button, and a <button>
+                                 holds phrasing content only, so the name and the status line
+                                 are spans. text-start, not text-left, so a right-to-left name
+                                 still lines up on the right. The photo is decorative here (the
+                                 name follows it) and carries no .tap-target: its 44px mobile
+                                 minimum would stretch the fixed 40px aspect-square circle into
+                                 an ellipse. The padding gives the focus ring room, and the
+                                 negative margin keeps the name where it was. -->
+                            <h2 class="min-w-0 flex-1 flex">
+                                <button type="button" @click="openChatInfo($event)"
+                                    aria-controls="info-panel" :aria-expanded="showInfoPanel ? 'true' : 'false'"
+                                    :title="infoPanelTitle"
+                                    class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 -mx-1.5 px-1.5 py-1 text-start rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
+                                    <span aria-hidden="true"
+                                        class="md:hidden avatar-initials w-10 h-10 min-w-[2.5rem] aspect-square rounded-full flex items-center justify-center font-semibold text-tg-avatar-fg overflow-hidden shrink-0"
+                                        :style="{ background: getChatAvatarFill(selectedChat) }">
+                                        <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
+                                            class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
+                                            alt="">
+                                        <template v-else-if="isDeletedChat(selectedChat)">
+                                            <svg class="w-6 h-6" fill="none" stroke="currentColor"
+                                                viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
+                                            </svg>
+                                        </template>
+                                        <template v-else>
+                                            {{ getInitials(selectedChat) }}
                                         </template>
                                     </span>
-                                </span>
-                            </button>
+                                    <!-- The title and the status line: the member count, or what the
+                                         chat is, and the topic inside a forum. On an archive of more
+                                         than one account the account follows as muted text, on every
+                                         width, like the apps' status line; the chat list keeps the
+                                         chips. The chat's archive figures are in the info panel. -->
+                                    <span class="min-w-0 flex-1 block">
+                                        <!-- Inside a topic the topic is the title, as in Telegram, and
+                                             the forum and the topic's size are the status line. -->
+                                        <span class="chat-header-title block truncate" dir="auto">{{ selectedPaneTopic?.title || getChatName(selectedChat) }}</span>
+                                        <!-- The status, then the account after a dot with 4px on each
+                                             side. On a narrow header the account gives way first (it
+                                             shrinks a hundred times faster), so the member count stays
+                                             readable, and on a line under 120px it leaves (a container
+                                             query); the info panel names the account in full. -->
+                                        <span class="chat-header-status flex items-center min-w-0 text-tg-muted">
+                                            <span class="min-w-0 truncate">
+                                                <template v-if="selectedPaneTopic?.title"><bdi>{{ getChatName(selectedChat) }}</bdi><template v-if="selectedPaneTopic.message_count != null"> · {{ formatCount(selectedPaneTopic.message_count) }} {{ Number(selectedPaneTopic.message_count) === 1 ? 'message' : 'messages' }}</template></template>
+                                                <template v-else>{{ chatStatusLine(selectedChat) }}</template>
+                                            </span>
+                                            <template v-if="multiAccount && chatAccountLabels(selectedChat).length">
+                                                <span aria-hidden="true" class="chat-header-account mx-1 shrink-0">·</span>
+                                                <span class="chat-header-account min-w-0 truncate shrink-[100]">{{ chatAccountLabels(selectedChat).map((chip) => chip.label).join(', ') }}</span>
+                                            </template>
+                                        </span>
+                                    </span>
+                                </button>
+                            </h2>
                         </div>
 
                         <div class="flex items-center gap-0.5 min-w-0">
@@ -8459,7 +8466,7 @@
                                         </button>
                                         <span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2">{{ bubbleAccountLabel(msg) }}</span>
                                         <button v-if="metaOpensInfo" type="button"
-                                            @click.stop="openMessageInfo(msg)"
+                                            @click.stop="openMessageInfo(msg, $event)"
                                             class="meta-info-btn hit-40 order-3"
                                             :aria-label="`${formatTime(msg.date)}. Show message details`">{{ formatTime(msg.date) }}</button>
                                         <span v-else class="order-3" :title="messageTimeTitle(msg)">{{ formatTime(msg.date) }}</span>
@@ -8635,7 +8642,7 @@
                     <h2 class="chat-header-title flex-1 text-tg-ink truncate">{{ infoPanelTitle }}</h2>
                 </header>
 
-                <div class="flex-1 overflow-y-auto overscroll-contain">
+                <div ref="infoPanelScroller" class="flex-1 overflow-y-auto overscroll-contain">
                     <!-- Profile block: avatar, name and status line, as the apps open with.
                          With earlier photos the avatar opens them, the current one first,
                          as Telegram's profile carousel does. -->
@@ -9698,6 +9705,7 @@
                 const showInfoPanel = ref(false)
                 const infoPanelToggleBtn = ref(null)
                 const infoPanelCloseBtn = ref(null)
+                const infoPanelScroller = ref(null)
                 // Substituted at serve time: which Open buttons the operator wrote a command for.
                 const VIEWER_MEDIA_OPEN = __VIEWER_MEDIA_OPEN__
 
@@ -9906,7 +9914,8 @@
                     }
                 }
                 // Closing hands focus back to what opened the panel: the chat's name
-                // in the header when it was the name (#538), else the "i" button.
+                // in the header or a message's time when one of them opened it (#538),
+                // else the "i" button.
                 let infoPanelOpener = null
                 const openInfoPanel = (event) => {
                     if (showInfoPanel.value) return
@@ -9925,7 +9934,20 @@
                     infoPanelOpener = null
                     nextTick(() => (opener?.isConnected ? opener : infoPanelToggleBtn.value)?.focus?.())
                 }
-                const toggleInfoPanel = () => showInfoPanel.value ? closeInfoPanel() : openInfoPanel()
+                // Closing with the "i" button keeps focus on it, whoever opened the panel.
+                const toggleInfoPanel = () => {
+                    if (!showInfoPanel.value) return openInfoPanel()
+                    infoPanelOpener = null
+                    closeInfoPanel()
+                }
+                // The chat's name in the header (#538). With the panel already open it
+                // brings the chat's part forward: the panel scrolls to its top, where
+                // the chat is, and focus moves into it. The selected message stays.
+                const openChatInfo = (event) => {
+                    if (!showInfoPanel.value) return openInfoPanel(event)
+                    infoPanelScroller.value?.scrollTo?.({ top: 0 })
+                    nextTick(() => infoPanelCloseBtn.value?.focus?.())
+                }
                 // Where a click on a row cannot select it (a touch screen, or a pane
                 // so narrow that the panel covers the chat), the time and the
                 // "deleted" marker are buttons that open the panel on their message:
@@ -9937,9 +9959,9 @@
                 // The panel opens at its top (the chat); the message's own section
                 // is scrolled to, so the tap lands on what it asked about.
                 const infoMessageSection = ref(null)
-                const openMessageInfo = (msg) => {
+                const openMessageInfo = (msg, event) => {
                     selectedMessage.value = msg
-                    openInfoPanel()
+                    openInfoPanel(event)
                     nextTick(() => infoMessageSection.value?.scrollIntoView?.({ block: 'start' }))
                 }
 
@@ -19497,6 +19519,7 @@
                     showInfoPanel,
                     infoPanelToggleBtn,
                     infoPanelCloseBtn,
+                    infoPanelScroller,
                     infoPanelTitle,
                     infoPanelMessage,
                     infoPanelMedia,
@@ -19506,7 +19529,7 @@
                     openMessageInfo,
                     infoMessageSection,
                     toggleInfoPanel,
-                    openInfoPanel,
+                    openChatInfo,
                     closeInfoPanel,
                     chatStatusLine,
                     chatMemberCount,

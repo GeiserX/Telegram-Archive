@@ -312,7 +312,7 @@ How thumbnails are made and cached is on [Media downloads](../configuration/medi
 
 ## Info panel
 
-Click the chat's name in the header to open the info panel, for a private chat, a group, a channel or a topic alike. On a phone the chat's photo beside the name opens it too. The chat information button opens and closes it. When you close the panel, focus goes back to what opened it.
+Click the chat's name in the header to open the info panel, for a private chat, a group, a channel or a topic alike. On a phone the chat's photo beside the name opens it too. When the panel is already open, the name scrolls it back up to the chat. The chat information button opens and closes it. When you close the panel with the close button or Escape, focus goes back to what opened it. When you close it with the chat information button, focus stays there.
 
 The info panel shows the open chat, in rows the way Telegram's info page writes them:
 

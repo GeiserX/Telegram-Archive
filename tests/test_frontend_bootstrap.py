@@ -1401,7 +1401,7 @@ def test_sender_details_dialog_shows_a_large_avatar():
 def _chat_header_info_button(html: str) -> str:
     """The header button that holds the photo, the name and the status line (#538)."""
     header = html[html.index("<!-- Chat Header -->") : html.index('<div class="flex items-center gap-0.5 min-w-0">')]
-    start = header.index('<button type="button" @click="openInfoPanel($event)"')
+    start = header.index('<button type="button" @click="openChatInfo($event)"')
     return header[start : header.index("</button>", start)]
 
 
