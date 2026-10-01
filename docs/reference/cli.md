@@ -41,7 +41,7 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 | Needs an authorized Telegram session | Database only, no Telegram credentials |
 |--------------------------------------|----------------------------------------|
-| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-details` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import`, `merge` |
+| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-details` | `migrate`, `export`, `stats`, `status`, `check-media`, `list-chats`, `import`, `merge` |
 
 !!! warning "One client per session"
     Stop the backup service before any command that connects to Telegram. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
@@ -204,6 +204,33 @@ Archive status: healthy
 With `--json` it prints the JSON that [`GET /api/status`](api.md#health-and-status) returns, with two more keys: `healthy`, true or false, and `problems`, the list of reasons. Log lines go to stderr, so stdout holds only the JSON.
 
 It exits 0 when the archive is healthy and 1 when it is unhealthy. When the configuration is invalid, the database cannot be reached or read, or `SCHEDULE` is not a valid cron expression, it prints `Status failed: <error>` on stderr and exits 1.
+
+## check-media { #check-media }
+
+```text
+telegram-archive [--data-dir PATH] check-media [--repair] [-c CHAT_ID]
+```
+
+| Short | Long | Argument | Required | Meaning |
+|-------|------|----------|----------|---------|
+| | `--repair` | | no | Restore files from copies on disk and mark the rest to download again. Without it nothing is changed. |
+| `-c` | `--chat-id` | `CHAT_ID` | no | Only this chat, by its marked id. Default: every chat. |
+
+Checks every downloaded media row of every account: is its file where the row says? It reads the database and stats each row's path, a few calls per row, and never walks the media folder. It prints counts only, never ids, paths or names.
+
+A row whose path holds no file is a broken link (a link into `media/_shared` whose shared file is gone) or a missing file (nothing at the path). For each one it looks for a copy on disk, as described in [A missing shared file](../configuration/media.md#a-missing-shared-file). With `--repair`, a copy found is put back where the row points, never replacing anything, and a row with no copy is marked not downloaded, so the next backup run downloads it from Telegram. An entry this process cannot follow, such as a link into a git-annex store, is left alone and counted. A location, contact, poll or other metadata-only row has no file: it is counted as a placeholder, never as broken, and never marked to download again. Older releases gave some of these rows a `.bin` path and a link into `_shared`; that path is a leftover and stays as it is.
+
+```text
+Media check (dry run, nothing changed; run with --repair to fix):
+  Rows checked:              <n>
+  Files in place:            <n>
+  Broken links:              <n>  (a link into _shared whose file is gone)
+  Missing files:             <n>  (nothing at the row's path)
+  Copy found on disk:        <n>  (--repair puts it back)
+  No copy on disk:           <n>  (--repair marks them to download again)
+```
+
+A dry run exits 1 when it finds a broken link or a missing file, and 0 otherwise. A repair exits 0, or 1 when a copy could not be put back or a row could not be marked; the log says why. A row marked to download again keeps its path, so the download fills the target of the link it names, even when the current Telegram file name differs. When the configuration is invalid or the database cannot be reached, it prints `Media check failed: <error type>` on stderr and exits 1. It needs no Telegram session, so the backup service can keep running.
 
 ## list-chats { #list-chats }
 

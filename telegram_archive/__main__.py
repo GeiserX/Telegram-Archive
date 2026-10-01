@@ -37,6 +37,7 @@ GETTING STARTED:
      telegram-archive list-chats   # List all backed up chats
      telegram-archive stats        # Show backup statistics
      telegram-archive status       # Is the archive healthy? (exit code 1 if not)
+     telegram-archive check-media  # Any media file missing? (--repair fixes them)
      telegram-archive export -o file.json  # Export to JSON
 
   5. Import Telegram Desktop exports:
@@ -127,6 +128,24 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         ),
     )
     status_parser.add_argument("--json", action="store_true", help="Print the status as JSON")
+
+    check_media_parser = subparsers.add_parser(
+        "check-media",
+        help="Find media files that are missing or behind a broken link, and repair them with --repair",
+        description=(
+            "Check every downloaded media row of every account: is its file where the row "
+            "says? A missing file is looked for on disk (under its name in _shared, in the "
+            "chat's other id-form folder, or at another row with the same content hash). "
+            "With --repair a copy found on disk is put back, never replacing anything, and "
+            "a file with no copy is marked not downloaded so the next backup fetches it "
+            "from Telegram again. Without --repair nothing is changed. Exit code 1 when "
+            "the dry run finds a file missing."
+        ),
+    )
+    check_media_parser.add_argument(
+        "--repair", action="store_true", help="Restore files from copies on disk and mark the rest to download again"
+    )
+    check_media_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat)")
 
     # List chats command
     list_parser = subparsers.add_parser(
@@ -353,6 +372,34 @@ async def run_status(args) -> int:
     else:
         print(format_status(status, problems))
     return 1 if problems else 0
+
+
+async def run_check_media(args) -> int:
+    """Run check-media: 1 when a dry run finds a file missing or a repair fails."""
+    from .config import Config, setup_logging
+    from .db import DatabaseAdapter, close_database, init_database
+    from .media_integrity import check_media, format_media_check
+
+    try:
+        config = Config()
+        setup_logging(config)
+        config.log_summary()
+        try:
+            manager = await init_database()
+            report = await check_media(
+                DatabaseAdapter(manager), config.media_path, repair=args.repair, chat_id=args.chat_id
+            )
+        finally:
+            await close_database()
+    except Exception as e:
+        # The type only: a driver or filesystem error can quote a path.
+        print(f"Media check failed: {type(e).__name__}", file=sys.stderr)
+        return 1
+    for line in format_media_check(report, repair=args.repair):
+        print(line)
+    if args.repair:
+        return 1 if report["restore_failed"] or report["refetch_failed"] else 0
+    return 1 if report["broken_links"] or report["missing_files"] else 0
 
 
 async def run_list_chats(args) -> int:
@@ -664,6 +711,8 @@ def main() -> int:
         return asyncio.run(run_stats(args))
     elif args.command == "status":
         return asyncio.run(run_status(args))
+    elif args.command == "check-media":
+        return asyncio.run(run_check_media(args))
     elif args.command == "list-chats":
         return asyncio.run(run_list_chats(args))
     elif args.command == "import":
