@@ -2402,6 +2402,11 @@
         .chat-row .chat-row-line .account-tag {
             min-width: 0;
         }
+        /* The preview's sender ("Esme:", "You:") in the title's colour, the
+           text after it in the line's muted one, as Telegram's list draws it. */
+        .chat-row .chat-preview-sender {
+            color: rgb(var(--tg-ink));
+        }
         .chat-row-chips {
             display: flex;
             gap: 4px;
@@ -2457,6 +2462,9 @@
         .chat-row.is-active .chat-row-sub,
         .chat-row.is-active .chat-row-sub * {
             color: rgb(var(--tg-active-muted));
+        }
+        .chat-row.is-active .chat-row-sub .chat-preview-sender {
+            color: rgb(var(--tg-active-text));
         }
         .chat-row.is-active .account-tag {
             color: rgb(var(--tg-active-text));
@@ -6854,14 +6862,19 @@
                                         </h3>
                                         <span class="chat-row-sub chat-row-date text-tg-muted shrink-0" :title="formatDateTitle(chat.last_message_date)">{{ formatDate(chat.last_message_date) }}</span>
                                     </div>
-                                    <!-- Two lines, like the apps: who or what the chat is, and
-                                         its size. The numeric id lives in the info panel. Which
-                                         account(s) archived it rides the right end, and only on
-                                         an archive of more than one account, where it tells the
-                                         rows apart; a chat several accounts share carries one
-                                         chip each. -->
+                                    <!-- Two lines, like the apps: the name, and the newest message
+                                         not deleted in Telegram, after its sender in a group ("You"
+                                         for the account's own). The kind and size of the chat move
+                                         to the line's tooltip and the info panel, and fill the line
+                                         when the chat has no message to show. The numeric id lives
+                                         in the info panel. Which account(s) archived it rides the
+                                         right end, and only on an archive of more than one account,
+                                         where it tells the rows apart; a chat several accounts
+                                         share carries one chip each. -->
                                     <div class="chat-row-line flex items-center gap-2 min-w-0">
-                                        <p class="chat-row-sub text-tg-muted truncate flex-1 min-w-0">{{ chatListLine(chat) }}</p>
+                                        <p v-if="chat.preview" class="chat-row-sub text-tg-muted truncate flex-1 min-w-0" dir="auto"
+                                            :title="chatListLine(chat)"><span v-if="chat.preview.sender" class="chat-preview-sender">{{ chat.preview.sender }}: </span>{{ chatPreviewText(chat.preview) }}</p>
+                                        <p v-else class="chat-row-sub text-tg-muted truncate flex-1 min-w-0">{{ chatListLine(chat) }}</p>
                                         <!-- At most 40% of the line, each chip yielding with an
                                              ellipsis, so the subtitle keeps its room on a phone. -->
                                         <span v-if="multiAccount && chatAccountLabels(chat).length" class="chat-row-chips">
@@ -9814,6 +9827,38 @@
                     const kind = chat?.is_forum ? 'forum' : chatKindLabel(chat)
                     const size = chatMemberCount(chat)
                     return size ? `${kind} · ${size}` : kind
+                }
+                // The chat list preview (9.0): the server sends the newest message not
+                // deleted in Telegram with its text already on one line and cut short,
+                // its sender's label, and its kind. A message with no text is named by
+                // a word, as Telegram's list names it.
+                const CHAT_PREVIEW_WORDS = {
+                    photo: 'Photo', video: 'Video', video_note: 'Video message', voice: 'Voice message',
+                    audio: 'Audio', animation: 'GIF', sticker: 'Sticker', document: 'File',
+                    geo: 'Location', geo_live: 'Live location', venue: 'Location', contact: 'Contact',
+                    poll: 'Poll', dice: 'Dice', game: 'Game', invoice: 'Invoice', story: 'Story',
+                    giveaway: 'Giveaway', giveaway_results: 'Giveaway results', webpage: 'Link',
+                    unsupported: 'Unsupported message', service: 'Service message',
+                }
+                const chatPreviewText = (preview) => {
+                    if (!preview) return ''
+                    const kind = typeof preview.kind === 'string' ? preview.kind : ''
+                    const text = typeof preview.text === 'string' ? preview.text : ''
+                    // A poll reads as Telegram Desktop's list reads it: the chart mark
+                    // and the question.
+                    if (kind === 'poll') return text ? `\u{1F4CA} ${text}` : 'Poll'
+                    if (text) return text
+                    if (kind === 'service') {
+                        // A row from before 7.28 stored no sentence: word it the way the
+                        // chat does, from its action.
+                        const view = serviceMessageView({
+                            text: '', sender_id: null,
+                            raw_data: { service_type: 'service', action_type: preview.action, new_title: preview.action_title },
+                        })
+                        const sentence = `${view.actor}${view.tail}`.trim()
+                        if (sentence) return sentence
+                    }
+                    return Object.hasOwn(CHAT_PREVIEW_WORDS, kind) ? CHAT_PREVIEW_WORDS[kind] : 'Message'
                 }
                 // The row the panel describes. The list is re-fetched every few seconds and a
                 // jump replaces it wholesale, so the panel reads the live row carrying the
@@ -19428,6 +19473,7 @@
                     chatMemberCount,
                     chatKindLabel,
                     chatListLine,
+                    chatPreviewText,
                     getChatTypeLabel,
                     mediaSummaryLine,
                     previewSrc,

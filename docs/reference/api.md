@@ -179,10 +179,39 @@ All of these need any login.
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
 | `GET /api/accounts` | None | `{accounts: [{id, label}]}`. `label` is `TG_ACCOUNT_<N>_LABEL` when set; otherwise `default` for the first account and `account<N>` for the others. |
-| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url` and `accounts`. |
+| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url`, `accounts` and `preview`, its newest message for the list's second line. See [The chat list preview](#the-chat-list-preview). |
 | `GET /api/chats/{chat_ref}` | None | One chat in the same shape as a list row |
 | `GET /api/folders` | None | `{folders}` with chat counts limited to what the caller can see |
 | `GET /api/archived/count` | None | `{count}` |
+
+### The chat list preview
+
+`preview` is the chat's newest message that was not deleted in Telegram, or `null` when the chat has none. It is read from the copy of the chat the row's `ref` opens, under the same restrictions as the chat's messages, so it never shows a message the caller could not open in the chat. It carries text and a kind only, never a file or a transcript. `GET /api/chats/{chat_ref}` does not return it.
+
+| Field | Value |
+|-------|-------|
+| `message_id` | The message's id in the chat |
+| `date` | When it was sent, UTC |
+| `text` | The text on one line, cut to 100 characters with an ellipsis. A poll with no text gives its question. A service row gives its sentence, for example `Esme joined the group`. `null` when there is no text. |
+| `sender` | `You` for the account's own message in a group or a private chat, the sender's first name for anyone else in a group, and `null` in a channel, for the other person in a private chat and for a service row |
+| `kind` | `text`, `service`, `poll`, the archive's media type (`photo`, `video`, `video_note`, `voice`, `audio`, `animation`, `sticker`, `document`, `geo`, `geo_live`, `venue`, `contact`, `dice`, `game`, `invoice`, `story`, `giveaway`, `giveaway_results`, `webpage`, `unsupported`), or `message` for a message with neither text nor a media record |
+| `outgoing` | Whether the account sent it |
+| `action`, `action_title` | For a service row with no stored sentence, from before 7.28: its `action_type` and `new_title`, so a client can word it. `null` otherwise. |
+
+Example:
+
+```json
+"preview": {
+  "message_id": 1288,
+  "date": "2026-09-30T08:57:00",
+  "text": "Perfect, save me a seat",
+  "sender": "Esme",
+  "kind": "text",
+  "outgoing": false,
+  "action": null,
+  "action_title": null
+}
+```
 
 ## Messages
 
