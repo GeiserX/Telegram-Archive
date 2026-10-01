@@ -1848,8 +1848,9 @@ class DatabaseAdapter:
         Cost: one statement per page, never per row. Each row costs one seek of
         ``idx_messages_chat_date_desc`` for the newest kept message (the ORDER BY
         rides the index, so the scan stops at the first row that is neither
-        another account's copy nor deleted), one primary-key lookup, and one
-        ``idx_media_message`` probe for the media kind. A chat whose whole tail
+        another account's copy nor deleted), one primary-key lookup, one
+        ``idx_media_message`` probe for the media kind and primary-key probes of
+        ``users`` for the sender's names. A chat whose whole tail
         was deleted walks back through that tail; the archive keeps no index on
         ``is_deleted`` because every other read wants deleted rows too.
 
@@ -1891,6 +1892,10 @@ class DatabaseAdapter:
             .correlate(Chat)
             .scalar_subquery()
         )
+        # No ORDER BY: SQLite answered ORDER BY id by walking the media primary
+        # key of the whole account, and min(type) by walking the chat's media in
+        # type order, instead of probing idx_media_message. A message has one
+        # media row in all but rare cases, so any of its rows names its kind.
         media_type = (
             select(Media.type)
             .where(
@@ -1898,11 +1903,17 @@ class DatabaseAdapter:
                 Media.chat_id == Message.chat_id,
                 Media.message_id == Message.id,
             )
-            .order_by(Media.id)
             .limit(1)
             .correlate(Message)
             .scalar_subquery()
         )
+
+        def sender_column(column):
+            # A primary-key probe per row, never a join: PostgreSQL estimates the
+            # page as one row and joined users by a sequential scan per preview,
+            # which grows with every person the archive has ever seen.
+            return select(column).where(User.id == Message.sender_id).correlate(Message).scalar_subquery()
+
         stmt = (
             select(
                 Message.account_id,
@@ -1915,9 +1926,9 @@ class DatabaseAdapter:
                 Message.sender_name,
                 Message.is_outgoing,
                 Message.raw_data,
-                User.first_name,
-                User.last_name,
-                User.username,
+                sender_column(User.first_name).label("first_name"),
+                sender_column(User.last_name).label("last_name"),
+                sender_column(User.username).label("username"),
                 media_type.label("media_type"),
             )
             .select_from(Chat)
@@ -1929,7 +1940,6 @@ class DatabaseAdapter:
                     Message.id == newest_kept_id,
                 ),
             )
-            .outerjoin(User, Message.sender_id == User.id)
             .where(tuple_(Chat.account_id, Chat.id).in_(keys))
         )
         result = await session.execute(stmt)
