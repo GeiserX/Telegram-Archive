@@ -115,6 +115,19 @@ def parse_msg_date(msg: dict[str, Any]) -> datetime | None:
     return None
 
 
+def media_files_of(msg: dict[str, Any], media_base_path: str) -> list[tuple[str | None, str]]:
+    """The type and full path of each stored file of a message, in export order.
+
+    The export lists a message once with every media row, downloaded first,
+    then lowest id (``media_files``). A row without a stored path has no file.
+    """
+    return [
+        (media.get("type"), os.path.join(media_base_path, media["path"]))
+        for media in msg.get("media_files") or []
+        if media.get("path")
+    ]
+
+
 async def restore_chat(
     source_chat_id: int,
     dest_chat_id: int,
@@ -202,11 +215,6 @@ async def restore_chat(
         logger.warning("No messages to restore after filtering!")
         return
 
-    # Count media
-    media_count = sum(1 for m in messages if m.get("media_path") and include_media)
-    logger.info(f"\nWill restore {len(messages)} messages ({media_count} with media)")
-    logger.info(f"Estimated time: ~{len(messages) * delay / 60:.1f} minutes (with {delay}s delay)")
-
     # Media base path. The export carries Media.file_path verbatim, and that
     # column holds two shapes: absolute (API sweep, realtime listener) and
     # media-root-relative (Telegram Desktop import). Joining against BACKUP_PATH
@@ -214,6 +222,11 @@ async def restore_chat(
     # absolute value — and wrong for the second, producing a path missing the
     # "media" segment, so every imported attachment showed as MISSING (#310).
     media_base_path = os.path.join(os.getenv("BACKUP_PATH", "/data/backups"), "media")
+
+    # Count media
+    media_count = sum(1 for m in messages if media_files_of(m, media_base_path) and include_media)
+    logger.info(f"\nWill restore {len(messages)} messages ({media_count} with media)")
+    logger.info(f"Estimated time: ~{len(messages) * delay / 60:.1f} minutes (with {delay}s delay)")
 
     if dry_run:
         logger.info("\n--- DRY RUN PREVIEW (first 10 messages) ---")
@@ -223,10 +236,10 @@ async def restore_chat(
             header = format_message_header(sender_name, msg_date)
             text = (msg.get("text", "") or "")[:80]
             media_info = ""
-            if msg.get("media_path") and include_media:
-                media_path = os.path.join(media_base_path, msg["media_path"])
-                exists = "✓" if os.path.exists(media_path) else "✗ MISSING"
-                media_info = f" [📎 {msg.get('media_type', 'media')} {exists}]"
+            if include_media:
+                for media_type, media_path in media_files_of(msg, media_base_path):
+                    exists = "✓" if os.path.exists(media_path) else "✗ MISSING"
+                    media_info += f" [📎 {media_type or 'media'} {exists}]"
             logger.info(f"  {header}{media_info}\n    {text}")
         if len(messages) > 10:
             logger.info(f"  ... and {len(messages) - 10} more messages")
@@ -272,24 +285,29 @@ async def restore_chat(
             text = msg.get("text", "") or ""
             full_text = f"{header}\n{text}" if text else header
 
-            # Check for media
-            media_file = None
-            if include_media and msg.get("media_path"):
-                potential_path = os.path.join(media_base_path, msg["media_path"])
-                if os.path.exists(potential_path):
-                    media_file = potential_path
-                else:
-                    logger.warning(f"Media file not found: {potential_path}")
+            # Check for media: every file of the message, in export order
+            media_files = []
+            if include_media:
+                for _media_type, potential_path in media_files_of(msg, media_base_path):
+                    if os.path.exists(potential_path):
+                        media_files.append(potential_path)
+                    else:
+                        logger.warning(f"Media file not found: {potential_path}")
 
             # Send message with media (combined) or text only
-            if media_file:
-                # Send media with caption (text as caption)
+            if media_files:
+                # Send the first file with the text as its caption, and each
+                # other file after it without text, so the text goes out once.
                 # For photos/videos, caption limit is 1024 chars
                 caption = full_text[:1024] if len(full_text) <= 1024 else full_text[:1021] + "..."
 
-                await client.send_file(dest_chat_id, media_file, caption=caption)
+                await client.send_file(dest_chat_id, media_files[0], caption=caption)
                 media_sent += 1
                 sent_count += 1
+                for media_file in media_files[1:]:
+                    await asyncio.sleep(delay)
+                    await client.send_file(dest_chat_id, media_file)
+                    media_sent += 1
 
             elif full_text.strip():
                 # Text-only message
@@ -302,7 +320,7 @@ async def restore_chat(
             # Progress logging
             if sent_count % 10 == 0:
                 pct = i / len(messages) * 100
-                logger.info(f"Progress: {sent_count}/{len(messages)} messages ({pct:.1f}%) - {media_sent} with media")
+                logger.info(f"Progress: {sent_count}/{len(messages)} messages ({pct:.1f}%) - {media_sent} media files")
 
             # Rate limiting delay - wait for upload to complete before continuing
             await asyncio.sleep(delay)

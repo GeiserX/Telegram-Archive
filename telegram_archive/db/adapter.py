@@ -8213,8 +8213,10 @@ class DatabaseAdapter:
 
         ``include_media`` is for ``scripts/restore_chat.py``, which uploads
         the files again: each message also gets ``media_type`` and
-        ``media_path``, the stored path of its first media row, or None. The
-        viewer's export never passes it, so no file path leaves the archive.
+        ``media_path``, the stored path of its first media row, or None, and
+        ``media_files``, the ``type`` and ``path`` of every media row in the
+        order ``media`` lists them. The viewer's export never passes it, so no
+        file path leaves the archive.
         """
         conditions = [Message.chat_id == chat_id]
         if account_id is not None:
@@ -8280,6 +8282,7 @@ class DatabaseAdapter:
                 if include_media:
                     msg["media_type"] = media[0].type if media else None
                     msg["media_path"] = media[0].file_path if media else None
+                    msg["media_files"] = [{"type": media_row.type, "path": media_row.file_path} for media_row in media]
                 # A location, a contact, a poll and the other metadata-only
                 # kinds are the message's content: the card the viewer draws.
                 media_payload = _media_payloads_of(row.raw_data)
