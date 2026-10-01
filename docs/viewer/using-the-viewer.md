@@ -8,7 +8,7 @@ The viewer has three panes:
 
 - The **sidebar** on the left holds the chat list and search.
 - The **chat pane** in the middle shows the messages of the open chat.
-- The **info panel** on the right opens when you click the chat information button in the chat header.
+- The **info panel** on the right opens when you click the chat's name or the chat information button in the chat header.
 
 The viewer only reads the archive. It never contacts Telegram. The interface is in English only.
 
@@ -311,6 +311,8 @@ How thumbnails are made and cached is on [Media downloads](../configuration/medi
 ![Shared Media with the Photos & Videos tab open](../images/screenshots/media-gallery.png)
 
 ## Info panel
+
+Click the chat's name in the header to open the info panel, for a private chat, a group, a channel or a topic alike. On a phone the chat's photo beside the name opens it too. The chat information button opens and closes it. When you close the panel, focus goes back to what opened it.
 
 The info panel shows the open chat, in rows the way Telegram's info page writes them:
 

@@ -7156,81 +7156,61 @@
                                         d="M15 19l-7-7 7-7"></path>
                                 </svg>
                             </button>
-                            <!-- Header avatar (#240). In a 1:1 chat the photo IS the
-                                 counterpart, so it opens the same "Sender details"
-                                 dialog the group message avatars use. Groups/channels
-                                 keep the plain non-interactive circle: there the photo
-                                 is the GROUP picture, and the dialog would show the
-                                 group title and a -100… id, which is not a sender.
-                                 No .tap-target here — its 44px mobile minimum would
-                                 stretch this fixed 40px aspect-square into an ellipse. -->
-                            <button v-if="selectedChat?.type === 'private'" type="button"
-                                @click="openSenderInfoFromChat(selectedChat, $event)"
-                                :aria-label="`Show details for ${getChatName(selectedChat)}`"
-                                :style="{ background: getChatAvatarFill(selectedChat) }"
-                                class="md:hidden avatar-initials w-10 h-10 min-w-[2.5rem] aspect-square rounded-full flex items-center justify-center font-semibold text-tg-avatar-fg overflow-hidden shrink-0 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
-                                <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
-                                    class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
-                                    :alt="getChatName(selectedChat)">
-                                <template v-else-if="isDeletedChat(selectedChat)">
-                                    <svg class="w-6 h-6" fill="none" stroke="currentColor"
-                                        viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
-                                    </svg>
-                                </template>
-                                <template v-else>
-                                    {{ getInitials(selectedChat) }}
-                                </template>
-                            </button>
-                            <div v-else
-                                class="md:hidden avatar-initials w-10 h-10 min-w-[2.5rem] aspect-square rounded-full flex items-center justify-center font-semibold text-tg-avatar-fg overflow-hidden shrink-0"
-                                :style="{ background: getChatAvatarFill(selectedChat) }">
-                                <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
-                                    class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
-                                    :alt="getChatName(selectedChat)">
-                                <template v-else-if="isDeletedChat(selectedChat)">
-                                    <svg class="w-6 h-6" fill="none" stroke="currentColor"
-                                        viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
-                                    </svg>
-                                </template>
-                                <template v-else>
-                                    {{ getInitials(selectedChat) }}
-                                </template>
-                            </div>
-                            <!-- The title and the status line: the member count, or what the
-                                 chat is, and the topic inside a forum. On an archive of more
-                                 than one account the account follows as muted text, on every
-                                 width, like the apps' status line; the chat list keeps the
-                                 chips. The chat's archive figures are in the
-                                 info panel. In a private chat the block opens the same
-                                 "Sender details" dialog as the phone's header avatar, which a
-                                 wide screen does not show. -->
-                            <div class="min-w-0 flex-1"
-                                :role="selectedChat?.type === 'private' ? 'button' : null"
-                                :tabindex="selectedChat?.type === 'private' ? 0 : null"
-                                :aria-label="selectedChat?.type === 'private' ? `Show details for ${getChatName(selectedChat)}` : null"
-                                :class="selectedChat?.type === 'private' ? 'cursor-pointer rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus' : ''"
-                                @click="selectedChat?.type === 'private' && openSenderInfoFromChat(selectedChat, $event)"
-                                @keydown.enter.prevent="selectedChat?.type === 'private' && openSenderInfoFromChat(selectedChat, $event)"
-                                @keydown.space.prevent="selectedChat?.type === 'private' && openSenderInfoFromChat(selectedChat, $event)">
-                                <!-- Inside a topic the topic is the title, as in Telegram, and
-                                     the forum and the topic's size are the status line. -->
-                                <h2 class="chat-header-title truncate" dir="auto">{{ selectedPaneTopic?.title || getChatName(selectedChat) }}</h2>
-                                <!-- The status, then the account after a dot with 4px on each
-                                     side. On a narrow header the account gives way first (it
-                                     shrinks a hundred times faster), so the member count stays
-                                     readable, and on a line under 120px it leaves (a container
-                                     query); the info panel names the account in full. -->
-                                <p class="chat-header-status flex items-center min-w-0 text-tg-muted">
-                                    <span class="min-w-0 truncate">
-                                        <template v-if="selectedPaneTopic?.title"><bdi>{{ getChatName(selectedChat) }}</bdi><template v-if="selectedPaneTopic.message_count != null"> · {{ formatCount(selectedPaneTopic.message_count) }} {{ Number(selectedPaneTopic.message_count) === 1 ? 'message' : 'messages' }}</template></template>
-                                        <template v-else>{{ chatStatusLine(selectedChat) }}</template>
-                                    </span>
-                                    <template v-if="multiAccount && chatAccountLabels(selectedChat).length">
-                                        <span aria-hidden="true" class="chat-header-account mx-1 shrink-0">·</span>
-                                        <span class="chat-header-account min-w-0 truncate shrink-[100]">{{ chatAccountLabels(selectedChat).map((chip) => chip.label).join(', ') }}</span>
+                            <!-- The photo, the name and the status line are one button that
+                                 opens the info panel, for every kind of chat, as a tap on the
+                                 title does in Telegram (#538). It only opens: the "i" button
+                                 is the toggle. On a desktop there is no photo (the chat list
+                                 row beside it has one). A <button> holds phrasing content
+                                 only, so the name and the status line are spans. The photo
+                                 is decorative here (the name follows it) and carries no
+                                 .tap-target: its 44px mobile minimum would stretch the fixed
+                                 40px aspect-square circle into an ellipse. The padding gives the
+                                 focus ring room, and the negative margin keeps the name where
+                                 it was. -->
+                            <button type="button" @click="openInfoPanel($event)"
+                                aria-controls="info-panel" :title="infoPanelTitle"
+                                class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 -mx-1.5 px-1.5 py-1 text-left rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
+                                <span aria-hidden="true"
+                                    class="md:hidden avatar-initials w-10 h-10 min-w-[2.5rem] aspect-square rounded-full flex items-center justify-center font-semibold text-tg-avatar-fg overflow-hidden shrink-0"
+                                    :style="{ background: getChatAvatarFill(selectedChat) }">
+                                    <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
+                                        class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
+                                        alt="">
+                                    <template v-else-if="isDeletedChat(selectedChat)">
+                                        <svg class="w-6 h-6" fill="none" stroke="currentColor"
+                                            viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
+                                        </svg>
                                     </template>
-                                </p>
-                            </div>
+                                    <template v-else>
+                                        {{ getInitials(selectedChat) }}
+                                    </template>
+                                </span>
+                                <!-- The title and the status line: the member count, or what the
+                                     chat is, and the topic inside a forum. On an archive of more
+                                     than one account the account follows as muted text, on every
+                                     width, like the apps' status line; the chat list keeps the
+                                     chips. The chat's archive figures are in the info panel. -->
+                                <span class="min-w-0 flex-1 block">
+                                    <!-- Inside a topic the topic is the title, as in Telegram, and
+                                         the forum and the topic's size are the status line. -->
+                                    <span class="chat-header-title block truncate" dir="auto">{{ selectedPaneTopic?.title || getChatName(selectedChat) }}</span>
+                                    <!-- The status, then the account after a dot with 4px on each
+                                         side. On a narrow header the account gives way first (it
+                                         shrinks a hundred times faster), so the member count stays
+                                         readable, and on a line under 120px it leaves (a container
+                                         query); the info panel names the account in full. -->
+                                    <span class="chat-header-status flex items-center min-w-0 text-tg-muted">
+                                        <span class="min-w-0 truncate">
+                                            <template v-if="selectedPaneTopic?.title"><bdi>{{ getChatName(selectedChat) }}</bdi><template v-if="selectedPaneTopic.message_count != null"> · {{ formatCount(selectedPaneTopic.message_count) }} {{ Number(selectedPaneTopic.message_count) === 1 ? 'message' : 'messages' }}</template></template>
+                                            <template v-else>{{ chatStatusLine(selectedChat) }}</template>
+                                        </span>
+                                        <template v-if="multiAccount && chatAccountLabels(selectedChat).length">
+                                            <span aria-hidden="true" class="chat-header-account mx-1 shrink-0">·</span>
+                                            <span class="chat-header-account min-w-0 truncate shrink-[100]">{{ chatAccountLabels(selectedChat).map((chip) => chip.label).join(', ') }}</span>
+                                        </template>
+                                    </span>
+                                </span>
+                            </button>
                         </div>
 
                         <div class="flex items-center gap-0.5 min-w-0">
@@ -9925,8 +9905,12 @@
                         event.preventDefault()
                     }
                 }
-                const openInfoPanel = () => {
+                // Closing hands focus back to what opened the panel: the chat's name
+                // in the header when it was the name (#538), else the "i" button.
+                let infoPanelOpener = null
+                const openInfoPanel = (event) => {
                     if (showInfoPanel.value) return
+                    infoPanelOpener = event?.currentTarget || null
                     showInfoPanel.value = true
                     clampPanes()
                     document.addEventListener('keydown', handleInfoPanelKeydown)
@@ -9937,7 +9921,9 @@
                     showInfoPanel.value = false
                     selectedMessage.value = null
                     document.removeEventListener('keydown', handleInfoPanelKeydown)
-                    nextTick(() => infoPanelToggleBtn.value?.focus?.())
+                    const opener = infoPanelOpener
+                    infoPanelOpener = null
+                    nextTick(() => (opener?.isConnected ? opener : infoPanelToggleBtn.value)?.focus?.())
                 }
                 const toggleInfoPanel = () => showInfoPanel.value ? closeInfoPanel() : openInfoPanel()
                 // Where a click on a row cannot select it (a touch screen, or a pane
@@ -15538,27 +15524,6 @@
                     nextTick(() => trigger?.focus())
                 }
 
-                // Adapter for the 1:1 header avatar (#240). A chat is NOT message-shaped:
-                // it carries `id` and `avatar_url`, while the dialog reads `sender_id` and
-                // `sender_avatar_url` — passing the raw chat straight through would render
-                // "Telegram ID: Unknown" and a blank avatar. In a private chat `chat.id` IS
-                // the counterpart's Telegram user id and its photo resolves to the same file
-                // a message's sender avatar would. `sender_name` is null on purpose: it is a
-                // per-message archival snapshot chats never have, so the dialog falls back to
-                // the current name and correctly hides the "Latest known name" duplicate row.
-                const openSenderInfoFromChat = (chat, event) => {
-                    if (!chat) return
-                    openSenderInfo({
-                        sender_id: chat.id,
-                        sender_name: null,
-                        first_name: chat.first_name,
-                        last_name: chat.last_name,
-                        username: chat.username,
-                        sender_avatar_url: chat.avatar_url,
-                        raw_data: null,
-                    }, event)
-                }
-
                 // The forward header's tap target: the origin chat, when archived.
                 // The sidebar holds only the current page, so unknown origins
                 // resolve through one shared full-list fetch (archived included,
@@ -19541,6 +19506,7 @@
                     openMessageInfo,
                     infoMessageSection,
                     toggleInfoPanel,
+                    openInfoPanel,
                     closeInfoPanel,
                     chatStatusLine,
                     chatMemberCount,
@@ -19702,7 +19668,6 @@
                     getSenderInfoName,
                     hasDifferentCurrentSenderName,
                     openSenderInfo,
-                    openSenderInfoFromChat,
                     closeSenderInfo,
                     getForwardName,
                     replyToLabel,

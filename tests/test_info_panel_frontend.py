@@ -222,6 +222,55 @@ assert.equal(moveMessageSelection(1), false, 'no pane, no move');
     )
 
 
+def test_closing_returns_focus_to_what_opened_the_panel() -> None:
+    """#538: the header's name opens the panel, so closing lands back on the name."""
+    _run_node(
+        _script("""
+const focused = [];
+const toggle = { focus() { focused.push('toggle'); } };
+infoPanelToggleBtn.value = toggle;
+const title = { isConnected: true, focus() { focused.push('title'); } };
+
+openInfoPanel({ currentTarget: title });
+assert.equal(showInfoPanel.value, true);
+openInfoPanel({ currentTarget: toggle });
+closeInfoPanel();
+assert.deepEqual(focused, ['title'], 'the name opened it, and a second open while open is not an opener');
+
+toggleInfoPanel();
+toggleInfoPanel();
+assert.deepEqual(focused, ['title', 'toggle'], 'the "i" button gets focus back as before');
+
+openInfoPanel({ currentTarget: title });
+title.isConnected = false;
+closeInfoPanel();
+assert.deepEqual(focused, ['title', 'toggle', 'toggle'], 'a name gone from the page gives way to the toggle');
+
+openMessageInfo({ id: 3 });
+closeInfoPanel();
+assert.deepEqual(focused, ['title', 'toggle', 'toggle', 'toggle'], 'a message opening the panel still returns to the toggle');
+""")
+    )
+
+
+def test_header_name_is_one_button_that_opens_the_info_panel() -> None:
+    """#538: the name opens the info panel for every kind of chat, as in Telegram."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    header = html[html.index("<!-- Chat Header -->") : html.index('<div class="flex items-center gap-0.5 min-w-0">')]
+    assert "selectedChat?.type === 'private'" not in header, "no chat type gets a different header"
+    start = header.index('<button type="button" @click="openInfoPanel($event)"')
+    button = header[start : header.index("</button>", start)]
+    assert 'aria-controls="info-panel"' in button
+    assert ':title="infoPanelTitle"' in button, "the hover hint says User info, Group info or Channel info"
+    assert "focus-visible:ring-2 focus-visible:ring-tg-focus" in button
+    assert 'class="chat-header-title block truncate"' in button
+    assert 'class="chat-header-status flex items-center' in button
+    assert re.findall(r"<(?:h[1-6]|p|div)[\s>]", button) == [], "a button holds phrasing content only"
+    assert 'role="button"' not in header
+    assert "openSenderInfoFromChat" not in html, "the chat is never dressed up as a message sender"
+    assert "openInfoPanel," in html
+
+
 def test_files_come_from_the_album_and_the_row_alike() -> None:
     _run_node(
         _script("""
