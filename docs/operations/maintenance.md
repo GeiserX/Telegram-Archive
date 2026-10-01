@@ -140,6 +140,13 @@ Media verification checks every downloaded file and downloads it again when it i
 
 See [Media downloads](../configuration/media.md) for what it checks.
 
+To check the files without downloading anything, run [`check-media`](../reference/cli.md#check-media). It counts broken links and missing files and, with `--repair`, puts back the ones with a copy on disk and marks the rest to download again at the next backup run:
+
+```bash
+docker compose exec telegram-backup python -m telegram_archive check-media
+docker compose exec telegram-backup python -m telegram_archive check-media --repair
+```
+
 ## Export to JSON
 
 `export` writes messages to a JSON file. It only reads the database, so it can run in the live container:
