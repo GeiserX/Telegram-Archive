@@ -57,7 +57,7 @@ os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_chat_ref_"
 
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import Chat, Media, Message, MessageVersion, Reaction
+from telegram_archive.db.models import Chat, Media, Message, MessageVersion, Reaction, ReactionHistory
 from telegram_archive.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -197,6 +197,27 @@ def _seed(sync_url: str, media_root: Path) -> dict[int, str]:
                     removed_at=start + timedelta(hours=3),
                 )
             )
+            # The history those rows stand for (reaction_history), the way the
+            # listener writes it: each state with the count before it.
+            for chat_id, message_id, emoji, count, previous, minutes in (
+                (CHAT_A_ID, 2, "👍", 2, None, 1),
+                (CHAT_A_ID, 2, "😮", 1, None, 2),
+                (CHAT_A_ID, 2, "😮", 0, 1, 10),
+                (CHAT_B_ID, 1, "🔥", 3, None, 5),
+                (CHAT_B_ID, 1, "🔥", 0, 3, 180),
+            ):
+                session.add(
+                    ReactionHistory(
+                        account_id=1,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        emoji=emoji,
+                        count=count,
+                        previous_count=previous,
+                        observed_at=start + timedelta(minutes=minutes),
+                        source="listener",
+                    )
+                )
             session.add(
                 Media(
                     account_id=1,
@@ -615,6 +636,43 @@ async def test_a_share_link_never_sees_another_chats_removed_reactions(viewer_ap
         assert own.status_code == 200, own.text
         assert [r["emoji"] for row in own.json() for r in row["removed_reactions"]] == ["😮"]
         other = await client.get(f"/api/chats/{archive.ref_b}/messages")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
+
+
+def _history_rows(rows: list[dict]) -> list[tuple]:
+    return [(row["id"], [(h["emoji"], h["count"]) for h in row["reaction_history"]]) for row in rows]
+
+
+async def test_the_reaction_history_rides_the_same_read_inside_the_same_chat(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a]))
+        own = await client.get(f"/api/chats/{archive.ref_a}/messages")
+        assert own.status_code == 200, own.text
+        assert _history_rows(own.json()) == [(3, []), (2, [("👍", 2), ("😮", 1), ("😮", 0)]), (1, [])]
+        other = await client.get(f"/api/chats/{archive.ref_b}/messages")
+        assert (other.status_code, other.json()) == (404, UNIFORM_404)
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_accounts=json.dumps([2]))
+        resp = await client.get(f"/api/chats/{archive.ref_a}/messages")
+        assert (resp.status_code, resp.json()) == (404, UNIFORM_404)
+
+
+async def test_the_export_carries_the_reaction_history_inside_the_same_chat(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a]))
+        export = await client.get(f"/api/chats/{archive.ref_a}/export")
+        assert export.status_code == 200, export.text
+        by_id = {m["id"]: m for m in export.json()["messages"]}
+        assert [(h["emoji"], h["count"], h["previous_count"]) for h in by_id[2]["reaction_history"]] == [
+            ("👍", 2, None),
+            ("😮", 1, None),
+            ("😮", 0, 1),
+        ]
+        assert by_id[2]["reaction_history"][2]["observed_at"] == "2026-04-01T09:10:00"
+        assert by_id[1]["reaction_history"] == []
+        other = await client.get(f"/api/chats/{archive.ref_b}/export")
         assert (other.status_code, other.json()) == (404, UNIFORM_404)
 
 

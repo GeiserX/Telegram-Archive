@@ -282,7 +282,7 @@ Transcripts also appear in:
 
 - the Voice tab of the media gallery, whose filter box matches file names and transcript text
 - the What changed feed
-- the viewer's chat export and the command line export
+- the viewer's chat export and the command line export, where each transcript's `media_id` names a media listed on its message, current or earlier
 
 No-download logins see no transcript button, no transcript text and no transcript search hits. See [No-download logins](../viewer/access.md#no-download-logins).
 

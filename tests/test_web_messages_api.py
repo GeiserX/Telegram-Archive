@@ -115,12 +115,6 @@ class TestDatabaseAdapterWebMethods(unittest.TestCase):
 
         self.assertTrue(hasattr(DatabaseAdapter, "get_message_versions"))
 
-    def test_get_message_versions_by_date_range_method_exists(self):
-        """Verify export message-versions method exists."""
-        from telegram_archive.db.adapter import DatabaseAdapter
-
-        self.assertTrue(hasattr(DatabaseAdapter, "get_message_versions_by_date_range"))
-
 
 class TestWebAppStructure(unittest.TestCase):
     """Test web app structure."""

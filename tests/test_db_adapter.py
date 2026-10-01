@@ -882,9 +882,10 @@ class TestMessageOperations:
 
         snapshot = await adapter.delete_message(chat_id=100, message_id=42, account_id=1)
 
-        # 1 snapshot select + 7 deletes: versions, the earlier media's transcripts,
-        # the earlier media (036), the media's transcripts, media, reactions, message
-        assert mock_session.execute.await_count == 8
+        # 1 snapshot select + 8 deletes: versions, the earlier media's transcripts,
+        # the earlier media (036), the media's transcripts, media, the reaction
+        # history (037), reactions, message
+        assert mock_session.execute.await_count == 9
         mock_session.commit.assert_awaited_once()
         assert snapshot is None
         # The snapshot SELECT locks the row (FOR UPDATE) so concurrent
@@ -1192,11 +1193,12 @@ class TestDeleteChatOperations:
 
         # 1 cross-account row lock + 11 deletes: versions, the earlier media's
         # transcripts and the earlier media (036), the media's
-        # transcripts, media, reactions, messages, sync_status, forum_topics,
+        # transcripts, media, the reaction history (037), reactions, messages,
+        # sync_status, forum_topics,
         # chat_folder_members (explicit - SQLite runs with foreign_keys off, so
         # their CASCADEs never fire), chat — plus the push-subscription orphan
         # probe (still present in another account, so no purge delete fires here).
-        assert mock_session.execute.await_count == 13
+        assert mock_session.execute.await_count == 14
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -2165,6 +2167,13 @@ class TestGetMessagesByDateRange:
 # ============================================================
 
 
+def _empty_history_result():
+    """The page's batched reaction_history read (037) with nothing kept."""
+    result = MagicMock()
+    result.scalars.return_value = []
+    return result
+
+
 def _owner_map_result(*rows):
     """The one `accounts` read `attach_sender_accounts` makes per adapter.
 
@@ -2274,6 +2283,7 @@ class TestGetMessagesPaginated:
             media_result,
             versions_result,
             reactions_result,
+            _empty_history_result(),
             _owner_map_result(),
         ]
 
@@ -2462,6 +2472,7 @@ class TestGetMessagesPaginated:
             version_count_result,
             reply_result,
             reactions_result,
+            _empty_history_result(),
             _owner_map_result(),
         ]
 
@@ -2496,7 +2507,10 @@ class TestGetMessagesPaginated:
             _mock_reaction("thumbsup", 2, 1),
             _mock_reaction("thumbsup", 1, 2),
         ]
-        mock_session.execute.return_value = mock_result
+        # The reaction history (037) is its own batched read: none kept here.
+        mock_session.execute.side_effect = lambda stmt, *args, **kwargs: (
+            _empty_history_result() if "reaction_history" in str(stmt) else mock_result
+        )
 
         result = await adapter.get_messages_paginated(chat_id=100)
         reactions = result[0]["reactions"]

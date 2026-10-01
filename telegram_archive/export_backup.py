@@ -65,22 +65,13 @@ class BackupExporter:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
         end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
 
-        # Messages, each with every earlier text the archive kept of it under
-        # ``versions`` whatever the version's date, and the flat
-        # ``message_versions`` list, windowed by the version's own date and
-        # without the account. One snapshot, so they cannot disagree.
-        messages, message_versions = await self.db.get_messages_and_versions_by_date_range(chat_id, start_dt, end_dt)
-        # Voice transcripts sit on the message whose media they transcribe. The
-        # account is part of the key: two accounts' private chats with the same
-        # peer share the chat id and the message ids, and are two conversations.
-        transcripts = await self.db.get_transcripts_for_export(chat_id)
-        by_message: dict[tuple, list] = {}
-        for row in transcripts:
-            by_message.setdefault((row.get("account_id"), row["chat_id"], row["message_id"]), []).append(row)
-        for message in messages:
-            rows = by_message.get((message.get("account_id"), message.get("chat_id"), message.get("id")))
-            if rows:
-                message["transcripts"] = rows
+        # Messages, each with its media, every earlier text and media the
+        # archive kept of it under ``versions`` whatever the version's date,
+        # and its transcripts. One snapshot, so every transcript names a media
+        # listed in the file. The account is part of each message: two
+        # accounts' private chats with the same peer share the chat id and the
+        # message ids, and are two conversations.
+        messages = await self.db.get_messages_for_backup_export(chat_id, start_dt, end_dt)
 
         # Get chats
         chats = await self.db.get_all_chats()
@@ -93,12 +84,11 @@ class BackupExporter:
             "statistics": {
                 "total_messages": len(messages),
                 "total_chats": len(chats_dict),
-                "total_message_versions": len(message_versions),
+                "total_message_versions": sum(len(message["versions"]) for message in messages),
                 "total_transcripts": sum(len(message.get("transcripts", ())) for message in messages),
             },
             "chats": chats,
             "messages": messages,
-            "message_versions": message_versions,
         }
 
         # Write to file

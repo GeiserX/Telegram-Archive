@@ -56,7 +56,7 @@ class TestCommitBatchReactionProbe(unittest.TestCase):
 
         self.backup.db.get_message_ids_with_reaction_rows.assert_awaited_once_with(-100500, [2], account_id=1)
         self.backup.db.reconcile_reactions.assert_awaited_once_with(
-            1, -100500, [{"emoji": "👍", "count": 2}], mark_removed=True, account_id=1
+            1, -100500, [{"emoji": "👍", "count": 2}], mark_removed=True, account_id=1, source="backup"
         )
 
     def test_empty_snapshot_with_stored_rows_still_reconciles(self):
@@ -90,7 +90,7 @@ class TestCommitBatchReactionProbe(unittest.TestCase):
 
         self.backup.db.get_message_ids_with_reaction_rows.assert_awaited_once_with(-100500, [4], account_id=1)
         self.backup.db.reconcile_reactions.assert_awaited_once_with(
-            4, -100500, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1
+            4, -100500, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1, source="backup"
         )
 
     def test_min_snapshot_never_reconciles_over_stored_rows(self):
@@ -169,7 +169,7 @@ class TestReactionRowProbeRealEngines:
         await _seed_message(real_adapter, chat_id, 1)
         await _seed_message(real_adapter, chat_id, 2)
         await real_adapter.reconcile_reactions(
-            1, chat_id, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1
+            1, chat_id, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1, source="backup"
         )
 
         found = await real_adapter.get_message_ids_with_reaction_rows(chat_id, [1, 2], account_id=1)
@@ -190,7 +190,7 @@ class TestReactionRowProbeRealEngines:
         await real_adapter.upsert_chat({"id": chat_id, "type": "group", "title": "probe"}, account_id=1)
         await _seed_message(real_adapter, chat_id, 7)
         await real_adapter.reconcile_reactions(
-            7, chat_id, [{"emoji": "🔥", "count": 1}], mark_removed=True, account_id=1
+            7, chat_id, [{"emoji": "🔥", "count": 1}], mark_removed=True, account_id=1, source="backup"
         )
 
         # 501 ids place the hit in the second 500-id chunk.

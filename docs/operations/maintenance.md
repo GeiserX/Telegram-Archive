@@ -176,7 +176,7 @@ docker compose exec telegram-backup \
 
 `-o` names the output file, which must be under `/data`. `-c` exports one chat's messages. `-s` is the first day to include. `-e` is the first day to exclude: the command compares it as midnight at the start of that day. To include a whole last day, pass the day after it. The example above covers all of 2024. For every flag, see [export](../reference/cli.md#export).
 
-The `chats` list in the file always holds every chat in the archive, even with `-c`. The export leaves out media files. For the file layout, see [Command line and Python API](../reference/cli.md).
+The `chats` list in the file always holds every chat in the archive, even with `-c`. The export lists each message's media but leaves out the files. For the file layout, see [Command line and Python API](../reference/cli.md).
 
 ## Merge two archives
 
@@ -188,7 +188,7 @@ It reads the target from the same settings as every other command: `DATABASE_URL
 
 Each source Telegram account is added to the target under the next free account id. Every row the account owns follows it under that id:
 
-- its chats, messages, edit history, reactions, media rows and transcripts
+- its chats, messages, edit history, reactions and their history, media rows and transcripts
 - forum topics, folders and folder membership, its [positions](../reference/glossary.md#position) and avatar history
 - its per-account records: followed chat migrations, failed-message records and import progress
 
