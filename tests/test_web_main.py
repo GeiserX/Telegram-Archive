@@ -5,10 +5,12 @@ Route handlers that require a running FastAPI app use pytest.importorskip
 so they are gracefully skipped when pydantic version mismatches prevent import.
 """
 
+import json
 import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -188,6 +190,23 @@ class TestConnectionManagerBroadcast(unittest.IsolatedAsyncioTestCase):
 
         await self.mgr.broadcast_to_chat(_chat_row(999, "refForbidden000000999A"), {"type": "test"})
         ws.send_json.assert_not_awaited()
+
+    async def test_a_no_download_login_gets_the_frame_meant_for_it(self):
+        """A frame with media goes to a login whose downloads are off without its
+        URL or path (9.0), the way the messages API answers that login."""
+        full_ws = AsyncMock()
+        locked_ws = AsyncMock()
+        await self.mgr.connect(full_ws, _user())
+        await self.mgr.connect(locked_ws, _user(no_download=True))
+        for ws in (full_ws, locked_ws):
+            self.mgr.subscribe(ws, "refNoDownload000000042")
+        full = {"type": "edit", "media": {"url": "/media/refNoDownload000000042/5_photo"}}
+        locked = {"type": "edit", "media": {"url": None, "no_download": True}}
+
+        await self.mgr.broadcast_to_chat(_chat_row(42, "refNoDownload000000042"), full, no_download_message=locked)
+
+        full_ws.send_json.assert_awaited_once_with(full)
+        locked_ws.send_json.assert_awaited_once_with(locked)
 
     async def test_broadcast_to_chat_disconnects_failed_ws(self):
         """broadcast_to_chat removes websockets that fail to send."""
@@ -979,6 +998,102 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_bc.call_args[0][1]["edit_hide"], 1)
         # So do the new entities: the edit may have changed only the formatting.
         self.assertEqual(mock_bc.call_args[0][1]["entities"], [{"type": "bold", "offset": 0, "length": 6}])
+
+    async def test_an_edit_frame_carries_the_new_media_as_the_messages_api_shows_it(self):
+        """2A (9.0): an edit that replaced the photo carries the current media. The
+        storage id becomes the URL key, the URL is ref-addressed with the ``?v=``
+        cache key of the re-keyed row, and what the writer sent beyond the API's
+        row (the chat id, Telegram's file id) never reaches the browser. A login
+        without downloads gets the same frame with no URL and no path."""
+        media = {
+            "id": "-1000000000010_5_photo_v1",
+            "type": "photo",
+            "file_path": "/srv/media/-1000000000010/7000_new.jpg",
+            "file_name": "7000_new.jpg",
+            "file_size": 4000,
+            "mime_type": "image/jpeg",
+            "width": 320,
+            "height": 240,
+            "duration": None,
+            "chat_id": -1000000000010,
+            "telegram_file_id": "7000",
+        }
+        with (
+            patch.object(web_main, "_media_root", Path("/srv/media")),
+            patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc,
+        ):
+            await web_main.handle_realtime_notification(
+                {"type": "edit", "chat_id": 10, "data": {"message_id": 5, "new_text": "Look", "media": media}}
+            )
+
+        frame = mock_bc.call_args[0][1]
+        self.assertEqual(frame["media"]["id"], "5_photo")
+        self.assertEqual(frame["media"]["url"], "/media/refRealtime00000000010/5_photo?v=1")
+        self.assertEqual(frame["media"]["width"], 320)
+        self.assertNotIn("chat_id", frame["media"])
+        self.assertNotIn("telegram_file_id", frame["media"])
+        self.assertNotIn("-1000000000010_", json.dumps(frame).replace(media["file_path"], ""))
+        locked = mock_bc.call_args.kwargs["no_download_message"]
+        self.assertEqual(locked["new_text"], "Look")
+        self.assertIsNone(locked["media"]["url"])
+        self.assertIsNone(locked["media"]["file_path"])
+        self.assertTrue(locked["media"]["no_download"])
+        # The full login's frame is not touched by the restricted copy.
+        self.assertEqual(frame["media"]["file_path"], media["file_path"])
+
+    async def test_an_edit_frame_whose_new_file_is_not_here_yet_has_no_url(self):
+        """The edit replaced the media but the file was not fetched live: the row
+        is empty, and the frame says so the way the messages API does."""
+        media = {"id": "-1000000000010_5_photo_v2", "type": "photo", "file_path": None}
+        with (
+            patch.object(web_main, "_media_root", Path("/srv/media")),
+            patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc,
+        ):
+            await web_main.handle_realtime_notification(
+                {"type": "edit", "chat_id": 10, "data": {"message_id": 5, "new_text": "Look", "media": media}}
+            )
+
+        self.assertEqual(mock_bc.call_args[0][1]["media"]["id"], "5_photo")
+        self.assertIsNone(mock_bc.call_args[0][1]["media"]["url"])
+
+    async def test_an_edit_frame_without_media_says_nothing_about_it(self):
+        """No media key from the listener: the media did not change, and the relay
+        adds none (the viewer keeps what it shows)."""
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "edit", "chat_id": 10, "data": {"message_id": 5, "new_text": "edited"}}
+            )
+        self.assertNotIn("media", mock_bc.call_args[0][1])
+        self.assertIsNone(mock_bc.call_args.kwargs["no_download_message"])
+
+    async def test_a_new_message_frame_shapes_its_media_the_same_way(self):
+        """The new_message frame's nested media gets the same URL key, URL and
+        download rule, so a live row shows its photo before the next refresh."""
+        message = {
+            "id": 9,
+            "text": "hi",
+            "media": {
+                "id": "-1000000000042_9_photo",
+                "type": "photo",
+                "file_path": "/srv/media/-1000000000042/1_a.jpg",
+                "file_name": "1_a.jpg",
+            },
+        }
+        with (
+            patch.object(web_main, "_media_root", Path("/srv/media")),
+            patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc,
+        ):
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "data": {"message": message}}
+            )
+
+        frame = mock_bc.call_args[0][1]
+        self.assertEqual(frame["message"]["text"], "hi")
+        self.assertEqual(frame["message"]["media"]["id"], "9_photo")
+        self.assertEqual(frame["message"]["media"]["url"], "/media/refRealtime00000000042/9_photo")
+        self.assertIsNone(mock_bc.call_args.kwargs["no_download_message"]["message"]["media"]["url"])
+        # The writer's payload is left as it was.
+        self.assertEqual(message["media"]["id"], "-1000000000042_9_photo")
 
     async def test_an_edit_frame_without_entities_says_nothing_about_them(self):
         """A frame whose text was cut to fit carries no entities; the relay adds none."""
