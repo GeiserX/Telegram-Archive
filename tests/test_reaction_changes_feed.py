@@ -141,6 +141,23 @@ class TestTheFeedListsReactionsTakenBack:
             (refs[1], 4, 1),
         ]
 
+    async def test_the_same_counts_an_hour_apart_are_two_drops(self, real_adapter):
+        """Account 1 kept only the first 5 to 4 drop and account 2 only a later
+        one, after the reaction came back: the second is its own event and
+        must not hide behind the first because the counts match."""
+        await seed_shared_chats(real_adapter)
+        await _states(real_adapter, SHARED_CHANNEL, 11, [{"👍": 5}, {"👍": 4}], account_id=1)
+        await _states(real_adapter, SHARED_CHANNEL, 11, [{"👍": 5}, {"👍": 4}], account_id=2, start=60)
+
+        changes = await real_adapter.get_recent_changes(scope=UNRESTRICTED, with_reactions=True)
+        refs = {
+            account_id: await chat_ref(real_adapter, SHARED_CHANNEL, account_id=account_id) for account_id in (1, 2)
+        }
+        assert [(c["chat"]["ref"], c["count_before"], c["count_after"], c["date"]) for c in changes] == [
+            (refs[2], 5, 4, (BASE + timedelta(hours=1, minutes=61)).isoformat()),
+            (refs[1], 5, 4, (BASE + timedelta(hours=1, minutes=1)).isoformat()),
+        ]
+
     async def test_one_chat_narrows_the_drops_and_a_private_chat_its_account(self, real_adapter):
         await seed_two_groups(real_adapter, messages=1)
         await seed_shared_chats(real_adapter)

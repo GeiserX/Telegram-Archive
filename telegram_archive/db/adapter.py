@@ -109,6 +109,12 @@ SUPERGROUP_ID_CEILING = -(10**12)
 # versions can be walked beside the messages; written once so they cannot drift.
 EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
 
+# Two accounts that saw one reaction drop record it a little apart: each one's
+# listener or backup notices it on its own clock. Within this many seconds, the
+# same emoji going from the same count to the same count is one event in What
+# changed; further apart, it is two.
+REACTION_EVENT_TOLERANCE_SECONDS = 900
+
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again. The drain query retries a media
 # whose newest row failed only while it has fewer than this many failed rows.
@@ -3353,6 +3359,16 @@ class DatabaseAdapter:
             duplicate = duplicate.where(predicate)
         return or_(Chat.type == PRIVATE_CHAT_TYPE, ~duplicate.exists())
 
+    def _seconds_apart(self, first, second):
+        """SQL for how many seconds lie between two timestamp columns, on either engine.
+
+        SQLite stores them as text, which ``julianday`` reads (fractional
+        seconds included); PostgreSQL subtracts them into an interval.
+        """
+        if self._is_sqlite:
+            return func.abs(func.julianday(first) - func.julianday(second)) * 86400
+        return func.abs(func.extract("epoch", first - second))
+
     async def get_recent_changes(
         self,
         *,
@@ -3597,7 +3613,10 @@ class DatabaseAdapter:
                 lower_transcript.text.is_not_distinct_from(MediaTranscript.text),
             ]
             # A drop is the same event in every account that saw it when the
-            # emoji went from the same count to the same count.
+            # emoji went from the same count to the same count at about the
+            # same time. Each account's listener or backup notices it on its
+            # own clock, so the times differ a little; the same counts far
+            # apart are two drops (taken back, given again, taken back).
             lower_reaction = aliased(ReactionHistory, name="lower_reaction_state")
             lower_reaction_chat = aliased(Chat, name="lower_reaction_chat")
             reaction_duplicate = [
@@ -3607,6 +3626,8 @@ class DatabaseAdapter:
                 lower_reaction.emoji == ReactionHistory.emoji,
                 lower_reaction.count == ReactionHistory.count,
                 lower_reaction.previous_count == ReactionHistory.previous_count,
+                self._seconds_apart(lower_reaction.observed_at, ReactionHistory.observed_at)
+                <= REACTION_EVENT_TOLERANCE_SECONDS,
             ]
             if since is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at >= since)
