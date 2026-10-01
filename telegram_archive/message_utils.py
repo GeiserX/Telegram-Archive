@@ -1210,8 +1210,11 @@ def extract_extended_media_details(media: object) -> tuple[str, dict] | None:
                 "title": getattr(media, "title", None),
                 "address": getattr(media, "address", None),
                 "provider": getattr(media, "provider", None),
+                "venue_id": getattr(media, "venue_id", None),
+                "venue_type": getattr(media, "venue_type", None),
                 "lat": getattr(geo, "lat", None),
                 "long": getattr(geo, "long", None),
+                "accuracy_radius": getattr(geo, "accuracy_radius", None),
             }
         elif kind == "invoice":
             details = {
@@ -1252,6 +1255,8 @@ def extract_extended_media_details(media: object) -> tuple[str, dict] | None:
                 "lat": getattr(geo, "lat", None),
                 "long": getattr(geo, "long", None),
                 "period": getattr(media, "period", None),
+                "heading": getattr(media, "heading", None),
+                "accuracy_radius": getattr(geo, "accuracy_radius", None),
             }
         elif kind == "game":
             game = getattr(media, "game", None)
@@ -1265,6 +1270,286 @@ def extract_extended_media_details(media: object) -> tuple[str, dict] | None:
         details = {}
     clean = {key: value for key, value in details.items() if isinstance(value, (str, int, float, bool))}
     return kind, clean
+
+
+# The raw_data keys a media payload is stored under: one per metadata-only
+# kind. A message upsert keeps every one of them the archive holds when a later
+# read does not carry it (DatabaseAdapter._pending_update_values).
+MEDIA_PAYLOAD_KEYS = tuple(sorted(METADATA_ONLY_MEDIA_TYPES))
+
+# The value Telegram sends as a live location's period when the sender shares
+# it "until I turn it off".
+LIVE_LOCATION_FOREVER = 0x7FFFFFFF
+
+
+def _text_with_entities_to_string(text_obj) -> str:
+    """
+    Convert TextWithEntities or string to a plain string.
+
+    Name-based (``__class__``, which a spec'd mock answers too) so this module
+    keeps importing without telethon, as the viewer image needs.
+
+    Args:
+        text_obj: TextWithEntities object or string
+
+    Returns:
+        Plain string representation
+    """
+    if text_obj is None:
+        return ""
+    if isinstance(text_obj, str):
+        return text_obj
+    if text_obj.__class__.__name__ == "TextWithEntities":
+        # Extract the text from TextWithEntities
+        return text_obj.text if hasattr(text_obj, "text") else str(text_obj)
+    # Fallback for any other type
+    return str(text_obj)
+
+
+def _poll_payload(media: object) -> dict:
+    """raw_data["poll"] for a MessageMediaPoll: the question, the answers and the tally."""
+    poll = media.poll
+    results = media.results
+
+    # Parse results if available
+    results_data = None
+    if results:
+        try:
+            results_list = []
+            if results.results:
+                for r in results.results:
+                    results_list.append(
+                        {
+                            "option": base64.b64encode(r.option).decode("ascii"),
+                            "voters": r.voters,
+                            "correct": r.correct,
+                        }
+                    )
+            results_data = {"total_voters": results.total_voters, "results": results_list}
+        except Exception as e:
+            logger.warning(f"Error parsing poll results: {type(e).__name__}")
+
+    # Convert TextWithEntities to strings for JSON serialization
+    question_text = _text_with_entities_to_string(getattr(poll, "question", ""))
+    return {
+        "id": getattr(poll, "id", None),
+        "question": question_text,
+        "answers": [
+            {
+                "text": _text_with_entities_to_string(getattr(a, "text", "")),
+                "option": base64.b64encode(a.option).decode("ascii"),
+            }
+            for a in poll.answers
+        ],
+        "closed": poll.closed,
+        "public_voters": poll.public_voters,
+        "multiple_choice": poll.multiple_choice,
+        "quiz": poll.quiz,
+        "results": results_data,
+    }
+
+
+def _is_number(value: object) -> bool:
+    """A real int or float, never a bool (a JSON true is not a coordinate)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _geo_payload(media: object) -> dict:
+    """raw_data["geo"]: {lat, long, accuracy_radius}, each only when Telegram sent it.
+
+    GeoPointEmpty has no coordinates, so a location Telegram no longer
+    resolves stores an empty payload and the viewer says "Location unavailable".
+    """
+    geo = getattr(media, "geo", None)
+    lat = getattr(geo, "lat", None)
+    long = getattr(geo, "long", None)
+    payload: dict = {}
+    if _is_number(lat) and _is_number(long):
+        payload["lat"] = lat
+        payload["long"] = long
+        radius = getattr(geo, "accuracy_radius", None)
+        if _is_number(radius):
+            payload["accuracy_radius"] = radius
+    return payload
+
+
+def _contact_payload(media: object) -> dict:
+    """raw_data["contact"]: the shared card as Telegram sent it (empty strings included)."""
+    payload: dict = {}
+    for key in ("first_name", "last_name", "phone_number", "vcard"):
+        value = getattr(media, key, None)
+        if isinstance(value, str):
+            payload[key] = value
+    user_id = getattr(media, "user_id", None)
+    if _is_number(user_id):
+        payload["user_id"] = user_id
+    return payload
+
+
+# The kinds backfill-payloads re-reads, each stored under the raw_data key
+# of the same name. Releases up to v7.28.0 also left a file_path on geo,
+# contact and poll rows (docs/design/location-and-contact.md).
+PAYLOAD_BACKFILL_TYPES = ("contact", "geo", "geo_live", "poll", "venue")
+
+# A vCard Telethon wrote is a few hundred bytes. Anything far larger is not
+# one of those files, so it is not read at all.
+VCARD_MAX_BYTES = 64 * 1024
+
+
+def contact_payload_from_vcard(data: bytes) -> dict | None:
+    """raw_data["contact"] from a vCard file Telethon wrote, or None when it does not parse.
+
+    Releases up to v7.28.0 asked Telethon to "download" a shared contact,
+    and Telethon wrote this file in place of a payload (``_download_contact``):
+
+        BEGIN:VCARD / VERSION:4.0 / N:{first};{last};;; / FN:{first} {last} /
+        TEL;TYPE=cell;VALUE=uri:tel:+{phone} / END:VCARD
+
+    Telethon puts the first name first in N, against the vCard standard, and
+    it wrote every one of these files, so N is read in Telethon's order. It
+    also put a "+" in front of the number Telegram sent; that one "+" comes
+    off, so the stored number matches a live capture. The whole text is kept
+    under ``vcard``. Nothing here is logged: a name and a phone are message
+    content.
+    """
+    if not isinstance(data, (bytes, bytearray)) or not data or len(data) > VCARD_MAX_BYTES:
+        return None
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # Unfold continuation lines (RFC 6350 3.2) before reading properties.
+    lines: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line[:1] in (" ", "\t") and lines:
+            lines[-1] += line[1:]
+        elif line:
+            lines.append(line)
+    if not lines or lines[0].strip().upper() != "BEGIN:VCARD":
+        return None
+    names: list[str] | None = None
+    full_name: str | None = None
+    phone: str | None = None
+    for line in lines:
+        prop, sep, value = line.partition(":")
+        if not sep:
+            continue
+        name = prop.split(";", 1)[0].strip().upper()
+        if name == "N" and names is None:
+            names = value.split(";")
+        elif name == "FN" and full_name is None:
+            full_name = value.strip()
+        elif name == "TEL" and phone is None:
+            number = value.strip()
+            if number.lower().startswith("tel:"):
+                number = number[4:]
+            if number.startswith("+"):
+                number = number[1:]
+            phone = number
+    first = names[0].strip() if names else (full_name or "")
+    last = names[1].strip() if names and len(names) > 1 else ""
+    if not first and not last and not phone:
+        return None
+    return {"first_name": first, "last_name": last, "phone_number": phone or "", "vcard": text}
+
+
+_PAYLOAD_BUILDERS = {
+    "MessageMediaGeo": ("geo", _geo_payload),
+    "MessageMediaContact": ("contact", _contact_payload),
+    "MessageMediaPoll": ("poll", _poll_payload),
+}
+
+
+def extract_media_payload(media: object, seen_at: datetime | None = None) -> tuple[str, dict] | None:
+    """(raw_data key, payload) for a metadata-only media kind, else None.
+
+    THE builder every writer calls (the sweep's _process_message, the
+    listener's on_new_message), so a location, a contact or a poll is kept the
+    same way whichever lane saw it. Dispatch is on the class NAME, so a bare
+    MagicMock stays inert; every other kind goes to
+    extract_extended_media_details. ``seen_at`` is when the read saw the
+    message (its edit date, else its send date): a live location keeps it as
+    ``at``, the time of the position it shows. Nothing here is logged: a
+    location and a phone number are message content.
+    """
+    if media is None:
+        return None
+    builder = _PAYLOAD_BUILDERS.get(media.__class__.__name__)
+    if builder is None:
+        extended = extract_extended_media_details(media)
+        if extended is None:
+            return None
+        kind, details = extended
+        if kind == "geo_live" and isinstance(seen_at, datetime):
+            if seen_at.tzinfo is not None:
+                seen_at = seen_at.astimezone(UTC).replace(tzinfo=None)
+            details["at"] = seen_at.isoformat()
+        return kind, details
+    key, build = builder
+    try:
+        return key, build(media)
+    except Exception as e:
+        # A layer change must never fail the capture of the message itself.
+        logger.warning(f"Could not read a {key} payload ({type(e).__name__})")
+        return None
+
+
+# The fields of one position a live location showed; the rest of the payload
+# (period) belongs to the share, not to a position.
+_GEO_LIVE_POSITION_KEYS = ("lat", "long", "heading", "accuracy_radius", "at")
+
+
+def _geo_live_has_coordinates(payload: dict) -> bool:
+    return _is_number(payload.get("lat")) and _is_number(payload.get("long"))
+
+
+def _geo_live_position(payload: dict) -> dict:
+    return {key: payload[key] for key in _GEO_LIVE_POSITION_KEYS if key in payload}
+
+
+def merge_geo_live(stored: object, incoming: object) -> object:
+    """The live location to keep when a read meets the one the archive holds.
+
+    The payload with the newer ``at`` is the top level; the other one's
+    position goes into ``earlier`` (oldest first), unless that position is
+    already there. An older read never takes the top level, and a read with no
+    coordinates (a stopped share can come back as GeoPointEmpty) never
+    replaces coordinates: it can only update ``period``. A payload with no
+    ``at`` (captured before ``at`` was kept) counts as the oldest. So no
+    position the archive saw is lost.
+    """
+    if not isinstance(stored, dict) or not stored:
+        return incoming
+    if not isinstance(incoming, dict) or not incoming:
+        return stored
+    if not _geo_live_has_coordinates(incoming):
+        merged = dict(stored)
+        if "period" in incoming:
+            merged["period"] = incoming["period"]
+        return merged
+    if not _geo_live_has_coordinates(stored):
+        newer, older = incoming, None
+    elif str(incoming.get("at") or "") >= str(stored.get("at") or ""):
+        newer, older = incoming, stored
+    else:
+        newer, older = stored, incoming
+
+    merged = {key: value for key, value in newer.items() if key != "earlier"}
+    if older is not None and "period" not in merged and "period" in older:
+        merged["period"] = older["period"]
+    top = _geo_live_position(merged)
+    candidates = list(stored.get("earlier") or []) + list(incoming.get("earlier") or [])
+    if older is not None:
+        candidates.append(_geo_live_position(older))
+    earlier: list[dict] = []
+    for position in candidates:
+        if not isinstance(position, dict) or position == top or position in earlier:
+            continue
+        earlier.append(position)
+    if earlier:
+        earlier.sort(key=lambda position: str(position.get("at") or ""))
+        merged["earlier"] = earlier
+    return merged
 
 
 def extract_forward_origin(message: object) -> dict | None:
@@ -1334,6 +1619,20 @@ def message_edit_hide(message: object) -> int:
     reactions changed. The ``is True`` check keeps a MagicMock fixture at 0.
     """
     return 1 if getattr(message, "edit_hide", None) is True else 0
+
+
+def message_seen_at(message: object) -> datetime | None:
+    """When the state a read of ``message`` shows was current: its edit date, else its send date.
+
+    Unlike media_read_date this counts a hidden edit too: Telegram moves a live
+    location by hidden edits, and the position the read shows dates from the
+    last of them.
+    """
+    edit_date = getattr(message, "edit_date", None)
+    if isinstance(edit_date, datetime):
+        return edit_date
+    date = getattr(message, "date", None)
+    return date if isinstance(date, datetime) else None
 
 
 def media_read_date(message: object) -> datetime | None:

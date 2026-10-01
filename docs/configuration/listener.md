@@ -56,7 +56,7 @@ Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_
 
 ## Edits
 
-The listener applies an edit only when the text or the formatting changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. An edit to a message that is not in the archive yet stores the message, with its current text and edit time, the way a new message is stored. It is stored quietly: the message is not new, so the viewer gets no new row and no notification or Web Push is sent. That needs `LISTEN_NEW_MESSAGES`, and the text from before the edit is not known unless a backup run read it at the same time, in which case it is kept as an earlier version.
+The listener applies an edit only when the text or the formatting changed and the edit is not older than the stored version. An edit that carries no date is applied only when the message was never edited before. An edit to a message that is not in the archive yet stores the message, with its current text and edit time, the way a new message is stored. It is stored quietly: the message is not new, so the viewer gets no new row, no notification or Web Push is sent, and no `message_edited` webhook fires. It counts as **Stored as new messages** in the listener's statistics, apart from the skipped edits. That needs `LISTEN_NEW_MESSAGES`, and the text from before the edit is not known unless a backup run read it at the same time, in which case it is kept as an earlier version.
 
 When an edit is applied, the previous text and its formatting are saved as a version, named as seen by the listener. The viewer marks the message with a pencil and the number of saved versions, says when the last edit was, and lets you open the earlier texts. See [Reactions, edits and deletions](../viewer/using-the-viewer.md#reactions-edits-and-deletions).
 
@@ -67,6 +67,8 @@ Telegram moves a message's edit time when only its reactions change, and flags t
 An edit that replaces the photo or file is an edit too, even with the same caption. The old media stays in the archive, as a version beside the earlier text, and the new one is downloaded by the same rules as a new message's media: `LISTEN_NEW_MESSAGES_MEDIA`, `SKIP_MEDIA_CHAT_IDS`, `MAX_MEDIA_SIZE_MB` and the media type filters. A file the listener does not fetch waits for the backup's pending downloads. The sync (`SYNC_DELETIONS_EDITS`) does the same for edits it finds. Only an edit Telegram shows replaces media: a reaction, which Telegram sends as a hidden edit, never does. Media the archive cannot identify, from a Telegram Desktop import or an older file name that does not start with Telegram's id, is not compared. Nor is a link preview's card picture, which Telegram can change for a message nobody edited.
 
 An edit that changes only the formatting, such as a word made bold, is an edit too: it saves a version with the old formatting, moves the edit time and fires the webhook, with the same old and new text. It needs an edit time newer than the stored one, since every edit moves it. The edit time counts whole seconds, and a bot can edit twice within one, so a live edit with other formatting at the stored edit time is applied too. The block tree of a Rich Text Editor message is formatting as well, and its old tree is kept in the version. An edit Telegram hides replaces no formatting. It only fills the formatting of a message archived before the archive kept formatting.
+
+Since 9.0 the backup and the listener store an empty formatting list for a message with no formatting, so bold added later to a plain message is an edit too. A message archived before 9.0 has no list: its formatting is unknown, and formatting that appears on it is filled in without a version or a new edit time. A read that finds it still plain leaves it unknown.
 
 ## Deletions
 
@@ -124,7 +126,14 @@ The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the sch
 
 In the viewer, the sidebar header shows **Live**, with a green dot and the last backup time, under the archive's name while a listener is active. For the master login, the **Live sync** section of Archive status shows one row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
-When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter.
+When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter. The edit counters are:
+
+| Counter | Counts |
+|---------|--------|
+| Received | Every edit event of a chat the listener follows. |
+| Applied | Edits that changed the archive: a version was kept. |
+| Skipped | Edits that changed nothing (already current, older, or a reaction), and edits of a message not stored yet that the listener could not store either, such as with `LISTEN_NEW_MESSAGES=false`. |
+| Stored as new messages | Edits of a message the archive had not stored yet, which the listener stored with its current text. |
 
 ## How changes reach the viewer
 
