@@ -48,7 +48,13 @@ from ..db.adapter import (
     parse_entitlement_column,
 )
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_STATUSES, account_metadata_key
-from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name, utcnow_naive
+from ..message_utils import (
+    METADATA_ONLY_MEDIA_TYPES,
+    describe_exception,
+    media_display_filename,
+    resolve_sender_display_name,
+    utcnow_naive,
+)
 from ..realtime import RealtimeListener, resolve_internal_push_secret
 from ..status import collect_status
 from ..transcription_contract import (
@@ -3048,7 +3054,14 @@ def _attach_media_url(media: dict, message_id: object, chat_ref: str) -> None:
     media_key = _url_media_key(message_id, media.get("type"))
     storage_id = media.get("id")
     media["id"] = media_key
-    if media_key and _media_relative_path(media.get("file_path")):
+    # A metadata-only kind (a location, a contact, a poll, ...) has no file.
+    # Rows written by older releases still carry a path to an empty
+    # placeholder; it gets no URL, so the viewer draws the card instead.
+    if (
+        media_key
+        and media.get("type") not in METADATA_ONLY_MEDIA_TYPES
+        and _media_relative_path(media.get("file_path"))
+    ):
         media["url"] = _current_media_url(chat_ref, media_key, storage_id)
     else:
         media["url"] = None

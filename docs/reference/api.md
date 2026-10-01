@@ -224,7 +224,17 @@ curl -s -b jar.txt \
   'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&edited_only=true'
 ```
 
-Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
+Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. A kind with no file (`geo`, `contact`, `poll`, `venue`, `geo_live` and the others in [Media](../configuration/media.md)) has `media.url` null, even when an older release left a `file_path` on it. What it holds is in `raw_data` under a key named after the kind:
+
+| Key | Fields |
+|-----|--------|
+| `geo` | `lat`, `long`, `accuracy_radius` |
+| `contact` | `first_name`, `last_name`, `phone_number`, `vcard`, `user_id` (0 when the number has no Telegram account) |
+| `venue` | `title`, `address`, `provider`, `venue_id`, `venue_type`, `lat`, `long`, `accuracy_radius` |
+| `geo_live` | `lat`, `long`, `period`, `heading`, `accuracy_radius`, `at` (when that position was current, UTC), `earlier` (positions earlier reads saw, oldest first) |
+| `poll` | `question`, `answers`, `closed`, `public_voters`, `multiple_choice`, `quiz`, `results` |
+
+A field Telegram did not send is left out, so a location Telegram sent without a point has no `lat` or `long`. A message with no media row (the listener writes none for these kinds) still has its key in `raw_data`. A reply also carries `reply_to_media_type`, the kind of the message it answers, which comes from that message's `raw_data` when it has no media row, and `reply_to_media_title`, a venue's title, when it answers a venue. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 
 In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
 
@@ -342,7 +352,7 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
 | `versions` | Every earlier text the archive kept of the message, oldest first, whatever its date. Each has `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced). An empty list means the archive kept no earlier text. |
 
-A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions, with the fields of [Message versions](#message-versions), picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
+A message with voice or media transcripts also has a `transcripts` list. A location, a contact, a poll or another kind with no file has a `media_payload` object, keyed and shaped as in `raw_data` (see [Paging through messages](#paging-through-messages)). `message_versions` is the older flat list of earlier versions, with the fields of [Message versions](#message-versions), picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
 
 The messages and their `versions` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
 
