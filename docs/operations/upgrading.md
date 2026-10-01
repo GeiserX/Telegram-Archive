@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 8.19.0 | Nothing to set. The first start runs migrations 034, 035 and 036, which add nullable columns and one new table, `media_versions`, and copy no data. `MASS_OPERATION_THRESHOLD` now counts deletions only, since edits are no longer limited. With `DELETION_MODE=hard`, deleting a chat or `SKIP_MEDIA_DELETE_EXISTING`, the earlier media an edit replaced is removed with the message's current media. A message archived before this release keeps a pencil from a reaction-only edit until a backup reads it again. |
+| 8.19.0 | Nothing to set. The first start runs migrations 034, 035 and 036, which add nullable columns and one new table, `media_versions`, and copy no data. `MASS_OPERATION_THRESHOLD` now counts deletions only, since edits are no longer limited. With `DELETION_MODE=hard`, deleting a chat, or `SKIP_MEDIA_DELETE_EXISTING` for the chats in `SKIP_MEDIA_CHAT_IDS`, the earlier media an edit replaced is removed with the message's current media. A message archived before this release keeps a pencil from a reaction-only edit until a backup reads it again. |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
 | 8.17.0 | Migration 033 runs on start. The module is now `telegram_archive`, and `python -m src` keeps working. See [Upgrading to 8.17.0](#upgrading-to-8170). |
 | 8.16.1 | Nothing. |
