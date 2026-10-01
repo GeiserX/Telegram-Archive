@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Added
+- **The chat list shows each chat's newest message.** The second line of a chat row is now the newest message not deleted in Telegram, the way Telegram's own list shows it: the sender's first name first in a group, `You:` for the account's own message, and a word for a message with no text, such as `Photo`, `Voice message`, `Location` or `Contact`. A poll shows its question. A message deleted in Telegram is skipped in the list and still shows in the chat with its mark. The kind of chat and its member count move to the line's tooltip and the info panel, and fill the line when a chat has no message to show. `/api/chats` returns the preview with every row as `preview`: the text on one line and cut to 100 characters, the sender's label, the kind, the date and whether the account sent it. It is read in one query per page from the copy of the chat the row opens, under the same restrictions as the chat's messages, so a viewer limited to some accounts, a share link and a login without downloads see only what they could open. The chat's last message date and the order of the list are unchanged. See [The chat list preview](reference/api.md#the-chat-list-preview).
+
 ## [8.19.0] - 2026-10-01
 
 Edits are kept whole. An edit keeps its formatting, says which path saw it, and keeps a photo or file it replaced, so the history panel shows every version as it looked. A reaction no longer marks a message edited, a burst of reactions no longer drops real edits, and an edit of a message the listener had not stored is kept. The viewer shows reactions that were taken back and opens What changed for one chat, a chat export says which messages were deleted or edited, and the browser now asks the viewer again before it reuses cached media. Upgrading runs migrations 034, 035 and 036.

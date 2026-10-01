@@ -746,6 +746,20 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         )
         s = ChatScript(1, OWNER_PERSONAL, uid, first_id=first_id)
         filler(s, "casual", [uid, OWNER_PERSONAL], now - (days_ago + 30) * day, now - days_ago * day, 14)
+        # The chat list preview's cases. Kofi's newest message was deleted in
+        # Telegram, so the list shows the one before it. Tobias's newest is a
+        # location and Mirela's a contact: metadata-only rows the list names
+        # with a word.
+        last = now - days_ago * day + timedelta(hours=1)
+        if uid == KOFI:
+            s.add(last, OWNER_PERSONAL, "See you at the trailhead at seven.")
+            s.add(
+                last + timedelta(minutes=3), KOFI, "Running ten minutes late, sorry", deleted_after=timedelta(minutes=1)
+            )
+        elif uid == TOBIAS:
+            s.add(last, TOBIAS, "", media={"type": "geo", "metadata_only": True})
+        elif uid == MIRELA:
+            s.add(last, MIRELA, "", media={"type": "contact", "metadata_only": True})
         scripts.append(s)
 
     # --- Book Club: a basic group ---------------------------------------------------
@@ -791,6 +805,26 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
             ("Chapter 4 has the best line in the book.", None),
         ],
         edit_source="sync",
+    )
+    # A poll is the newest message: the list shows its question after the sender.
+    s.add(
+        now - timedelta(hours=20),
+        NOOR,
+        "",
+        raw={
+            "poll": {
+                "question": "Which book should we read in spring?",
+                "answers": [{"text": "The Salt Orchard", "option": "MA=="}, {"text": "Winter Lines", "option": "MQ=="}],
+                "closed": False,
+                "public_voters": True,
+                "multiple_choice": False,
+                "quiz": False,
+                "results": {
+                    "total_voters": 3,
+                    "results": [{"option": "MA==", "voters": 2}, {"option": "MQ==", "voters": 1}],
+                },
+            }
+        },
     )
     scripts.append(s)
 
@@ -1034,6 +1068,11 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
             kind = m["type"]
             file_id = int(hashlib.sha256(m["id"].encode()).hexdigest()[:8], 16)
             skip = m.pop("skip", None)
+            if m.pop("metadata_only", False):
+                # A location or a contact: a payload, not a file, stored the way
+                # the backup stores it.
+                m.update(file_size=0, downloaded=False)
+                continue
             if skip in ("oversize", "filtered", "pending"):
                 # Never downloaded: the row says why, or nothing when it is only
                 # waiting for the next backup.

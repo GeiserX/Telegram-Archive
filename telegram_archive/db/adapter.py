@@ -515,6 +515,65 @@ def _raw_data_dict(raw_data: Any) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# How much of a message the chat list's second line carries. The line shows
+# about forty characters on a phone; the rest is room for a wide sidebar.
+CHAT_PREVIEW_TEXT_LENGTH = 100
+
+
+def _preview_text(text: str | None) -> str | None:
+    """``text`` on one line, cut to ``CHAT_PREVIEW_TEXT_LENGTH`` with an ellipsis."""
+    if not isinstance(text, str):
+        return None
+    folded = " ".join(text.split())
+    if not folded:
+        return None
+    if len(folded) > CHAT_PREVIEW_TEXT_LENGTH:
+        return folded[:CHAT_PREVIEW_TEXT_LENGTH].rstrip() + "\u2026"
+    return folded
+
+
+def _chat_preview(row: Any, chat_type: str | None) -> dict[str, Any]:
+    """One chat-list preview from a row of ``_attach_chat_previews``' query."""
+    raw = _raw_data_dict(row.raw_data) or {}
+    text = _preview_text(row.text)
+    outgoing = bool(row.is_outgoing)
+    action = None
+    action_title = None
+    if raw.get("service_type") == "service":
+        kind = "service"
+        if text is None:
+            action = raw.get("action_type") if isinstance(raw.get("action_type"), str) else None
+            action_title = raw.get("new_title") if isinstance(raw.get("new_title"), str) else None
+    elif isinstance(raw.get("poll"), dict):
+        kind = "poll"
+        if text is None:
+            text = _preview_text(raw["poll"].get("question"))
+    elif row.media_type:
+        kind = row.media_type
+    elif text is not None:
+        kind = "text"
+    else:
+        kind = "message"
+
+    sender = None
+    if kind != "service" and chat_type != "channel":
+        if outgoing:
+            sender = "You"
+        elif chat_type != PRIVATE_CHAT_TYPE:
+            first_name = row.first_name.strip() if isinstance(row.first_name, str) else ""
+            sender = first_name or resolve_sender_display_name(row.sender_name, None, row.last_name, row.username)
+    return {
+        "message_id": row.id,
+        "date": row.date,
+        "text": text,
+        "sender": sender,
+        "kind": kind,
+        "outgoing": outgoing,
+        "action": action,
+        "action_title": action_title,
+    }
+
+
 def _json_or_none(value: str | None) -> Any:
     """A JSON column's value, or None when it is empty or unreadable."""
     if not value:
@@ -1631,6 +1690,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         scope: ChatScope | None = None,
         fold_shared: bool = False,
+        with_preview: bool = False,
     ) -> list[dict[str, Any]]:
         """Get chats with their last message date, with optional pagination and search.
 
@@ -1657,6 +1717,10 @@ class DatabaseAdapter:
                 the alternative (fold the filtered set) makes the same chat
                 appear and disappear depending on which account archived it,
                 and picks a different ref per view.
+            with_preview: Attach ``preview`` to every row: the chat's newest
+                message not deleted in Telegram, the way Telegram's own chat
+                list shows it (see ``_attach_chat_previews``). Only the viewer's
+                chat list asks for it.
         """
         async with self.db_manager.async_session_factory() as session:
             # Last message date, as a CORRELATED scalar subquery — one
@@ -1765,9 +1829,115 @@ class DatabaseAdapter:
                     "last_message_date": row.last_message_date,
                 }
                 chats.append(chat_dict)
+            if with_preview:
+                await self._attach_chat_previews(session, chats)
         if fold_shared:
             await self._attach_chat_accounts(chats, scope=scope)
         return chats
+
+    async def _attach_chat_previews(self, session, chats: list[dict[str, Any]]) -> None:
+        """Give every row in ``chats`` its ``preview``, in place, in ONE query.
+
+        The preview is the chat's newest message NOT deleted in Telegram, which
+        is what Telegram's own list shows; the chat itself still shows the
+        deletion. It is read from the row's own ``(account_id, id)`` copy, the
+        same copy the row's ref opens, so it can never show a message the
+        principal could not open in the chat: the page passed in is already cut
+        to the principal's scope and folded.
+
+        Cost: one statement per page, never per row. Each row costs one seek of
+        ``idx_messages_chat_date_desc`` for the newest kept message (the ORDER BY
+        rides the index, so the scan stops at the first row that is neither
+        another account's copy nor deleted), one primary-key lookup, and one
+        ``idx_media_message`` probe for the media kind. A chat whose whole tail
+        was deleted walks back through that tail; the archive keeps no index on
+        ``is_deleted`` because every other read wants deleted rows too.
+
+        Shape (``None`` for a chat with no kept message)::
+
+            {"message_id", "date", "text", "sender", "kind", "outgoing",
+             "action", "action_title"}
+
+        * ``text``: whitespace folded to single spaces, cut to
+          ``CHAT_PREVIEW_TEXT_LENGTH`` characters with an ellipsis. A poll with
+          no text gives its question. None when there is nothing to quote.
+        * ``kind``: ``text``, ``service``, ``poll``, the media type the archive
+          stored (``photo``, ``voice``, ``geo``, ``contact`` ...) or ``message``
+          when a message has neither text nor a media row (media capture off).
+        * ``sender``: ``"You"`` for the account's own message in a private chat
+          or a group, the sender's first name for anyone else in a group, and
+          None in a channel, in a private chat for the other person, and for a
+          service row, whose sentence already names its actor.
+        * ``action`` / ``action_title``: a service row's ``action_type`` and
+          ``new_title`` when its text is empty (rows from before 7.28), so the
+          viewer can word it the way the chat does.
+        """
+        for chat in chats:
+            chat["preview"] = None
+        keys = sorted({(chat["account_id"], chat["id"]) for chat in chats})
+        if not keys:
+            return
+
+        newest_kept = aliased(Message)
+        newest_kept_id = (
+            select(newest_kept.id)
+            .where(
+                newest_kept.account_id == Chat.account_id,
+                newest_kept.chat_id == Chat.id,
+                or_(newest_kept.is_deleted == 0, newest_kept.is_deleted.is_(None)),
+            )
+            .order_by(newest_kept.date.desc(), newest_kept.id.desc())
+            .limit(1)
+            .correlate(Chat)
+            .scalar_subquery()
+        )
+        media_type = (
+            select(Media.type)
+            .where(
+                Media.account_id == Message.account_id,
+                Media.chat_id == Message.chat_id,
+                Media.message_id == Message.id,
+            )
+            .order_by(Media.id)
+            .limit(1)
+            .correlate(Message)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(
+                Message.account_id,
+                Message.chat_id,
+                Message.id,
+                Message.date,
+                # Enough characters to survive the whitespace fold, never the
+                # whole text: a long post must not travel to be cut to a line.
+                func.substr(Message.text, 1, CHAT_PREVIEW_TEXT_LENGTH * 4).label("text"),
+                Message.sender_name,
+                Message.is_outgoing,
+                Message.raw_data,
+                User.first_name,
+                User.last_name,
+                User.username,
+                media_type.label("media_type"),
+            )
+            .select_from(Chat)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Chat.account_id,
+                    Message.chat_id == Chat.id,
+                    Message.id == newest_kept_id,
+                ),
+            )
+            .outerjoin(User, Message.sender_id == User.id)
+            .where(tuple_(Chat.account_id, Chat.id).in_(keys))
+        )
+        result = await session.execute(stmt)
+        previews = {(row.account_id, row.chat_id): row for row in result}
+        for chat in chats:
+            row = previews.get((chat["account_id"], chat["id"]))
+            if row is not None:
+                chat["preview"] = _chat_preview(row, chat.get("type"))
 
     async def _attach_chat_accounts(self, chats: list[dict[str, Any]], *, scope: ChatScope | None) -> None:
         """Give every row in ``chats`` its ``accounts`` list, in place.

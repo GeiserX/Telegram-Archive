@@ -3117,6 +3117,12 @@ async def get_chats(
         # one row carrying both account ids (8.12). It rides into the SAME two
         # calls as the scope, for the same reason: total and has_more have to
         # count the rows the page actually shows.
+        #
+        # with_preview (9.0) is the second line of each row: the newest message
+        # not deleted in Telegram, read from the very copy the row's ref opens,
+        # so it shows nothing the principal could not open in the chat. It is
+        # text and a media kind only, never a file or a transcript, so a
+        # no-download login and a share link see it as they see the chat.
         scope = _chat_scope(user)
         chats = await db.get_all_chats(
             limit=limit,
@@ -3126,6 +3132,7 @@ async def get_chats(
             folder_id=folder_id,
             scope=scope,
             fold_shared=True,
+            with_preview=True,
         )
         total = await db.get_chat_count(
             search=search, archived=archived, folder_id=folder_id, scope=scope, fold_shared=True
