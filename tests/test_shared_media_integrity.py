@@ -893,3 +893,91 @@ class TestRemainingGuards:
         with patch("telegram_archive.telegram_backup.place_copy", side_effect=appears_meanwhile):
             assert backup._fill_broken_row_path(existing, result)["file_path"] == link
         assert backup._fill_broken_row_path(None, result) is result
+
+
+class TestBackupTellsTheOperatorAboutBrokenLinks:
+    """A backup run that meets downloaded rows behind broken links says so once.
+
+    Without check-media, VERIFY_MEDIA or transcription, nothing else would tell
+    the operator. Only rows the run reads are counted, and the warning carries
+    a count and the command, never a path, chat id or file name.
+    """
+
+    def _backup(self, media, *, verify_media=False):
+        backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
+        backup.config = MagicMock(media_path=media, verify_media=verify_media, download_youtube_videos=False)
+        backup._broken_links_met = set()
+        return backup
+
+    async def _meet(self, backup, row, message_id=7):
+        """The reuse check of _media_row_for, stopped right after it (a declined
+        YouTube preview returns None before any download)."""
+        with patch("telegram_archive.telegram_backup.is_youtube_preview_video", return_value=True):
+            return await backup._media_row_for(MagicMock(id=message_id), CHANNEL, MagicMock(), "photo", None, row)
+
+    async def test_a_run_counts_each_broken_row_once_and_warns_with_the_count_only(self, tmp_path, caplog):
+        media = str(tmp_path)
+        _legacy, link = _production_shape(media, legacy_copy=False)
+        other = os.path.join(media, str(CHANNEL), "5000000000000000002.jpg")
+        os.symlink(os.path.join("..", "_shared", "5000000000000000002.jpg"), other)
+        backup = self._backup(media)
+        first = {"id": f"{CHANNEL}_7_photo", "downloaded": 1, "file_path": link}
+        second = {"id": f"{CHANNEL}_8_photo", "downloaded": 1, "file_path": other}
+
+        # The broken row is not reused: the run goes on to fetch it.
+        assert await self._meet(backup, first) is None
+        await self._meet(backup, first)
+        await self._meet(backup, second, message_id=8)
+        with caplog.at_level("WARNING", logger="telegram_archive.telegram_backup"):
+            backup._warn_broken_media_links()
+
+        [record] = [r for r in caplog.records if "check-media" in r.getMessage()]
+        message = record.getMessage()
+        assert "met 2 downloaded media file(s)" in message
+        assert "`telegram-archive check-media`" in message
+        for secret in (str(CHANNEL), LEGACY_FOLDER, FILE, media):
+            assert secret not in message
+        # Nothing on disk changed: the link is still there, pointing where it did.
+        assert os.readlink(link) == os.path.join("..", "_shared", FILE)
+
+    async def test_a_present_file_is_reused_and_a_clean_run_says_nothing(self, tmp_path, caplog):
+        media = str(tmp_path)
+        path = os.path.join(media, str(CHANNEL), FILE)
+        os.makedirs(os.path.dirname(path))
+        with open(path, "wb") as f:
+            f.write(BYTES)
+        backup = self._backup(media)
+        row = {"id": f"{CHANNEL}_7_photo", "downloaded": 1, "file_path": path}
+
+        assert await self._meet(backup, row) is row
+        with caplog.at_level("WARNING", logger="telegram_archive.telegram_backup"):
+            backup._warn_broken_media_links()
+
+        assert backup._broken_links_met == set()
+        assert not [r for r in caplog.records if "check-media" in r.getMessage()]
+
+    async def test_with_verify_media_the_run_repairs_and_adds_no_warning(self, tmp_path, caplog):
+        media = str(tmp_path)
+        _legacy, link = _production_shape(media, legacy_copy=False)
+        backup = self._backup(media, verify_media=True)
+
+        await self._meet(backup, {"id": f"{CHANNEL}_7_photo", "downloaded": 1, "file_path": link})
+        with caplog.at_level("WARNING", logger="telegram_archive.telegram_backup"):
+            backup._warn_broken_media_links()
+
+        assert not [r for r in caplog.records if "check-media" in r.getMessage()]
+
+    async def test_each_run_starts_from_zero_and_warns_even_when_it_fails(self, tmp_path):
+        backup = self._backup(str(tmp_path))
+        backup._broken_links_met = {"left over from the run before"}
+        backup.client = MagicMock()
+        backup.client.start = AsyncMock(side_effect=RuntimeError("offline"))
+        backup.db = AsyncMock()
+        seen = []
+        backup._warn_broken_media_links = lambda: seen.append(set(backup._broken_links_met))
+
+        with pytest.raises(RuntimeError):
+            await backup.backup_all()
+
+        assert seen == [set()]
