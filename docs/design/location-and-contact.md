@@ -35,7 +35,7 @@ raw_data["poll"]     = unchanged shape, now also written by the listener
 
 ## Writer changes
 
-One builder in `message_utils.py`: `extract_media_payload(media) -> (key, payload) | None`. It handles `geo`, `contact` and `poll` by class name (so a bare `MagicMock` stays inert, like `_EXTENDED_MEDIA_TYPES`), and hands every other kind to `extract_extended_media_details`. The poll code and `_text_with_entities_to_string` move into `message_utils.py` unchanged. The venue and live location branches gain the new fields.
+One builder in `message_utils.py`: `extract_media_payload(media, seen_at=None) -> (key, payload) | None`. `seen_at` is the message's edit date, else its date (`message_seen_at`), and becomes a live location's `at`. It handles `geo`, `contact` and `poll` by class name (so a bare `MagicMock` stays inert, like `_EXTENDED_MEDIA_TYPES`), and hands every other kind to `extract_extended_media_details`. The poll code and `_text_with_entities_to_string` move into `message_utils.py` unchanged. The venue and live location branches gain the new fields.
 
 | Writer | Change |
 | --- | --- |
@@ -44,13 +44,13 @@ One builder in `message_utils.py`: `extract_media_payload(media) -> (key, payloa
 | Listener, edit of an unknown message | Falls back to `on_new_message`, so it is covered. |
 | Listener, `on_message_edited` | No change. Live location updates are not followed (see below). |
 | Sync, `_sync_deletions_and_edits` | No change. It writes text, `edit_hide` and reactions only. |
-| Telegram Desktop import, JSON | Maps the export's location, venue, live location, contact and poll fields to the same keys. The field names must be checked against a Desktop export of a demo account before coding. If a field is not there, that kind is skipped. |
+| Telegram Desktop import, JSON | Maps the export's location, venue, live location, contact and poll fields to the same keys. The field names are the ones Telegram Desktop's `export_output_json.cpp` writes: `location_information`, `live_location_period_seconds`, `place_name`, `address`, `contact_information` and `poll`. The export has no poll option bytes, so an imported answer's `option` is its position. |
 | Telegram Desktop import, HTML | No change. The HTML has no structured fields. |
-| `merge`, CLI `export` | No change. Both copy `raw_data` as it is. |
+| `merge`, CLI `export` | No change. Both copy `raw_data` as it is. The viewer's export, which carries no `raw_data`, gains `media_payload` with these keys. |
 
 ### The upsert keeps payload keys
 
-`_MEDIA_PAYLOAD_KEYS` lists the payload keys: `poll`, `geo`, `contact`, `venue`, `geo_live`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `game`, `unsupported`. In every branch of the upsert (`insert_message` and `insert_messages_batch`), a payload key the archive holds and the incoming `raw_data` lacks is kept. A key the incoming one carries still wins, so a poll's later tally replaces the earlier one, as today. This closes the `import --merge` trap.
+`MEDIA_PAYLOAD_KEYS` in `message_utils.py` lists the payload keys, one per metadata-only media type: `poll`, `geo`, `contact`, `venue`, `geo_live`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `game`, `unsupported`. In every branch of the upsert (`insert_message` and `insert_messages_batch`), a payload key the archive holds and the incoming `raw_data` lacks is kept. A key the incoming one carries still wins, so a poll's later tally replaces the earlier one, as today. This closes the `import --merge` trap.
 
 ### Live location
 
@@ -93,7 +93,7 @@ Live location                    Contact
 - **Venue.** The same card, with the title on one line (semibold, cut with an ellipsis) and the address under it in up to two lines. The link uses the coordinates. Provider and venue id are not shown, since using them would mean a request to Foursquare or Google. This replaces the venue chip.
 - **Live location.** The same card, with the sender's avatar inside the pin, as all four official apps draw it. Title "Live location". Subtitle "Last position, updated <time>" from `geo_live.at`, in Telegram Desktop's absolute forms ("today at 14:05", "yesterday at 09:10", "3 Mar 2025 at 18:00"), computed once per render with no timer. While `date + period` is still ahead, it adds "Sharing until <time>", or "until turned off" for period `2147483647`. It never says the share is live now. This replaces the live location chip.
 - **Contact.** An initials circle in the peer colour (`getInitials` and `avatar-initials`). The name in semibold, falling back to the phone and then to "Contact". The phone as stored, with a "+" in front when it is all digits. A `tel:` link whose href keeps only "+" and digits, and a copy button with the toast "Phone copied". No phone: "Unknown number", with no call and no copy.
-- **Words.** `MEDIA_TYPE_WORDS`, `replyMediaLabels` and the deleted-kind labels gain "Location" (geo and venue), "Live location" and "Contact". A venue in a reply reads "Location, <title>". A reply to a location stops saying "geo".
+- **Words.** `MEDIA_TYPE_WORDS`, `replyMediaLabels` and the deleted-kind labels gain "Location" (geo and venue), "Live location" and "Contact". A venue in a reply reads "Location, <title>", from a `reply_to_media_title` the reply query takes from the target's `raw_data`, which also names the kind of a target with no media row. A reply to a location stops saying "geo".
 - **No file branch.** `_attach_message_payload_urls` in `web/main.py` gives no `media.url` to a metadata-only type, and `mediaPlaceholder` never shows "File / Not downloaded yet" for one. So an old `.bin` row shows its card, not a broken download link, even before the cleanup runs.
 
 Left out on purpose: "Add contact", "Message", directions, the countdown ring, ticking timers, the heading arrow and the accuracy circle, provider lookups, a vCard details box, and a link from a contact to its chat. `heading`, `accuracy_radius` and `vcard` are stored so any of these can come later.
