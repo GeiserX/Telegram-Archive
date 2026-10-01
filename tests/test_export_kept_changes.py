@@ -126,6 +126,27 @@ class TestViewerExport:
         )
         json.dumps(list(exported.values()))  # serialisable as the route streams it
 
+    async def test_carries_the_hidden_edit_flag_as_the_command_does(self, real_adapter):
+        """A reaction moves edit_date and sets edit_hide: without the flag the row reads as edited."""
+        await real_adapter.upsert_chat({"id": CHAT, "type": "group", "title": "Fixture Group"}, account_id=1)
+        for message_id, edit_hide in ((6, 1), (7, 0), (8, None)):
+            await real_adapter.insert_message(
+                {
+                    "id": message_id,
+                    "chat_id": CHAT,
+                    "text": f"message {message_id}",
+                    "date": SENT,
+                    "edit_date": FIRST_EDIT,
+                    "edit_hide": edit_hide,
+                    "sender_name": "Fixture Sender",
+                },
+                account_id=1,
+            )
+        viewer = {m["id"]: m["edit_hide"] async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)}
+        command = {m["id"]: m["edit_hide"] for m in await real_adapter.get_messages_for_backup_export(CHAT)}
+        assert viewer == {6: 1, 7: 0, 8: None}
+        assert viewer == command
+
     async def test_unscoped_export_gives_each_account_its_own_versions(self, real_adapter):
         await _seed(real_adapter)
         exported = [m async for m in real_adapter.get_messages_for_export(CHAT) if m["id"] == 1]
