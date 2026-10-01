@@ -12,10 +12,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -186,6 +188,90 @@ def _detect_media(msg: dict) -> tuple[str | None, str | None, str | None]:
         return media_type, rel, fname
 
     return None, None, None
+
+
+def _export_number(value: Any) -> float | None:
+    """A finite number from the export, else None (never a bool)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _export_point(value: Any) -> dict[str, float]:
+    """``{"lat", "long"}`` from an export's ``location_information``; empty when it has none."""
+    if not isinstance(value, dict):
+        return {}
+    lat = _export_number(value.get("latitude"))
+    long = _export_number(value.get("longitude"))
+    if lat is None or long is None:
+        return {}
+    return {"lat": lat, "long": long}
+
+
+def _export_media_payload(msg: dict, seen_at: datetime | None) -> tuple[str, dict] | None:
+    """(raw_data key, payload) for a location, venue, live location, contact or poll in a JSON export.
+
+    Telegram Desktop's JSON export (export_output_json.cpp) writes a venue as
+    ``place_name``/``address`` beside an optional ``location_information``, a
+    location as ``location_information`` (null when Telegram had no point), a
+    live location as that plus ``live_location_period_seconds``, a contact as
+    ``contact_information``, and a poll as ``poll`` with each answer's voters.
+    The keys and shapes are the ones the capture lanes write, so the viewer
+    draws an imported card like a captured one. An export carries no poll
+    option bytes, so an answer's ``option`` is its position in the list. Fields
+    the export does not have are left out.
+    """
+    poll = msg.get("poll")
+    if isinstance(poll, dict):
+        answers = []
+        tally = []
+        for index, answer in enumerate(poll.get("answers") or []):
+            if not isinstance(answer, dict):
+                continue
+            option = str(index)
+            answers.append({"text": flatten_text(answer.get("text")), "option": option})
+            voters = _export_number(answer.get("voters"))
+            entry: dict[str, Any] = {"option": option, "voters": int(voters) if voters is not None else 0}
+            if isinstance(answer.get("chosen"), bool):
+                entry["chosen"] = answer["chosen"]
+            tally.append(entry)
+        payload: dict[str, Any] = {"question": flatten_text(poll.get("question")), "answers": answers}
+        if isinstance(poll.get("closed"), bool):
+            payload["closed"] = poll["closed"]
+        total = _export_number(poll.get("total_voters"))
+        if total is not None:
+            payload["results"] = {"total_voters": int(total), "results": tally}
+        return "poll", payload
+
+    contact = msg.get("contact_information")
+    if isinstance(contact, dict):
+        return "contact", {
+            key: contact[key]
+            for key in ("first_name", "last_name", "phone_number")
+            if isinstance(contact.get(key), str)
+        }
+
+    if "place_name" in msg or "address" in msg:
+        payload = {
+            key: msg[source]
+            for key, source in (("title", "place_name"), ("address", "address"))
+            if isinstance(msg.get(source), str)
+        }
+        payload.update(_export_point(msg.get("location_information")))
+        return "venue", payload
+
+    if "location_information" in msg:
+        point = _export_point(msg.get("location_information"))
+        period = _export_number(msg.get("live_location_period_seconds"))
+        if period is None:
+            return "geo", point
+        payload = {**point, "period": int(period)}
+        if seen_at is not None:
+            payload["at"] = seen_at.isoformat()
+        return "geo_live", payload
+
+    return None
 
 
 def _resolve_export_media_path(export_root: Path, relative_path: str) -> Path | None:
@@ -1084,6 +1170,11 @@ class TelegramImporter:
             raw_data: dict[str, Any] = {}
             if msg.get("forwarded_from"):
                 raw_data["forward_from_name"] = msg["forwarded_from"]
+            edit_date = parse_edited_date(msg)
+            if msg_type != "service":
+                media_payload = _export_media_payload(msg, edit_date or date)
+                if media_payload is not None:
+                    raw_data[media_payload[0]] = media_payload[1]
 
             # Telegram Desktop exports carry no outgoing flag, no pinned flag and
             # no forwarder id (forwarded_from is a bare display name, kept in
@@ -1101,7 +1192,7 @@ class TelegramImporter:
                 "date": date,
                 "text": text,
                 "reply_to_msg_id": msg.get("reply_to_message_id"),
-                "edit_date": parse_edited_date(msg),
+                "edit_date": edit_date,
                 "raw_data": raw_data,
                 # The path named on any version this import writes.
                 "version_source": "import",
