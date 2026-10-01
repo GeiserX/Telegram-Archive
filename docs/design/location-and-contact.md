@@ -50,13 +50,13 @@ One builder in `message_utils.py`: `extract_media_payload(media, seen_at=None) -
 
 ### The upsert keeps payload keys
 
-`MEDIA_PAYLOAD_KEYS` in `message_utils.py` lists the payload keys, one per metadata-only media type: `poll`, `geo`, `contact`, `venue`, `geo_live`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `game`, `unsupported`. In every branch of the upsert (`insert_message` and `insert_messages_batch`), a payload key the archive holds and the incoming `raw_data` lacks is kept. A key the incoming one carries still wins, so a poll's later tally replaces the earlier one, as today. This closes the `import --merge` trap.
+`MEDIA_PAYLOAD_KEYS` in `message_utils.py` lists the payload keys, one per metadata-only media type: `poll`, `geo`, `contact`, `venue`, `geo_live`, `dice`, `invoice`, `story`, `giveaway`, `giveaway_results`, `game`, `unsupported`. In every branch of the upsert (`insert_message` and `insert_messages_batch`), a payload key the archive holds and the incoming `raw_data` lacks is kept. When both hold the key, a read from Telegram (the backup or the listener) wins, so a poll's later tally replaces the earlier one, as today. An import never replaces a key the archive holds: an export carries less than Telegram served (no poll option bytes, no vCard, no venue provider or accuracy), so it only fills a key the archive lacks. This closes the `import --merge` trap.
 
 ### Live location
 
 A live location is a message Telegram edits every few seconds while the share runs. The archive does not follow those edits. Following them would write a row per update, up to about a thousand for an eight-hour share, and the viewer draws no track.
 
-What it keeps is every position its own reads saw. That is the listener's first capture, then each sweep or backfill read. When an upsert meets a stored `geo_live`, one helper, `merge_geo_live(stored, incoming)`, decides:
+What it keeps is every position its own reads saw. That is the listener's first capture, then each sweep or backfill read. When a read from Telegram meets a stored `geo_live`, one helper, `merge_geo_live(stored, incoming)`, decides (an import keeps the stored one, as for every payload key):
 
 - The payload with the newer `at` becomes the top level. The other one goes into `earlier`, unless the same position is already there.
 - An older read never takes the top level.
@@ -105,7 +105,7 @@ A login without media access still sees coordinates and phone numbers. They are 
 `telegram-archive backfill-payloads [--apply] [--chat-id N]`. It is an operator command, because the work is a one-off: once old rows are filled, new captures carry the payload, and a permanent background pass would be machinery for nothing. It follows `reclassify-round-videos`: one run per account, connect and tear down, a summary dict, counts only. One difference: it is a dry run unless given `--apply`, where `merge` and `reclassify-round-videos` write unless given `--dry-run`. Writing only when asked is the safer default for a command that changes old rows.
 
 1. **Select.** A new adapter query lists messages that have a media row of type `geo`, `geo_live`, `venue`, `contact` or `poll` and whose `raw_data` lacks that type's key, plus rows of those types that still carry a `file_path`. It returns ids grouped by chat, ordered by message id.
-2. **Read.** Per chat, `get_entity` through `call_with_flood_retry`. A chat Telegram refuses is counted and skipped. Then `get_messages(chat, ids=batch)` in batches of 100 through `call_with_flood_retry`, which sleeps out a FloodWait and backs off on transient errors, with a one-second pause between batches. Results are matched by `message.id`, never by position.
+2. **Read.** Per chat, `get_entity` through `call_with_flood_retry`. A chat Telegram refuses (private, admin required, unknown peer) is counted and skipped. Any other error counts as an error, and the chat's rows stay on the work list. Then `get_messages(chat, ids=batch)` in batches of 100 through `call_with_flood_retry`, which sleeps out a FloodWait and backs off on transient errors, with a one-second pause between batches. A batch that still fails counts as an error and its rows stay. A FloodWait longer than `MAX_FLOOD_WAIT_SECONDS`, or past `MAX_FLOOD_RETRIES`, stops the run for the account, since every further request would be refused and could lengthen the wait. Results are matched by `message.id`, never by position.
 3. **Fill.** `extract_media_payload` builds the payload. A new adapter method, `add_missing_raw_data_keys(chat_id, message_id, payload)`, takes the row lock, adds only keys the row lacks, and returns whether it added anything. It is modelled on `_fill_missing_formatting`. It never goes through `insert_message`, so text, dates, reactions and every existing key stay as they are.
 4. **Not served.** A `None` result, or a message whose media is now another kind, is counted as "not served".
 5. **Report.** `[DRY RUN]` prefix when not applying. Counts per kind: filled, already present, not served, chats unavailable, leftover paths cleared, leftover paths kept.
@@ -118,11 +118,11 @@ Not covered: a location or contact in a `SKIP_MEDIA` chat left no media row and 
 
 This is part of the backfill, not a migration. A migration runs on every install at startup and would drop the only pointer to a contact vCard that may be the last copy of a contact Telegram no longer serves.
 
-For each row of a metadata-only type with a `file_path`, under `--apply`:
+For each row of a metadata-only type with a `file_path`, under `--apply`, except a row Telegram did not answer in this run because of an error (it stays on the work list untouched), and only when the media folder exists and holds files where the command runs (otherwise every path would read as missing, so every path is kept):
 
 - The payload key is present (it was already there, or this run filled it): clear the path.
-- The key is missing, the row is a contact, and the path names a regular, non-empty file: read it as a vCard, take the name, phone and full text into `raw_data["contact"]`, then clear the path. The contents are never logged.
-- The key is missing and the file is missing, empty or a dangling link: clear the path, since it points at nothing.
+- The key is missing, the row is a contact, and the path names a regular, non-empty file: read it as a vCard, take the name, phone and full text into `raw_data["contact"]`, then clear the path. The path is cleared only once the row holds a `contact` key. The contents are never logged.
+- The key is missing and the file is missing, empty or a dangling link: clear the path, since it points at nothing. Missing means "no such file" in a folder that exists inside the media folder. A permission error, a missing folder or a path outside the media folder keeps the path.
 - Otherwise (a non-empty file that does not parse): keep the path and count it as kept.
 
 Clearing sets `file_path`, `file_name` and `download_date` to NULL and `downloaded` to 0. The row stays. The disk is left alone: dangling links stay, and any vCard files stay in `_shared`. The shared-media-integrity work treats metadata-only rows as having no file, so it will not flag them. An operator who wants those files gone can delete them by hand.
@@ -130,7 +130,7 @@ Clearing sets `file_path`, `file_name` and `download_date` to NULL and `download
 ## What it deletes, overwrites or forgets
 
 - **Deletes.** Nothing. No row and no file.
-- **Overwrites.** A poll tally is replaced by a newer read's tally, as today. A live location's top-level position is replaced by a newer read's, and the old one moves into `earlier`. The backfill overwrites nothing. The cleanup nulls a `file_path` only when the payload is kept or the path points at nothing.
+- **Overwrites.** A poll tally is replaced by a newer read's tally from Telegram, as today. An import replaces no payload. A live location's top-level position is replaced by a newer read's, and the old one moves into `earlier`. The backfill overwrites nothing. The cleanup nulls a `file_path` only when the payload is kept or the path points at nothing.
 - **Forgets.** The positions of a live share between two archive reads, which the archive never saw. A path to a file that was never written. A vCard file's link to its row, but only after its content is in `raw_data["contact"]`.
 
 ## Tests to add
@@ -141,7 +141,7 @@ Demo coordinates and demo names only, in tests, docs and screenshots.
 - Both writers: sweep and listener store identical `geo`, `contact` and `poll` payloads for the same message. The listener's WebSocket frame carries them.
 - Upsert, on SQLite and on the real PostgreSQL engine: an archived poll, geo or contact survives an `import --merge` read that lacks it. `merge_geo_live` keeps the newer read on top, moves the older one into `earlier`, ignores an older read, and keeps coordinates against a read with none.
 - `add_missing_raw_data_keys`: adds a missing key, never replaces a present one, returns False the second time.
-- `backfill-payloads`: a dry run writes nothing. `--apply` fills. A second run fills zero. `None` and changed-kind results count as not served. A refused chat counts as unavailable. A FloodWait is slept out. Results returned out of order still land on the right ids. Cleanup clears only the cases above, recovers a demo vCard, keeps an unparseable file's path, and every file is still on disk afterwards. Multi-account runs as in `reclassify-round-videos`.
+- `backfill-payloads`: a dry run writes nothing. `--apply` fills. A second run fills zero. `None` and changed-kind results count as not served. A refused chat counts as unavailable. A FloodWait is slept out, and one too long to sleep out stops the run with no further request. Results returned out of order still land on the right ids. Cleanup clears only the cases above, recovers a demo vCard, keeps an unparseable file's path, and every file is still on disk afterwards. Multi-account runs as in `reclassify-round-videos`.
 - No PII in logs: extend `tests/test_no_account_pii_in_logs.py` with a demo phone and demo coordinates through both writers and the backfill.
 - Viewer, with the JS harness in `tests/test_frontend_bootstrap.py`: each card from its `raw_data` key, the fallback from `media.type` alone, the OpenStreetMap URL from numbers, bad coordinates giving "Location unavailable" and no link, the contact fallbacks, the `tel:` href with only "+" and digits, the live states (ahead, ended, until turned off), the reply and pinned words, and no file branch for a metadata-only row with a `file_path`. `web/main.py` gives such a row no `media.url`.
 - Contrast: the new text colours at 4.5:1 on both quote tokens in every theme, with the helper in `tests/test_sender_avatars.py`.

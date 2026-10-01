@@ -18,6 +18,7 @@ from telethon import TelegramClient
 from telethon.errors import (
     AuthKeyError,
     ChannelPrivateError,
+    ChatAdminRequiredError,
     ChatForbiddenError,
     ChatIdInvalidError,
     FileReferenceExpiredError,
@@ -1744,7 +1745,53 @@ class TelegramBackup:
         )
         return summary
 
-    def _leftover_path_action(self, row: dict) -> tuple[str, dict | None]:
+    def _visible_media_root(self) -> str | None:
+        """The real path of the media root when the archive's disk is visibly there, else None.
+
+        A missing, unreadable or empty media root means the command runs where
+        the media volume is not mounted (a host or PyPI install, a volume left
+        out, a root moved since capture). Every stored path would then read as
+        missing, so no path may be cleared on that evidence.
+        """
+        root = self.config.media_path
+        try:
+            if not os.path.isdir(root):
+                return None
+            with os.scandir(root) as entries:
+                if next(entries, None) is None:
+                    return None
+        except OSError:
+            return None
+        return os.path.realpath(root)
+
+    @staticmethod
+    def _missing_under_root(path: str, media_root: str) -> bool:
+        """True when ``path`` is missing (or a dangling link) inside a visible media root.
+
+        Only a definite "no such file" counts: a permission error or a path
+        component that is not a directory says nothing about the file. The
+        parent directory must exist and lie under the media root, so a path
+        from another mount, or under a directory that is gone, is never read
+        as missing.
+        """
+        try:
+            # stat() follows links: FileNotFoundError for a missing file and for a dangling link.
+            os.stat(path)
+            return False
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        parent = os.path.dirname(path)
+        try:
+            if not os.path.isdir(parent):
+                return False
+            real_parent = os.path.realpath(parent)
+            return os.path.commonpath([real_parent, media_root]) == media_root
+        except OSError, ValueError:
+            return False
+
+    def _leftover_path_action(self, row: dict, media_root: str | None) -> tuple[str, dict | None]:
         """What to do with a metadata-only row's leftover ``file_path``: ("clear" | "keep", recovered contact).
 
         Releases up to v7.28.0 gave geo, contact and poll rows a ``.bin``
@@ -1753,16 +1800,20 @@ class TelegramBackup:
         Telegram no longer serves. So the path is cleared when the payload is
         kept, when the file is missing, empty or a dangling link, or when a
         contact's vCard has just been read into a payload. A non-empty file
-        that does not parse keeps its path. Nothing on disk is changed, and
-        nothing read is logged.
+        that does not parse keeps its path. ``media_root`` is
+        ``_visible_media_root()``: with no visible media root every path is
+        kept, and a file counts as missing only inside it
+        (``_missing_under_root``). Nothing on disk is changed, and nothing
+        read is logged.
         """
+        if media_root is None:
+            return "keep", None
         if row["has_payload"]:
             return "clear", None
         path = resolve_stored_media_path(row["file_path"], self.config.media_path)
         if path is None:
             return "keep", None
-        # exists() follows links: False for a missing file and for a dangling link.
-        if not os.path.exists(path):
+        if self._missing_under_root(path, media_root):
             return "clear", None
         if not os.path.isfile(path):
             return "keep", None
@@ -1795,6 +1846,14 @@ class TelegramBackup:
         path of these rows (``_leftover_path_action``), and never touches the
         disk. Without ``apply`` it reads and counts but writes nothing.
 
+        A row Telegram never answered (its batch failed, or its chat could
+        not be reached for a reason other than a refusal) keeps its path
+        this run, so a transient error never turns into a vCard read in
+        place of the full payload. A FloodWait that ``call_with_flood_retry``
+        could not sleep out stops the run for this account
+        (``flood_wait_seconds``) rather than send more requests Telegram
+        will refuse.
+
         The rows still missing a key are the work list, so an interrupted run
         resumes by running again and a second run adds nothing new. Counts
         only are logged: a location or a phone number is message content.
@@ -1809,9 +1868,15 @@ class TelegramBackup:
             "paths_kept": 0,
             "vcards_recovered": 0,
             "errors": 0,
+            "flood_wait_seconds": 0,
         }
         prefix = "" if apply else "[DRY RUN] "
         logger.info(f"{prefix}Backfilling media payloads across {len(groups)} chat(s)...")
+        media_root = self._visible_media_root()
+        if media_root is None:
+            logger.warning(
+                f"{prefix}The media folder is missing, unreadable or empty here; every leftover path is kept"
+            )
         first_call = True
 
         for chat, rows in groups.items():
@@ -1820,16 +1885,26 @@ class TelegramBackup:
                 if row["has_payload"]:
                     kinds[row["type"]]["already_present"] += 1
             missing = [row for row in rows if not row["has_payload"]]
+            # Message ids Telegram never answered for: their paths stay this run.
+            unanswered: set[int] = set()
             entity = None
             if missing:
                 try:
                     entity = await call_with_flood_retry(self.client.get_entity, chat)
-                except Exception as e:
+                except (FloodWaitError, FloodPremiumWaitError) as e:
+                    summary["flood_wait_seconds"] = e.seconds
+                    break
+                except (ChannelPrivateError, ChatAdminRequiredError, ValueError) as e:
+                    # A refusal: Telegram answered that it no longer serves this chat.
                     # Type name only: the error text can name the peer.
                     summary["chats_unavailable"] += 1
                     for row in missing:
                         kinds[row["type"]]["not_served"] += 1
                     logger.warning(f"A chat is no longer served by Telegram ({type(e).__name__}); skipped")
+                except Exception as e:
+                    summary["errors"] += 1
+                    unanswered.update(row["message_id"] for row in missing)
+                    logger.warning(f"Could not reach a chat ({type(e).__name__}); its rows stay for the next run")
             if entity is not None:
                 for start in range(0, len(missing), PAYLOAD_BACKFILL_BATCH):
                     batch = missing[start : start + PAYLOAD_BACKFILL_BATCH]
@@ -1840,9 +1915,14 @@ class TelegramBackup:
                         messages = await call_with_flood_retry(
                             self.client.get_messages, entity, ids=[row["message_id"] for row in batch]
                         )
+                    except (FloodWaitError, FloodPremiumWaitError) as e:
+                        summary["flood_wait_seconds"] = e.seconds
+                        unanswered.update(row["message_id"] for row in missing[start:])
+                        break
                     except Exception as e:
                         # The rows stay on the work list for the next run.
                         summary["errors"] += 1
+                        unanswered.update(row["message_id"] for row in batch)
                         logger.warning(f"Could not read a batch of messages ({type(e).__name__})")
                         continue
                     # Matched by id, never by position.
@@ -1867,17 +1947,17 @@ class TelegramBackup:
                         row["has_payload"] = True
 
             for row in rows:
-                if not row["file_path"]:
+                if not row["file_path"] or row["message_id"] in unanswered:
                     continue
-                action, contact = self._leftover_path_action(row)
+                action, contact = self._leftover_path_action(row, media_root)
                 if action == "keep":
                     summary["paths_kept"] += 1
                     continue
                 if contact is not None:
-                    if apply:
-                        await self.db.add_missing_raw_data_keys(
-                            chat, row["message_id"], {"contact": contact}, account_id=self.account_id
-                        )
+                    if apply and not await self._store_recovered_contact(chat, row["message_id"], contact):
+                        # The content is in neither raw_data nor anywhere else: the path stays.
+                        summary["paths_kept"] += 1
+                        continue
                     summary["vcards_recovered"] += 1
                 if apply:
                     if await self.db.clear_metadata_media_path(chat, row["media_id"], account_id=self.account_id):
@@ -1885,6 +1965,14 @@ class TelegramBackup:
                 else:
                     summary["paths_cleared"] += 1
 
+            if summary["flood_wait_seconds"]:
+                break
+
+        if summary["flood_wait_seconds"]:
+            logger.warning(
+                f"{prefix}Media payload backfill stopped after a FloodWait of {summary['flood_wait_seconds']}s; "
+                "run again later"
+            )
         filled = sum(k["filled"] for k in kinds.values())
         not_served = sum(k["not_served"] for k in kinds.values())
         logger.info(
@@ -1893,6 +1981,17 @@ class TelegramBackup:
             f"cleared, {summary['paths_kept']} kept, {summary['errors']} error(s)"
         )
         return summary
+
+    async def _store_recovered_contact(self, chat: int, message_id: int, contact: dict) -> bool:
+        """Add a contact read from its vCard file; True when the row now holds a ``contact`` key.
+
+        A concurrent writer that stored the key first also counts: the
+        content is in raw_data either way. Anything else (the message row is
+        gone, its raw_data does not parse) is False, and the path must stay.
+        """
+        if await self.db.add_missing_raw_data_keys(chat, message_id, {"contact": contact}, account_id=self.account_id):
+            return True
+        return await self.db.raw_data_has_key(chat, message_id, "contact", account_id=self.account_id)
 
     async def _verify_and_redownload_media(self) -> None:
         """
@@ -5222,6 +5321,7 @@ def _add_backfill_summary(total: dict, summary: dict) -> None:
             bucket[key] = bucket.get(key, 0) + value
     for key in ("chats_scanned", "chats_unavailable", "paths_cleared", "paths_kept", "vcards_recovered", "errors"):
         total[key] += summary.get(key, 0)
+    total["flood_wait_seconds"] = max(total.get("flood_wait_seconds", 0), summary.get("flood_wait_seconds", 0))
 
 
 async def run_backfill_payloads(config: Config, chat_id: int | None = None, apply: bool = False) -> dict:
@@ -5239,6 +5339,7 @@ async def run_backfill_payloads(config: Config, chat_id: int | None = None, appl
         "paths_kept": 0,
         "vcards_recovered": 0,
         "errors": 0,
+        "flood_wait_seconds": 0,
     }
     failed = 0
     for account in config.accounts:

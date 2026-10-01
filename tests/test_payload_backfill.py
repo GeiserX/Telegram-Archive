@@ -285,20 +285,28 @@ class TestClearMetadataMediaPath:
 class FakeTelegram:
     """get_entity / get_messages over a dict of served messages, recording every call."""
 
-    def __init__(self, served, *, refused=(), reverse=False, flood_first=False):
+    def __init__(self, served, *, refused=(), reverse=False, flood_first=False, entity_error=None, batch_error=None):
         self.served = served  # {(chat, message_id): media}
         self.refused = set(refused)
         self.reverse = reverse
         self.flood_first = flood_first
+        self.entity_error = entity_error  # raised by every get_entity
+        self.batch_error = batch_error  # raised by every get_messages
         self.calls = []
+        self.entity_calls = []
 
     async def get_entity(self, chat):
+        self.entity_calls.append(chat)
         if chat in self.refused:
             raise ChannelPrivateError(request=None)
+        if self.entity_error is not None:
+            raise self.entity_error
         return SimpleNamespace(chat=chat)
 
     async def get_messages(self, entity, ids):
         self.calls.append(list(ids))
+        if self.batch_error is not None:
+            raise self.batch_error
         if self.flood_first:
             self.flood_first = False
             raise FloodWaitError(request=None, capture=3)
@@ -334,6 +342,7 @@ async def _seed_all_kinds(adapter):
 class TestBackfill:
     async def test_a_dry_run_reads_and_counts_but_writes_nothing(self, real_adapter, tmp_path):
         served = await _seed_all_kinds(real_adapter)
+        (tmp_path / "1_photo.jpg").write_bytes(b"demo")  # the media folder is there and holds files
         await _seed(real_adapter, CHAT_A, 9, "geo", file_path=str(tmp_path / "gone.bin"))
         served[(CHAT_A, 9)] = _media("geo")
 
@@ -427,6 +436,28 @@ class TestBackfill:
         assert slept and slept[0] >= 3
         assert len(client.calls) == 2
         assert summary["kinds"]["geo"]["filled"] == 1
+
+    @pytest.mark.parametrize("where", ["get_messages", "get_entity"])
+    async def test_a_flood_wait_too_long_to_sleep_out_stops_the_run(self, real_adapter, tmp_path, where):
+        await _seed_chat(real_adapter, CHAT_A)
+        await _seed_chat(real_adapter, CHAT_B)
+        # The work list runs in chat id order, so CHAT_B (the lower id) comes first.
+        for mid in range(1, 151):
+            await _seed(real_adapter, CHAT_B, mid, "geo")
+        await _seed(real_adapter, CHAT_A, 1, "geo")
+        flood = FloodWaitError(request=None, capture=telegram_backup.MAX_FLOOD_WAIT_SECONDS + 1)
+        client = FakeTelegram({}, **({"batch_error": flood} if where == "get_messages" else {"entity_error": flood}))
+
+        summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+
+        assert summary["flood_wait_seconds"] == telegram_backup.MAX_FLOOD_WAIT_SECONDS + 1
+        # One refused call, then nothing more: not the second batch, not the next chat.
+        assert client.entity_calls == [CHAT_B]
+        assert len(client.calls) == (1 if where == "get_messages" else 0)
+        assert summary["chats_unavailable"] == 0
+        assert summary["kinds"]["geo"]["not_served"] == 0
+        for chat, mid in ((CHAT_B, 1), (CHAT_B, 150), (CHAT_A, 1)):
+            assert (await _message(real_adapter, chat, mid))[0] == {}
 
     async def test_results_out_of_order_land_on_the_right_ids(self, real_adapter, tmp_path):
         await _seed_chat(real_adapter)
@@ -524,6 +555,96 @@ class TestLeftoverPaths:
 
         assert summary["vcards_recovered"] == 1
         assert (await _message(real_adapter, CHAT_A, 1))[0]["contact"]["first_name"] == "Alex"
+
+    @pytest.mark.parametrize("media_folder", ["empty", "absent"])
+    async def test_no_path_is_cleared_when_the_media_folder_is_not_there(self, real_adapter, tmp_path, media_folder):
+        """A host install, an unmounted volume or a moved root: every stored path reads as missing."""
+        await _seed_chat(real_adapter)
+        media = tmp_path / "media"
+        if media_folder == "empty":
+            media.mkdir()
+        await _seed(real_adapter, CHAT_A, 1, "contact", file_path=str(media / "chat" / "1.bin"))
+        await _seed(real_adapter, CHAT_A, 2, "geo", raw_data={"geo": {"lat": 1.0}}, file_path=str(media / "2.bin"))
+        await _seed(real_adapter, CHAT_A, 3, "poll", file_path="/data/backups/media/chat/3.bin")
+
+        summary = await _backup(real_adapter, FakeTelegram({}), media).backfill_media_payloads(apply=True)
+
+        assert summary["paths_cleared"] == 0
+        assert summary["paths_kept"] == 3
+        for mid in (1, 2, 3):
+            assert (await _media_row(real_adapter, CHAT_A, mid)).file_path is not None, mid
+
+    async def test_a_missing_file_outside_the_root_or_under_a_missing_folder_keeps_its_path(
+        self, real_adapter, tmp_path
+    ):
+        await _seed_chat(real_adapter)
+        media = tmp_path / "media"
+        media.mkdir()
+        (media / "1_photo.jpg").write_bytes(b"demo")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        await _seed(real_adapter, CHAT_A, 1, "contact", file_path=str(elsewhere / "1.bin"))
+        await _seed(real_adapter, CHAT_A, 2, "contact", file_path=str(media / "gone-folder" / "2.bin"))
+        await _seed(real_adapter, CHAT_A, 3, "geo", file_path=str(media / "3.bin"))
+
+        summary = await _backup(real_adapter, FakeTelegram({}), media).backfill_media_payloads(apply=True)
+
+        assert (await _media_row(real_adapter, CHAT_A, 1)).file_path == str(elsewhere / "1.bin")
+        assert (await _media_row(real_adapter, CHAT_A, 2)).file_path == str(media / "gone-folder" / "2.bin")
+        # The positive control: a missing file in a folder of the root is cleared.
+        assert (await _media_row(real_adapter, CHAT_A, 3)).file_path is None
+        assert (summary["paths_cleared"], summary["paths_kept"]) == (1, 2)
+
+    @pytest.mark.parametrize("failure", ["batch", "chat"])
+    async def test_a_row_telegram_never_answered_keeps_its_vcard_path(self, real_adapter, tmp_path, failure):
+        await _seed_chat(real_adapter)
+        (tmp_path / "c.bin").write_text(TELETHON_VCARD)
+        await _seed(real_adapter, CHAT_A, 1, "contact", file_path=str(tmp_path / "c.bin"))
+        error = ConnectionError("transient")
+        client = FakeTelegram(
+            {(CHAT_A, 1): _media("contact")},
+            **({"batch_error": error} if failure == "batch" else {"entity_error": error}),
+        )
+
+        with patch.object(telegram_backup, "call_with_flood_retry", lambda fn, *a, **k: fn(*a, **k)):
+            summary = await _backup(real_adapter, client, tmp_path).backfill_media_payloads(apply=True)
+
+        assert summary["errors"] == 1
+        assert summary["chats_unavailable"] == 0
+        assert summary["vcards_recovered"] == 0
+        assert (await _media_row(real_adapter, CHAT_A, 1)).file_path == str(tmp_path / "c.bin")
+        assert (await _message(real_adapter, CHAT_A, 1))[0] == {}
+
+    async def test_a_vcard_that_could_not_be_stored_keeps_its_path(self, real_adapter, tmp_path):
+        await _seed_chat(real_adapter)
+        (tmp_path / "c.bin").write_text(TELETHON_VCARD)
+        await _seed(real_adapter, CHAT_A, 1, "contact", file_path=str(tmp_path / "c.bin"))
+        backup = _backup(real_adapter, FakeTelegram({}), tmp_path)
+
+        with patch.object(real_adapter, "add_missing_raw_data_keys", AsyncMock(return_value=False)):
+            summary = await backup.backfill_media_payloads(apply=True)
+
+        assert summary["vcards_recovered"] == 0
+        assert (summary["paths_cleared"], summary["paths_kept"]) == (0, 1)
+        assert (await _media_row(real_adapter, CHAT_A, 1)).file_path == str(tmp_path / "c.bin")
+
+    async def test_a_contact_a_concurrent_writer_stored_first_clears_the_path(self, real_adapter, tmp_path):
+        await _seed_chat(real_adapter)
+        (tmp_path / "c.bin").write_text(TELETHON_VCARD)
+        await _seed(real_adapter, CHAT_A, 1, "contact", file_path=str(tmp_path / "c.bin"))
+        backup = _backup(real_adapter, FakeTelegram({}), tmp_path)
+        real_add = real_adapter.add_missing_raw_data_keys
+
+        async def _writer_wins(chat, message_id, payload, *, account_id):
+            await real_add(chat, message_id, {"contact": {"first_name": "Listener"}}, account_id=account_id)
+            return await real_add(chat, message_id, payload, account_id=account_id)
+
+        with patch.object(real_adapter, "add_missing_raw_data_keys", _writer_wins):
+            summary = await backup.backfill_media_payloads(apply=True)
+
+        assert summary["vcards_recovered"] == 1
+        assert (await _media_row(real_adapter, CHAT_A, 1)).file_path is None
+        assert (await _message(real_adapter, CHAT_A, 1))[0] == {"contact": {"first_name": "Listener"}}
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +746,14 @@ class TestCommandLine:
         assert seen == {"chat_id": -1001, "apply": True}
         assert "[DRY RUN]" not in out
         assert "Nothing was written" not in out
+
+    def test_a_flood_wait_stop_is_printed(self, monkeypatch, capsys):
+        summary = _summary(filled=1)
+        summary["flood_wait_seconds"] = 7200
+        rc, _seen = self._run(monkeypatch, ["backfill-payloads", "--apply"], summary)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Stopped after a FloodWait of 7200 s" in out
 
     def test_a_failure_exits_one_with_the_type_only(self, monkeypatch, capsys):
         rc, _seen = self._run(monkeypatch, ["backfill-payloads"], RuntimeError("+15555550100"))

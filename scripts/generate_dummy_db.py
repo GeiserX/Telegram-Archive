@@ -603,10 +603,12 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     # contact, drawn as cards. Demo places and a fake number only. The venue
     # and the location carry the media row the backup writes; the live
     # location and the contact have none, as the listener stores them. The
-    # oldest location was archived by a release that kept no payload and left
-    # a path to an empty placeholder file, so it says "Details not archived".
+    # oldest location and the poll after it were archived by a release that
+    # kept no payload and left a path to an empty placeholder file, so they
+    # say "Details not archived".
     t = today - day + timedelta(hours=8)
     s.add(t - 5 * day, JUNIPER, "", media={"type": "geo", "legacy_bin": True})
+    s.add(t - 5 * day + timedelta(minutes=1), JUNIPER, "", media={"type": "poll", "legacy_bin": True})
     bakery_q = s.add(t, OWNER_PERSONAL, "Where is that bakery you keep talking about?")
     bakery = s.add(
         t + timedelta(minutes=2),

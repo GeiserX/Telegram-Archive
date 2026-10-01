@@ -553,18 +553,58 @@ class TestUpsertKeepsPayloads:
             after = (await session.execute(select(Message.raw_data).where(Message.id == 15))).scalar_one()
         assert after == before
 
+    @pytest.mark.parametrize("kind", ["poll", "contact", "venue", "geo", "geo_live"])
+    async def test_an_import_never_replaces_a_captured_payload(self, real_adapter, kind):
+        """An export's stand-in is thinner than what Telegram served: no option bytes, no vCard, no provider."""
+        await _seed_chat(real_adapter)
+        stored, _frame = await _listener_capture(MEDIA_CASES[kind]())
+        captured = stored["raw_data"] if isinstance(stored["raw_data"], dict) else json.loads(stored["raw_data"])
+        assert kind in captured
+        await real_adapter.insert_message(_row(16, captured, source="listener"), account_id=1)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            before = (await session.execute(select(Message.raw_data).where(Message.id == 16))).scalar_one()
+        export_shapes = {
+            "poll": {
+                "question": "Where next?",
+                "answers": [{"text": "Lake", "option": "0"}, {"text": "Ridge", "option": "1"}],
+                "results": {"total_voters": 2, "results": [{"option": "0", "voters": 2}]},
+            },
+            "contact": {"first_name": "Alex", "last_name": "Demo", "phone_number": "+1 555 555 0100"},
+            "venue": {"title": "Demo Cafe", "address": "1 Example St", "lat": DEMO_LAT, "long": DEMO_LONG},
+            "geo": {"lat": DEMO_LAT, "long": DEMO_LONG},
+            # Same moment as the capture, so a newer-wins merge would have taken it.
+            "geo_live": {"lat": 1.5, "long": 2.5, "period": 900, "at": captured.get("geo_live", {}).get("at")},
+        }
+        await real_adapter.insert_message(_row(16, {kind: export_shapes[kind]}, source="import"), account_id=1)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            after = (await session.execute(select(Message.raw_data).where(Message.id == 16))).scalar_one()
+        assert after == before
+
+    async def test_an_import_fills_a_payload_the_archive_lacks(self, real_adapter):
+        await _seed_chat(real_adapter)
+        await real_adapter.insert_message(_row(17, {"grouped_id": "1"}), account_id=1)
+        await real_adapter.insert_message(_row(17, {"geo": {"lat": 1.0, "long": 2.0}}, source="import"), account_id=1)
+        assert (await _raw_data(real_adapter, CHAT_ID, 17))["geo"] == {"lat": 1.0, "long": 2.0}
+
 
 class TestKeepArchivedPayloads:
     def test_returns_the_archived_string_when_nothing_changes(self):
         archived = json.dumps({"geo": {"lat": 1.0, "long": 2.0}, "grouped_id": "1"})
-        assert _keep_archived_payloads(archived, json.dumps({"grouped_id": "1"})) is archived
+        assert _keep_archived_payloads(archived, json.dumps({"grouped_id": "1"}), incoming_wins=True) is archived
 
     def test_non_payload_keys_are_not_kept(self):
         archived = json.dumps({"post_author": "Author A"})
-        assert _keep_archived_payloads(archived, json.dumps({"grouped_id": "1"})) == json.dumps({"grouped_id": "1"})
+        incoming = json.dumps({"grouped_id": "1"})
+        assert _keep_archived_payloads(archived, incoming, incoming_wins=True) == incoming
 
     def test_an_unreadable_archive_leaves_the_incoming_read(self):
-        assert _keep_archived_payloads("not json", '{"geo": {}}') == '{"geo": {}}'
+        assert _keep_archived_payloads("not json", '{"geo": {}}', incoming_wins=False) == '{"geo": {}}'
+
+    def test_only_a_telegram_read_replaces_a_held_payload(self):
+        archived = json.dumps({"poll": {"question": "Q", "id": "77"}})
+        incoming = json.dumps({"poll": {"question": "Q"}})
+        assert _keep_archived_payloads(archived, incoming, incoming_wins=True) == incoming
+        assert _keep_archived_payloads(archived, incoming, incoming_wins=False) is archived
 
 
 # ---------------------------------------------------------------------------

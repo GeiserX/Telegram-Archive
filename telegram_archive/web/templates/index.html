@@ -7889,7 +7889,7 @@
                                     </div>
                                     </template>
 
-                                    <!-- Extended media chip (dice, venue, invoice, story, giveaway, live location, game, ...) -->
+                                    <!-- Extended media chip (dice, invoice, story, giveaway, game, a poll with no details, ...) -->
                                     <div v-if="getExtendedMediaChip(msg)"
                                         class="mb-2 inline-flex items-start gap-2 bg-tg-quote-bg rounded-lg px-3 py-2 text-sm max-w-full">
                                         <span class="text-lg leading-none">{{ getExtendedMediaChip(msg).icon }}</span>
@@ -9897,18 +9897,30 @@
                     nextTick(() => infoMessageSection.value?.scrollIntoView?.({ block: 'start' }))
                 }
 
+                // The media types that are a Telegram payload, not a file: the
+                // mirror of METADATA_ONLY_MEDIA_TYPES in message_utils.py (a test
+                // keeps the two equal). A row of one of these never draws a file
+                // or a "Not downloaded yet" placeholder, even when an older
+                // release left a file_path on it, and is not listed as a file in
+                // the info panel.
+                const METADATA_ONLY_TYPES = new Set([
+                    'contact', 'geo', 'poll', 'venue', 'dice', 'invoice', 'story',
+                    'giveaway', 'giveaway_results', 'geo_live', 'game', 'unsupported',
+                ])
                 // Every file of the message the panel shows; an album contributes each item.
+                // A location, a contact or a poll has no file, whatever an older
+                // release left in file_path.
                 const infoPanelMedia = computed(() => {
                     const msg = infoPanelMessage.value
                     if (!msg) return []
                     const album = getAlbumForMessage(msg)
-                    return (album && album.length ? album : [msg]).filter(m => m.media)
+                    return (album && album.length ? album : [msg]).filter(m => m.media && !METADATA_ONLY_TYPES.has(m.media.type))
                 })
                 // Media types in words, for the file line and the placeholders.
                 const MEDIA_TYPE_WORDS = {
                     photo: 'Photo', video: 'Video', video_note: 'Round video', voice: 'Voice message',
                     audio: 'Audio', animation: 'GIF', sticker: 'Sticker', document: 'File',
-                    geo: 'Location', venue: 'Location', geo_live: 'Live location', contact: 'Contact',
+                    geo: 'Location', venue: 'Location', geo_live: 'Live location', contact: 'Contact', poll: 'Poll',
                 }
                 // The file's line: what it is in words (the MIME type for a document,
                 // where it says more), then its length, size and dimensions.
@@ -15530,6 +15542,7 @@
                     venue: 'Location',
                     geo_live: 'Live location',
                     contact: 'Contact',
+                    poll: 'Poll',
                 }
 
                 // The quote names the replied-to sender only, as the Telegram apps
@@ -15820,6 +15833,9 @@
                     giveaway_results: { icon: '\u{1F3C6}', label: 'Giveaway results' },
                     game: { icon: '\u{1F3AE}', label: 'Game' },
                     unsupported: { icon: '\u26A0\uFE0F', label: 'Unsupported media' },
+                    // Only for a poll row whose details are not archived; the
+                    // poll block draws one that is.
+                    poll: { icon: '\u{1F4CA}', label: 'Poll' },
                 }
 
                 const formatInvoiceAmount = (amount, currency) => {
@@ -15838,6 +15854,7 @@
                     const kind = msg.media?.type
                     const meta = EXTENDED_MEDIA_CHIP_META[kind]
                     if (!meta) return null
+                    if (kind === 'poll' && msg.raw_data?.poll) return null
                     const data = msg.raw_data?.[kind] || {}
                     let icon = meta.icon
                     let label = meta.label
@@ -15867,6 +15884,8 @@
                         detail = data.description || ''
                     } else if (kind === 'unsupported') {
                         detail = 'Sent with a newer Telegram feature this archive version cannot decode'
+                    } else if (kind === 'poll') {
+                        detail = 'Details not archived'
                     }
                     return { icon, label, detail }
                 }
@@ -15889,15 +15908,6 @@
                     return PAYLOAD_CARD_KINDS.includes(type) ? type : null
                 }
 
-                // The media types that are a Telegram payload, not a file: the
-                // mirror of METADATA_ONLY_MEDIA_TYPES in message_utils.py (a test
-                // keeps the two equal). A row of one of these never draws a file
-                // or a "Not downloaded yet" placeholder, even when an older
-                // release left a file_path on it.
-                const METADATA_ONLY_TYPES = new Set([
-                    'contact', 'geo', 'poll', 'venue', 'dice', 'invoice', 'story',
-                    'giveaway', 'giveaway_results', 'geo_live', 'game', 'unsupported',
-                ])
                 const isMetadataOnlyMedia = (msg) => METADATA_ONLY_TYPES.has(msg?.media?.type)
 
                 // A point the card may link to: two real numbers inside the

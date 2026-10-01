@@ -132,7 +132,7 @@ docker compose start telegram-backup
 
 ## Fill old locations, contacts and polls
 
-Messages archived before the archive kept locations, venues, live locations and contacts show their card with `Details not archived`. Old polls archived by the backup can be in the same state. `backfill-payloads` asks Telegram for those messages again and adds only the missing details. It never replaces text, dates, reactions or details already stored. It also clears the empty placeholder path older releases left on these rows, and leaves every file on disk where it is.
+Messages archived before the archive kept locations, venues, live locations and contacts show their card with `Details not archived`. Old polls archived by the backup can be in the same state. `backfill-payloads` asks Telegram for those messages again and adds only the missing details. It never replaces text, dates, reactions or details already stored. It also clears the placeholder path older releases left on these rows when the file is empty, missing or no longer needed, and leaves every file on disk where it is. Run it where the media folder is mounted, as in the commands below: without it, every path is kept.
 
 It is a dry run unless you add `--apply`:
 

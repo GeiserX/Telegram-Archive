@@ -649,17 +649,21 @@ def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
     return json.dumps(merged) if merged else "{}"
 
 
-def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str) -> str:
+def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str, *, incoming_wins: bool) -> str:
     """``incoming_raw_data`` with every media payload the archive holds kept.
 
     A payload key (a poll, a location, a contact, a venue, a live location,
     ...; ``MEDIA_PAYLOAD_KEYS``) the archive holds and the incoming read lacks
     stays: an ``import --merge`` read that carries only ``forward_from_name``
-    must not drop a poll. A key the incoming read carries wins, so a newer
-    poll tally replaces the old one. A live location in both goes through
-    ``merge_geo_live``, which keeps every position either one saw. When the
-    result is the archived payload itself, the archived string comes back
-    unchanged, so the upsert sees no change to write.
+    must not drop a poll. When both hold a key, ``incoming_wins`` decides.
+    A read from Telegram (``incoming_wins`` true) wins, so a newer poll tally
+    replaces the old one, and a live location in both goes through
+    ``merge_geo_live``, which keeps every position either one saw. Any other
+    writer (an import renders a thinner stand-in: no poll option bytes, no
+    vCard, no venue provider) only fills keys the archive lacks; the archived
+    value stays, a live location included. When the result is the archived
+    payload itself, the archived string comes back unchanged, so the upsert
+    sees no change to write.
     """
     archived = _raw_data_dict(archived_raw_data)
     incoming = _raw_data_dict(incoming_raw_data)
@@ -669,7 +673,7 @@ def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str) -> s
     for key in MEDIA_PAYLOAD_KEYS:
         if key not in archived:
             continue
-        if key not in merged:
+        if key not in merged or not incoming_wins:
             merged[key] = archived[key]
         elif key == "geo_live":
             merged[key] = merge_geo_live(archived[key], merged[key])
@@ -1234,8 +1238,14 @@ class DatabaseAdapter:
             update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
         # Whatever wrote raw_data above, a media payload the archive holds and
         # this read lacks stays (an import of a forward must not drop a poll).
+        # Only a read from Telegram replaces a payload the archive holds; an
+        # import's thinner stand-in never does.
         if "raw_data" in update_values:
-            update_values["raw_data"] = _keep_archived_payloads(existing.raw_data, update_values["raw_data"])
+            update_values["raw_data"] = _keep_archived_payloads(
+                existing.raw_data,
+                update_values["raw_data"],
+                incoming_wins=message_data.get("version_source") in _TELEGRAM_READ_SOURCES,
+            )
 
         changed = {}
         for key, value in update_values.items():
@@ -4607,6 +4617,19 @@ class DatabaseAdapter:
             message.raw_data = json.dumps(merged)
             await session.commit()
             return True
+
+    async def raw_data_has_key(self, chat_id: int, message_id: int, key: str, *, account_id: int) -> bool:
+        """True when the message exists and its ``raw_data`` parses and holds ``key``."""
+        async with self.db_manager.async_session_factory() as session:
+            raw_data = (
+                await session.execute(
+                    select(Message.raw_data).where(
+                        and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
+                    )
+                )
+            ).scalar_one_or_none()
+        raw = _raw_data_dict(raw_data)
+        return raw is not None and key in raw
 
     @retry_on_locked()
     async def clear_metadata_media_path(self, chat_id: int, media_id: str, *, account_id: int) -> bool:

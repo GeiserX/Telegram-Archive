@@ -561,6 +561,11 @@ def run_backfill_payloads(args) -> int:
     print(f"  Contacts read from vCard files:  {summary['vcards_recovered']}")
     if summary["errors"]:
         print(f"  Errors (run again to retry):     {summary['errors']}")
+    if summary.get("flood_wait_seconds"):
+        print(
+            f"Stopped after a FloodWait of {summary['flood_wait_seconds']} s. "
+            "The rest stays on the work list: run again later."
+        )
     if not args.apply:
         print("Nothing was written. Run again with --apply to write these changes.")
     return 0

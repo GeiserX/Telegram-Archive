@@ -38,6 +38,8 @@ _DECLARATIONS = (
     "const pinnedKindWord = (msg) =>",
     "const replyMediaLabels = {",
     "const replyToSnippet = (msg) =>",
+    "const EXTENDED_MEDIA_CHIP_META = {",
+    "const getExtendedMediaChip = (msg) =>",
 )
 
 SENT = "2026-03-01T12:00:00"
@@ -72,6 +74,7 @@ class TestCards(unittest.TestCase):
             "https://www.openstreetmap.org/?mlat=40.416775&mlon=-3.703790#map=16/40.416775/-3.703790",
         )
         self.assertEqual(card["coordinates"], "40.416775, -3.703790")
+        self.assertEqual(card["label"], "Location. 40.416775, -3.703790. ± 25 m")
 
     def test_the_payload_wins_over_a_row_with_no_media(self):
         """The listener writes no media row: the card is keyed on raw_data first."""
@@ -117,6 +120,33 @@ class TestCards(unittest.TestCase):
         self.assertEqual(card["title"], "Demo Cafe")
         self.assertEqual(card["lines"], [{"text": "1 Example Street", "address": True}])
         self.assertTrue(card["url"].startswith("https://www.openstreetmap.org/?mlat=1.000000&mlon=2.000000"))
+        self.assertEqual(card["label"], "Demo Cafe. 1 Example Street")
+
+    def test_a_venue_with_no_address_shows_its_coordinates(self):
+        card = self._location(
+            {
+                "date": SENT,
+                "media": {"type": "venue"},
+                "raw_data": {"venue": {"title": "Demo Cafe", "lat": 1, "long": 2}},
+            }
+        )
+        self.assertEqual(card["title"], "Demo Cafe")
+        self.assertEqual(card["lines"], [{"text": "1.000000, 2.000000"}])
+        self.assertTrue(card["url"].startswith("https://www.openstreetmap.org/?mlat=1.000000&mlon=2.000000"))
+
+    def test_a_venue_with_no_point_says_location_unavailable(self):
+        card = self._location(
+            {
+                "date": SENT,
+                "media": {"type": "venue"},
+                "raw_data": {"venue": {"title": "Demo Cafe", "address": "1 Example Street"}},
+            }
+        )
+        self.assertEqual(
+            card["lines"], [{"text": "1 Example Street", "address": True}, {"text": "Location unavailable"}]
+        )
+        self.assertIsNone(card["url"])
+        self.assertIsNone(card["point"])
 
     # --- live location ----------------------------------------------------
 
@@ -145,6 +175,20 @@ class TestCards(unittest.TestCase):
         for now in ("2026-03-01T12:10:00", "2026-03-02T08:00:00"):
             for line in self._live(now):
                 self.assertNotIn("live", line.lower())
+
+    def test_a_stopped_share_with_no_point_says_location_unavailable(self):
+        """A stopped share can come back as GeoPointEmpty: no lat, no long."""
+        msg = {"date": SENT, "raw_data": {"geo_live": {"period": 900, "at": "2026-03-01T12:14:00"}}}
+        for now, lines in (
+            ("2026-03-01T12:10:00", ["Location unavailable", "Sharing until today at 12:15"]),
+            ("2026-03-02T08:00:00", ["Location unavailable"]),
+        ):
+            with self.subTest(now=now):
+                card = self._location(msg, now)
+                self.assertEqual([line["text"] for line in card["lines"]], lines)
+                self.assertIsNone(card["url"])
+                # No point, so no copy button (v-if="card.point").
+                self.assertIsNone(card["point"])
 
     def test_a_live_location_beats_the_plain_kinds(self):
         card = self._location(
@@ -209,6 +253,20 @@ class TestCards(unittest.TestCase):
         )
         self.assertEqual(out, ["Location", "Location, Demo Cafe", "Location", "Live location", "Contact"])
 
+    def test_a_poll_with_no_details_says_so(self):
+        """A poll row an earlier import left without raw_data.poll draws a chip, not an empty bubble."""
+        out = self._run(
+            "[getExtendedMediaChip({ media: { type: 'poll', file_path: '1/2.bin' }, raw_data: {} }),"
+            " getExtendedMediaChip({ media: { type: 'poll' }, raw_data: { poll: { question: 'Where next?' } } }),"
+            " pinnedKindWord({ media: { type: 'poll' }, raw_data: {} }),"
+            " replyToSnippet({ reply_to_media_type: 'poll' })]"
+        )
+        self.assertEqual(out[0]["label"], "Poll")
+        self.assertEqual(out[0]["detail"], "Details not archived")
+        # A poll with its details draws the poll block instead.
+        self.assertIsNone(out[1])
+        self.assertEqual(out[2:], ["Poll", "Poll"])
+
     def test_the_metadata_only_list_mirrors_the_backend(self):
         js = self._run("[...METADATA_ONLY_TYPES].sort()")
         self.assertEqual(js, sorted(METADATA_ONLY_MEDIA_TYPES))
@@ -236,16 +294,23 @@ const getMediaDisplayName = (media) => media.file_name
                 "const mediaPlaceholder = (msg) =>",
             ),
             prelude,
-            "console.log(JSON.stringify(["
-            "mediaPlaceholder({ media: { type: 'contact', file_path: '1/2.bin' }, mediaLoadFailed: true }),"
-            "mediaPlaceholder({ media: { type: 'geo' } }),"
-            "mediaPlaceholder({ media: { type: 'document', file_name: 'a.pdf' } }),"
-            "]))",
+            f"const types = {json.dumps(sorted(METADATA_ONLY_MEDIA_TYPES))}\n"
+            "console.log(JSON.stringify({"
+            " leftovers: types.flatMap(type => [true, false].map(failed => ["
+            "   type, failed, mediaPlaceholder({ media: { type, file_path: '1/2.bin' }, mediaLoadFailed: failed })])),"
+            " bare: types.map(type => [type, mediaPlaceholder({ media: { type } })]),"
+            " document: mediaPlaceholder({ media: { type: 'document', file_name: 'a.pdf' } }),"
+            "}))",
         )
-        self.assertIsNone(out[0])
-        self.assertIsNone(out[1])
+        self.assertEqual(len(out["leftovers"]), 2 * len(METADATA_ONLY_MEDIA_TYPES))
+        for media_type, failed, placeholder in out["leftovers"]:
+            with self.subTest(type=media_type, load_failed=failed):
+                self.assertIsNone(placeholder)
+        for media_type, placeholder in out["bare"]:
+            with self.subTest(type=media_type):
+                self.assertIsNone(placeholder)
         # Positive control: a real file still gets its placeholder.
-        self.assertEqual(out[2]["shape"], "file")
+        self.assertEqual(out["document"]["shape"], "file")
 
     def test_the_media_block_never_opens_for_one(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
@@ -301,6 +366,18 @@ class TestCardMarkupAndColours(unittest.TestCase):
         )
         self.assertEqual(hosts, {"www.openstreetmap.org"})
         self.assertNotIn("innerHTML", self.markup)
+
+    def test_screen_readers_get_a_label_for_every_control(self):
+        self.assertIn(':aria-label="card.url ? `${card.label}. Open on OpenStreetMap` : null"', self.markup)
+        self.assertIn('aria-label="Copy coordinates"', self.markup)
+        self.assertIn(':aria-label="`Call ${card.phone}`"', self.markup)
+        self.assertIn('aria-label="Copy phone number"', self.markup)
+        # The pin and the initials disc are decoration: the title and the name say it.
+        self.assertIn('<span class="geo-card-pin" aria-hidden="true">', self.markup)
+        self.assertIn(
+            'class="contact-card-disc avatar-initials" :style="{ background: card.fill }" aria-hidden="true"',
+            self.markup,
+        )
 
     def test_copy_toasts_say_what_was_copied(self):
         self.assertIn("copyText(card.coordinates, 'Coordinates copied')", self.markup)

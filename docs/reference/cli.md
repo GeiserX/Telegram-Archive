@@ -346,9 +346,9 @@ telegram-archive [--data-dir PATH] backfill-payloads [-c CHAT_ID] [--apply]
 
 Messages archived before the archive kept locations, venues, live locations, contacts and polls have a media row of the kind and no details, so the viewer shows their card with `Details not archived`. This command asks Telegram for those messages again and adds only the missing details under `raw_data`. It never replaces text, dates, reactions or any detail already stored.
 
-It reads up to 100 messages per request and pauses one second between requests. It waits out a FloodWait and retries on short network errors. A chat Telegram no longer serves is skipped. So is a message Telegram no longer returns, or one that now holds another kind of media. Both are counted.
+It reads up to 100 messages per request and pauses one second between requests. It waits out a FloodWait and retries on short network errors. A FloodWait longer than `MAX_FLOOD_WAIT_SECONDS` stops the run, since Telegram would refuse every further request. A chat Telegram no longer serves is skipped. So is a message Telegram no longer returns, or one that now holds another kind of media. Both are counted.
 
-It also clears the leftover placeholder path that releases up to 7.28.0 left on location, contact and poll rows. A path is cleared when the details are stored, or when the file is missing, empty or a broken link. For a contact whose details Telegram no longer serves, a vCard file at that path is read into the contact's details first. A file that holds something else keeps its path. Clearing keeps the row and sets `file_path`, `file_name` and `download_date` to empty and `downloaded` to 0. No file on disk is changed or deleted.
+It also clears the leftover placeholder path that releases up to 7.28.0 left on location, contact and poll rows. A path is cleared when the details are stored, or when the file is missing, empty or a broken link. For a contact whose details Telegram no longer serves, a vCard file at that path is read into the contact's details first. A file that holds something else keeps its path. Paths are only cleared where the media folder is there: when it is missing or empty where the command runs, as on a host without the media volume, every path is kept. A file counts as missing only in a folder that exists inside the media folder. A message Telegram did not answer because of an error keeps its path until a later run reads it. Clearing keeps the row and sets `file_path`, `file_name` and `download_date` to empty and `downloaded` to 0. No file on disk is changed or deleted.
 
 The messages still missing their details are the work list, so there is nothing to store between runs. An interrupted run resumes when you run it again, and a second run adds nothing new. Messages Telegram no longer serves are asked for again on each run, at one request per 100 of them. No location, name or phone number is written to the logs.
 
@@ -369,7 +369,7 @@ Media payload backfill complete:
   Contacts read from vCard files:  <n>
 ```
 
-Without `--apply` the heading starts with `[DRY RUN]`, the counts say what a run with `--apply` would do, and a last line says nothing was written. `Already there` counts rows listed only for their leftover path. An `Errors (run again to retry):` line follows when a request failed for another reason. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command.
+Without `--apply` the heading starts with `[DRY RUN]`, the counts say what a run with `--apply` would do, and a last line says nothing was written. `Already there` counts rows listed only for their leftover path. An `Errors (run again to retry):` line follows when a request failed for another reason. When a long FloodWait stopped the run, a line says `Stopped after a FloodWait of <n> s` and the rest stays on the work list for a later run. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command.
 
 It exits 0 on success. On failure it prints `Payload backfill failed: <error type>` on stderr and exits 1.
 
