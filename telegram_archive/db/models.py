@@ -647,6 +647,61 @@ class Reaction(Base):
     )
 
 
+# The rows the feed lists as "taken back": a count lower than the one before it.
+REACTION_TAKEN_BACK_WHERE = text("count < previous_count")
+
+
+class ReactionHistory(Base):
+    """Every state the archive observed of one emoji on one message, append-only (037).
+
+    ``reactions`` keeps one row per emoji with the current count, and a
+    ``removed_at`` tombstone when it went. Before 037 a count that dropped
+    without reaching zero overwrote the earlier count, and an emoji that came
+    back cleared its tombstone. This table keeps each of those states:
+    ``reconcile_reactions`` adds a row whenever an emoji's count differs from
+    the newest row kept for it. ``count`` 0 records that the emoji was taken
+    back completely. ``previous_count`` is the count of the row before it
+    (NULL for the first), so a drop reads without a second lookup.
+
+    Rows with ``source`` "baseline" were copied from ``reactions`` when the
+    history began: the count is the last one that table held and
+    ``observed_at`` is when the archive first saw the emoji, or when it saw it
+    gone. Aggregate counts only, like ``reactions``: no reactor ids.
+    """
+
+    __tablename__ = "reaction_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    emoji: Mapped[str] = mapped_column(String(50), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_count: Mapped[int | None] = mapped_column(Integer)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    source: Mapped[str | None] = mapped_column(String(16))
+
+    __table_args__ = (
+        # Inert on SQLite like media_versions' CASCADE: the explicit deletes
+        # in delete_message and delete_chat_and_related_data do the work.
+        ForeignKeyConstraint(
+            ["account_id", "message_id", "chat_id"],
+            ["messages.account_id", "messages.id", "messages.chat_id"],
+            name="fk_reaction_history_message",
+            ondelete="CASCADE",
+        ),
+        Index("ix_reaction_history_message", "account_id", "chat_id", "message_id"),
+        # What changed lists drops newest first; the partial index holds only
+        # them, so the feed never walks the far more common increases.
+        Index(
+            "ix_reaction_history_taken_back",
+            "observed_at",
+            sqlite_where=REACTION_TAKEN_BACK_WHERE,
+            postgresql_where=REACTION_TAKEN_BACK_WHERE,
+        ),
+    )
+
+
 class SyncStatus(Base):
     """Sync status table - tracks backup progress per chat."""
 

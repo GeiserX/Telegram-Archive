@@ -265,7 +265,7 @@ Each message nests its media. `media.id` is the media key, `{message_id}_{type}`
 
 A field Telegram did not send is left out, so a location Telegram sent without a point has no `lat` or `long`. A message with no media row (the listener writes none for these kinds) still has its key in `raw_data`. A reply also carries `reply_to_media_type`, the kind of the message it answers, which comes from that message's `raw_data` when it has no media row, and `reply_to_media_title`, a venue's title, when it answers a venue. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 
-In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
+In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji, from its latest drop, with `emoji`, `count` (how many went), `count_before` (the count before the drop, above `count` when some stayed), `removed_at` (when the archive noticed, in UTC) and `back_at` (when an emoji taken back to zero was seen again, or `null`). An emoji that came back is in both lists. `reaction_history` lists every state of the message's reactions the archive kept, oldest first: `emoji`, `count` (0 when taken back), `previous_count` (`null` for the first state), `observed_at` and `source` (`listener`, `backup`, or `baseline` for a state copied from the reactions kept before 9.0). Neither list names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
 
 ### Message versions
 
@@ -292,7 +292,7 @@ All of these need any login. Results cover only chats the caller can see.
 |-----------------|-----------|----------|
 | `GET /api/search/messages` | `q` required, 1 to 500 characters. `limit` default 20, up to 100. `offset` up to 5000. | `{query, limit, offset, has_more, indexed, results}` |
 | `GET /api/tags/{tag}` | `scope` is `chat`, `mine` or `all`, default `all`. `chat_ref`, required with `scope=chat`. `limit` default 50, up to 200. `offset`. | `{tag, results, has_more, truncated}` |
-| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. `chat_ref` for one chat. | `{changes, next_before}` |
+| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. `chat_ref` for one chat. `reactions=true` adds reactions taken back. | `{changes, next_before}` |
 
 `/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum` and `avatar_url`.
 
@@ -302,13 +302,16 @@ All of these need any login. Results cover only chats the caller can see.
 curl -s -b jar.txt 'http://localhost:8000/api/tags/%23holiday?scope=all&limit=50'
 ```
 
-`/api/changes` lists deletions, edits and new transcripts, newest first. Each change has `kind`, `date`, `chat` with `ref`, `title` and `type`, `message_id` and `sender_name`, plus:
+`/api/changes` lists deletions, edits and new transcripts, newest first, and with `reactions=true` the reactions taken back. Each change has `kind`, `date`, `chat` with `ref`, `title` and `type`, `message_id` and `sender_name`, plus:
 
 | `kind` | Extra fields |
 |--------|-------------|
 | `deleted` | `text` |
 | `edited` | `old_text`, `new_text` |
 | `transcript` | `text`, `language` |
+| `reaction` | `text` (the message's current text), `emoji`, `count` (how many went), `count_before`, `count_after` |
+
+A `reaction` row is one drop the archive kept in the reaction history: a count below the one before it, dated when the archive noticed. A partial drop and a complete one both list, and so does a removal kept before 9.0. A drop that two accounts holding one channel both saw lists once. They are left out without `reactions=true`, since they come and go far more often than the rest.
 
 `chat_ref` narrows the feed to one chat. For a channel or group that several accounts hold, that is every copy the caller may see, and each change is listed once under the copy the feed for every chat lists it under, so a row's `chat.ref` can name another account's copy of the same chat. A private chat narrows to the copy that ref names, since each account's private chat with one person is a different conversation. A chat the caller cannot see answers 404, the same as an unknown ref. Paging works the same way.
 
@@ -380,6 +383,7 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
 | `media` | The message's current media, as a list of [export media](#export-media). Usually one entry. A message can hold more than one media row, and the first entry is the one the viewer shows. An empty list means the message has no media. |
 | `versions` | Every earlier version the archive kept of the message, oldest first, whatever its date. An empty list means the archive kept none. |
+| `reaction_history` | Every state of the message's reactions the archive kept, oldest first, whatever its date: `emoji`, `count` (0 when taken back), `previous_count`, `observed_at` (ISO 8601 UTC) and `source`, as in [the messages list](#messages). |
 | `transcripts` | Present only when the message's media has transcripts: every transcript row, newest first. Each names its media by `media_id`. |
 
 A location, a contact, a poll or another kind with no file has a `media_payload` object, keyed and shaped as in `raw_data` (see [Paging through messages](#paging-through-messages)).
@@ -441,7 +445,7 @@ So every transcript in the file names a media listed in the same file, on its me
 
 Before 9.0 the file also ended with a flat `message_versions` list. It is gone: every version is under its message. See [Upgrading to 9.0](../operations/upgrading.md#upgrading-to-90).
 
-Everything in the file is read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions, its media or its transcripts. The export reads a message's versions and media as it writes that message, so a long chat is never held in memory at once. If they ever stop lining up with the messages, the export stops with an error instead of writing messages without them. The file then ends early and is not valid JSON.
+Everything in the file is read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions, its media, its reaction history or its transcripts. The export reads a message's versions, media and reaction states as it writes that message, so a long chat is never held in memory at once. If they ever stop lining up with the messages, the export stops with an error instead of writing messages without them. The file then ends early and is not valid JSON.
 
 ## Transcripts
 

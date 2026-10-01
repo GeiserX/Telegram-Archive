@@ -198,7 +198,7 @@ Feature page: [Real-time listener](../configuration/listener.md).
 | <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `false` | backup | Also download the media of new messages at once. Otherwise media waits for the next scheduled backup. |
 | <span id="listen_edits"></span>`LISTEN_EDITS` | `true` | backup | Apply text edits as they happen. The previous text is kept as a version. |
 | <span id="listen_deletions"></span>`LISTEN_DELETIONS` | `false` | backup | Apply deletions as `DELETION_MODE` says. When false, the listener only counts them. |
-| <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, earlier media, transcripts and reactions. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |
+| <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, earlier media, transcripts, reactions and reaction history. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |
 | <span id="listen_chat_actions"></span>`LISTEN_CHAT_ACTIONS` | `true` | backup | Save service messages such as joins and leaves, and refresh chat titles and photos. |
 | <span id="listen_reactions"></span>`LISTEN_REACTIONS` | `false` | backup | Capture per-emoji reaction counts as they change. |
 | <span id="reaction_debounce_seconds"></span>`REACTION_DEBOUNCE_SECONDS` | `1.5` | backup | How often buffered reaction changes are written. Floored at 0.1. |

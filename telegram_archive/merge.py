@@ -47,6 +47,7 @@ from .db.models import (
     MessageVersion,
     Metadata,
     Reaction,
+    ReactionHistory,
     SyncStatus,
     User,
     account_metadata_key,
@@ -70,6 +71,7 @@ ACCOUNT_TABLES: tuple[tuple[sa.Table, bool], ...] = (
     (MessageVersion.__table__, True),
     (MediaVersion.__table__, True),
     (Reaction.__table__, True),
+    (ReactionHistory.__table__, True),
     (AvatarHistory.__table__, True),
 )
 

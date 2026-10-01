@@ -37,6 +37,7 @@ _DECLARATIONS = (
     "const hasReactionRow = (msg) =>",
     "const removedReactionCount = (msg) =>",
     "const removedReactionsLabel = (msg) =>",
+    "const removedReactionBefore = (removed) =>",
     "const removedReactionsKey = (msg) =>",
     "const isRemovedReactionsOpen = (msg) =>",
     "const toggleRemovedReactions = (msg) =>",
@@ -102,6 +103,43 @@ class TestTheChipAndItsList(unittest.TestCase):
         self.assertEqual(out["madrid"], "1 · 12:28")
         self.assertEqual(out["bare"], "4")
 
+    def test_a_partial_drop_reads_n_of_the_count_before(self) -> None:
+        partial = {"emoji": "❤️", "count": 2, "count_before": 7, "removed_at": "2026-09-01T11:14:00", "back_at": None}
+        whole = {"emoji": "👍", "count": 3, "count_before": 3, "removed_at": "2026-09-01T11:14:00", "back_at": None}
+        out = _run(
+            f"(() => {{ const msg = {json.dumps(_MSG)}; const rows = {json.dumps([partial, whole])};"
+            " return { texts: rows.map(r => removedReactionText(msg, r)), titles: rows.map(removedReactionTitle) } })()"
+        )
+        self.assertEqual(out["texts"], ["2 of 7 · 11:14", "3 · 11:14"])
+        self.assertEqual(
+            out["titles"],
+            [
+                "❤️ 2 of 7, taken back. The archive noticed on September 1, 2026 at 11:14.",
+                "👍 3, taken back. The archive noticed on September 1, 2026 at 11:14.",
+            ],
+        )
+
+    def test_a_reaction_that_came_back_says_when(self) -> None:
+        back = {
+            "emoji": "😮",
+            "count": 1,
+            "count_before": 1,
+            "removed_at": "2026-09-01T11:08:00",
+            "back_at": "2026-09-01T11:12:00",
+        }
+        next_day = {**back, "back_at": "2026-09-02T08:00:00"}
+        out = _run(
+            f"(() => {{ const msg = {json.dumps(_MSG)}; const rows = {json.dumps([back, next_day])};"
+            " return { texts: rows.map(r => removedReactionText(msg, r)), title: removedReactionTitle(rows[0]) } })()"
+        )
+        # The return is dated against the removal: a time on the same day, the date too on a later one.
+        self.assertEqual(out["texts"], ["1 · 11:08, back 11:12", "1 · 11:08, back Sep 2, 08:00"])
+        self.assertEqual(
+            out["title"],
+            "😮 1, taken back. The archive noticed on September 1, 2026 at 11:08."
+            " It came back on September 1, 2026 at 11:12.",
+        )
+
     def test_the_toggle_opens_and_closes_one_message(self) -> None:
         out = _run(
             f"(() => {{ const msg = {json.dumps(_MSG)}; const other = {{ id: 6, chat_id: 7 }}; const seen = []"
@@ -118,7 +156,9 @@ class TestALiveFrame(unittest.TestCase):
         return _run(
             f"(() => {{ const msg = {json.dumps(msg)}; applyLiveReactions(msg, {json.dumps(reactions)})"
             "; return { live: msg.reactions.map(r => [r.emoji, r.count]),"
-            " removed: msg.removed_reactions.map(r => [r.emoji, r.count, typeof r.removed_at]) } })()"
+            " removed: msg.removed_reactions.map(r => [r.emoji, r.count, typeof r.removed_at]),"
+            " before: msg.removed_reactions.map(r => r.count_before ?? null),"
+            " back: msg.removed_reactions.map(r => typeof r.back_at) } })()"
         )
 
     def test_an_emoji_that_leaves_the_live_set_joins_the_list_first(self) -> None:
@@ -126,14 +166,31 @@ class TestALiveFrame(unittest.TestCase):
         self.assertEqual(out["live"], [])
         self.assertEqual(out["removed"], [["❤️", 5, "string"], ["😮", 1, "string"], ["👍", 2, "string"]])
 
-    def test_an_emoji_that_comes_back_leaves_the_list(self) -> None:
+    def test_an_emoji_that_comes_back_stays_in_the_list_with_its_return(self) -> None:
         out = self._apply(_MSG, [{"emoji": "❤️", "count": 5}, {"emoji": "😮", "count": 3}])
         self.assertEqual(out["live"], [["❤️", 5], ["😮", 3]])
-        self.assertEqual(out["removed"], [["👍", 2, "string"]])
+        self.assertEqual(out["removed"], [["😮", 1, "string"], ["👍", 2, "string"]])
+        self.assertEqual(out["back"], ["string", "undefined"])
+
+    def test_a_count_that_falls_but_stays_is_a_partial_drop(self) -> None:
+        out = self._apply(_MSG, [{"emoji": "❤️", "count": 3}])
+        self.assertEqual(out["live"], [["❤️", 3]])
+        self.assertEqual(out["removed"], [["❤️", 2, "string"], ["😮", 1, "string"], ["👍", 2, "string"]])
+        self.assertEqual(out["before"], [5, None, None])
+
+    def test_a_partial_drop_that_rises_again_is_not_a_return(self) -> None:
+        msg = {
+            "id": 5,
+            "reactions": [{"emoji": "❤️", "count": 5}],
+            "removed_reactions": [{"emoji": "❤️", "count": 2, "count_before": 7, "removed_at": _SENT, "back_at": None}],
+        }
+        out = self._apply(msg, [{"emoji": "❤️", "count": 6}])
+        self.assertEqual(out["removed"], [["❤️", 2, "string"]])
+        self.assertEqual(out["back"], ["object"])
 
     def test_a_message_without_a_list_gets_one(self) -> None:
         out = self._apply({"id": 1, "reactions": [{"emoji": "👍", "count": 1}]}, None)
-        self.assertEqual(out, {"live": [], "removed": [["👍", 1, "string"]]})
+        self.assertEqual((out["live"], out["removed"]), ([], [["👍", 1, "string"]]))
 
 
 class TestTheTemplate(unittest.TestCase):
