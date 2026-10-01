@@ -54,13 +54,6 @@ def _mock_db():
     db.get_message_sender_id = AsyncMock(return_value=None)
     db.get_messages_paginated = AsyncMock(return_value=[])
     db.get_message_versions = AsyncMock(return_value=[])
-    db.get_message_versions_by_date_range = AsyncMock(return_value=[])
-
-    async def _no_versions(*args, **kwargs):
-        return
-        yield  # pragma: no cover — makes this an async generator
-
-    db.iter_message_versions_for_export = _no_versions
     db.get_pinned_messages = AsyncMock(return_value=[])
     db.get_all_folders = AsyncMock(return_value=[])
     db.get_forum_topics = AsyncMock(return_value=[])

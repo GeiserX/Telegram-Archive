@@ -331,8 +331,8 @@ class TestExports:
         edge = await real_adapter.get_transcripts_for_export(CHAT, account_id=1, from_date=WHEN, to_date=WHEN)
         assert edge == []
 
-        read = real_adapter.get_transcripts_for_export
-        with patch.object(real_adapter, "get_transcripts_for_export", wraps=read) as spy:
+        read = real_adapter._read_export_transcripts
+        with patch.object(real_adapter, "_read_export_transcripts", wraps=read) as spy:
             exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, **window)]
         assert [(m["id"], [r["text"] for r in m["transcripts"]]) for m in exported] == [(1, ["inside the window"])]
         assert spy.await_args.kwargs == {"account_id": 1, **window}

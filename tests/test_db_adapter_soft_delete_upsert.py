@@ -694,26 +694,6 @@ async def test_get_messages_paginated_includes_version_counts(sqlite_adapter):
 
 
 @pytest.mark.asyncio
-async def test_get_message_versions_by_date_range_filters_version_dates(sqlite_adapter):
-    await sqlite_adapter.insert_message(
-        {"id": 30, "chat_id": 300, "date": datetime(2026, 6, 25, 14, 0), "text": "old"}, account_id=1
-    )
-    await sqlite_adapter.insert_message(
-        {"id": 31, "chat_id": 300, "date": datetime(2026, 6, 26, 14, 0), "text": "new"}, account_id=1
-    )
-    await sqlite_adapter.update_message_text(300, 30, "old edited", datetime(2026, 6, 25, 14, 5), account_id=1)
-    await sqlite_adapter.update_message_text(300, 31, "new edited", datetime(2026, 6, 26, 14, 5), account_id=1)
-
-    versions = await sqlite_adapter.get_message_versions_by_date_range(
-        chat_id=300,
-        start_date=datetime(2026, 6, 26),
-        end_date=datetime(2026, 6, 27),
-    )
-
-    assert [row["message_id"] for row in versions] == [31]
-
-
-@pytest.mark.asyncio
 async def test_update_message_text_reports_outcome(sqlite_adapter):
     await sqlite_adapter.insert_message(
         {"id": 50, "chat_id": 300, "date": datetime(2026, 6, 26, 9, 0), "text": "original"}, account_id=1
@@ -944,39 +924,6 @@ async def test_recording_the_same_version_twice_is_a_silent_noop(sqlite_adapter,
             select(MessageVersion).where(MessageVersion.chat_id == 300, MessageVersion.message_id == 70)
         )
         assert len(list(rows.scalars())) == 1
-
-
-@pytest.mark.asyncio
-async def test_version_export_window_uses_the_export_contract(sqlite_adapter):
-    """iter_message_versions_for_export windows with (>= from, < to) — the
-    export contract — without touching the shared query's inclusive end_date
-    that other callers own."""
-    await sqlite_adapter.insert_message(
-        {"id": 80, "chat_id": 300, "date": datetime(2026, 6, 28, 9, 0), "text": "v1"}, account_id=1
-    )
-    await sqlite_adapter.update_message_text(300, 80, "v2", datetime(2026, 6, 28, 10, 0), account_id=1)
-    await sqlite_adapter.update_message_text(300, 80, "v3", datetime(2026, 6, 28, 11, 0), account_id=1)
-
-    everything = [v async for v in sqlite_adapter.iter_message_versions_for_export(300, account_id=1)]
-    assert len(everything) == 2
-
-    windowed = [
-        v
-        async for v in sqlite_adapter.iter_message_versions_for_export(
-            300, account_id=1, from_date=datetime(2026, 6, 28, 9, 30), to_date=datetime(2026, 6, 28, 10, 0)
-        )
-    ]
-    # v1's version row carries the superseded text's date (9:00) -> below from;
-    # v2's row (10:00) -> excluded by the EXCLUSIVE to bound.
-    assert windowed == []
-
-    windowed = [
-        v
-        async for v in sqlite_adapter.iter_message_versions_for_export(
-            300, account_id=1, from_date=datetime(2026, 6, 28, 9, 0), to_date=datetime(2026, 6, 28, 10, 1)
-        )
-    ]
-    assert [v["text"] for v in windowed] == ["v1", "v2"]
 
 
 # ---------------------------------------------------------------------------

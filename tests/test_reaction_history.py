@@ -280,17 +280,16 @@ class TestBothExportsCarryTheHistory:
         exported = [m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1, **window)]
         assert [(m["id"], [h["count"] for h in m["reaction_history"]]) for m in exported] == [(1, [7, 5])]
 
-    async def test_a_message_with_two_media_repeats_with_the_same_history(self, real_adapter, clock):
+    async def test_a_message_with_two_media_is_listed_once_with_its_history(self, real_adapter, clock):
         await self._seed_history(real_adapter)
         for media_id in ("fixture-a", "fixture-b"):
             await real_adapter.insert_media(
                 {"id": media_id, "message_id": 1, "chat_id": CHAT_ID, "type": "photo"}, account_id=1
             )
-        exported = [m async for m in real_adapter.get_messages_for_export(CHAT_ID, include_media=True, account_id=1)]
-        assert [(m["id"], [h["count"] for h in m["reaction_history"]]) for m in exported] == [
-            (1, [7, 5]),
-            (1, [7, 5]),
-            (2, []),
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT_ID, account_id=1)]
+        assert [(m["id"], len(m["media"]), [h["count"] for h in m["reaction_history"]]) for m in exported] == [
+            (1, 2, [7, 5]),
+            (2, 0, []),
         ]
 
     async def test_an_unscoped_export_gives_each_account_its_own_history(self, real_adapter, clock):
