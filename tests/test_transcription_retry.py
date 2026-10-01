@@ -310,6 +310,42 @@ class TestBudgetAndOrder:
         assert await _awaiting(real_adapter) == ["m_2_voice"]  # longest waiting
         assert await _awaiting(real_adapter, priority=[CHAT]) == ["m_1_voice"]
 
+    async def test_files_still_missing_in_a_priority_chat_never_hold_the_budget(self, real_adapter, tmp_path):
+        """As many still-missing files as the budget, in the first priority chat: the run still sends the rest."""
+        for n in (1, 2):
+            row = await _media(
+                real_adapter, tmp_path, f"m_{n}_voice", on_disk=False, download_date=datetime(2026, 1, 9)
+            )
+            os.makedirs(os.path.dirname(row["file_path"]), exist_ok=True)
+            os.symlink(f"/nonexistent-object-store/m_{n}_voice.ogg", row["file_path"])
+            await _fail(real_adapter, f"m_{n}_voice", "file_missing")
+        await _other_chat_media(real_adapter, tmp_path, "m_3_voice", download_date=datetime(2026, 1, 1))
+        await _other_chat_media(real_adapter, tmp_path, "m_4_voice", download_date=datetime(2026, 1, 2))
+        await _other_chat_media(real_adapter, tmp_path, "m_5_voice", download_date=datetime(2026, 1, 3))
+        config = _config(str(tmp_path), transcription_backfill_per_run=2, transcription_priority_chat_ids=[CHAT])
+        server = FakeServer()
+        stats = await _drain(config, real_adapter, server)
+        assert (stats["noop"], stats["done"]) == (2, 2)
+        assert [len(await _rows(real_adapter, m)) for m in ("m_1_voice", "m_2_voice")] == [1, 1]
+        # The budget still holds: two sent, newest first, and the third waits for the next run.
+        assert [bool(await _rows(real_adapter, m)) for m in ("m_3_voice", "m_4_voice", "m_5_voice")] == [
+            False,
+            True,
+            True,
+        ]
+
+    async def test_a_probe_whose_wait_is_over_is_found_behind_many_still_waiting(self, real_adapter, tmp_path):
+        for n in range(1, 22):
+            await _media(real_adapter, tmp_path, f"m_{n}_voice", content_hash=f"{n:064d}")
+            if n <= 20:
+                # Two failures, the newest half an hour ago: an hour to wait.
+                await _fail(real_adapter, f"m_{n}_voice", "engine_unavailable", ago=timedelta(minutes=31))
+                await _fail(real_adapter, f"m_{n}_voice", "engine_unavailable", ago=timedelta(minutes=30))
+            else:
+                # One failure a minute ago: no wait, though it sorts after the twenty.
+                await _fail(real_adapter, f"m_{n}_voice", "engine_unavailable", ago=timedelta(minutes=1))
+        assert await _awaiting(real_adapter) == ["m_21_voice"]
+
 
 class TestMixedReasons:
     @pytest.mark.parametrize(

@@ -1679,11 +1679,19 @@ async def drain_transcriptions(
     if not media_rows:
         logger.debug("Transcription: nothing to send")
         return stats
+    handled = 0
     for media in media_rows:
+        if handled >= per_run:
+            # The list holds checks of files still missing beyond the budget;
+            # a check that finds one still missing costs nothing, a file back
+            # on disk is sent and counts.
+            break
         outcome = await transcribe_media(
             config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
         )
         stats[outcome] = stats.get(outcome, 0) + 1
+        if outcome != "noop":
+            handled += 1
         if not client.answered and client.file_refusals >= 2:
             # Every file refused, none answered: more likely TRANSCRIPTION_MODEL or
             # TRANSCRIPTION_LANGUAGE than the files. Two rows a run at most, and a

@@ -501,9 +501,9 @@ class TestDrainQueryPlan:
             assert len(await _drain(real_adapter)) == 21
         finally:
             event.remove(engine.sync_engine, "before_cursor_execute", capture)
-        # The main query, and the probe query that runs while the run has room left.
+        # The main query, the probe query that runs while the run has room left, and the file checks.
         [main] = [c for c in captured if " LEFT OUTER JOIN " in str(c.compile(dialect=engine.dialect))]
-        assert len(captured) == 2
+        assert len(captured) == 3
         sql = str(main.compile(dialect=engine.dialect, compile_kwargs={"literal_binds": True}))
         async with real_adapter.db_manager.async_session_factory() as session:
             connection = await session.connection()

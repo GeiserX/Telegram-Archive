@@ -181,7 +181,6 @@ TRANSCRIPT_MAX_ANY_FAILED_ROWS = 10
 # drain: at once after the media's first failed row, then once the newest is
 # older than this, doubled for each failed row after the second.
 TRANSCRIPT_PROBE_WAIT = timedelta(hours=1)
-TRANSCRIPT_PROBE_CANDIDATES = 20
 TRANSCRIPT_JSON_COLUMNS = frozenset({"models", "words", "segments"})
 TRANSCRIPT_FILL_COLUMNS = frozenset(
     {
@@ -9493,9 +9492,12 @@ class DatabaseAdapter:
         counts: three of them end the retries. A failure in
         ``TRANSCRIPT_ENVIRONMENT_ERRORS`` does not count, since a repair of
         the disk or the server makes it go away. A file failure (missing,
-        unreadable) qualifies on every drain and sorts after the rest of its
-        priority tier; ``transcribe_media`` writes nothing while the file is
-        still missing or unreadable. A server failure qualifies once the
+        unreadable) qualifies on every drain; ``transcribe_media`` writes
+        nothing while the file is still missing or unreadable, so such media
+        come from a query of their own, at most ``per_run`` of them, each
+        after the other media of its priority tier, and take no place in
+        the budget: the drain stops once ``per_run`` media did more than
+        that check. A server failure qualifies once the
         server finished a transcript of its own (not a copy) after it. With
         none since, the server may still be broken, and one such media per
         drain goes as a probe, from a query of its own: the first in
@@ -9522,9 +9524,9 @@ class DatabaseAdapter:
         no ``job_id`` (a refusal, an outage or a crash mid-submit), whatever
         its type: the type filter of the main query would otherwise strand
         a pressed file of a type outside ``types`` for good. Then newest download
-        first, at most ``per_run`` rows. Each result carries the media
-        columns and ``transcript``: the newest row's id, status, job_id and
-        error, or None.
+        first, at most ``per_run`` rows besides the file checks. Each result
+        carries the media columns and ``transcript``: the newest row's id,
+        status, job_id and error, or None.
 
         The ask-now rows are read by a query of their own, from the few
         open transcript rows. OR-ing them into the type filter of the main
@@ -9588,11 +9590,10 @@ class DatabaseAdapter:
             if isinstance(chat_id, int) and not isinstance(chat_id, bool):
                 ranks.setdefault(chat_id, len(ranks))
         rank = (case(ranks, value=Media.chat_id, else_=len(ranks)),) if ranks else ()
-        # A file still missing or unreadable is checked again on every drain
-        # and writes nothing while it stays that way: it goes after the rest
-        # of its priority tier, so such files never hold the budget.
-        waits_for_file = case((and_(newest.status == "failed", newest.error.in_(TRANSCRIPT_FILE_ERRORS)), 1), else_=0)
-        main_order = (*rank, waits_for_file, *order)
+        file_failure = and_(
+            newest.status == "failed", newest.error.is_not(None), newest.error.in_(TRANSCRIPT_FILE_ERRORS)
+        )
+        main_order = (*rank, *order)
         columns = (Media, newest.id, newest.status, newest.job_id, newest.error)
         asked_stmt = (
             select(*columns)
@@ -9639,7 +9640,7 @@ class DatabaseAdapter:
                             and_(
                                 newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before
                             ),
-                            and_(retryable, or_(not_(server_failure), server_retry)),
+                            and_(retryable, not_(file_failure), or_(not_(server_failure), server_retry)),
                         ),
                     )
                 )
@@ -9647,32 +9648,61 @@ class DatabaseAdapter:
                 .limit(per_run)
             )
             found = list(await session.execute(asked_stmt))
+            asked = len(found)
             if len(found) < per_run:
                 seen = {media.id for media, *_ in found}
                 for match in await session.execute(stmt):
                     if match[0].id not in seen:
                         found.append(match)
+                found = found[:per_run]
             if len(found) < per_run:
                 # No transcript finished since these failed: the server may still
                 # be broken, so one of them goes as a probe instead of all. The
                 # first in priority order whose wait is over, longest waiting
-                # first; its answer, done or not, tells the next drain.
-                probe_stmt = (
-                    select(*columns, failed_rows, failed_at)
-                    .join(newest, newest_join)
-                    .where(and_(wanted_media, retryable, server_failure, not_(server_retry)))
-                    .order_by(*rank, failed_at, newest.id)
-                    .limit(TRANSCRIPT_PROBE_CANDIDATES)
-                )
-                seen = {media.id for media, *_ in found}
+                # first; its answer, done or not, tells the next drain. The wait
+                # is in the query, so one still waiting never hides one whose
+                # wait is over.
                 now = utcnow_naive()
-                for *match, failures, failed_time in await session.execute(probe_stmt):
-                    wait = TRANSCRIPT_PROBE_WAIT * 2 ** (failures - 2) if failures > 1 else timedelta(0)
-                    if match[0].id not in seen and failed_time is not None and failed_time <= now - wait:
-                        found.append(match)
-                        break
+                cutoff = case(
+                    *(
+                        (failed_rows == n, now - TRANSCRIPT_PROBE_WAIT * 2 ** (n - 2))
+                        for n in range(2, TRANSCRIPT_MAX_ANY_FAILED_ROWS)
+                    ),
+                    else_=now,
+                )
+                probe_stmt = (
+                    select(*columns)
+                    .join(newest, newest_join)
+                    .where(and_(wanted_media, retryable, server_failure, not_(server_retry), failed_at <= cutoff))
+                    .order_by(*rank, failed_at, newest.id)
+                    .limit(1)
+                )
+                probe = list(await session.execute(probe_stmt))
+            else:
+                probe = []
+            # A file still missing or unreadable is checked again on every drain
+            # and writes nothing while it stays that way, so it takes no place
+            # in the budget: at most ``per_run`` such files come from a query of
+            # their own, each after the other media of its priority tier, and
+            # the drain stops once ``per_run`` media did more than that check.
+            file_stmt = (
+                select(*columns)
+                .join(newest, newest_join)
+                .where(and_(wanted_media, retryable, file_failure))
+                .order_by(*main_order)
+                .limit(per_run)
+            )
+            waiting = list(await session.execute(file_stmt))
+
+            def tier(match, waits: bool) -> tuple[int, bool]:
+                return ranks.get(match[0].chat_id, len(ranks)), waits
+
+            # Both lists are in priority order already; a stable sort by tier
+            # keeps each one's order and puts the file checks last in a tier.
+            ordered = sorted([(m, False) for m in found[asked:]] + [(m, True) for m in waiting], key=lambda e: tier(*e))
+            found = found[:asked] + [m for m, _ in ordered] + probe
             rows = []
-            for media, transcript_id, transcript_status, transcript_job_id, transcript_error in found[:per_run]:
+            for media, transcript_id, transcript_status, transcript_job_id, transcript_error in found:
                 rows.append(
                     {
                         "id": media.id,

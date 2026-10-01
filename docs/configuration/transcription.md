@@ -158,7 +158,7 @@ Each drain sends files in this order:
 3. everything else, newest download first
 4. at most one file whose last failure was the server's, as a test (see [Retries](#retries))
 
-Within steps 2 and 3, a file whose last attempt found it missing or unreadable goes after the rest of its step. Such a file is checked on every drain and stores nothing while it stays broken, so it never holds the budget back from files that can be sent.
+Within steps 2 and 3, a file whose last attempt found it missing or unreadable goes after the rest of its step. Such a file is checked on every drain and stores nothing while it stays broken. A check that finds it still broken does not count toward `TRANSCRIPTION_BACKFILL_PER_RUN`, so these files never hold the budget back from files that can be sent. Each drain checks at most `TRANSCRIPTION_BACKFILL_PER_RUN` of them. One that is back is sent and counts.
 
 One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. The default is 50, and pressed files count inside that number. With akou, jobs still open on the server count against it too. If open jobs fill the cap, even pressed files wait for a later drain.
 
