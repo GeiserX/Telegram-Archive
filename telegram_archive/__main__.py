@@ -377,7 +377,7 @@ async def run_check_media(args) -> int:
     for line in format_media_check(report, repair=args.repair):
         print(line)
     if args.repair:
-        return 1 if report["restore_failed"] else 0
+        return 1 if report["restore_failed"] or report["refetch_failed"] else 0
     return 1 if report["broken_links"] or report["missing_files"] else 0
 
 

@@ -85,6 +85,7 @@ from .message_utils import (
     message_entities,
     message_plain_text,
     message_rich_payload,
+    place_copy,
     resolve_shared_file_path,
     sender_display_name,
     service_action_type,
@@ -1740,6 +1741,33 @@ class TelegramBackup:
         )
         return summary
 
+    def _fill_broken_row_path(self, existing: dict | None, result: dict | None) -> dict | None:
+        """Put a fresh download under the broken link the row already names.
+
+        A repair marks a row not downloaded and keeps its ``file_path``: the
+        link whose ``_shared`` file is gone. The download names its file after
+        the current Telegram file name, which can differ from the name that
+        link holds (legacy or renamed files), so the bytes are also placed at
+        the link's own target. That link, and every other link to the same
+        target, resolve again, and the row keeps the path it had.
+        """
+        if not isinstance(existing, dict) or not isinstance(result, dict) or not result.get("downloaded"):
+            return result
+        old_path = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
+        missing_target = self._broken_shared_link(old_path)
+        new_path = resolve_stored_media_path(result.get("file_path"), self.config.media_path)
+        if not missing_target or not new_path or not os.path.isfile(new_path):
+            return result
+        try:
+            place_copy(new_path, missing_target)
+        except FileExistsError:
+            pass  # restored meanwhile
+        except OSError as e:
+            # Type only: the path carries the chat-id folder.
+            logger.warning(f"Could not restore the file behind a broken media link: {type(e).__name__}")
+            return result
+        return {**result, "file_path": existing["file_path"]}
+
     def _broken_shared_link(self, path: str | None) -> str | None:
         """The missing ``_shared`` entry behind a broken chat-folder link, or None."""
         if not path:
@@ -2020,7 +2048,10 @@ class TelegramBackup:
         if media_id is None:
             return
         try:
-            await self.db.mark_media_for_redownload(media_id, account_id=self.account_id)
+            # A broken link keeps its path, so the download fills its target.
+            await self.db.mark_media_for_redownload(
+                media_id, account_id=self.account_id, keep_path=bool(self._broken_shared_link(file_path))
+            )
         except Exception as e:
             logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
 
@@ -4147,6 +4178,7 @@ class TelegramBackup:
             logger.debug("Media not processed: the archive holds newer media for this message")
             return None
         result = await self._media_row_for(message, chat_id, media, media_type, telegram_file_id, existing)
+        result = self._fill_broken_row_path(existing, result)
         if isinstance(existing, dict) and existing.get("replaced") is True:
             # Tells the message upsert that this read's edit replaced the media.
             # With no row to write (a YouTube preview video declined), the

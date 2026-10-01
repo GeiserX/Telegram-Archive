@@ -263,7 +263,7 @@ async def repair_media_row(db, row: dict[str, Any], media_root: str, *, account_
     if not refetch or row.get("id") is None:
         return MISSING
     try:
-        await db.mark_media_for_redownload(row["id"], account_id=row.get("account_id") or account_id)
+        await db.mark_media_for_redownload(row["id"], account_id=row.get("account_id") or account_id, keep_path=True)
     except Exception as e:
         logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
         return MISSING
@@ -286,6 +286,7 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
         "missing_files": 0,
         "restorable": 0,
         "refetch": 0,
+        "refetch_failed": 0,
         "restored": 0,
         "restore_failed": 0,
         "kept": 0,
@@ -322,9 +323,17 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
                         else:
                             report["restore_failed"] += 1
                     continue
-                report["refetch"] += 1
-                if repair and row.get("id") is not None:
-                    await db.mark_media_for_redownload(row["id"], account_id=account_id)
+                if not repair:
+                    report["refetch"] += 1
+                    continue
+                try:
+                    await db.mark_media_for_redownload(row["id"], account_id=account_id, keep_path=True)
+                except Exception as e:
+                    # One row's failure is counted and the check goes on.
+                    logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
+                    report["refetch_failed"] += 1
+                else:
+                    report["refetch"] += 1
     return report
 
 
@@ -348,6 +357,8 @@ def format_media_check(report: dict[str, int], *, repair: bool) -> list[str]:
         ]
         if report["restore_failed"]:
             lines.append(f"  Could not restore:         {report['restore_failed']}  (see the log)")
+        if report["refetch_failed"]:
+            lines.append(f"  Could not mark:            {report['refetch_failed']}  (see the log)")
     else:
         lines += [
             f"  Copy found on disk:        {report['restorable']}  (--repair puts it back)",

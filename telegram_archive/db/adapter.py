@@ -5139,18 +5139,23 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
-    async def mark_media_for_redownload(self, media_id: str, *, account_id: int) -> None:
+    async def mark_media_for_redownload(self, media_id: str, *, account_id: int, keep_path: bool = False) -> None:
         """Mark a media record as needing re-download.
 
         Also resets download_attempts so a row that previously hit the retry
         cap (#212) becomes eligible for the pending-download retry again.
+
+        ``keep_path`` keeps ``file_path``: the row still names the link whose
+        ``_shared`` file is gone, and the download puts the bytes back under
+        that link's own target (``_process_media``), so the link and every
+        other link to the same target resolve again even when the current
+        Telegram file name differs from the one the link holds.
         """
+        values: dict[str, Any] = {"downloaded": 0, "download_date": None, "download_attempts": 0}
+        if not keep_path:
+            values["file_path"] = None
         async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                update(Media)
-                .where(and_(Media.account_id == account_id, Media.id == media_id))
-                .values(downloaded=0, file_path=None, download_date=None, download_attempts=0)
-            )
+            stmt = update(Media).where(and_(Media.account_id == account_id, Media.id == media_id)).values(**values)
             await session.execute(stmt)
             await session.commit()
 

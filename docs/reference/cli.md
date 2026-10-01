@@ -230,7 +230,7 @@ Media check (dry run, nothing changed; run with --repair to fix):
   No copy on disk:           <n>  (--repair marks them to download again)
 ```
 
-A dry run exits 1 when it finds a broken link or a missing file, and 0 otherwise. A repair exits 0, or 1 when a copy could not be put back; the log says why. When the configuration is invalid or the database cannot be reached, it prints `Media check failed: <error type>` on stderr and exits 1. It needs no Telegram session, so the backup service can keep running.
+A dry run exits 1 when it finds a broken link or a missing file, and 0 otherwise. A repair exits 0, or 1 when a copy could not be put back or a row could not be marked; the log says why. A row marked to download again keeps its path, so the download fills the target of the link it names, even when the current Telegram file name differs. When the configuration is invalid or the database cannot be reached, it prints `Media check failed: <error type>` on stderr and exits 1. It needs no Telegram session, so the backup service can keep running.
 
 ## list-chats { #list-chats }
 

@@ -363,6 +363,43 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         with open(chat_link, "rb") as f:
             self.assertEqual(f.read(), b"fresh bytes")
 
+    def test_a_refetch_fills_the_legacy_named_link_the_row_keeps(self):
+        """A repair marks the row not downloaded and keeps its path: a link with an
+        older name than the one the current Telegram file gets. The download fills
+        that link's own target, so it and every other link to the same target
+        resolve again, and the row keeps the path it had."""
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, "300")
+        other_dir = os.path.join(self.media_path, "400")
+        for folder in (shared_dir, chat_dir, other_dir):
+            os.makedirs(folder)
+        legacy_name = "legacy_old_name.mp4"
+        old_link = os.path.join(chat_dir, legacy_name)
+        other_link = os.path.join(other_dir, legacy_name)
+        os.symlink(os.path.join("..", "_shared", legacy_name), old_link)
+        os.symlink(os.path.join("..", "_shared", legacy_name), other_link)
+        self.backup.db.reconcile_media_row = AsyncMock(
+            return_value={"id": "300_20_video", "downloaded": 0, "file_path": old_link}
+        )
+
+        async def fake_download(message, path, *args, **kwargs):
+            with open(path, "wb") as f:
+                f.write(b"fresh bytes")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+        self.backup._get_media_type = MagicMock(return_value="video")
+        self.backup._get_media_filename = MagicMock(return_value="video_xyz.mp4")
+        self.backup._get_media_size = MagicMock(return_value=1024)
+
+        result = self._run(self.backup._process_media(self._make_message(msg_id=20, file_id="xyz"), 300))
+
+        self.assertTrue(result["downloaded"])
+        self.assertEqual(result["file_path"], old_link)
+        for link in (old_link, other_link):
+            with open(link, "rb") as f:
+                self.assertEqual(f.read(), b"fresh bytes")
+
     def test_an_existing_downloaded_row_behind_a_broken_link_is_fetched_again(self):
         """The reuse branch keeps a row whose file is on disk. A broken link is
         not a file on disk: the retry after a re-fetch mark must download."""
