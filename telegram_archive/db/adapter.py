@@ -7225,7 +7225,7 @@ class DatabaseAdapter:
     # the database (PG_TSQUERY_FROM_SEARCH) and prefix terms get a flat row
     # estimate either way, so it always walks idx_messages_date backwards and
     # filters. That is 1 ms for a dense term and a full-table walk for a rare
-    # or absent one — 2 to 9 s on a 2.9M-row archive. The GIN index is the
+    # or absent one — 2 to 9 s on a large archive. The GIN index is the
     # opposite: its cost is the number of hits, so a rare term is milliseconds
     # and a single letter is over a second. So the search first asks the index
     # how many hits there are, capped, and takes the path that is bounded for
@@ -7235,7 +7235,7 @@ class DatabaseAdapter:
     # bounds — a dense term whose newest hit is millions of rows back — and
     # the sorted hit set answers when it fires. SQLite's FTS5 always drives
     # from the hit set, and sorting the keys before the joins is what keeps a
-    # common word cheap there (measured on a 155k-row archive: 87 ms against
+    # common word cheap there (measured on a mid-sized archive: 87 ms against
     # 667 ms for the joined walk), so SQLite takes that one path
     # unconditionally.
     GLOBAL_SEARCH_DENSE_HITS = 10_000

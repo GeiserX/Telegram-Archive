@@ -4,7 +4,7 @@
 
 ## What is missing today
 
-A plain location (`MessageMediaGeo`) and a shared contact (`MessageMediaContact`) keep nothing. `classify_media_type` names them `geo` and `contact`, the media row is metadata-only, and `raw_data` stays `"{}"`. Production has 1,447 location rows and 1,190 contact rows in that state.
+A plain location (`MessageMediaGeo`) and a shared contact (`MessageMediaContact`) keep nothing. `classify_media_type` names them `geo` and `contact`, the media row is metadata-only, and `raw_data` stays `"{}"`. Every location and contact row archived before this change is in that state.
 
 Three more gaps sit next to it:
 

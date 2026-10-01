@@ -10,7 +10,7 @@ database anyone had looked at.
 ``get_all_chats`` reads each chat's last message through a correlated
 ``MAX(messages.date)`` subquery, one seek per chat row against
 ``idx_messages_chat_date_desc``. Without that index each of the archive's
-4,784 chats scans its own messages across a 2.7M-row table, so the cost of
+chats scans its own messages across the whole messages table, so the cost of
 listing chats becomes the cost of reading the archive. Restoring the two
 indexes took that query from >20 minutes to 39 ms, measured on the archive
 that reported it.
