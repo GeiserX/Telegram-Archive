@@ -152,8 +152,8 @@ class NotificationType(str, Enum):
     TRANSCRIPT = "transcript"
 
 
-# The bytes an edit frame's data may take with its entities. PostgreSQL's
-# NOTIFY payload stops at 8000 bytes, and the frame adds its envelope.
+# The bytes an edit frame's data may take with its entities and its media.
+# PostgreSQL's NOTIFY payload stops at 8000 bytes, and the frame adds its envelope.
 _NOTIFY_ENTITIES_BUDGET = 6000
 
 
@@ -164,7 +164,10 @@ def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:
     paths. An edit's ``entities`` are dropped when the data with them would pass
     ``_NOTIFY_ENTITIES_BUDGET`` bytes: a short text can carry many custom emoji or
     long link entities. The viewer keeps the formatting it has for a frame without
-    entities. Returns a shallow-copied dict so the caller's original is not mutated.
+    entities. An edit's ``media`` (the photo or file it put in place) goes next,
+    when the data is still too large: the viewer keeps the media it shows until
+    the next refresh. The text is never dropped. Returns a shallow-copied dict so
+    the caller's original is not mutated.
     """
     truncated = False
 
@@ -186,12 +189,15 @@ def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:
         data.pop("entities", None)
         truncated = True
 
-    if data.get("entities"):
+    for key in ("entities", "media"):
+        if not data.get(key):
+            continue
         size = len(json.dumps(data, default=_json_serializer).encode("utf-8"))
         if size > _NOTIFY_ENTITIES_BUDGET:
             if not truncated:
                 data = data.copy()
-            data.pop("entities", None)
+                truncated = True
+            data.pop(key, None)
 
     return data
 

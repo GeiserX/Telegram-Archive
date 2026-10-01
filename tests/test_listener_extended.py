@@ -19,6 +19,7 @@ Covers lines missing from the initial test_listener.py:
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1952,6 +1953,20 @@ class TestLogStats:
 
         # Should not raise
         await listener._log_stats()
+
+    async def test_log_stats_lists_edits_stored_as_new_messages(self, caplog):
+        """8.4C (9.0): edits of a message the archive had not stored count on a line
+        of their own in the stop statistics, apart from the skipped ones."""
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
+        listener.stats["start_time"] = datetime.now() - timedelta(minutes=5)
+        listener.stats["edits_skipped"] = 2
+        listener.stats["edits_stored_as_new"] = 3
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.listener"):
+            await listener._log_stats()
+
+        assert "Skipped:  2" in caplog.text
+        assert "Stored as new messages: 3" in caplog.text
 
     async def test_log_stats_shows_zero_errors_without_warning(self):
         """_log_stats with zero errors does not log the error warning."""
