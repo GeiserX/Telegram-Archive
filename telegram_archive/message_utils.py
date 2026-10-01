@@ -1386,7 +1386,7 @@ def _contact_payload(media: object) -> dict:
     return payload
 
 
-# The kinds backfill-payloads re-reads, each stored under the raw_data key
+# The kinds backfill-details re-reads, each stored under the raw_data key
 # of the same name. Releases up to v7.28.0 also left a file_path on geo,
 # contact and poll rows (docs/design/location-and-contact.md).
 PAYLOAD_BACKFILL_TYPES = ("contact", "geo", "geo_live", "poll", "venue")

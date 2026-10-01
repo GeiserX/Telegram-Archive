@@ -41,7 +41,7 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 | Needs an authorized Telegram session | Database only, no Telegram credentials |
 |--------------------------------------|----------------------------------------|
-| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-payloads` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import`, `merge` |
+| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-details` | `migrate`, `export`, `stats`, `status`, `list-chats`, `import`, `merge` |
 
 !!! warning "One client per session"
     Stop the backup service before any command that connects to Telegram. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
@@ -333,10 +333,10 @@ A `Chats with errors:` line follows when some chats failed. With several account
 
 It exits 0 on success. On failure it prints `Reclassification failed: <error>` on stderr and exits 1.
 
-## backfill-payloads { #backfill-payloads }
+## backfill-details { #backfill-details }
 
 ```text
-telegram-archive [--data-dir PATH] backfill-payloads [-c CHAT_ID] [--apply]
+telegram-archive [--data-dir PATH] backfill-details [-c CHAT_ID] [--apply]
 ```
 
 | Short | Long | Argument | Required | Meaning |
@@ -344,24 +344,34 @@ telegram-archive [--data-dir PATH] backfill-payloads [-c CHAT_ID] [--apply]
 | `-c` | `--chat-id` | `CHAT_ID` | no | Only this chat. Without it, every chat. |
 | | `--apply` | | no | Write the changes. Without it, the command reads and counts but writes nothing. |
 
-Messages archived before the archive kept locations, venues, live locations, contacts and polls have a media row of the kind and no details, so the viewer shows their card with `Details not archived`. This command asks Telegram for those messages again and adds only the missing details under `raw_data`. It never replaces text, dates, reactions or any detail already stored.
+It reads old messages from Telegram again and fills in two things older releases did not keep:
 
-It reads up to 100 messages per request and pauses one second between requests. It waits out a FloodWait and retries on short network errors. A FloodWait longer than `MAX_FLOOD_WAIT_SECONDS` stops the run, since Telegram would refuse every further request. A chat Telegram no longer serves is skipped. So is a message Telegram no longer returns, or one that now holds another kind of media. Both are counted.
+- **Locations, venues, live locations, contacts and polls.** Messages archived before the archive kept them have a media row of the kind and no details, so the viewer shows their card with `Details not archived`. The command adds only the missing details under `raw_data`.
+- **The hidden-edit flag.** Telegram moves a message's edit time when only its reactions change, and flags that edit as one not to show. Messages archived before 9.0 have the edit time and no flag, so a reaction shows as a pencil. The command reads the messages with an edit time, no flag, no kept earlier version and no deletion, and stores Telegram's flag in `edit_hide`. It writes the flag only when Telegram returns the edit time the archive holds. A later edit time means a new edit, which the next backup records with its own flag, so that message is counted and left alone. A message with a kept earlier version is not read: it was really edited and keeps its pencil either way.
+
+It never replaces text, dates, reactions, an edit time, a flag or any detail already stored.
+
+A message on both lists is asked for once. It reads up to 100 messages per request and pauses one second between requests, so a chat with N messages to read costs one request to find the chat and one per 100 of them. It waits out a FloodWait and retries on short network errors. A FloodWait longer than `MAX_FLOOD_WAIT_SECONDS` stops the run, since Telegram would refuse every further request. A chat Telegram no longer serves is skipped. So is a message Telegram no longer returns, or one that now holds another kind of media. All are counted.
 
 It also clears the leftover placeholder path that releases up to 7.28.0 left on location, contact and poll rows. A path is cleared when the details are stored, or when the file is missing, empty or a broken link. For a contact whose details Telegram no longer serves, a vCard file at that path is read into the contact's details first. A file that holds something else keeps its path. Paths are only cleared where the media folder is there: when it is missing or empty where the command runs, as on a host without the media volume, every path is kept. A file counts as missing only in a folder that exists inside the media folder. A message Telegram did not answer because of an error keeps its path until a later run reads it. Clearing keeps the row and sets `file_path`, `file_name` and `download_date` to empty and `downloaded` to 0. No file on disk is changed or deleted.
 
-The messages still missing their details are the work list, so there is nothing to store between runs. An interrupted run resumes when you run it again, and a second run adds nothing new. Messages Telegram no longer serves are asked for again on each run, at one request per 100 of them. No location, name or phone number is written to the logs.
+The messages still missing their details or their flag are the work list, so there is nothing to store between runs. An interrupted run resumes when you run it again, and a second run fills nothing new. Messages Telegram no longer serves are asked for again on each run, at one request per 100 of them, and so are edits with a later edit time until a backup records them. No text, location, name or phone number is written to the logs.
 
 It prints:
 
 ```text
-Media payload backfill complete:
+Details backfill complete:
   Kind        Filled  Already there  Not served
   contact        <n>            <n>         <n>
   geo            <n>            <n>         <n>
   geo_live       <n>            <n>         <n>
   poll           <n>            <n>         <n>
   venue          <n>            <n>         <n>
+  Edit flags filled, hidden:       <n>
+  Edit flags filled, shown:        <n>
+  Edits with a later edit time:    <n>
+  Edit flags filled meanwhile:     <n>
+  Edits not served:                <n>
   Chats scanned:                   <n>
   Chats Telegram no longer serves: <n>
   Leftover paths cleared:          <n>
@@ -369,9 +379,9 @@ Media payload backfill complete:
   Contacts read from vCard files:  <n>
 ```
 
-Without `--apply` the heading starts with `[DRY RUN]`, the counts say what a run with `--apply` would do, and a last line says nothing was written. `Already there` counts rows listed only for their leftover path. An `Errors (run again to retry):` line follows when a request failed for another reason. When a long FloodWait stopped the run, a line says `Stopped after a FloodWait of <n> s` and the rest stays on the work list for a later run. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command.
+Without `--apply` the heading starts with `[DRY RUN]`, the counts say what a run with `--apply` would do, and a last line says nothing was written. `Already there` counts rows listed only for their leftover path. `Edit flags filled, hidden` counts the reactions whose pencil goes away, and `shown` the real edits, which keep it. `Edit flags filled meanwhile` counts flags a backup or the listener stored between the read and the write. An `Errors (run again to retry):` line follows when a request failed for another reason. When a long FloodWait stopped the run, a line says `Stopped after a FloodWait of <n> s` and the rest stays on the work list for a later run. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command.
 
-It exits 0 on success. When a FloodWait stops the run before the end, it prints the summary and exits 1. On failure it prints `Payload backfill failed: <error type>` on stderr and exits 1.
+It exits 0 on success. When a FloodWait stops the run before the end, it prints the summary and exits 1. On failure it prints `Details backfill failed: <error type>` on stderr and exits 1.
 
 ## Other entry points
 

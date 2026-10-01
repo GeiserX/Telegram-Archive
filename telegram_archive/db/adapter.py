@@ -2194,6 +2194,45 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row.id for row in result}
 
+    async def get_edit_hide_backfill_rows(self, chat_id: int, *, account_id: int) -> list[tuple[int, datetime]]:
+        """The work list of ``backfill-details`` for edit flags in one chat: ``(message_id, edit_date)``.
+
+        A row is listed when it has an ``edit_date``, no ``edit_hide`` and no
+        kept version, and is not deleted. A kept version means a real edit the
+        archive saw, whose pencil stays whatever the flag says; Telegram no
+        longer serves a deleted message. One chat at a time, so the query is
+        a range of the primary key and the list stays the size of one chat.
+        Filling the flag takes a row off the list.
+        """
+        has_version = (
+            select(MessageVersion.id)
+            .where(
+                and_(
+                    MessageVersion.account_id == Message.account_id,
+                    MessageVersion.chat_id == Message.chat_id,
+                    MessageVersion.message_id == Message.id,
+                )
+            )
+            .exists()
+        )
+        stmt = (
+            select(Message.id, Message.edit_date)
+            .where(
+                and_(
+                    Message.account_id == account_id,
+                    Message.chat_id == chat_id,
+                    Message.edit_date.isnot(None),
+                    Message.edit_hide.is_(None),
+                    or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
+                    ~has_version,
+                )
+            )
+            .order_by(Message.id)
+        )
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(stmt)
+            return [(row.id, row.edit_date) for row in result]
+
     @retry_on_locked()
     async def fill_edit_hide(
         self, chat_id: int, message_id: int, edit_date: datetime, edit_hide: int, *, account_id: int
@@ -4553,7 +4592,7 @@ class DatabaseAdapter:
     async def get_payload_backfill_rows(
         self, *, account_id: int, chat_id: int | None = None
     ) -> dict[int, list[dict[str, Any]]]:
-        """The work list of ``backfill-payloads``, grouped by chat, ordered by message id.
+        """The work list of ``backfill-details``, grouped by chat, ordered by message id.
 
         A media row of a ``PAYLOAD_BACKFILL_TYPES`` kind is listed when its
         message's ``raw_data`` lacks the key of the same name, or when the row
@@ -4606,7 +4645,7 @@ class DatabaseAdapter:
     ) -> bool:
         """Add each key of ``payload`` the message's ``raw_data`` lacks; True if anything was added.
 
-        For ``backfill-payloads``. The row is locked first, so a writer that
+        For ``backfill-details``. The row is locked first, so a writer that
         stores the same key meanwhile wins and this adds nothing. A key the
         row already holds is never replaced, and nothing else on the row
         (text, dates, reactions, other keys) is touched: this is not the

@@ -130,20 +130,22 @@ docker compose start telegram-backup
 !!! note "Reload open viewer tabs afterwards"
     An open viewer tab shows "missing from the archive disk" for a re-typed video until you reload the page.
 
-## Fill old locations, contacts and polls
+## Fill old locations, contacts, polls and edit flags
 
-Messages archived before the archive kept locations, venues, live locations and contacts show their card with `Details not archived`. Old polls archived by the backup can be in the same state. `backfill-payloads` asks Telegram for those messages again and adds only the missing details. It never replaces text, dates, reactions or details already stored. It also clears the placeholder path older releases left on these rows when the file is empty, missing or no longer needed, and leaves every file on disk where it is. Run it where the media folder is mounted, as in the commands below: without it, every path is kept.
+Messages archived before the archive kept locations, venues, live locations and contacts show their card with `Details not archived`. Old polls archived by the backup can be in the same state. Messages archived before 9.0 also lack Telegram's flag for an edit time moved by a reaction, so a reaction shows as a pencil until a backup reads the message again. `backfill-details` asks Telegram for those messages again, each once, and adds only the missing details and flags. It never replaces text, dates, reactions or details already stored. It also clears the placeholder path older releases left on these rows when the file is empty, missing or no longer needed, and leaves every file on disk where it is. Run it where the media folder is mounted, as in the commands below: without it, every path is kept.
 
 It is a dry run unless you add `--apply`:
 
 ```bash
 docker compose stop telegram-backup
-docker compose run --rm telegram-backup python -m telegram_archive backfill-payloads
-docker compose run --rm telegram-backup python -m telegram_archive backfill-payloads --apply
+docker compose run --rm telegram-backup python -m telegram_archive backfill-details
+docker compose run --rm telegram-backup python -m telegram_archive backfill-details --apply
 docker compose start telegram-backup
 ```
 
-`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the chats Telegram no longer serves and the placeholder paths cleared and kept. If the run stops, run it again: it picks up the messages still missing their details, and a second complete run adds nothing. For every flag and the full output, see [backfill-payloads](../reference/cli.md#backfill-payloads).
+It costs one request per 100 messages to read, plus one per chat, with a second between requests. An archive with 50,000 old edited messages takes at least 500 requests, so ten minutes or more. A dry run asks Telegram the same questions as a real run.
+
+`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the edit flags filled as hidden (the pencil goes) and as shown (a real edit keeps it), the edits with a later edit time, then the chats Telegram no longer serves and the placeholder paths cleared and kept. If the run stops, run it again: it picks up the messages still missing their details or their flag, and a second complete run fills nothing. For every flag and the full output, see [backfill-details](../reference/cli.md#backfill-details).
 
 ## Verify media files
 
