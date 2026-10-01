@@ -595,12 +595,14 @@ class TestLeftoverPaths:
         assert (await _media_row(real_adapter, CHAT_A, 3)).file_path is None
         assert (summary["paths_cleared"], summary["paths_kept"]) == (1, 2)
 
-    @pytest.mark.parametrize("failure", ["batch", "chat"])
+    @pytest.mark.parametrize("failure", ["batch", "chat", "unresolved"])
     async def test_a_row_telegram_never_answered_keeps_its_vcard_path(self, real_adapter, tmp_path, failure):
         await _seed_chat(real_adapter)
         (tmp_path / "c.bin").write_text(TELETHON_VCARD)
         await _seed(real_adapter, CHAT_A, 1, "contact", file_path=str(tmp_path / "c.bin"))
-        error = ConnectionError("transient")
+        # "unresolved": Telethon's ValueError for a peer this session cannot
+        # resolve. Telegram refused nothing, so the chat is not "no longer served".
+        error = ValueError("unresolved peer") if failure == "unresolved" else ConnectionError("transient")
         client = FakeTelegram(
             {(CHAT_A, 1): _media("contact")},
             **({"batch_error": error} if failure == "batch" else {"entity_error": error}),
@@ -752,7 +754,7 @@ class TestCommandLine:
         summary["flood_wait_seconds"] = 7200
         rc, _seen = self._run(monkeypatch, ["backfill-payloads", "--apply"], summary)
         out = capsys.readouterr().out
-        assert rc == 0
+        assert rc == 1
         assert "Stopped after a FloodWait of 7200 s" in out
 
     def test_a_failure_exits_one_with_the_type_only(self, monkeypatch, capsys):

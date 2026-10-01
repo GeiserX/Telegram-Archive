@@ -371,7 +371,7 @@ Media payload backfill complete:
 
 Without `--apply` the heading starts with `[DRY RUN]`, the counts say what a run with `--apply` would do, and a last line says nothing was written. `Already there` counts rows listed only for their leftover path. An `Errors (run again to retry):` line follows when a request failed for another reason. When a long FloodWait stopped the run, a line says `Stopped after a FloodWait of <n> s` and the rest stays on the work list for a later run. With several accounts, an account that failed altogether counts as one error there. With one account, that failure ends the command.
 
-It exits 0 on success. On failure it prints `Payload backfill failed: <error type>` on stderr and exits 1.
+It exits 0 on success. When a FloodWait stops the run before the end, it prints the summary and exits 1. On failure it prints `Payload backfill failed: <error type>` on stderr and exits 1.
 
 ## Other entry points
 

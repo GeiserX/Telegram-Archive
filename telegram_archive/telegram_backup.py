@@ -1894,7 +1894,7 @@ class TelegramBackup:
                 except (FloodWaitError, FloodPremiumWaitError) as e:
                     summary["flood_wait_seconds"] = e.seconds
                     break
-                except (ChannelPrivateError, ChatAdminRequiredError, ValueError) as e:
+                except (ChannelPrivateError, ChatAdminRequiredError) as e:
                     # A refusal: Telegram answered that it no longer serves this chat.
                     # Type name only: the error text can name the peer.
                     summary["chats_unavailable"] += 1

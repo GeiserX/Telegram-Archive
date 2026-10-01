@@ -568,7 +568,8 @@ def run_backfill_payloads(args) -> int:
         )
     if not args.apply:
         print("Nothing was written. Run again with --apply to write these changes.")
-    return 0
+    # A run a FloodWait cut short is not a finished run: a script must see that.
+    return 1 if summary.get("flood_wait_seconds") else 0
 
 
 def run_backfill_topics(args) -> int:
