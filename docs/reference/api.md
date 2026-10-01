@@ -132,7 +132,7 @@ Master routes answer 403 `Admin access required` to everyone else. They also ans
 
 A chat route answers the same 404 `Chat not found` for a ref that does not exist, a malformed ref and a chat the caller may not see. What a caller may see combines the operator's `DISPLAY_CHAT_IDS` filter with the caller's `allowed_accounts` and `allowed_chat_refs` grants.
 
-Logins with `no_download` set get 403 `Downloads disabled for this account` on media bytes, thumbnails, transcript routes and export. In message payloads their media `file_path` and `url` are `null`, `downloaded` is `false` and transcripts are removed. Avatars stay available to them.
+Logins with `no_download` set get 403 `Downloads disabled for this account` on media bytes, thumbnails, transcript routes and export. In message payloads their media `file_path` and `url` are `null`, `downloaded` is `false`, transcripts are removed and a shared contact's `raw_data.contact.vcard` is left out. Avatars stay available to them.
 
 ## Health and status
 

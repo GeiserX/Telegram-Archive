@@ -410,10 +410,19 @@ async def handle_realtime_notification(payload: dict):
         message = data.get("message")
         frame = {"type": "new_message", "chat_ref": chat_ref, "message": message}
         no_download_frame = None
-        if isinstance(message, dict) and isinstance(message.get("media"), dict):
-            media, no_download_media = _frame_media(message["media"], message.get("id"), chat_ref)
-            frame["message"] = {**message, "media": media}
-            no_download_frame = {**frame, "message": {**message, "media": no_download_media}}
+        if isinstance(message, dict):
+            no_download_message = message
+            if isinstance(message.get("media"), dict):
+                media, no_download_media = _frame_media(message["media"], message.get("id"), chat_ref)
+                frame["message"] = {**message, "media": media}
+                no_download_message = {**message, "media": no_download_media}
+            # A login whose downloads are off gets the frame the messages
+            # route would give it: no media URL or path, and no vCard text.
+            raw_data = message.get("raw_data")
+            if _without_contact_vcard(raw_data) is not raw_data:
+                no_download_message = {**no_download_message, "raw_data": _without_contact_vcard(raw_data)}
+            if no_download_message is not message:
+                no_download_frame = {**frame, "message": no_download_message}
         await ws_manager.broadcast_to_chat(chat, frame, no_download_message=no_download_frame)
 
         # Send Web Push notification for new messages
@@ -1534,13 +1543,32 @@ async def require_chat(chat_ref: str, user: UserContext = Depends(require_auth))
     return await _resolve_chat_ref(chat_ref, user)
 
 
+def _without_contact_vcard(raw_data: object) -> object:
+    """``raw_data`` without a shared contact's vCard text, for a no-download login.
+
+    Releases before 9.0 kept a contact's vCard as a file such a login could not
+    download; it is now read into ``raw_data.contact.vcard``. The viewer shows
+    the name and the phone only, so the vCard text stays with the file rule.
+    Returns a copy when it removes something, and ``raw_data`` itself otherwise.
+    """
+    if not isinstance(raw_data, dict):
+        return raw_data
+    contact = raw_data.get("contact")
+    if not isinstance(contact, dict) or "vcard" not in contact:
+        return raw_data
+    return {**raw_data, "contact": {key: value for key, value in contact.items() if key != "vcard"}}
+
+
 def _strip_original_media_paths(messages: list[dict]) -> None:
     """Remove original media file paths, URLs and transcripts from API responses for no-download sessions.
 
     A transcript is the content of the audio in text form, so a login that
     may not hear the audio does not read it either (docs/TRANSCRIPTION.md).
+    A shared contact's vCard text goes too (``_without_contact_vcard``).
     """
     for message in messages:
+        if isinstance(message, dict) and "raw_data" in message:
+            message["raw_data"] = _without_contact_vcard(message["raw_data"])
         media = message.get("media")
         if isinstance(media, dict):
             media["file_path"] = None
