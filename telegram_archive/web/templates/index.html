@@ -10325,6 +10325,8 @@
 
                 // The list is replaced on every tab switch and cleared when the gallery opens,
                 // so an empty list is the signal to forget the previous view entirely.
+                // The watch is shallow: it fires when the list is replaced, not when items
+                // are pushed into it, so every change to the list must assign a new array.
                 watch(mediaGalleryItems, (items) => {
                     if (!items || !items.length) {
                         resetThumbQueue()
@@ -13970,7 +13972,9 @@
                         const data = await res.json()
                         if (!stillCurrent()) return
                         if (append) {
-                            mediaGalleryItems.value.push(...data.items)
+                            // Replaced, not pushed: the thumbnail queue's watcher sees only a
+                            // new list, so tiles pushed into the old one never got a preview.
+                            mediaGalleryItems.value = mediaGalleryItems.value.concat(data.items)
                         } else {
                             mediaGalleryItems.value = data.items
                         }

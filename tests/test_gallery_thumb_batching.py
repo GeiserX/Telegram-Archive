@@ -8,22 +8,37 @@ for 7 to 39 seconds and were reset, so the pane read "Failed to load media"
 while the tab badges said there were 1,701 files.
 
 These lift the real admission queue out of the template and run it under node,
-so they pin the behaviour rather than the source text.
+so they pin the behaviour rather than the source text. They run on the vendored
+Vue build's own ref and watch: the queue learns about tiles through a shallow
+watch, and a stub that called the watcher by hand hid that pushing a page into
+the list never fired it (#537).
 """
 
+import json
 import re
 
 from test_frontend_audit_fixes import INDEX_HTML, _run_node
 
+VUE_JS = INDEX_HTML.parents[1] / "static" / "vendor" / "vue-3.5.41.global.prod.js"
+
 BLOCK_START = "                const THUMB_CONCURRENCY = 4\n"
 BLOCK_END = "                const mediaTabs = [\n"
+LOADER_START = "                let mediaGalleryRequestSeq = 0\n"
+LOADER_END = "                const loadMediaCounts = async"
+
+# The Vue build is too large to pass inline to `node -e`, so the script reads it.
+VUE_LOADER = f"""
+"use strict";
+require('node:vm').runInThisContext(require('node:fs').readFileSync({json.dumps(str(VUE_JS))}, 'utf8'));
+"""
 
 PRELUDE = """
-"use strict";
 const assert = require('node:assert/strict');
-const ref = value => ({ value });
-const watchers = [];
-const watch = (source, fn) => watchers.push({ source, fn });
+const { ref, nextTick } = Vue;
+// The real watch, flushed synchronously so a test reads the outcome on the next
+// line. Flush timing does not change what a watch tracks: a shallow watch still
+// ignores a push into the list.
+const watch = (source, fn, options) => Vue.watch(source, fn, { ...options, flush: 'sync' });
 const mediaGalleryItems = ref([]);
 // Timers are driven by hand so the test never sleeps.
 const timers = new Map();
@@ -36,7 +51,7 @@ const oldestTimer = () => { assert.ok(timers.size, 'no pending timer'); return [
 const items = n => Array.from({ length: n }, (_, i) => ({ id: `${i + 1}_photo`, thumb_url: `/media/thumb/200/ref/${i + 1}_photo` }));
 const admitted = () => [...admittedThumbs.value];
 const failed = () => [...failedThumbs.value];
-const setItems = list => { mediaGalleryItems.value = list; watchers[0].fn(list) };
+const setItems = list => { mediaGalleryItems.value = list };
 """
 
 
@@ -47,7 +62,7 @@ def _queue_block(html: str) -> str:
 
 def _script(body: str) -> str:
     html = INDEX_HTML.read_text(encoding="utf-8")
-    return "\n".join([PRELUDE, _queue_block(html), body])
+    return "\n".join([VUE_LOADER, PRELUDE, _queue_block(html), body])
 
 
 def test_only_a_few_tiles_are_admitted_and_each_one_that_settles_admits_the_next() -> None:
@@ -117,6 +132,58 @@ assert.deepEqual(admitted().slice(-1), ['5_photo']);
 settleThumb('1_photo');
 assert.equal(admitted().length, 5, 'a settled tile cannot be settled again by a re-render');
 """)
+    )
+
+
+def test_a_page_loaded_by_scrolling_gets_its_previews() -> None:
+    # The real loader, not a stand-in for it: infinite scroll and "Load more" both
+    # call loadMediaGallery(true), and the tiles it adds must join the queue.
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index(LOADER_START)
+    loader = html[start : html.index(LOADER_END, start)]
+    _run_node(
+        "\n".join(
+            [
+                VUE_LOADER,
+                PRELUDE,
+                """
+const page = top => Array.from({ length: 50 }, (_, i) => ({ id: `${top - i}_photo`, thumb_url: `/media/thumb/200/ref/${top - i}_photo` }));
+const requests = [];
+const fetch = async url => {
+  requests.push(url);
+  const older = url.includes('before_id=51_photo');
+  return { ok: true, json: async () => older ? { items: page(50), has_more: false } : { items: page(100), has_more: true } };
+};
+const selectedChat = ref({ ref: 'ref' });
+const mediaGalleryTab = ref('photos');
+const mediaGalleryLoading = ref(false);
+const mediaGalleryHasMore = ref(true);
+const mediaGalleryError = ref(false);
+let mediaGalleryEmptyPages = 0;
+const galleryShownCount = () => mediaGalleryItems.value.length;
+const loadMoreMediaIfInView = () => {};
+const showToast = message => assert.fail(`unexpected toast: ${message}`);
+""",
+                _queue_block(html),
+                loader,
+                """
+(async () => {
+  await loadMediaGallery();
+  assert.deepEqual(admitted(), ['100_photo', '99_photo', '98_photo', '97_photo'], 'the first page starts four at a time');
+  for (let n = 100; n > 50; n--) settleThumb(`${n}_photo`);
+  assert.equal(admitted().length, 50, 'the whole first page drew');
+
+  await loadMediaGallery(true);
+  assert.equal(requests.length, 2);
+  assert.ok(requests[1].includes('before_id=51_photo'), 'the second page continues after the last tile');
+  assert.equal(mediaGalleryItems.value.length, 100, 'the second page is in the grid');
+  assert.deepEqual(admitted().slice(50), ['50_photo', '49_photo', '48_photo', '47_photo'], 'the second page is queued for previews');
+  for (let n = 50; n > 0; n--) settleThumb(`${n}_photo`);
+  assert.equal(admitted().length, 100, 'every tile loaded by scrolling gets its preview');
+})().catch(error => { console.error(error); process.exit(1) });
+""",
+            ]
+        )
     )
 
 
