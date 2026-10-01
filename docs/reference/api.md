@@ -267,6 +267,24 @@ A field Telegram did not send is left out, so a location Telegram sent without a
 
 In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji, from its latest drop, with `emoji`, `count` (how many went), `count_before` (the count before the drop, above `count` when some stayed), `removed_at` (when the archive noticed, in UTC) and `back_at` (when an emoji taken back to zero was seen again, or `null`). An emoji that came back is in both lists. `reaction_history` lists every state of the message's reactions the archive kept, oldest first: `emoji`, `count` (0 when taken back), `previous_count` (`null` for the first state), `observed_at` and `source` (`listener`, `backup`, or `baseline` for a state copied from the reactions kept before 9.0). Neither list names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
 
+In `GET /api/chats/{chat_ref}/messages` each message also carries `snapshots`, the newest state the archive kept of its poll and of its link preview. See [Poll and link preview snapshots](#poll-and-link-preview-snapshots).
+
+### Poll and link preview snapshots
+
+`raw_data.poll` and `raw_data.webpage` hold a poll and a link preview as the archive first captured them, and never change. When a later read shows another state, the archive adds a snapshot: a poll's votes, results or closing, or the preview card's fields. A read that shows the newest kept state adds nothing. The listener writes them from edit events and poll updates, and the backup and the sync from their reads. Live locations are not followed.
+
+`snapshots` is an object keyed by kind, `poll` or `preview`, and empty when the archive kept no later state. Each entry describes the newest state of that kind:
+
+| Field | Meaning |
+|-------|---------|
+| `payload` | The whole state, in the shape of `raw_data.poll` or `raw_data.webpage`. A poll state from an update that carried the results alone holds only `results`. |
+| `observed_at` | When the archive saw it, by the archive's own clock, in UTC. |
+| `source` | The path that saw it: `listener`, `sync` or `backup`. |
+| `count` | How many states of that kind the archive kept after the first capture. |
+| `differs_from_first` | False when the newest state is the same as the first capture again, for example after a vote was taken back. |
+
+The snapshots read through the same chat and account as the messages: a viewer restricted to some accounts sees only the snapshots its accounts wrote. Both exports list every state, oldest first.
+
 ### Message versions
 
 Each earlier version of an edited message has these fields:
@@ -384,6 +402,7 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `media` | The message's current media, as a list of [export media](#export-media). Usually one entry. A message can hold more than one media row, and the first entry is the one the viewer shows. An empty list means the message has no media. |
 | `versions` | Every earlier version the archive kept of the message, oldest first, whatever its date. An empty list means the archive kept none. |
 | `reaction_history` | Every state of the message's reactions the archive kept, oldest first, whatever its date: `emoji`, `count` (0 when taken back), `previous_count`, `observed_at` (ISO 8601 UTC) and `source`, as in [the messages list](#messages). |
+| `snapshots` | Every later state of the message's poll or link preview the archive kept, oldest first. Each has `kind` (`poll` or `preview`), `payload`, `observed_at` (ISO 8601 UTC) and `source`, as in [Poll and link preview snapshots](#poll-and-link-preview-snapshots). The export has no `raw_data`, so the first capture is not in it. An empty list means no later state was kept. |
 | `transcripts` | Present only when the message's media has transcripts: every transcript row, newest first. Each names its media by `media_id`. |
 
 A location, a contact, a poll or another kind with no file has a `media_payload` object, keyed and shaped as in `raw_data` (see [Paging through messages](#paging-through-messages)).
@@ -445,7 +464,7 @@ So every transcript in the file names a media listed in the same file, on its me
 
 Before 9.0 the file also ended with a flat `message_versions` list. It is gone: every version is under its message. See [Upgrading to 9.0](../operations/upgrading.md#upgrading-to-90).
 
-Everything in the file is read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions, its media, its reaction history or its transcripts. The export reads a message's versions, media and reaction states as it writes that message, so a long chat is never held in memory at once. If they ever stop lining up with the messages, the export stops with an error instead of writing messages without them. The file then ends early and is not valid JSON.
+Everything in the file is read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions, its media, its reaction history, its snapshots or its transcripts. The export reads a message's versions, media, reaction states and snapshots as it writes that message, so a long chat is never held in memory at once. If they ever stop lining up with the messages, the export stops with an error instead of writing messages without them. The file then ends early and is not valid JSON.
 
 ## Transcripts
 

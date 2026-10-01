@@ -30,7 +30,14 @@ from telegram_archive import merge
 from telegram_archive.__main__ import create_parser, main
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import MediaTranscript, MediaVersion, MessageVersion, Reaction, ReactionHistory
+from telegram_archive.db.models import (
+    MediaTranscript,
+    MediaVersion,
+    MessageSnapshot,
+    MessageVersion,
+    Reaction,
+    ReactionHistory,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -245,6 +252,18 @@ async def seed_source(url: str, media: Path) -> None:
                     source="listener",
                 )
             )
+            # A later state of message two's poll (038).
+            await session.execute(
+                sa.insert(MessageSnapshot).values(
+                    account_id=account_a,
+                    chat_id=CHANNEL,
+                    message_id=2,
+                    kind="poll",
+                    payload='{"closed": true}',
+                    observed_at=datetime(2024, 1, 2, 10, 0),
+                    source="listener",
+                )
+            )
             await session.commit()
 
         await db.upsert_forum_topic({"id": 5, "chat_id": FORUM, "title": "Test Topic"}, account_id=account_a)
@@ -388,6 +407,7 @@ class TestMergeCopiesEverything(MergeCase):
             "media": 5,
             "message_versions": 1,
             "media_versions": 1,
+            "message_snapshots": 1,
             "reactions": 1,
             "reaction_history": 1,
             "avatar_history": 1,
@@ -421,6 +441,13 @@ class TestMergeCopiesEverything(MergeCase):
             [(2, "fake message two, first draft")],
             self.target_rows(
                 "SELECT account_id, text FROM message_versions WHERE chat_id = :chat AND message_id = 2", chat=CHANNEL
+            ),
+        )
+        self.assertEqual(
+            [(2, "poll", '{"closed": true}')],
+            self.target_rows(
+                "SELECT account_id, kind, payload FROM message_snapshots WHERE chat_id = :chat AND message_id = 2",
+                chat=CHANNEL,
             ),
         )
         self.assertEqual(

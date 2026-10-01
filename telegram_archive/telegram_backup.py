@@ -73,6 +73,7 @@ from .message_utils import (
     extract_forward_origin,
     extract_media_attributes,
     extract_media_payload,
+    extract_media_poll,
     extract_reactions,
     extract_topic_id,
     extract_webpage_preview,
@@ -3193,6 +3194,11 @@ class TelegramBackup:
                         if media_replaced:
                             await self._download_replaced_media(remote_msg, chat_id)
 
+                    # A poll's votes or closing, or a changed link preview, moves no
+                    # edit_date: the message is in hand, so its state is compared
+                    # with the newest kept on every pass.
+                    await self._keep_snapshots(remote_msg, chat_id, "sync")
+
                     # Piggyback reaction reconcile (#221): the full message is already
                     # in hand, so harvest its reactions at zero extra API cost. Skip
                     # None (extraction failure) and min payloads (partial; may omit the
@@ -4344,6 +4350,26 @@ class TelegramBackup:
             edit_hide=message_edit_hide(message),
         )
         return isinstance(row, dict) and row.get("replaced") is True
+
+    async def _keep_snapshots(self, message: Message, chat_id: int, source: str) -> None:
+        """Keep the poll or link-preview state a read shows when it differs from the newest kept.
+
+        ``raw_data`` keeps the first capture; ``record_message_snapshots``
+        adds a ``message_snapshots`` row for a later state and nothing when it
+        matches. Live locations are not followed.
+        """
+        media = getattr(message, "media", None)
+        observed = {}
+        poll = extract_media_poll(media)
+        if poll is not None:
+            observed["poll"] = poll
+        preview = extract_webpage_preview(media)
+        if preview is not None:
+            observed["preview"] = preview
+        if observed:
+            await self.db.record_message_snapshots(
+                chat_id, message.id, observed, account_id=self.account_id, source=source
+            )
 
     async def _apply_edit(self, message: Message, chat_id: int, source: str, *, media_changed: bool) -> str:
         """Apply a read's text, formatting and edit date to the archived message; the outcome.

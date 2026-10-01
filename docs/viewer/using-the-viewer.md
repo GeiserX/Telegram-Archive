@@ -122,10 +122,10 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 - **Round videos** play in place as a circle, muted, while they are on screen. Click one to turn the sound on or off. They never open in the lightbox.
 - **GIFs** loop while they are on screen and pause when you scroll away.
 - **Stickers** in `.webp` show as images up to 200 px wide. Other stickers show the text "Animated Sticker".
-- **Polls and quizzes** show each answer with a percentage bar and the total votes.
+- **Polls and quizzes** show each answer with a percentage bar and the total votes, as the archive last saw them. A closed poll reads **Final results**. When the votes differ from the first capture, a quiet "updated" and the time the archive saw them follow the poll's kind; hover it for the full date. The first capture is kept.
 - **Locations, venues, live locations and shared contacts** show as cards. See [Locations and contacts](#locations-and-contacts).
 - **Dice, invoices, stories, giveaways and games** show as a chip.
-- **Link previews** show the archived card with site name, title, description and image.
+- **Link previews** show the archived card with site name, title, description and image. When Telegram changed the card after the first capture, the newest card is shown with a quiet "updated" line and the time the archive saw it.
 
 #### Locations and contacts
 
@@ -300,7 +300,7 @@ The **Shared Media Gallery** button in the chat header opens the chat's files in
 
 A tab with nothing in it is left out.
 
-Items load 50 at a time, and the next 50 load as you reach the end. A **Load more** button at the end does the same, for when the Voice filter hides a whole page.
+Items load 50 at a time, and the next 50 load as you reach the end. A **Load more** button at the end does the same, for when the Voice filter hides a whole page. Photo and video previews load a few at a time in grid order, for the tiles of every page.
 
 A photo or video whose message was deleted in Telegram carries a dark pill in its tile's bottom left corner, the same pill a photo's time uses in the chat, with a trash and the word "deleted". Small tiles show the trash alone. Hover the tile to see when it was deleted.
 

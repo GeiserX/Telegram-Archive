@@ -17,7 +17,7 @@ import shutil
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any
 
@@ -84,6 +84,7 @@ from .models import (
     MediaTranscript,
     MediaVersion,
     Message,
+    MessageSnapshot,
     MessageVersion,
     Metadata,
     PushSubscription,
@@ -149,11 +150,38 @@ class _ExportWalk:
 REACTION_EVENT_TOLERANCE_SECONDS = 900
 
 # Media transcripts (032). ``status`` only advances along this rank; a row at
-# a terminal status is never written again. The drain query retries a media
-# whose newest row failed only while it has fewer than this many failed rows.
+# a terminal status is never written again.
 TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
 TRANSCRIPT_TERMINAL_STATUSES = frozenset({"done", "failed", "skipped"})
+# Failure reasons about the archive's copy of the file, and about the server
+# rather than the file: a repair of the disk or of the server makes them go
+# away, so they say nothing about whether the audio can be transcribed.
+# akou's own rule agrees: only ``decode_failed`` and ``too_long`` are the
+# caller's file, the rest is the server's.
+TRANSCRIPT_FILE_ERRORS = frozenset({"file_missing", "file_unreadable"})
+TRANSCRIPT_SERVER_ERRORS = frozenset(
+    {
+        "engine_unavailable",
+        "models_missing",
+        "model_download_failed",
+        "not_found",
+        "expired",
+        "invalid_job",
+        "invalid_json",
+    }
+)
+TRANSCRIPT_ENVIRONMENT_ERRORS = TRANSCRIPT_FILE_ERRORS | TRANSCRIPT_SERVER_ERRORS
+# The drain retries a media whose newest row failed while it has fewer than
+# this many failed rows for any other reason (about the file's content or the
+# request)...
 TRANSCRIPT_MAX_FAILED_ROWS = 3
+# ...and fewer than this many failed rows in all, which ends a file the server
+# keeps failing on while it finishes others.
+TRANSCRIPT_MAX_ANY_FAILED_ROWS = 10
+# A server failure with no transcript finished since is retried by one probe a
+# drain: at once after the media's first failed row, then once the newest is
+# older than this, doubled for each failed row after the second.
+TRANSCRIPT_PROBE_WAIT = timedelta(hours=1)
 TRANSCRIPT_JSON_COLUMNS = frozenset({"models", "words", "segments"})
 TRANSCRIPT_FILL_COLUMNS = frozenset(
     {
@@ -771,9 +799,11 @@ def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str, *, i
     ...; ``MEDIA_PAYLOAD_KEYS``) the archive holds and the incoming read lacks
     stays: an ``import --merge`` read that carries only ``forward_from_name``
     must not drop a poll. When both hold a key, ``incoming_wins`` decides.
-    A read from Telegram (``incoming_wins`` true) wins, so a newer poll tally
-    replaces the old one, and a live location in both goes through
-    ``merge_geo_live``, which keeps every position either one saw. Any other
+    A read from Telegram (``incoming_wins`` true) wins, and a live location
+    in both goes through ``merge_geo_live``, which keeps every position
+    either one saw. The poll and the link preview are pinned to their first
+    capture afterwards by ``_keep_archived_snapshot_keys``: a newer tally or
+    card becomes a ``message_snapshots`` row instead. Any other
     writer (an import renders a thinner stand-in: no poll option bytes, no
     vCard, no venue provider) only fills keys the archive lacks; the archived
     value stays, a live location included. When the result is the archived
@@ -803,6 +833,125 @@ def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str, *, i
 # edit_date with other formatting is an edit. An import renders text and
 # formatting its own way, so a difference there is not evidence of an edit.
 _TELEGRAM_READ_SOURCES = ("backup", "listener")
+
+
+# message_snapshots (038): each kind and the raw_data key its first capture
+# lives under. raw_data keeps that first capture; a later state goes to a row.
+SNAPSHOT_RAW_KEYS = {"poll": "poll", "preview": "webpage"}
+
+
+def _canonical_json(value: Any) -> str:
+    """One spelling of a JSON value, for comparing two states."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _merge_poll_state(kept: dict | None, incoming: dict) -> dict:
+    """The poll a read shows, laid over the newest state the archive kept.
+
+    A read never takes away what the archive knows. A field the read leaves
+    out or sends as None keeps its kept value: an ``UpdateMessagePoll`` may
+    carry the results alone, and Telegram leaves the per-option counts out
+    while the account has not voted. An option once marked ``correct`` stays
+    marked: a quiz's answer does not change, and a ``min`` update omits it.
+    """
+    state = dict(kept or {})
+    for key, value in incoming.items():
+        if key != "results" and value is not None:
+            state[key] = value
+    incoming_results = incoming.get("results")
+    if isinstance(incoming_results, dict):
+        kept_results = state.get("results") if isinstance(state.get("results"), dict) else {}
+        results = dict(kept_results)
+        if incoming_results.get("total_voters") is not None:
+            results["total_voters"] = incoming_results["total_voters"]
+        options = incoming_results.get("results")
+        if options:
+            known_correct = {
+                option.get("option")
+                for option in kept_results.get("results") or ()
+                if isinstance(option, dict) and option.get("correct")
+            }
+            results["results"] = [
+                {**option, "correct": True}
+                if isinstance(option, dict) and not option.get("correct") and option.get("option") in known_correct
+                else option
+                for option in options
+            ]
+        elif "results" not in results:
+            results["results"] = options
+        state["results"] = results
+    return state
+
+
+def _observed_snapshot_states(raw_data: Any) -> dict[str, dict]:
+    """The poll and preview a read's ``raw_data`` carries, by snapshot kind."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return {}
+    return {kind: raw[key] for kind, key in SNAPSHOT_RAW_KEYS.items() if isinstance(raw.get(key), dict) and raw[key]}
+
+
+def _snapshot_plan(
+    archived_raw_data: Any, newest: dict[str, dict], observed: dict[str, dict]
+) -> tuple[list[tuple[str, dict]], dict[str, dict]]:
+    """What a read of a poll or a link preview writes: (rows to add, raw_data keys to fill).
+
+    The state a read is compared with is the newest snapshot row of that kind,
+    or the first capture in ``raw_data`` when there is none. A row is added
+    only when the state differs. When the archive kept no state at all (a
+    message stored before its preview resolved, or by a listener that did not
+    capture polls), a full state fills the missing ``raw_data`` key as the
+    first capture and adds no row. A key that holds something other than an
+    object, or a ``raw_data`` that does not parse, is never filled over.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    fillable = archived is not None or not _has_raw_payload(archived_raw_data)
+    rows: list[tuple[str, dict]] = []
+    fills: dict[str, dict] = {}
+    for kind, incoming in observed.items():
+        raw_key = SNAPSHOT_RAW_KEYS[kind]
+        first = (archived or {}).get(raw_key)
+        kept = newest.get(kind, first if isinstance(first, dict) else None)
+        state = _merge_poll_state(kept, incoming) if kind == "poll" else incoming
+        if kept is None:
+            full = bool(state.get("answers")) if kind == "poll" else True
+            if full and fillable and raw_key not in (archived or {}):
+                fills[raw_key] = state
+                continue
+        elif _canonical_json(state) == _canonical_json(kept):
+            continue
+        rows.append((kind, state))
+    return rows, fills
+
+
+def _keep_archived_snapshot_keys(archived_raw_data: Any, incoming_raw_data: str) -> str:
+    """``incoming_raw_data`` with the archived poll and preview in place.
+
+    ``raw_data`` keeps the first capture of both: a read with another state
+    adds a ``message_snapshots`` row instead (``_snapshot_plan``). A key the
+    archive does not have is left out here; the snapshot step fills it when
+    the archive kept no state of that kind.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if incoming is None:
+        return incoming_raw_data
+    merged = dict(incoming)
+    for key in SNAPSHOT_RAW_KEYS.values():
+        if archived is not None and key in archived:
+            merged[key] = archived[key]
+        else:
+            merged.pop(key, None)
+    if merged == incoming:
+        return incoming_raw_data
+    return json.dumps(merged) if merged else "{}"
+
+
+def _with_snapshot_fills(raw_data: Any, fills: dict[str, dict]) -> str:
+    """``raw_data`` with the missing first captures ``_snapshot_plan`` chose to fill."""
+    merged = dict(_raw_data_dict(raw_data) or {})
+    merged.update(fills)
+    return json.dumps(merged)
 
 
 def retry_on_locked(
@@ -1187,6 +1336,137 @@ class DatabaseAdapter:
         result = await session.execute(stmt.execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
+    async def _newest_snapshot_states(self, session, account_id: int, chat_id: int, message_id: int) -> dict[str, dict]:
+        """The newest kept state of each snapshot kind of one message (``message_snapshots``)."""
+        result = await session.execute(
+            select(MessageSnapshot.kind, MessageSnapshot.payload)
+            .where(
+                and_(
+                    MessageSnapshot.account_id == account_id,
+                    MessageSnapshot.chat_id == chat_id,
+                    MessageSnapshot.message_id == message_id,
+                )
+            )
+            .order_by(MessageSnapshot.id.desc())
+        )
+        newest: dict[str, dict] = {}
+        for row in result:
+            if row.kind in newest:
+                continue
+            payload = _raw_data_dict(row.payload)
+            if payload is not None:
+                newest[row.kind] = payload
+        return newest
+
+    async def _insert_snapshot_rows(
+        self,
+        session,
+        account_id: int,
+        chat_id: int,
+        message_id: int,
+        rows: list[tuple[str, dict]],
+        *,
+        source: str | None,
+    ) -> None:
+        """Add the ``message_snapshots`` rows ``_snapshot_plan`` decided on, observed now."""
+        if not rows:
+            return
+        observed_at = utcnow_naive()
+        await session.execute(
+            insert(MessageSnapshot),
+            [
+                {
+                    "account_id": account_id,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "kind": kind,
+                    "payload": json.dumps(payload),
+                    "observed_at": observed_at,
+                    "source": source,
+                }
+                for kind, payload in rows
+            ],
+        )
+
+    @retry_on_locked()
+    async def record_message_snapshots(
+        self,
+        chat_id: int,
+        message_id: int,
+        observed: dict[str, dict],
+        *,
+        account_id: int,
+        source: str,
+    ) -> list[str] | None:
+        """Keep a poll's or a link preview's state when it differs from the newest kept.
+
+        ``observed`` maps a snapshot kind (``poll``, ``preview``) to the state a
+        read shows, in ``raw_data`` shape; a poll state may hold the results
+        alone. Returns the kinds a row was added for (empty when nothing
+        changed), or None when the message is not archived. The listener's edit
+        events and poll updates and the sync's reads come here; the backup's
+        reads go through the message upsert, which applies the same plan.
+        """
+        if not observed:
+            return []
+        async with self.db_manager.async_session_factory() as session:
+            snapshot = await self._load_message_snapshot(session, account_id, chat_id, message_id)
+            if snapshot is None:
+                return None
+            newest = await self._newest_snapshot_states(session, account_id, chat_id, message_id)
+            rows, fills = _snapshot_plan(snapshot.raw_data, newest, observed)
+            if not rows and not fills:
+                return []
+            existing = await self._load_message_for_update(session, account_id, chat_id, message_id)
+            if existing is None:
+                return None
+            newest = await self._newest_snapshot_states(session, account_id, chat_id, message_id)
+            rows, fills = _snapshot_plan(existing.raw_data, newest, observed)
+            await self._insert_snapshot_rows(session, account_id, chat_id, message_id, rows, source=source)
+            if fills:
+                await session.execute(
+                    update(Message)
+                    .where(
+                        and_(
+                            Message.account_id == account_id,
+                            Message.chat_id == chat_id,
+                            Message.id == message_id,
+                        )
+                    )
+                    .values(raw_data=_with_snapshot_fills(existing.raw_data, fills))
+                )
+            await session.commit()
+            return [kind for kind, _ in rows]
+
+    async def find_poll_messages(self, poll_id: int, *, account_id: int) -> list[tuple[int, int, int | None]]:
+        """The (chat_id, message_id, reply_to_top_id) of every archived message of ``account_id`` holding this poll.
+
+        Telegram's ``UpdateMessagePoll`` names the poll, not the message, and a
+        forwarded poll is the same poll in every chat it reached. The poll's id
+        sits in ``raw_data["poll"]["id"]``; the text match narrows the rows and
+        each one is then checked on its parsed ``raw_data``. It reads the
+        whole messages table, so the listener caches the answer per poll. The
+        forum topic comes along so the listener can apply ``SKIP_TOPIC_IDS``.
+        """
+        poll_id = int(poll_id)
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(Message.chat_id, Message.id, Message.reply_to_top_id, Message.raw_data).where(
+                    and_(
+                        Message.account_id == account_id,
+                        Message.raw_data.like('%"poll"%'),
+                        Message.raw_data.like(f'%"id": {poll_id}%'),
+                    )
+                )
+            )
+            rows = result.all()
+        found = []
+        for row in rows:
+            poll = (_raw_data_dict(row.raw_data) or {}).get("poll")
+            if isinstance(poll, dict) and poll.get("id") == poll_id:
+                found.append((row.chat_id, row.id, row.reply_to_top_id))
+        return found
+
     @staticmethod
     def _fills_unknown_edit_hide(existing: Message, edit_date: datetime | None, edit_hide: int | None) -> bool:
         """True when ``edit_hide`` fills a flag the archive never knew.
@@ -1364,6 +1644,20 @@ class DatabaseAdapter:
                 incoming_wins=message_data.get("version_source") in _TELEGRAM_READ_SOURCES,
             )
 
+        # The poll and the link preview keep their first capture. A read that
+        # carried nothing else leaves the archived payload as it is.
+        if "raw_data" in update_values:
+            incoming_raw_data = update_values["raw_data"]
+            pinned = _keep_archived_snapshot_keys(existing.raw_data, incoming_raw_data)
+            if (
+                _has_raw_payload(incoming_raw_data)
+                and not _has_raw_payload(pinned)
+                and _has_raw_payload(getattr(existing, "raw_data", None))
+            ):
+                update_values.pop("raw_data")
+            else:
+                update_values["raw_data"] = pinned
+
         changed = {}
         for key, value in update_values.items():
             if key in ("account_id", "id", "chat_id"):
@@ -1388,8 +1682,23 @@ class DatabaseAdapter:
         if snapshot is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
-        if not self._pending_update_values(snapshot, message_data, values) and not self._older_read_text_to_keep(
-            snapshot, message_data, values
+        source = message_data.get("version_source")
+        # A poll or link preview in another state than the newest kept adds a
+        # message_snapshots row; only reads from Telegram count (an import
+        # renders its own way). A missing first capture is filled either way.
+        observed = _observed_snapshot_states(values.get("raw_data"))
+        snapshot_rows: list[tuple[str, dict]] = []
+        snapshot_fills: dict[str, dict] = {}
+        if observed:
+            newest = await self._newest_snapshot_states(session, values["account_id"], values["chat_id"], values["id"])
+            snapshot_rows, snapshot_fills = _snapshot_plan(snapshot.raw_data, newest, observed)
+            if source not in _TELEGRAM_READ_SOURCES:
+                snapshot_rows = []
+        if (
+            not self._pending_update_values(snapshot, message_data, values)
+            and not self._older_read_text_to_keep(snapshot, message_data, values)
+            and not snapshot_rows
+            and not snapshot_fills
         ):
             return
 
@@ -1397,8 +1706,12 @@ class DatabaseAdapter:
         if existing is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
-
-        source = message_data.get("version_source")
+        if observed:
+            # Decided again under the row lock: another writer may have added a state.
+            newest = await self._newest_snapshot_states(session, existing.account_id, existing.chat_id, existing.id)
+            snapshot_rows, snapshot_fills = _snapshot_plan(existing.raw_data, newest, observed)
+            if source not in _TELEGRAM_READ_SOURCES:
+                snapshot_rows = []
         if self._older_read_text_to_keep(existing, message_data, values):
             await self._record_message_version(
                 session=session,
@@ -1416,6 +1729,13 @@ class DatabaseAdapter:
             existing, message_data, values
         )
         update_values = self._pending_update_values(existing, message_data, values)
+        await self._insert_snapshot_rows(
+            session, existing.account_id, existing.chat_id, existing.id, snapshot_rows, source=source
+        )
+        if snapshot_fills:
+            update_values["raw_data"] = _with_snapshot_fills(
+                update_values.get("raw_data", existing.raw_data), snapshot_fills
+            )
         if not update_values:
             return
         if "text" in update_values or formatting_edit:
@@ -2338,7 +2658,8 @@ class DatabaseAdapter:
 
         The messages ``get_messages_by_date_range`` picks, in
         ``EXPORT_MESSAGE_ORDER``, each with ``media``, ``versions``,
-        ``reaction_history`` and, when it has any, ``transcripts``
+        ``reaction_history``, ``snapshots`` (the later states of its poll or
+        link preview) and, when it has any, ``transcripts``
         (``_export_message_parts``). Dates stay
         datetimes, as every other date of that file does. One snapshot, so a
         backup writing meanwhile cannot make a message, its versions, its
@@ -2353,7 +2674,7 @@ class DatabaseAdapter:
                 transcripts.setdefault((row["account_id"], row["chat_id"], row["message_id"]), []).append(row)
             result = await session.stream(select(Message).where(*conditions).order_by(*EXPORT_MESSAGE_ORDER))
             messages = []
-            async for m, media, versions, reaction_history in self._export_message_parts(
+            async for m, media, versions, reaction_history, snapshots in self._export_message_parts(
                 session, result.scalars(), conditions, iso=False
             ):
                 message = {
@@ -2362,6 +2683,7 @@ class DatabaseAdapter:
                     "media": [self._export_media_dict(row) for row in media],
                     "versions": versions,
                     "reaction_history": reaction_history,
+                    "snapshots": snapshots,
                 }
                 rows = transcripts.get((m.account_id, m.chat_id, m.id))
                 if rows:
@@ -2678,6 +3000,16 @@ class DatabaseAdapter:
                         MessageVersion.account_id == account_id,
                         MessageVersion.chat_id == chat_id,
                         MessageVersion.message_id == message_id,
+                    )
+                )
+            )
+            # Delete the later poll and preview states kept beside it
+            await session.execute(
+                delete(MessageSnapshot).where(
+                    and_(
+                        MessageSnapshot.account_id == account_id,
+                        MessageSnapshot.chat_id == chat_id,
+                        MessageSnapshot.message_id == message_id,
                     )
                 )
             )
@@ -3264,7 +3596,7 @@ class DatabaseAdapter:
         )
 
     async def _export_message_parts(self, session, messages, message_conditions: list, *, iso: bool):
-        """Yield each message of ``messages`` with its media rows, ``versions`` and reaction history.
+        """Yield each message of ``messages`` with its media rows, ``versions``, reaction history and snapshots.
 
         ``messages`` is an async iterable of rows or ``Message`` objects in
         ``EXPORT_MESSAGE_ORDER``, picked by ``message_conditions``; each has
@@ -3273,8 +3605,10 @@ class DatabaseAdapter:
         session, walked beside it, and so is its ``reaction_history`` (one
         dict per kept state, oldest first, ``observed_at`` in ISO 8601 when
         ``iso``), so only the current message's rows are ever in memory,
-        however long the chat. Call ``_read_one_snapshot`` first, so all five
-        read the same archive state.
+        however long the chat. Its ``snapshots`` (``message_snapshots``, the
+        later states of its poll or link preview, oldest first) walk beside
+        it too. Call ``_read_one_snapshot`` first, so all six read the same
+        archive state.
 
         If rows are left over at the end, two statements stopped sorting
         alike and some messages went out without them: the export fails
@@ -3284,6 +3618,7 @@ class DatabaseAdapter:
         texts = await _ExportWalk.open(session, self._versions_of_messages_query(message_conditions))
         earlier = await _ExportWalk.open(session, self._media_versions_of_messages_query(message_conditions))
         reactions = await _ExportWalk.open(session, self._reaction_history_of_messages_query(message_conditions))
+        snapshots = await _ExportWalk.open(session, self._snapshots_of_messages_query(message_conditions))
         async for message in messages:
             key = (message.account_id, message.chat_id, message.id)
             states = [self._reaction_history_to_dict(row) for row in await reactions.take(key)]
@@ -3295,8 +3630,9 @@ class DatabaseAdapter:
                 await media.take(key),
                 self._export_versions(await texts.take(key), await earlier.take(key), iso=iso),
                 states,
+                [self._export_snapshot_dict(row, iso_dates=iso) for row in await snapshots.take(key)],
             )
-        if any(walk.pending is not None for walk in (media, texts, earlier, reactions)):
+        if any(walk.pending is not None for walk in (media, texts, earlier, reactions, snapshots)):
             raise RuntimeError("Export versions fell out of step with the messages")
 
     @staticmethod
@@ -3330,6 +3666,48 @@ class DatabaseAdapter:
             .where(*message_conditions)
             .order_by(*EXPORT_MESSAGE_ORDER, ReactionHistory.observed_at.asc(), ReactionHistory.id.asc())
         )
+
+    @staticmethod
+    def _snapshots_of_messages_query(message_conditions: list):
+        """Every ``message_snapshots`` row of the messages ``message_conditions`` pick, in export order.
+
+        Like ``_versions_of_messages_query``: the conditions apply to the
+        message, rows come in ``EXPORT_MESSAGE_ORDER`` and each message's rows
+        in the order they were observed, so a reader can walk them beside the
+        messages.
+        """
+        return (
+            select(
+                MessageSnapshot.account_id,
+                MessageSnapshot.chat_id,
+                MessageSnapshot.message_id,
+                MessageSnapshot.kind,
+                MessageSnapshot.payload,
+                MessageSnapshot.observed_at,
+                MessageSnapshot.source,
+            )
+            .join(
+                Message,
+                and_(
+                    Message.account_id == MessageSnapshot.account_id,
+                    Message.chat_id == MessageSnapshot.chat_id,
+                    Message.id == MessageSnapshot.message_id,
+                ),
+            )
+            .where(*message_conditions)
+            .order_by(*EXPORT_MESSAGE_ORDER, MessageSnapshot.id.asc())
+        )
+
+    @staticmethod
+    def _export_snapshot_dict(row, *, iso_dates: bool) -> dict[str, Any]:
+        """One kept poll or preview state as both exports write it: kind, payload, observed_at, source."""
+        observed_at = row.observed_at
+        return {
+            "kind": row.kind,
+            "payload": _raw_data_dict(row.payload),
+            "observed_at": observed_at.isoformat() if iso_dates and observed_at else observed_at,
+            "source": row.source,
+        }
 
     async def _read_one_snapshot(self, session) -> None:
         """Make every read ``session`` runs from here on see the same archive state.
@@ -6512,6 +6890,12 @@ class DatabaseAdapter:
                     and_(MessageVersion.account_id == account_id, MessageVersion.chat_id == chat_id)
                 )
             )
+            # Delete the later poll and preview states
+            await session.execute(
+                delete(MessageSnapshot).where(
+                    and_(MessageSnapshot.account_id == account_id, MessageSnapshot.chat_id == chat_id)
+                )
+            )
             # Delete the earlier media an edit replaced, with their transcripts
             await self._delete_media_versions_of(
                 session,
@@ -7314,6 +7698,65 @@ class DatabaseAdapter:
             transcript_search=search
         )
 
+    async def _newest_snapshots_of_page(
+        self, session, chat_id: int, message_ids: list[int], account_id: int | None
+    ) -> dict[tuple[int, int], dict[str, dict[str, Any]]]:
+        """For a page of messages, the newest ``message_snapshots`` row of each kind and how many there are.
+
+        Keyed by (account_id, message_id), then by kind. Two indexed reads
+        whatever the number of rows: the counts and newest ids grouped, then
+        those rows.
+        """
+        if not message_ids:
+            return {}
+        groups_stmt = (
+            select(
+                MessageSnapshot.account_id,
+                MessageSnapshot.message_id,
+                MessageSnapshot.kind,
+                func.max(MessageSnapshot.id).label("newest_id"),
+                func.count(MessageSnapshot.id).label("row_count"),
+            )
+            .where(and_(MessageSnapshot.chat_id == chat_id, MessageSnapshot.message_id.in_(message_ids)))
+            .group_by(MessageSnapshot.account_id, MessageSnapshot.message_id, MessageSnapshot.kind)
+        )
+        if account_id is not None:
+            groups_stmt = groups_stmt.where(MessageSnapshot.account_id == account_id)
+        groups = (await session.execute(groups_stmt)).all()
+        if not groups:
+            return {}
+        rows_result = await session.execute(
+            select(MessageSnapshot).where(MessageSnapshot.id.in_([group.newest_id for group in groups]))
+        )
+        by_id = {row.id: row for row in rows_result.scalars()}
+        newest: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
+        for group in groups:
+            row = by_id.get(group.newest_id)
+            payload = _raw_data_dict(row.payload) if row is not None else None
+            if payload is None:
+                continue
+            newest.setdefault((group.account_id, group.message_id), {})[group.kind] = {
+                "payload": payload,
+                "observed_at": row.observed_at,
+                "source": row.source,
+                "count": int(group.row_count or 0),
+            }
+        return newest
+
+    @staticmethod
+    def _snapshots_for_row(msg: dict[str, Any], newest: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """A row's ``snapshots``: per kind the newest state, and whether it differs from the first capture."""
+        raw = msg.get("raw_data") if isinstance(msg.get("raw_data"), dict) else {}
+        snapshots = {}
+        for kind, snapshot in newest.items():
+            first = raw.get(SNAPSHOT_RAW_KEYS.get(kind, kind))
+            snapshots[kind] = {
+                **snapshot,
+                "differs_from_first": not isinstance(first, dict)
+                or _canonical_json(first) != _canonical_json(snapshot["payload"]),
+            }
+        return snapshots
+
     async def get_messages_paginated(
         self,
         chat_id: int,
@@ -7572,6 +8015,11 @@ class DatabaseAdapter:
                     count_stmt = count_stmt.where(MessageVersion.account_id == account_id)
                 count_result = await session.execute(count_stmt)
                 version_counts.update({row.message_id: int(row.version_count or 0) for row in count_result})
+
+            # The newest kept state of each message's poll and link preview.
+            newest_snapshots = await self._newest_snapshots_of_page(session, chat_id, page_message_ids, account_id)
+            for account, msg in zip(row_accounts, messages, strict=True):
+                msg["snapshots"] = self._snapshots_for_row(msg, newest_snapshots.get((account, msg["id"]), {}))
 
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
@@ -8151,7 +8599,7 @@ class DatabaseAdapter:
             ):
                 transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
             result = await session.stream(stmt)
-            async for row, media, versions, reaction_history in self._export_message_parts(
+            async for row, media, versions, reaction_history, snapshots in self._export_message_parts(
                 session, result, conditions, iso=True
             ):
                 msg = {
@@ -8187,6 +8635,7 @@ class DatabaseAdapter:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 msg["versions"] = versions
                 msg["reaction_history"] = reaction_history
+                msg["snapshots"] = snapshots
                 yield msg
 
     # ========== Forum Topic Operations (v6.2.0) ==========
@@ -9048,10 +9497,10 @@ class DatabaseAdapter:
         inserted and that row is returned, so a drain that runs twice and the
         viewer's ask-now route share one row. ``done`` or ``skipped``: None,
         and no row, unless ``force`` says the user asked for another
-        transcript. ``failed``: a new row (the drain query caps those at
-        three per media). Two processes racing past the read both try to
-        insert; the partial unique index on open rows stops the second, and
-        the loser returns the winner's row as if it were its own.
+        transcript. ``failed``: a new row (the drain query decides whether
+        a failed media is tried again). Two processes racing past the read
+        both try to insert; the partial unique index on open rows stops the
+        second, and the loser returns the winner's row as if it were its own.
         """
         async with self.db_manager.async_session_factory() as session:
             newest = await self._newest_transcript(session, media_id, account_id)
@@ -9457,8 +9906,28 @@ class DatabaseAdapter:
         A media qualifies when its newest transcript row is missing, or is
         ``queued`` with no ``job_id`` and older than ``stale_before`` (a
         process died between the insert and the submit; the row is reused),
-        or is ``failed`` while fewer than three failed rows exist for it. A
-        ``done`` or ``skipped`` newest row ends the loop for that media.
+        or is ``failed`` under the retry rule below. A ``done`` or ``skipped``
+        newest row ends the loop for that media.
+
+        The retry rule reads each failed row's reason, so rows written before
+        it follow it too. A failure about the file's content or the request
+        counts: three of them end the retries. A failure in
+        ``TRANSCRIPT_ENVIRONMENT_ERRORS`` does not count, since a repair of
+        the disk or the server makes it go away. A file failure (missing,
+        unreadable) qualifies on every drain; ``transcribe_media`` writes
+        nothing while the file is still missing or unreadable, so such media
+        come from a query of their own, at most ``per_run`` of them, each
+        after the other media of its priority tier, and take no place in
+        the budget: the drain stops once ``per_run`` media did more than
+        that check. A server failure qualifies once the
+        server finished a transcript of its own (not a copy) after it. With
+        none since, the server may still be broken, and one such media per
+        drain goes as a probe, from a query of its own: the first in
+        priority order, longest waiting first, whose wait is over: none
+        after its first failed row, then ``TRANSCRIPT_PROBE_WAIT`` after
+        the second, doubled for each failed row after that. Ten
+        failed rows of any reason end the retries, which stops a file the
+        server keeps failing on while it finishes others.
 
         A media with no row of its own qualifies even when its account
         already holds a ``done`` transcript of the same audio: the drain's
@@ -9477,9 +9946,9 @@ class DatabaseAdapter:
         no ``job_id`` (a refusal, an outage or a crash mid-submit), whatever
         its type: the type filter of the main query would otherwise strand
         a pressed file of a type outside ``types`` for good. Then newest download
-        first, at most ``per_run`` rows. Each result carries the media
-        columns and ``transcript``: the newest row's id, status and job_id,
-        or None.
+        first, at most ``per_run`` rows besides the file checks. Each result
+        carries the media columns and ``transcript``: the newest row's id,
+        status, job_id and error, or None.
 
         The ask-now rows are read by a query of their own, from the few
         open transcript rows. OR-ing them into the type filter of the main
@@ -9488,8 +9957,8 @@ class DatabaseAdapter:
 
         ``priority_chat_ids`` (TRANSCRIPTION_PRIORITY_CHAT_IDS) orders the
         main query only: media of those chats first, in list order, then
-        the rest. It never widens what qualifies, and the ask-now rows still
-        come before all of it.
+        the rest, and the probe. It never widens what qualifies, and the
+        ask-now rows still come before all of it.
         """
         wanted = sorted({t for t in types if isinstance(t, str) and t in TRANSCRIBABLE_TYPES})
         if not wanted or per_run <= 0:
@@ -9506,17 +9975,35 @@ class DatabaseAdapter:
             .correlate(Media)
             .scalar_subquery()
         )
-        failed_rows = (
-            select(func.count(MediaTranscript.id))
-            .where(
-                and_(
-                    MediaTranscript.account_id == Media.account_id,
-                    MediaTranscript.media_id == Media.id,
-                    MediaTranscript.status == "failed",
+
+        def failed_count(*conditions):
+            return (
+                select(func.count(MediaTranscript.id))
+                .where(
+                    and_(
+                        MediaTranscript.account_id == Media.account_id,
+                        MediaTranscript.media_id == Media.id,
+                        MediaTranscript.status == "failed",
+                        *conditions,
+                    )
                 )
+                .correlate(Media)
+                .scalar_subquery()
             )
-            .correlate(Media)
-            .scalar_subquery()
+
+        failed_rows = failed_count()
+        counted_rows = failed_count(
+            or_(MediaTranscript.error.is_(None), MediaTranscript.error.not_in(TRANSCRIPT_ENVIRONMENT_ERRORS))
+        )
+        failed_at = func.coalesce(newest.completed_at, newest.requested_at)
+        # NOT of a comparison with a NULL reason is NULL, never true: the reason is tested for NULL first.
+        server_failure = and_(
+            newest.status == "failed", newest.error.is_not(None), newest.error.in_(TRANSCRIPT_SERVER_ERRORS)
+        )
+        retryable = and_(
+            newest.status == "failed",
+            counted_rows < TRANSCRIPT_MAX_FAILED_ROWS,
+            failed_rows < TRANSCRIPT_MAX_ANY_FAILED_ROWS,
         )
         # Newest download first in both queries.
         order = (nulls_last(Media.download_date.desc()), Media.id.desc())
@@ -9524,9 +10011,14 @@ class DatabaseAdapter:
         for chat_id in priority_chat_ids:
             if isinstance(chat_id, int) and not isinstance(chat_id, bool):
                 ranks.setdefault(chat_id, len(ranks))
-        main_order = (case(ranks, value=Media.chat_id, else_=len(ranks)), *order) if ranks else order
+        rank = (case(ranks, value=Media.chat_id, else_=len(ranks)),) if ranks else ()
+        file_failure = and_(
+            newest.status == "failed", newest.error.is_not(None), newest.error.in_(TRANSCRIPT_FILE_ERRORS)
+        )
+        main_order = (*rank, *order)
+        columns = (Media, newest.id, newest.status, newest.job_id, newest.error)
         asked_stmt = (
-            select(Media, newest.id, newest.status, newest.job_id)
+            select(*columns)
             .join(newest, and_(newest.account_id == Media.account_id, newest.media_id == Media.id))
             .where(
                 and_(
@@ -9541,37 +10033,98 @@ class DatabaseAdapter:
             .order_by(*order)
             .limit(per_run)
         )
-        stmt = (
-            select(Media, newest.id, newest.status, newest.job_id)
-            .outerjoin(
-                newest,
-                and_(newest.account_id == Media.account_id, newest.media_id == Media.id, newest.id == newest_id),
-            )
+        newest_join = and_(newest.account_id == Media.account_id, newest.media_id == Media.id, newest.id == newest_id)
+        wanted_media = and_(Media.account_id == account_id, Media.downloaded == 1, Media.type.in_(wanted), has_sound)
+        last_done = (
+            select(func.max(MediaTranscript.completed_at))
             .where(
                 and_(
-                    Media.account_id == account_id,
-                    Media.downloaded == 1,
-                    Media.type.in_(wanted),
-                    has_sound,
-                    or_(
-                        newest.id.is_(None),
-                        and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
-                        and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
-                    ),
+                    MediaTranscript.account_id == account_id,
+                    MediaTranscript.status == "done",
+                    MediaTranscript.copied_from_id.is_(None),
                 )
             )
-            .order_by(*main_order)
-            .limit(per_run)
+            .scalar_subquery()
         )
         async with self.db_manager.async_session_factory() as session:
+            # When the server last finished a transcript of its own (a copy is
+            # no answer from it): a server failure from before then is retried.
+            finished_at = (await session.execute(select(last_done))).scalar()
+            server_retry = failed_at < finished_at if finished_at is not None else false()
+            stmt = (
+                select(*columns)
+                .outerjoin(newest, newest_join)
+                .where(
+                    and_(
+                        wanted_media,
+                        or_(
+                            newest.id.is_(None),
+                            and_(
+                                newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before
+                            ),
+                            and_(retryable, not_(file_failure), or_(not_(server_failure), server_retry)),
+                        ),
+                    )
+                )
+                .order_by(*main_order)
+                .limit(per_run)
+            )
             found = list(await session.execute(asked_stmt))
+            asked = len(found)
             if len(found) < per_run:
-                asked_ids = {media.id for media, *_ in found}
+                seen = {media.id for media, *_ in found}
                 for match in await session.execute(stmt):
-                    if match[0].id not in asked_ids:
+                    if match[0].id not in seen:
                         found.append(match)
+                found = found[:per_run]
+            if len(found) < per_run:
+                # No transcript finished since these failed: the server may still
+                # be broken, so one of them goes as a probe instead of all. The
+                # first in priority order whose wait is over, longest waiting
+                # first; its answer, done or not, tells the next drain. The wait
+                # is in the query, so one still waiting never hides one whose
+                # wait is over.
+                now = utcnow_naive()
+                cutoff = case(
+                    *(
+                        (failed_rows == n, now - TRANSCRIPT_PROBE_WAIT * 2 ** (n - 2))
+                        for n in range(2, TRANSCRIPT_MAX_ANY_FAILED_ROWS)
+                    ),
+                    else_=now,
+                )
+                probe_stmt = (
+                    select(*columns)
+                    .join(newest, newest_join)
+                    .where(and_(wanted_media, retryable, server_failure, not_(server_retry), failed_at <= cutoff))
+                    .order_by(*rank, failed_at, newest.id)
+                    .limit(1)
+                )
+                probe = list(await session.execute(probe_stmt))
+            else:
+                probe = []
+            # A file still missing or unreadable is checked again on every drain
+            # and writes nothing while it stays that way, so it takes no place
+            # in the budget: at most ``per_run`` such files come from a query of
+            # their own, each after the other media of its priority tier, and
+            # the drain stops once ``per_run`` media did more than that check.
+            file_stmt = (
+                select(*columns)
+                .join(newest, newest_join)
+                .where(and_(wanted_media, retryable, file_failure))
+                .order_by(*main_order)
+                .limit(per_run)
+            )
+            waiting = list(await session.execute(file_stmt))
+
+            def tier(match, waits: bool) -> tuple[int, bool]:
+                return ranks.get(match[0].chat_id, len(ranks)), waits
+
+            # Both lists are in priority order already; a stable sort by tier
+            # keeps each one's order and puts the file checks last in a tier.
+            ordered = sorted([(m, False) for m in found[asked:]] + [(m, True) for m in waiting], key=lambda e: tier(*e))
+            found = found[:asked] + [m for m, _ in ordered] + probe
             rows = []
-            for media, transcript_id, transcript_status, transcript_job_id in found[:per_run]:
+            for media, transcript_id, transcript_status, transcript_job_id, transcript_error in found:
                 rows.append(
                     {
                         "id": media.id,
@@ -9586,7 +10139,12 @@ class DatabaseAdapter:
                         "duration": media.duration,
                         "content_hash": media.content_hash,
                         "transcript": (
-                            {"id": transcript_id, "status": transcript_status, "job_id": transcript_job_id}
+                            {
+                                "id": transcript_id,
+                                "status": transcript_status,
+                                "job_id": transcript_job_id,
+                                "error": transcript_error,
+                            }
                             if transcript_id is not None
                             else None
                         ),

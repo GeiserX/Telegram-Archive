@@ -156,12 +156,19 @@ Each drain sends files in this order:
 1. files whose button was pressed
 2. files from `TRANSCRIPTION_PRIORITY_CHAT_IDS`, in list order
 3. everything else, newest download first
+4. at most one file whose last failure was the server's, as a test (see [Retries](#retries))
+
+Within steps 2 and 3, a file whose last attempt found it missing or unreadable goes after the rest of its step. Such a file is checked on every drain and stores nothing while it stays broken. A check that finds it still broken does not count toward `TRANSCRIPTION_BACKFILL_PER_RUN`, so these files never hold the budget back from files that can be sent. Each drain checks at most `TRANSCRIPTION_BACKFILL_PER_RUN` of them. One that is back is sent and counts.
 
 One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. The default is 50, and pressed files count inside that number. With akou, jobs still open on the server count against it too. If open jobs fill the cap, even pressed files wait for a later drain.
 
 ### Retries
 
-- A file is retried automatically until it has 3 failed attempts. After that only a press retries it.
+- A file is retried automatically until it has 3 failed attempts that were about the file itself, or 10 failed attempts in all. The 10 stops a file the server keeps failing on while it finishes others. After that only a press retries it.
+- A failure caused by the disk or the server does not count toward the 3. Once the cause is repaired, the next drain picks the file up on its own, however many such failures it already has. This also holds for failures stored before this rule. There are two kinds:
+    - The file: `file_missing` and `file_unreadable`. Every drain checks the file again. While it is still missing or unreadable, nothing new is stored. Once it is back, it is sent.
+    - The server: `engine_unavailable`, `models_missing`, `model_download_failed`, `not_found`, `expired`, `invalid_job` and `invalid_json`. None of these says anything about the audio. `not_found` means the server lost the job, for example after a restart that wiped its jobs. `expired` means the job outlived the server's retention before its result arrived. A file with one of these failures is sent again once the server has finished another transcript since. A copy of an earlier transcript does not count as finished by the server. Until then the server may still be broken, so each drain sends just one such file, as a test. It is the file that has waited longest, priority chats first, once its wait is over. There is no wait after its first failure. After the second it waits 1 hour, and the wait doubles with each failure after that: 2, 4, 8 hours and so on. When that test succeeds, the next drain sends the rest.
+- Every other failure counts, including `decode_failed`, `too_long`, `cancelled`, a timeout and a server error on the OpenAI endpoint.
 - A press always gets one more attempt, whatever happened before.
 - A queued file that never got a job is sent again after 10 minutes.
 - An unreachable server spends no retry. The file stays queued.
@@ -331,6 +338,7 @@ Transcription logs never contain the key, media ids, file names or transcript te
 | Files stay queued and every drain ends early on an OpenAI-compatible server | The server answers `404`. Check that `TRANSCRIPTION_URL` has no `/v1` suffix and that the model exists. |
 | A warning to check `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_LANGUAGE` | Two files were refused with a 4xx error and none succeeded. The model or language is usually wrong for this provider. |
 | `callback_not_allowed` | The callback host is not on the akou key's callback allowlist. Add it on akou's side, or unset `TRANSCRIPTION_CALLBACK_URL`. |
+| A file failed with `engine_unavailable`, `not_found` or `expired` and is not sent again | The failure was the server's. The drain sends the file once the server has finished another transcript, or sooner as the drain's one test file once its wait is over. See [Retries](#retries). After 10 failed attempts only a press sends it. |
 | Archive status says "On, server not found yet" | No drain has reached the server yet. It fills after the next backup run. |
 
 For general log and health checks, see [Monitoring and troubleshooting](../operations/troubleshooting.md).

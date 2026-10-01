@@ -393,7 +393,7 @@ class TestDrainQuery:
             account_id=1, types=TYPES, per_run=10, stale_before=utcnow_naive() - timedelta(minutes=10)
         )
         assert [r["id"] for r in rows] == ["m_1_voice"]
-        assert rows[0]["transcript"] == {"id": row["id"], "status": "queued", "job_id": None}
+        assert rows[0]["transcript"] == {"id": row["id"], "status": "queued", "job_id": None, "error": None}
 
     async def test_an_ask_now_row_is_sent_at_once_and_first(self, real_adapter):
         """The viewer's ask-now row (no preset) skips the ten-minute wait and leads the run."""
@@ -414,7 +414,7 @@ class TestDrainQuery:
             account_id=1, types=TYPES, per_run=10, stale_before=utcnow_naive() - timedelta(minutes=10)
         )
         assert [r["id"] for r in rows] == ["m_1_voice", "m_2_voice"]
-        assert rows[0]["transcript"] == {"id": asked["id"], "status": "queued", "job_id": None}
+        assert rows[0]["transcript"] == {"id": asked["id"], "status": "queued", "job_id": None, "error": None}
         assert rows[1]["transcript"] is None
 
     async def test_an_ask_now_row_picked_up_by_the_backup_waits_like_any_other(self, real_adapter):
@@ -501,8 +501,10 @@ class TestDrainQueryPlan:
             assert len(await _drain(real_adapter)) == 21
         finally:
             event.remove(engine.sync_engine, "before_cursor_execute", capture)
-        assert len(captured) == 1
-        sql = str(captured[0].compile(dialect=engine.dialect, compile_kwargs={"literal_binds": True}))
+        # The main query, the probe query that runs while the run has room left, and the file checks.
+        [main] = [c for c in captured if " LEFT OUTER JOIN " in str(c.compile(dialect=engine.dialect))]
+        assert len(captured) == 3
+        sql = str(main.compile(dialect=engine.dialect, compile_kwargs={"literal_binds": True}))
         async with real_adapter.db_manager.async_session_factory() as session:
             connection = await session.connection()
             await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
