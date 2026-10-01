@@ -333,8 +333,8 @@ class TestRecordAndFind:
         )
         await _seed(real_adapter, {"poll": _poll_state(3, 1)}, account_id=2)
 
-        assert await real_adapter.find_poll_messages(POLL_ID, account_id=1) == [(CHAT_ID, MESSAGE_ID)]
-        assert await real_adapter.find_poll_messages(POLL_ID, account_id=2) == [(CHAT_ID, MESSAGE_ID)]
+        assert await real_adapter.find_poll_messages(POLL_ID, account_id=1) == [(CHAT_ID, MESSAGE_ID, None)]
+        assert await real_adapter.find_poll_messages(POLL_ID, account_id=2) == [(CHAT_ID, MESSAGE_ID, None)]
         assert await real_adapter.find_poll_messages(POLL_ID + 1, account_id=1) == []
 
     async def test_a_hard_deleted_message_or_chat_takes_its_rows(self, real_adapter):
@@ -553,6 +553,45 @@ class TestListener:
         for _ in range(3):
             await handlers["on_message_poll"](UpdateMessagePoll(poll_id=POLL_ID, results=_results(1, 1)))
         listener.db.find_poll_messages.assert_awaited_once()
+
+    async def _seed_in_topic(self, adapter, topic_id: int) -> None:
+        await _seed_chat(adapter)
+        await adapter.insert_message(
+            {**_message_data({"poll": _poll_state(3, 1)}), "reply_to_top_id": topic_id}, account_id=1
+        )
+
+    @staticmethod
+    def _skipping(listener, topic_id: int) -> None:
+        """SKIP_TOPIC_IDS holds ``topic_id`` of the chat."""
+        listener.config.should_skip_topic = MagicMock(
+            side_effect=lambda chat_id, topic: chat_id == CHAT_ID and topic == topic_id
+        )
+
+    @pytest.mark.parametrize("names_message", [False, True])
+    async def test_a_poll_update_in_a_skipped_topic_keeps_nothing(self, real_adapter, names_message):
+        await self._seed_in_topic(real_adapter, 7)
+        listener, handlers = _listener(real_adapter)
+        self._skipping(listener, 7)
+        if names_message:
+            update = UpdateMessagePoll(
+                poll_id=POLL_ID,
+                results=_results(6, 1),
+                peer=PeerChannel(channel_id=CHANNEL_ID),
+                msg_id=MESSAGE_ID,
+                top_msg_id=7,
+            )
+        else:
+            update = UpdateMessagePoll(poll_id=POLL_ID, results=_results(6, 1))
+        await handlers["on_message_poll"](update)
+        assert await _snapshots(real_adapter) == []
+
+    async def test_a_poll_update_naming_only_the_poll_still_keeps_a_poll_in_another_topic(self, real_adapter):
+        await self._seed_in_topic(real_adapter, 8)
+        listener, handlers = _listener(real_adapter)
+        self._skipping(listener, 7)
+        await handlers["on_message_poll"](UpdateMessagePoll(poll_id=POLL_ID, results=_results(6, 1)))
+        (row,) = await _snapshots(real_adapter)
+        assert json.loads(row.payload)["results"]["total_voters"] == 7
 
     async def test_a_poll_update_waits_for_listen_edits(self, real_adapter):
         await _seed(real_adapter, {"poll": _poll_state(3, 1)})

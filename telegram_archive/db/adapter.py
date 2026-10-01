@@ -1411,19 +1411,20 @@ class DatabaseAdapter:
             await session.commit()
             return [kind for kind, _ in rows]
 
-    async def find_poll_messages(self, poll_id: int, *, account_id: int) -> list[tuple[int, int]]:
-        """The (chat_id, message_id) of every archived message of ``account_id`` holding this poll.
+    async def find_poll_messages(self, poll_id: int, *, account_id: int) -> list[tuple[int, int, int | None]]:
+        """The (chat_id, message_id, reply_to_top_id) of every archived message of ``account_id`` holding this poll.
 
         Telegram's ``UpdateMessagePoll`` names the poll, not the message, and a
         forwarded poll is the same poll in every chat it reached. The poll's id
         sits in ``raw_data["poll"]["id"]``; the text match narrows the rows and
         each one is then checked on its parsed ``raw_data``. It reads the
-        whole messages table, so the listener caches the answer per poll.
+        whole messages table, so the listener caches the answer per poll. The
+        forum topic comes along so the listener can apply ``SKIP_TOPIC_IDS``.
         """
         poll_id = int(poll_id)
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(
-                select(Message.chat_id, Message.id, Message.raw_data).where(
+                select(Message.chat_id, Message.id, Message.reply_to_top_id, Message.raw_data).where(
                     and_(
                         Message.account_id == account_id,
                         Message.raw_data.like('%"poll"%'),
@@ -1436,7 +1437,7 @@ class DatabaseAdapter:
         for row in rows:
             poll = (_raw_data_dict(row.raw_data) or {}).get("poll")
             if isinstance(poll, dict) and poll.get("id") == poll_id:
-                found.append((row.chat_id, row.id))
+                found.append((row.chat_id, row.id, row.reply_to_top_id))
         return found
 
     @staticmethod

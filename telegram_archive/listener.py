@@ -382,11 +382,11 @@ class TelegramListener:
         }
 
         # UpdateMessagePoll names a poll, not a message. poll id -> (expiry on
-        # the monotonic clock or None, the archived (chat_id, message_id) that
-        # hold it). Finding a poll reads the messages table, so the answer is
+        # the monotonic clock or None, the archived (chat_id, message_id,
+        # reply_to_top_id) that hold it; the topic keeps SKIP_TOPIC_IDS in force). Finding a poll reads the messages table, so the answer is
         # kept: a found poll until it leaves the cache, a poll not archived
         # (yet) for POLL_LOOKUP_MISS_SECONDS.
-        self._poll_messages: dict[int, tuple[float | None, list[tuple[int, int]]]] = {}
+        self._poll_messages: dict[int, tuple[float | None, list[tuple[int, int, int | None]]]] = {}
 
         # Outbound event webhook (#336): fires on listener-applied edits and
         # deletions. Inert unless EVENT_WEBHOOK_ENABLED with a valid URL.
@@ -1276,14 +1276,14 @@ class TelegramListener:
             logger.error(f"Error downloading media: {describe_exception(e)}")
             return None
 
-    def _remember_poll_message(self, poll: dict | None, chat_id: int, message_id: int) -> None:
-        """Note which archived message holds a poll, for the poll updates that name only the poll."""
+    def _remember_poll_message(self, poll: dict | None, chat_id: int, message_id: int, topic_id: int | None) -> None:
+        """Note which archived message holds a poll, and its forum topic, for the poll updates that name only the poll."""
         poll_id = poll.get("id") if isinstance(poll, dict) else None
         if not isinstance(poll_id, int):
             return
         _, known = self._poll_messages.get(poll_id, (None, []))
-        if (chat_id, message_id) not in known:
-            known = [*known, (chat_id, message_id)]
+        if (chat_id, message_id, topic_id) not in known:
+            known = [*known, (chat_id, message_id, topic_id)]
         self._poll_messages[poll_id] = (None, known)
         self._trim_poll_messages()
 
@@ -1291,8 +1291,8 @@ class TelegramListener:
         while len(self._poll_messages) > POLL_LOOKUP_CACHE_SIZE:
             self._poll_messages.pop(next(iter(self._poll_messages)))
 
-    async def _archived_poll_messages(self, poll_id: int) -> list[tuple[int, int]]:
-        """The archived messages of this account that hold the poll (``find_poll_messages``), cached."""
+    async def _archived_poll_messages(self, poll_id: int) -> list[tuple[int, int, int | None]]:
+        """The archived (chat_id, message_id, topic id) of this account that hold the poll (``find_poll_messages``), cached."""
         cached = self._poll_messages.get(poll_id)
         now = time.monotonic()
         if cached is not None and (cached[0] is None or cached[0] > now):
@@ -1405,7 +1405,7 @@ class TelegramListener:
                     poll_state = extract_media_poll(message.media)
                     if poll_state is not None:
                         observed["poll"] = poll_state
-                        self._remember_poll_message(poll_state, chat_id, message.id)
+                        self._remember_poll_message(poll_state, chat_id, message.id, extract_topic_id(message))
                     preview_state = extract_webpage_preview(message.media)
                     if preview_state is not None:
                         observed["preview"] = preview_state
@@ -1669,7 +1669,7 @@ class TelegramListener:
                     message_data["raw_data"][payload_kind] = payload
                     if payload_kind == "poll":
                         # A later poll update that names only the poll finds this message.
-                        self._remember_poll_message(payload, chat_id, message.id)
+                        self._remember_poll_message(payload, chat_id, message.id, reply_to_top_id)
                 # Forward origin pointer: pure metadata off the event, no API
                 # cost — the sweep writer captures the same key.
                 forward_origin = extract_forward_origin(message)
@@ -2025,16 +2025,15 @@ class TelegramListener:
                 peer = getattr(event, "peer", None)
                 msg_id = getattr(event, "msg_id", None)
                 if peer is not None and msg_id is not None:
-                    chat_id = self._get_marked_id(peer)
-                    if self.config.should_skip_topic(chat_id, getattr(event, "top_msg_id", None)):
-                        return
-                    targets = [(chat_id, msg_id)]
+                    targets = [(self._get_marked_id(peer), msg_id, getattr(event, "top_msg_id", None))]
                 elif poll_id is not None:
                     targets = await self._archived_poll_messages(poll_id)
                 else:
                     return
-                for chat_id, message_id in targets:
-                    if not self._should_process_chat(chat_id):
+                # The same scope as an edit: the chat, and the forum topic in
+                # SKIP_TOPIC_IDS, whichever way the update named the message.
+                for chat_id, message_id, topic_id in targets:
+                    if not self._should_process_chat(chat_id) or self.config.should_skip_topic(chat_id, topic_id):
                         continue
                     await self._keep_snapshots(chat_id, message_id, {"poll": state})
             except Exception as e:
