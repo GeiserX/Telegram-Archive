@@ -163,9 +163,18 @@ declining Telegram's attachment is the whole mechanism.
 - **Deleting the chat-folder entry frees nothing** when `DEDUPLICATE_MEDIA` is on:
   it is a symlink into `_shared/`, and one blob can sit behind many rows.
   `_cleanup_youtube_videos` reaps the blob too, but only after
-  `count_media_by_content_hash` (all accounts) reports no surviving reference.
+  `count_shared_blob_references` (all accounts, by file name OR content hash,
+  media and media_versions) reports none and no chat folder links to it. Rows
+  from before content hashing carry no hash, so a hash-only count is not enough.
   Nothing else in this codebase reclaims a `_shared` blob — `_cleanup_existing_media`
   (SKIP_MEDIA_CHAT_IDS) still leaves them behind.
+- **A link whose `_shared` entry is gone is broken, not trusted.**
+  `broken_shared_link_target` (message_utils) is the one test. VERIFY_MEDIA, the
+  download path and the transcription drain repair such a row through
+  `media_integrity.repair_media_row`: a copy on disk is placed under the name the
+  link holds (the link is never rewritten), otherwise the row goes back to
+  `downloaded=0`. A `_shared` entry that exists but cannot be followed (git-annex,
+  #143) stays trusted. Never move a published blob out of `_shared`.
 
 ### Logging Rules
 

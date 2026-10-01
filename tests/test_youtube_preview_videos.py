@@ -378,7 +378,8 @@ class TestCleanupExistingVideos(_AsyncCase):
         backup.config.youtube_videos_delete_existing = delete_existing
         backup.db = AsyncMock()
         backup.db.delete_media_records = AsyncMock(return_value=0)
-        backup.db.count_media_by_content_hash = AsyncMock(return_value={})
+        backup.db.count_shared_blob_references = AsyncMock(return_value={})
+        backup.db.referenced_file_paths = AsyncMock(return_value=set())
         return backup
 
     def _plant_deduplicated(self, backup, *, content_hash, file_name, chats, blob_bytes=b"x" * 4096):
@@ -421,7 +422,7 @@ class TestCleanupExistingVideos(_AsyncCase):
         ]
         backup.db.get_webpage_preview_documents = AsyncMock(return_value=records)
         backup.db.delete_media_records = AsyncMock(return_value=3)
-        backup.db.count_media_by_content_hash = AsyncMock(return_value={})  # nothing references it now
+        backup.db.count_shared_blob_references = AsyncMock(return_value={})  # nothing references it now
 
         self._run(backup._cleanup_youtube_videos())
 
@@ -435,14 +436,14 @@ class TestCleanupExistingVideos(_AsyncCase):
 
     def test_a_blob_another_row_still_points_at_survives(self):
         """The safety that makes the reap legal at all. One chat's link is
-        removed; a row elsewhere still references the hash, so the bytes stay."""
+        removed; a row elsewhere still references the blob, so the bytes stay."""
         backup = self._make_backup()
         blob, links = self._plant_deduplicated(backup, content_hash="cd" * 32, file_name="v.mp4", chats=[-1, -2])
         backup.db.get_webpage_preview_documents = AsyncMock(
             return_value=[self._record("r0", -1, links[0], "v.mp4", "cd" * 32)]
         )
         backup.db.delete_media_records = AsyncMock(return_value=1)
-        backup.db.count_media_by_content_hash = AsyncMock(return_value={"cd" * 32: 1})
+        backup.db.count_shared_blob_references = AsyncMock(return_value={"v.mp4": 1})
 
         self._run(backup._cleanup_youtube_videos())
 
@@ -457,16 +458,16 @@ class TestCleanupExistingVideos(_AsyncCase):
             return_value=[self._record("r0", -1, links[0], "v.mp4", "ef" * 32)]
         )
         backup.db.delete_media_records = AsyncMock(return_value=1)
-        backup.db.count_media_by_content_hash = AsyncMock(side_effect=RuntimeError("db down"))
+        backup.db.count_shared_blob_references = AsyncMock(side_effect=RuntimeError("db down"))
 
         self._run(backup._cleanup_youtube_videos())
         self.assertTrue(os.path.exists(blob))
 
     def test_a_failed_row_delete_neither_reaps_nor_aborts_the_run(self):
-        """The files are already gone and the rows are not: reaping a blob now
-        would be against a refcount the surviving rows make wrong, and letting
-        the error out would abort the whole backup (the call sits inside
-        backup_all's try). The next run retries."""
+        """Rows go first, so a failed row delete removes no file at all: the
+        rows and their files stay together, and letting the error out would
+        abort the whole backup (the call sits inside backup_all's try). The
+        next run retries."""
         backup = self._make_backup()
         blob, links = self._plant_deduplicated(backup, content_hash="99" * 32, file_name="v.mp4", chats=[-1])
         backup.db.get_webpage_preview_documents = AsyncMock(
@@ -477,7 +478,8 @@ class TestCleanupExistingVideos(_AsyncCase):
         self._run(backup._cleanup_youtube_videos())  # must not raise
 
         self.assertTrue(os.path.exists(blob))
-        backup.db.count_media_by_content_hash.assert_not_awaited()
+        self.assertTrue(os.path.lexists(links[0]))
+        backup.db.count_shared_blob_references.assert_not_awaited()
 
     def test_an_undeduplicated_file_is_removed_directly(self):
         backup = self._make_backup()
