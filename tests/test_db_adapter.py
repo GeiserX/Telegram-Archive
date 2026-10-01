@@ -1206,6 +1206,9 @@ class TestDeleteChatOperations:
         """delete_chat_and_related_data removes physical media directory."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
+        # No media row of any account still uses the folder once this
+        # account's rows are gone.
+        adapter.count_media_rows_in_folder = AsyncMock(return_value=0)
 
         with (
             patch("telegram_archive.db.adapter.os.path.exists", return_value=True),
@@ -1215,6 +1218,26 @@ class TestDeleteChatOperations:
             await adapter.delete_chat_and_related_data(100, media_base_path="/data/media", account_id=1)
 
         mock_rmtree.assert_called_once_with(os.path.join("/data/media", "100"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("count", [2, RuntimeError("db down")])
+    async def test_delete_chat_keeps_a_media_folder_still_in_use_or_on_doubt(self, count):
+        """Another account's rows still use the chat folder, or the count failed:
+        the folder stays whole."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+        adapter.count_media_rows_in_folder = (
+            AsyncMock(side_effect=count) if isinstance(count, Exception) else AsyncMock(return_value=count)
+        )
+
+        with (
+            patch("telegram_archive.db.adapter.os.path.exists", return_value=True),
+            patch("telegram_archive.db.adapter.shutil.rmtree") as mock_rmtree,
+            patch("telegram_archive.db.adapter.glob.glob", return_value=[]),
+        ):
+            await adapter.delete_chat_and_related_data(100, media_base_path="/data/media", account_id=1)
+
+        mock_rmtree.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_chat_skips_files_when_no_media_path(self):
