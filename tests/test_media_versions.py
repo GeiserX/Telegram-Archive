@@ -536,6 +536,74 @@ class TestListenerKeepsReplacedMedia:
         assert sorted(_read(media_root, v.file_path) for v in kept) == [f"photo {OLD_PHOTO}", f"photo {NEW_PHOTO}"]
 
 
+class TestTheLiveEditFrameCarriesTheMedia:
+    """2A (9.0): an edit that replaced the media carries the message's current
+    media in its live frame, so an open chat swaps it in at once."""
+
+    @staticmethod
+    def _edit_frames(listener) -> list[dict]:
+        from telegram_archive.realtime import NotificationType
+
+        return [
+            call.args[2] for call in listener._notifier.notify.await_args_list if call.args[0] == NotificationType.EDIT
+        ]
+
+    def _listening(self, adapter, media_root: str) -> tuple[TelegramListener, dict]:
+        listener, handlers = _listener(adapter, media_root)
+        listener._notifier = MagicMock()
+        listener._notifier.notify = AsyncMock()
+        return listener, handlers
+
+    async def test_a_replacing_edit_carries_the_new_file(self, real_adapter, tmp_path):
+        from telegram_archive.listener import _FRAME_MEDIA_KEYS
+
+        media_root = str(tmp_path / "media")
+        await _seed(real_adapter)
+        original = await _archive_old_photo(real_adapter, media_root)
+        listener, handlers = self._listening(real_adapter, media_root)
+
+        await handlers[events.MessageEdited](_event(_telegram_message(NEW_PHOTO, edit_date=EDITED)))
+
+        (frame,) = self._edit_frames(listener)
+        media = frame["media"]
+        assert tuple(media) == _FRAME_MEDIA_KEYS
+        # The re-keyed row: the viewer turns its _v1 into the URL's ?v=1.
+        assert media["id"] == f"{original['id']}_v1"
+        assert media["type"] == "photo"
+        assert _read(media_root, media["file_path"]) == f"photo {NEW_PHOTO}"
+
+    async def test_without_a_live_download_the_frame_carries_the_empty_row(self, real_adapter, tmp_path):
+        """LISTEN_NEW_MESSAGES_MEDIA off: the new file waits for the backup, and the
+        frame carries the row as the archive holds it, with no file."""
+        media_root = str(tmp_path / "media")
+        await _seed(real_adapter)
+        original = await _archive_old_photo(real_adapter, media_root)
+        listener, handlers = self._listening(real_adapter, media_root)
+        listener.config.listen_new_messages_media = False
+
+        await handlers[events.MessageEdited](_event(_telegram_message(NEW_PHOTO, edit_date=EDITED)))
+
+        (frame,) = self._edit_frames(listener)
+        assert frame["media"]["id"] == f"{original['id']}_v1"
+        assert frame["media"]["type"] == "photo"
+        assert frame["media"]["file_path"] is None
+
+    async def test_control_a_caption_edit_carries_no_media(self, real_adapter, tmp_path):
+        """The same photo with a new caption: no media key, the viewer keeps its photo."""
+        media_root = str(tmp_path / "media")
+        await _seed(real_adapter)
+        await _archive_old_photo(real_adapter, media_root)
+        listener, handlers = self._listening(real_adapter, media_root)
+
+        await handlers[events.MessageEdited](
+            _event(_telegram_message(OLD_PHOTO, text="Look at this one", edit_date=EDITED))
+        )
+
+        (frame,) = self._edit_frames(listener)
+        assert frame["new_text"] == "Look at this one"
+        assert "media" not in frame
+
+
 class TestADownloadNeverLandsInNewerMedia:
     async def test_a_drain_download_finishing_after_an_edit_fills_the_kept_version(self, real_adapter, tmp_path):
         """The drain asks for the row of photo A and starts downloading it; the

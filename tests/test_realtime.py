@@ -336,6 +336,52 @@ class TestRealtimeNotifierNotify:
         assert "entities" not in payload["data"]
         assert len(json.dumps(payload).encode("utf-8")) < 8000
 
+    async def test_notify_drops_the_edit_media_after_the_entities_never_the_text(self):
+        """2A (9.0): an edit frame carries its new media. A frame that would pass the
+        NOTIFY limit drops the entities first, then the media, and keeps the text."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        notifier = RealtimeNotifier(db_manager=mock_db)
+        await notifier.init()
+        emoji = [
+            {"type": "custom_emoji", "offset": index * 2, "length": 2, "document_id": 5000000000000000000 + index}
+            for index in range(40)
+        ]
+        small_media = {"id": "1_5_photo_v1", "type": "photo", "file_name": "a.jpg"}
+        # A file name of 255 characters outside ASCII escapes to six bytes each.
+        large_media = {**small_media, "file_name": "\u00e9" * 255, "file_path": "/m/" + "\u00e9" * 255}
+        text = "\u4e2d" * 500
+
+        with patch.object(notifier, "_notify_postgres", new_callable=AsyncMock) as mock_pg:
+            # Small: the media and the entities both ride along.
+            await notifier.notify(
+                NotificationType.EDIT,
+                42,
+                {"message_id": 5, "new_text": "ab" * 40, "entities": emoji, "media": small_media},
+            )
+            assert mock_pg.call_args[0][0]["data"]["media"] == small_media
+            assert mock_pg.call_args[0][0]["data"]["entities"] == emoji
+
+            # Too large with the entities: they go, and the media stays when it fits.
+            many = emoji * 4
+            await notifier.notify(
+                NotificationType.EDIT,
+                42,
+                {"message_id": 5, "new_text": "ab" * 160, "entities": many, "media": small_media},
+            )
+            assert "entities" not in mock_pg.call_args[0][0]["data"]
+            assert mock_pg.call_args[0][0]["data"]["media"] == small_media
+
+            # Too large even without entities: the media goes too, never the text.
+            data = {"message_id": 5, "new_text": text, "media": large_media}
+            await notifier.notify(NotificationType.EDIT, 42, data)
+            payload = mock_pg.call_args[0][0]
+            assert payload["data"]["new_text"] == text
+            assert "media" not in payload["data"]
+            assert len(json.dumps(payload).encode("utf-8")) < 8000
+            # The caller's dict is left as it was.
+            assert data["media"] == large_media
+
     async def test_notify_does_not_truncate_short_edit_new_text(self):
         """notify() preserves short data["new_text"] for edit notifications."""
         mock_db = MagicMock()

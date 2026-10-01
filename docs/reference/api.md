@@ -224,7 +224,17 @@ curl -s -b jar.txt \
   'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&edited_only=true'
 ```
 
-Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
+Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. A kind with no file (`geo`, `contact`, `poll`, `venue`, `geo_live` and the others in [Media](../configuration/media.md)) has `media.url` null, even when an older release left a `file_path` on it. What it holds is in `raw_data` under a key named after the kind:
+
+| Key | Fields |
+|-----|--------|
+| `geo` | `lat`, `long`, `accuracy_radius` |
+| `contact` | `first_name`, `last_name`, `phone_number`, `vcard`, `user_id` (0 when the number has no Telegram account) |
+| `venue` | `title`, `address`, `provider`, `venue_id`, `venue_type`, `lat`, `long`, `accuracy_radius` |
+| `geo_live` | `lat`, `long`, `period`, `heading`, `accuracy_radius`, `at` (when that position was current, UTC), `earlier` (positions earlier reads saw, oldest first) |
+| `poll` | `question`, `answers`, `closed`, `public_voters`, `multiple_choice`, `quiz`, `results` |
+
+A field Telegram did not send is left out, so a location Telegram sent without a point has no `lat` or `long`. A message with no media row (the listener writes none for these kinds) still has its key in `raw_data`. A reply also carries `reply_to_media_type`, the kind of the message it answers, which comes from that message's `raw_data` when it has no media row, and `reply_to_media_title`, a venue's title, when it answers a venue. `sender_avatar_url` points at `/media/avatar/{chat_ref}/{message_id}`. Transcripts are attached when transcription is on.
 
 In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
 
@@ -343,6 +353,8 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `versions` | Every earlier version the archive kept of the message, oldest first, whatever its date. An empty list means the archive kept none. |
 | `transcripts` | Present only when the message's media has transcripts: every transcript row, newest first. Each names its media by `media_id`. |
 
+A location, a contact, a poll or another kind with no file has a `media_payload` object, keyed and shaped as in `raw_data` (see [Paging through messages](#paging-through-messages)).
+
 Each entry of `versions` has these fields:
 
 | Field | Content |
@@ -437,11 +449,13 @@ Event frames all carry `type` and `chat_ref`:
 | `type` | Fields |
 |--------|--------|
 | `new_message` | `message` |
-| `edit` | `message_id`, `new_text`, `edit_date`, `edit_hide`, and `entities` when the frame carries the new formatting (left out when `new_text` was cut to fit) |
+| `edit` | `message_id`, `new_text`, `edit_date`, `edit_hide`, and `entities` when the frame carries the new formatting (left out when `new_text` was cut to fit). `media` when the edit replaced the photo or file (see below) |
 | `delete` | `message_id`, `deletion_mode`, `deleted_at` |
 | `pin` | `message_ids`, `pinned` |
 | `reaction` | `message_id`, `reactions` (the live set; an emoji missing from it was taken back) |
 | `transcript` | `message_id`, `transcript_id`, `status` |
+
+The nested `media` of a `new_message` frame's `message`, and of an `edit` frame, has the shape `/api/chats/{ref}/messages` gives a message's `media`: `id` is the `{message_id}_{type}` key, and `url` is the ref-addressed `/media/` URL, or null when the file is not on disk. The URL of media an edit replaced ends in `?v={n}`, so a browser never shows the earlier file from its cache. A login whose downloads are off gets `url` and `file_path` null and `no_download: true`, as on the messages route. An `edit` frame without `media` says the media did not change. It is also left out when the frame would pass PostgreSQL's notification size limit, after the `entities`; the text is never left out.
 
 The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, an admin change to the viewer account or share token behind it, or the end-all action. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).
 

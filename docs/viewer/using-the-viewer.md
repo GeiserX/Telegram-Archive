@@ -116,8 +116,36 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 - **GIFs** loop while they are on screen and pause when you scroll away.
 - **Stickers** in `.webp` show as images up to 200 px wide. Other stickers show the text "Animated Sticker".
 - **Polls and quizzes** show each answer with a percentage bar and the total votes.
-- **Dice, venues, invoices, stories, giveaways, live locations and games** show as a chip.
+- **Locations, venues, live locations and shared contacts** show as cards. See [Locations and contacts](#locations-and-contacts).
+- **Dice, invoices, stories, giveaways and games** show as a chip.
 - **Link previews** show the archived card with site name, title, description and image.
+
+#### Locations and contacts
+
+A location, a venue, a live location and a shared contact each show as a card in the bubble, the way the Telegram apps draw them.
+
+- **Location.** A pin, the word Location, the coordinates to six decimals and, when Telegram sent it, how accurate the point is (`± 25 m`).
+- **Venue.** The place's name on one line and its address on up to two.
+- **Live location.** The sender's picture in the pin and when the archive last saw a position, for example `Last position, updated yesterday at 20:14`. While the sharing period has not run out, a second line says until when, or `Sharing until turned off`. The archive does not follow a live share as it moves, so the card never says the share is live now.
+- **Contact.** The initials in a coloured circle, the name and the phone number. The phone button calls the number on a device that can, and the copy button copies it.
+
+Click a location, venue or live location card to open the place on [OpenStreetMap](https://www.openstreetmap.org) in a new tab. OpenStreetMap needs no account, its pages carry no ads or ad trackers, and its map data is open. The viewer loads no map tiles and sends nothing anywhere until you click, so the page you open is the only one that sees the coordinates. The copy button beside the card copies the coordinates instead.
+
+A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link, until [`backfill-payloads`](../operations/maintenance.md#fill-old-locations-contacts-and-polls) reads it from Telegram again. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download, and the same command clears the leftover path. A poll archived without its details shows a Poll chip with `Details not archived`, and the same command fills it in.
+
+A login without downloads still sees the coordinates and phone numbers: they are the message's content, like its text.
+
+=== "Desktop"
+
+    ![A venue, a location, a live location that has ended and a shared contact in a private chat](../images/screenshots/location-cards.png)
+
+=== "Night"
+
+    ![The same cards in Telegram Night](../images/screenshots/location-cards-night.png)
+
+=== "Phone"
+
+    ![A live location and a shared contact on a phone](../images/screenshots/location-cards-mobile.png){ width="300" }
 
 When a file is not in the archive, a placeholder takes its place in the same shape: a photo or a video keeps its proportions, a round video its circle, and a voice message, an audio or a document its file row. A ring in the middle holds a sign for the reason, and two lines say what it is and why, with its size when the archive knows it, for example `24 MB · over the download limit`. The ring is not a button: nothing downloads from here. A file missing from the archive disk, the one fault among the reasons, shows an amber disc instead. [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer) lists each reason and the setting behind it.
 
@@ -153,7 +181,7 @@ Rest the pointer on the pencil, reach it with <kbd>Tab</kbd>, or press and hold 
 
 Click the pencil to open the **Edit history**. On a wide screen it opens beside the chat, which stays readable, and the message it belongs to is highlighted there. On a phone it opens as a sheet from the bottom, with the message above it. The versions run down a timeline, oldest first: "08:52 Sent", "08:54 Edit 1 · 2 min later", "08:57 Edit 2, current · 3 min later", with the date when an edit came on another day. Each text sits on a card, the current one tinted, with its own formatting, the way the bubble drew it then. The words each edit added are underlined on a green tint and the words it removed are struck through, and a key under the header says so. An edit that changed only the formatting, such as a word made bold, says "formatting only". The archive can miss edits: the sync, a backup or an import reads only the text current at that moment, so several edits between two reads leave one version, and a message archived after it was edited has no earlier text. When a version came from one of those, or was kept before the archive recorded where each version came from, the header says "at least 3 edits" and the edits drop their numbers. When the first text the archive kept was already an edit, the first card also reads "First seen, already edited". The listener sees each edit only while it runs: edits made while it was away reach it as one, and the numbers cannot show that. It lists up to 100 earlier texts. <kbd>Esc</kbd> or the cross closes it, and focus goes back to the pencil. A message with the pencil alone opens the history too, which says the archive did not see an earlier version.
 
-Telegram lets a sender replace the photo or file of a message. The archive keeps the old one and downloads the new one beside it, and the bubble shows the new one. In the edit history the version that had the old media shows it above its text, a thumbnail for a photo, "Earlier video" or "Earlier audio" for those, and "Earlier file" with its name for anything else, each of which opens the file; the current entry then shows the current media too, so you can compare them. An edit that replaced the media and kept the caption is an edit with the same text. A chat open while the edit arrives shows the new media once it reloads. A login without downloads sees the kind of media, not the file.
+Telegram lets a sender replace the photo or file of a message. The archive keeps the old one and downloads the new one beside it, and the bubble shows the new one. In the edit history the version that had the old media shows it above its text, a thumbnail for a photo, "Earlier video" or "Earlier audio" for those, and "Earlier file" with its name for anything else, each of which opens the file; the current entry then shows the current media too, so you can compare them. An edit that replaced the media and kept the caption is an edit with the same text. With the listener running, a chat open while the edit arrives shows the new media at once, for an older message too and while a search, a filter or the pinned messages are open. Without the listener it shows once the chat reloads. A login without downloads sees the kind of media, not the file.
 
 === "Telegram Day"
 

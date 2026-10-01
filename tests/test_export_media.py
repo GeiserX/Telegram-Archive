@@ -384,6 +384,36 @@ class TestCliExport:
         ]
 
 
+GEO = {"lat": 1.5, "long": 2.5}  # demo coordinates
+
+
+async def _location(adapter) -> None:
+    """Message 1: a location, kept in ``raw_data`` beside its metadata-only media row."""
+    await adapter.upsert_chat({"id": CHAT, "type": "group", "title": "Fixture Group"}, account_id=1)
+    await adapter.insert_message(
+        {"id": 1, "chat_id": CHAT, "text": "", "date": SENT, "sender_name": "Fixture Sender", "raw_data": {"geo": GEO}},
+        account_id=1,
+    )
+    await adapter.insert_media({"id": f"{CHAT}_1_geo", "message_id": 1, "chat_id": CHAT, "type": "geo"}, account_id=1)
+
+
+class TestLocationsAndContacts:
+    """Both exports carry a location, a contact or a poll the way they always carried a poll."""
+
+    async def test_viewer_export_puts_the_payload_beside_the_media(self, real_adapter):
+        await _location(real_adapter)
+        (message,) = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)]
+        assert message["media_payload"] == {"geo": GEO}
+        assert [(media["media_id"], media["type"]) for media in message["media"]] == [(f"{CHAT}_1_geo", "geo")]
+
+    async def test_cli_export_keeps_it_in_raw_data(self, real_adapter, tmp_path):
+        await _location(real_adapter)
+        (message,) = (await _cli_export(real_adapter, tmp_path))["messages"]
+        raw = message["raw_data"]
+        assert (json.loads(raw) if isinstance(raw, str) else raw)["geo"] == GEO
+        assert [media["type"] for media in message["media"]] == ["geo"]
+
+
 async def _voice_with_audio_twin(adapter) -> tuple[str, str]:
     """Message 1: a voice row and an older ``audio`` twin of the same file, the twin transcribed."""
     await _message(adapter, 1)
