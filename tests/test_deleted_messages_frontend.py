@@ -59,6 +59,8 @@ _FOLD_DECLARATIONS = (
     "const deletedKey = (msg) =>",
     "const isDeletedOpen = (msg) =>",
     "const isDeletedFolded = (msg) =>",
+    "const PAYLOAD_CARD_KINDS = [",
+    "const payloadCardKind = (msg) =>",
     "const DELETED_KIND = {",
     "const deletedKindLabel = (msg) =>",
     "const noticedStamp = (sentIso, noticedIso) =>",
@@ -161,11 +163,19 @@ class TestTheFoldingRules(unittest.TestCase):
             "document": "Deleted file",
             "audio": "Deleted file",
             "poll": "Deleted message",
+            "geo": "Deleted location",
+            "venue": "Deleted location",
+            "geo_live": "Deleted live location",
+            "contact": "Deleted contact",
         }
         rows = [_row(i, deleted_at="2026-09-29T08:38:00", media={"type": kind}) for i, kind in enumerate(kinds)]
         rows.append(_row(99, deleted_at="2026-09-29T08:38:00"))
+        # The listener writes no media row for a location or a contact: the
+        # payload names the kind.
+        rows.append(_row(100, deleted_at="2026-09-29T08:38:00", raw_data={"contact": {"first_name": "Alex"}}))
+        rows.append(_row(101, deleted_at="2026-09-29T08:38:00", raw_data={"geo_live": {"lat": 1.0, "long": 2.0}}))
         out = self._run(f"{json.dumps(rows)}.map(deletedKindLabel)")
-        self.assertEqual(out, [*kinds.values(), "Deleted message"])
+        self.assertEqual(out, [*kinds.values(), "Deleted message", "Deleted contact", "Deleted live location"])
 
     def test_the_time_is_when_the_archive_noticed_with_the_day_when_it_differs(self) -> None:
         same_day = _row(1, deleted_at="2026-09-29T08:38:00")

@@ -265,6 +265,25 @@ class TestKind:
             preview = result[(1, GROUP - index)]
             assert (preview["kind"], preview["text"]) == (kind, None)
 
+    async def test_a_location_or_contact_with_no_media_row_is_named_by_its_payload(self, real_adapter):
+        """The listener stores a location or a contact as a payload alone."""
+        payloads = {
+            "geo": {"lat": 1.5, "long": 2.5},
+            "geo_live": {"lat": 1.5, "long": 2.5, "period": 900},
+            "venue": {"title": "Demo Hall", "lat": 1.5, "long": 2.5},
+            "contact": {"first_name": "Demo", "phone_number": "15555550100"},
+        }
+        for index, (kind, payload) in enumerate(payloads.items()):
+            chat_id = GROUP - index
+            await add_chat(real_adapter, chat_id, "group")
+            await add_message(real_adapter, chat_id, 1, index, "", raw={kind: payload})
+
+        result = await previews(real_adapter)
+
+        for index, kind in enumerate(payloads):
+            preview = result[(1, GROUP - index)]
+            assert (preview["kind"], preview["text"]) == (kind, None)
+
     async def test_a_caption_rides_with_its_media_kind(self, real_adapter):
         await add_chat(real_adapter, GROUP, "group")
         await add_message(real_adapter, GROUP, 1, 0, "Top of the pass")

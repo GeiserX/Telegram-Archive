@@ -49,8 +49,11 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
+    MEDIA_PAYLOAD_KEYS,
     METADATA_ONLY_MEDIA_TYPES,
+    PAYLOAD_BACKFILL_TYPES,
     compute_directory_size,
+    merge_geo_live,
     resolve_sender_display_name,
     stored_media_file_id,
     utcnow_naive,
@@ -190,8 +193,16 @@ def _clamp(value: str | None, max_length: int) -> str | None:
 
 
 def _has_raw_payload(value: Any) -> bool:
-    """True when a serialised raw_data blob carries anything worth keeping."""
-    return bool(value) and value != "{}"
+    """True when a serialised raw_data blob carries anything worth keeping.
+
+    An empty formatting list alone (``{"entities": []}``, a read of a message
+    with no formatting and no other extras, since 9.0) is no payload either:
+    it must not replace extras another writer archived, just as ``"{}"`` does not.
+    """
+    if not value or value == "{}":
+        return False
+    raw = _raw_data_dict(value)
+    return raw is None or any(key != "entities" or entity_list != [] for key, entity_list in raw.items())
 
 
 def parse_entitlement_column(raw: str | None, element_type: type) -> set | None:
@@ -515,6 +526,32 @@ def _raw_data_dict(raw_data: Any) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# The payload keys a reply quote names when the target has no media row, in
+# the order the viewer's cards pick them.
+_REPLY_CARD_KINDS = ("geo_live", "venue", "geo", "contact")
+
+
+def _reply_card_kind(raw_data: Any) -> tuple[str | None, str | None]:
+    """The card kind a reply target's ``raw_data`` holds, and a venue's title."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return None, None
+    for kind in _REPLY_CARD_KINDS:
+        payload = raw.get(kind)
+        if isinstance(payload, dict):
+            title = payload.get("title") if kind == "venue" else None
+            return kind, title if isinstance(title, str) and title else None
+    return None, None
+
+
+def _media_payloads_of(raw_data: Any) -> dict[str, Any]:
+    """The media payloads in ``raw_data`` (``MEDIA_PAYLOAD_KEYS``), keyed as stored."""
+    raw = _raw_data_dict(raw_data)
+    if not raw:
+        return {}
+    return {key: raw[key] for key in MEDIA_PAYLOAD_KEYS if key in raw}
+
+
 # How much of a message the chat list's second line carries. The line shows
 # about forty characters on a phone; the rest is room for a wide sidebar.
 CHAT_PREVIEW_TEXT_LENGTH = 100
@@ -550,6 +587,10 @@ def _chat_preview(row: Any, chat_type: str | None) -> dict[str, Any]:
             text = _preview_text(raw["poll"].get("question"))
     elif row.media_type:
         kind = row.media_type
+    elif _reply_card_kind(raw)[0] is not None:
+        # The listener writes no media row for a location or a contact; its
+        # payload names the kind, as it does for a reply quote.
+        kind = _reply_card_kind(raw)[0]
     elif text is not None:
         kind = "text"
     else:
@@ -645,18 +686,22 @@ def _keep_archived_formatting(archived_raw_data: Any, incoming_raw_data: str) ->
     For a write that is not an edit (an import that renders text its own way,
     an older read, an edit Telegram hides). The archived formatting keys win;
     a key the archive does not have is filled from the incoming payload.
+    An empty formatting list never fills one: a row archived before 9.0 has
+    its formatting unknown, and stays so until a read brings some.
     """
-    archived = _raw_data_dict(archived_raw_data)
+    archived = _raw_data_dict(archived_raw_data) or {}
     incoming = _raw_data_dict(incoming_raw_data)
-    if not archived or incoming is None:
+    if incoming is None:
         return incoming_raw_data
     merged = dict(incoming)
     for key in _FORMATTING_KEYS:
         if key in archived:
             merged[key] = archived[key]
+        elif key == "entities" and merged.get(key) == []:
+            merged.pop(key)
     if merged == incoming:
         return incoming_raw_data
-    return json.dumps(merged)
+    return json.dumps(merged) if merged else "{}"
 
 
 def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
@@ -677,6 +722,41 @@ def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
         else:
             merged.pop(key, None)
     return json.dumps(merged) if merged else "{}"
+
+
+def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str, *, incoming_wins: bool) -> str:
+    """``incoming_raw_data`` with every media payload the archive holds kept.
+
+    A payload key (a poll, a location, a contact, a venue, a live location,
+    ...; ``MEDIA_PAYLOAD_KEYS``) the archive holds and the incoming read lacks
+    stays: an ``import --merge`` read that carries only ``forward_from_name``
+    must not drop a poll. When both hold a key, ``incoming_wins`` decides.
+    A read from Telegram (``incoming_wins`` true) wins, so a newer poll tally
+    replaces the old one, and a live location in both goes through
+    ``merge_geo_live``, which keeps every position either one saw. Any other
+    writer (an import renders a thinner stand-in: no poll option bytes, no
+    vCard, no venue provider) only fills keys the archive lacks; the archived
+    value stays, a live location included. When the result is the archived
+    payload itself, the archived string comes back unchanged, so the upsert
+    sees no change to write.
+    """
+    archived = _raw_data_dict(archived_raw_data)
+    incoming = _raw_data_dict(incoming_raw_data)
+    if not archived or incoming is None:
+        return incoming_raw_data
+    merged = dict(incoming)
+    for key in MEDIA_PAYLOAD_KEYS:
+        if key not in archived:
+            continue
+        if key not in merged or not incoming_wins:
+            merged[key] = archived[key]
+        elif key == "geo_live":
+            merged[key] = merge_geo_live(archived[key], merged[key])
+    if merged == incoming:
+        return incoming_raw_data
+    if merged == archived and isinstance(archived_raw_data, str):
+        return archived_raw_data
+    return json.dumps(merged)
 
 
 # The writers whose upserts are reads of the message from Telegram, so a newer
@@ -1228,9 +1308,21 @@ class DatabaseAdapter:
                 and _has_raw_payload(archived_raw_data)
                 and _raw_data_dict(archived_raw_data) is not None
             ):
-                update_values["raw_data"] = _with_formatting_of(archived_raw_data, "{}")
+                # The read's empty formatting list, when it has one, says the
+                # new text has none, and stays known.
+                update_values["raw_data"] = _with_formatting_of(archived_raw_data, values.get("raw_data") or "{}")
         elif "raw_data" in update_values:
             update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
+        # Whatever wrote raw_data above, a media payload the archive holds and
+        # this read lacks stays (an import of a forward must not drop a poll).
+        # Only a read from Telegram replaces a payload the archive holds; an
+        # import's thinner stand-in never does.
+        if "raw_data" in update_values:
+            update_values["raw_data"] = _keep_archived_payloads(
+                existing.raw_data,
+                update_values["raw_data"],
+                incoming_wins=message_data.get("version_source") in _TELEGRAM_READ_SOURCES,
+            )
 
         changed = {}
         for key, value in update_values.items():
@@ -2769,7 +2861,9 @@ class DatabaseAdapter:
         json; a row whose raw_data is unparseable is left untouched (never
         destroy unrelated capture payloads for a formatting refresh). None
         drops a key: an edit that no longer carries formatting, or no longer
-        is a Rich Text Editor message, must not keep the stale value.
+        is a Rich Text Editor message, must not keep the stale value. Entities
+        are the exception since 9.0: None becomes an empty list, so the text is
+        known to have no formatting and a later edit that adds some is an edit.
         """
         try:
             raw = json.loads(message.raw_data) if message.raw_data else {}
@@ -2778,7 +2872,7 @@ class DatabaseAdapter:
         if not isinstance(raw, dict):
             return False
         changed = False
-        for key, value in (("entities", entities), ("rich_message", rich_message)):
+        for key, value in (("entities", entities or []), ("rich_message", rich_message)):
             if value is None:
                 if key in raw:
                     raw.pop(key)
@@ -4640,6 +4734,130 @@ class DatabaseAdapter:
             )
             return [c for (c,) in rows if c is not None]
 
+    async def get_payload_backfill_rows(
+        self, *, account_id: int, chat_id: int | None = None
+    ) -> dict[int, list[dict[str, Any]]]:
+        """The work list of ``backfill-payloads``, grouped by chat, ordered by message id.
+
+        A media row of a ``PAYLOAD_BACKFILL_TYPES`` kind is listed when its
+        message's ``raw_data`` lacks the key of the same name, or when the row
+        still carries a ``file_path`` (the leftover of releases up to v7.28.0).
+        Each entry is ``{message_id, media_id, type, file_path, has_payload}``.
+        A row whose ``raw_data`` does not parse is left out: nothing may be
+        added to a payload the archive cannot read without destroying it.
+        Filling a key or clearing a path takes a row off the list, so an
+        interrupted run resumes by running again.
+        """
+        stmt = (
+            select(Media.chat_id, Media.message_id, Media.id, Media.type, Media.file_path, Message.raw_data)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Media.account_id,
+                    Message.chat_id == Media.chat_id,
+                    Message.id == Media.message_id,
+                ),
+            )
+            .where(and_(Media.account_id == account_id, Media.type.in_(PAYLOAD_BACKFILL_TYPES)))
+            .order_by(Media.chat_id, Media.message_id, Media.id)
+        )
+        if chat_id is not None:
+            stmt = stmt.where(Media.chat_id == chat_id)
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.stream(stmt.execution_options(yield_per=1000))
+            async for row_chat, message_id, media_id, media_type, file_path, raw_data in result:
+                raw = _raw_data_dict(raw_data)
+                if raw is None:
+                    continue
+                has_payload = media_type in raw
+                if has_payload and not file_path:
+                    continue
+                grouped.setdefault(row_chat, []).append(
+                    {
+                        "message_id": message_id,
+                        "media_id": media_id,
+                        "type": media_type,
+                        "file_path": file_path or None,
+                        "has_payload": has_payload,
+                    }
+                )
+        return grouped
+
+    @retry_on_locked()
+    async def add_missing_raw_data_keys(
+        self, chat_id: int, message_id: int, payload: dict[str, Any], *, account_id: int
+    ) -> bool:
+        """Add each key of ``payload`` the message's ``raw_data`` lacks; True if anything was added.
+
+        For ``backfill-payloads``. The row is locked first, so a writer that
+        stores the same key meanwhile wins and this adds nothing. A key the
+        row already holds is never replaced, and nothing else on the row
+        (text, dates, reactions, other keys) is touched: this is not the
+        upsert. A row whose ``raw_data`` does not parse is left as it is.
+        """
+        if not payload:
+            return False
+        async with self.db_manager.async_session_factory() as session:
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
+            if message is None:
+                await session.rollback()
+                return False
+            raw = _raw_data_dict(message.raw_data)
+            if raw is None:
+                await session.rollback()
+                return False
+            merged = dict(raw)
+            for key, value in payload.items():
+                if key not in merged:
+                    merged[key] = value
+            if merged == raw:
+                await session.rollback()
+                return False
+            message.raw_data = json.dumps(merged)
+            await session.commit()
+            return True
+
+    async def raw_data_has_key(self, chat_id: int, message_id: int, key: str, *, account_id: int) -> bool:
+        """True when the message exists and its ``raw_data`` parses and holds ``key``."""
+        async with self.db_manager.async_session_factory() as session:
+            raw_data = (
+                await session.execute(
+                    select(Message.raw_data).where(
+                        and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
+                    )
+                )
+            ).scalar_one_or_none()
+        raw = _raw_data_dict(raw_data)
+        return raw is not None and key in raw
+
+    @retry_on_locked()
+    async def clear_metadata_media_path(self, chat_id: int, media_id: str, *, account_id: int) -> bool:
+        """Clear the leftover file fields of a metadata-only media row; True if a row changed.
+
+        Sets ``file_path``, ``file_name`` and ``download_date`` to NULL and
+        ``downloaded`` to 0, so the row reads as what it is: a location, a
+        contact or a poll with no file. The row stays, and nothing on disk is
+        touched. Only a metadata-only row that still has a path matches, so a
+        second call changes nothing.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Media)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.chat_id == chat_id,
+                        Media.id == media_id,
+                        Media.type.in_(METADATA_ONLY_MEDIA_TYPES),
+                        Media.file_path.is_not(None),
+                    )
+                )
+                .values(file_path=None, file_name=None, download_date=None, downloaded=0)
+            )
+            await session.commit()
+            return (result.rowcount or 0) > 0
+
     async def retype_media_for_messages(
         self, chat_id: int, message_ids: Sequence[int], media_type: str, *, account_id: int
     ) -> int:
@@ -5914,6 +6132,7 @@ class DatabaseAdapter:
                 User.last_name,
                 User.username,
                 reply_media_type,
+                Message.raw_data,
             )
             .outerjoin(User, Message.sender_id == User.id)
             .where(and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed)))
@@ -5921,16 +6140,19 @@ class DatabaseAdapter:
         if account_id is not None:
             reply_stmt = reply_stmt.where(Message.account_id == account_id)
         reply_result = await session.execute(reply_stmt)
-        reply_rows: dict[int, dict[str, Any]] = {
-            row.id: {
+        reply_rows: dict[int, dict[str, Any]] = {}
+        for row in reply_result:
+            payload_kind, venue_title = _reply_card_kind(row.raw_data)
+            reply_rows[row.id] = {
                 "text": row.text,
                 "sender_name": resolve_sender_display_name(
                     row.sender_name, row.first_name, row.last_name, row.username
                 ),
-                "media_type": row.reply_media_type,
+                # The listener writes no media row for a location or a contact,
+                # so its payload names the kind when there is no row.
+                "media_type": row.reply_media_type or payload_kind,
+                "venue_title": venue_title,
             }
-            for row in reply_result
-        }
 
         for msg in messages:
             if not msg.get("reply_to_msg_id"):
@@ -5938,6 +6160,9 @@ class DatabaseAdapter:
             reply_row = reply_rows.get(msg["reply_to_msg_id"])
             msg["reply_to_sender_name"] = reply_row["sender_name"] if reply_row else None
             msg["reply_to_media_type"] = reply_row["media_type"] if reply_row else None
+            if reply_row and reply_row["venue_title"]:
+                # "Location, Demo Cafe" in the quote, as the Telegram apps write it.
+                msg["reply_to_media_title"] = reply_row["venue_title"]
             if reply_row and not msg.get("reply_to_text") and reply_row["text"]:
                 msg["reply_to_text"] = reply_row["text"][:100]
 
@@ -7288,7 +7513,9 @@ class DatabaseAdapter:
             marked by ``is_deleted``/``deleted_at``. Each carries ``edit_date``
             and ``versions``, every earlier text the archive kept of it (any
             date, oldest first). A message whose media has transcripts carries
-            them all under ``transcripts``, newest first.
+            them all under ``transcripts``, newest first. A location, a
+            contact, a poll or another metadata-only kind is under
+            ``media_payload``, keyed as in ``raw_data``.
         """
         transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for row in await self.get_transcripts_for_export(
@@ -7316,6 +7543,7 @@ class DatabaseAdapter:
                         Message.edit_date,
                         Message.is_deleted,
                         Message.deleted_at,
+                        Message.raw_data,
                         Media.type.label("media_type"),
                         Media.file_path.label("media_file_path"),
                         User.first_name,
@@ -7347,6 +7575,7 @@ class DatabaseAdapter:
                         Message.edit_date,
                         Message.is_deleted,
                         Message.deleted_at,
+                        Message.raw_data,
                         User.first_name,
                         User.last_name,
                         User.username,
@@ -7397,6 +7626,11 @@ class DatabaseAdapter:
                 if include_media:
                     msg["media_type"] = row.media_type
                     msg["media_path"] = row.media_file_path
+                # A location, a contact, a poll and the other metadata-only
+                # kinds are the message's content: the card the viewer draws.
+                media_payload = _media_payloads_of(row.raw_data)
+                if media_payload:
+                    msg["media_payload"] = media_payload
                 if (row.account_id, row.id) in transcripts:
                     msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 msg["versions"] = list(last_versions)

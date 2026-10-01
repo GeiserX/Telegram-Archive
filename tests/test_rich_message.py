@@ -354,7 +354,8 @@ class TestSweepStoresRichMessages(unittest.TestCase):
         result = self._run(self.backup._process_message(self._make_message(None), CHAT_ID))
         self.assertEqual(result["text"], "")
         self.assertNotIn("rich_message", result["raw_data"])
-        self.assertNotIn("entities", result["raw_data"])
+        # 8.1B (9.0): "no formatting" is stored as an empty list.
+        self.assertEqual(result["raw_data"]["entities"], [])
 
 
 if __name__ == "__main__":

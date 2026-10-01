@@ -4,7 +4,8 @@
 Every person, chat and message in it is invented. The archive holds two
 accounts, private chats, groups, a forum with topics and channels, with
 photos, an album, a sticker, voice notes with transcripts, a round video, a
-document, replies, forwards, reactions, edits with their earlier versions,
+document, a location, a venue, a live location and a shared contact, replies,
+forwards, reactions, edits with their earlier versions,
 messages deleted in Telegram that the archive kept, and pinned messages.
 
 It also holds every state the viewer draws for what the archive alone knows:
@@ -598,6 +599,82 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     )
     s = ChatScript(1, OWNER_PERSONAL, JUNIPER, first_id=880)
     filler(s, "casual", [JUNIPER, OWNER_PERSONAL], now - 40 * day, now - 2 * day, 30)
+    # A location, a venue, a live location that has ended and a shared
+    # contact, drawn as cards. Demo places and a fake number only. The venue
+    # and the location carry the media row the backup writes; the live
+    # location and the contact have none, as the listener stores them. The
+    # oldest location and the poll after it were archived by a release that
+    # kept no payload and left a path to an empty placeholder file, so they
+    # say "Details not archived".
+    t = today - day + timedelta(hours=8)
+    s.add(t - 5 * day, JUNIPER, "", media={"type": "geo", "legacy_bin": True})
+    s.add(t - 5 * day + timedelta(minutes=1), JUNIPER, "", media={"type": "poll", "legacy_bin": True})
+    bakery_q = s.add(t, OWNER_PERSONAL, "Where is that bakery you keep talking about?")
+    bakery = s.add(
+        t + timedelta(minutes=2),
+        JUNIPER,
+        "",
+        reply=bakery_q,
+        media={"type": "venue"},
+        raw={
+            "venue": {
+                "title": "Elm Street Bakery",
+                "address": "12 Elm Street, Demo Town",
+                "provider": "foursquare",
+                "venue_id": "demo-venue-0001",
+                "venue_type": "food/bakery",
+                "lat": 40.416775,
+                "long": -3.70379,
+            }
+        },
+    )
+    parked = s.add(
+        t + timedelta(minutes=3),
+        JUNIPER,
+        "",
+        media={"type": "geo"},
+        raw={"geo": {"lat": 40.41902, "long": -3.70091, "accuracy_radius": 25}},
+    )
+    s.add(t + timedelta(minutes=4), JUNIPER, "I parked there, the bakery is two streets down.", reply=parked)
+    live_start = t + timedelta(hours=1)
+    s.add(
+        live_start,
+        JUNIPER,
+        "",
+        raw={
+            "geo_live": {
+                "lat": 40.41702,
+                "long": -3.70322,
+                "period": 900,
+                "heading": 90,
+                "accuracy_radius": 10,
+                "at": (live_start + timedelta(minutes=14)).isoformat(),
+                "earlier": [
+                    {"lat": 40.41850, "long": -3.70150, "at": (live_start + timedelta(minutes=2)).isoformat()},
+                ],
+            }
+        },
+    )
+    s.add(
+        live_start + timedelta(minutes=15),
+        OWNER_PERSONAL,
+        "On my way. Here is the number of the owner, she sells the rolls wholesale.",
+        reply=bakery,
+    )
+    s.add(
+        live_start + timedelta(minutes=16),
+        OWNER_PERSONAL,
+        "",
+        raw={
+            "contact": {
+                "first_name": "Alex",
+                "last_name": "Demo",
+                "phone_number": "15555550100",
+                "vcard": "",
+                "user_id": 0,
+            }
+        },
+    )
     t = now - timedelta(hours=3)
     s.add(t, JUNIPER, "Did you get home okay?")
     s.add(t + timedelta(minutes=2), OWNER_PERSONAL, "Yes, thanks! My legs are still complaining 😅")
@@ -748,8 +825,9 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         filler(s, "casual", [uid, OWNER_PERSONAL], now - (days_ago + 30) * day, now - days_ago * day, 14)
         # The chat list preview's cases. Kofi's newest message was deleted in
         # Telegram, so the list shows the one before it. Tobias's newest is a
-        # location and Mirela's a contact: metadata-only rows the list names
-        # with a word.
+        # location the listener stored (a payload and no media row) and
+        # Mirela's a contact the backup stored (both): the list names each with
+        # a word.
         last = now - days_ago * day + timedelta(hours=1)
         if uid == KOFI:
             s.add(last, OWNER_PERSONAL, "See you at the trailhead at seven.")
@@ -757,9 +835,23 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
                 last + timedelta(minutes=3), KOFI, "Running ten minutes late, sorry", deleted_after=timedelta(minutes=1)
             )
         elif uid == TOBIAS:
-            s.add(last, TOBIAS, "", media={"type": "geo", "metadata_only": True})
+            s.add(last, TOBIAS, "", raw={"geo": {"lat": 40.42011, "long": -3.70562, "accuracy_radius": 15}})
         elif uid == MIRELA:
-            s.add(last, MIRELA, "", media={"type": "contact", "metadata_only": True})
+            s.add(
+                last,
+                MIRELA,
+                "",
+                media={"type": "contact"},
+                raw={
+                    "contact": {
+                        "first_name": "Sam",
+                        "last_name": "Demo",
+                        "phone_number": "15555550101",
+                        "vcard": "",
+                        "user_id": 0,
+                    }
+                },
+            )
         scripts.append(s)
 
     # --- Book Club: a basic group ---------------------------------------------------
@@ -1067,12 +1159,19 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
             folder = media_root / str(s.chat_id)
             kind = m["type"]
             file_id = int(hashlib.sha256(m["id"].encode()).hexdigest()[:8], 16)
-            skip = m.pop("skip", None)
-            if m.pop("metadata_only", False):
-                # A location or a contact: a payload, not a file, stored the way
-                # the backup stores it.
-                m.update(file_size=0, downloaded=False)
+            if kind in ("geo", "venue", "geo_live", "contact", "poll"):
+                # A metadata-only row: no file. A release from 2025-12 to
+                # 2026-04 left a path to an empty .bin placeholder on these,
+                # which no longer exists on disk.
+                m["file_size"] = 0
+                m["downloaded"] = False
+                if m.pop("legacy_bin", False):
+                    m["file_name"] = f"{file_id}.bin"
+                    m["file_path"] = f"{s.chat_id}/{file_id}.bin"
+                    m["downloaded"] = True
+                    m["download_date"] = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
                 continue
+            skip = m.pop("skip", None)
             if skip in ("oversize", "filtered", "pending"):
                 # Never downloaded: the row says why, or nothing when it is only
                 # waiting for the next backup.

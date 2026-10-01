@@ -3968,6 +3968,7 @@ const cases = [
     { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'voice' },
     { reply_to_msg_id: 1, reply_to_sender_name: null, reply_to_text: null, reply_to_media_type: null },
     { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'venue' },
+    { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'dice' },
     { reply_to_msg_id: 1 },
     {},
     undefined,
@@ -3982,8 +3983,10 @@ const cases = [
                 ["Ada L", "Voice message"],
                 # Target not in the archive: no name to show.
                 ["Reply", "Message"],
+                # A venue with no title from the backend: the kind in words.
+                ["Ada L", "Location"],
                 # Unmapped media kind: the raw type beats the bare word.
-                ["Ada L", "venue"],
+                ["Ada L", "dice"],
                 # Older backend, neither key present.
                 ["Reply", "Message"],
                 ["Reply", "Message"],

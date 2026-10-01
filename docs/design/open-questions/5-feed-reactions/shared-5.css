@@ -1,0 +1,10 @@
+/* 5: the reaction chip sits where the card's meta sits, on the text's line. */
+[data-mockup-reaction-card] .message-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+[data-mockup-reaction-card] .reaction-chip.reaction-removed {
+    height: 24px;
+    border-radius: 12px;
+}
