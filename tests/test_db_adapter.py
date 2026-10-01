@@ -882,10 +882,11 @@ class TestMessageOperations:
 
         snapshot = await adapter.delete_message(chat_id=100, message_id=42, account_id=1)
 
-        # 1 snapshot select + 8 deletes: versions, the earlier media's transcripts,
-        # the earlier media (036), the media's transcripts, media, the reaction
-        # history (037), reactions, message
-        assert mock_session.execute.await_count == 9
+        # 1 snapshot select + 9 deletes: versions, the poll and preview states
+        # (038), the earlier media's transcripts, the earlier media (036), the
+        # media's transcripts, media, the reaction history (037), reactions,
+        # message
+        assert mock_session.execute.await_count == 10
         mock_session.commit.assert_awaited_once()
         assert snapshot is None
         # The snapshot SELECT locks the row (FOR UPDATE) so concurrent
@@ -1181,8 +1182,8 @@ class TestDeleteChatOperations:
     """Test delete_chat_and_related_data and related cleanup operations."""
 
     @pytest.mark.asyncio
-    async def test_delete_chat_issues_eleven_deletes(self):
-        """delete_chat_and_related_data deletes versions, earlier media, transcripts, media, reactions, messages, sync, topics, folder members, and chat."""
+    async def test_delete_chat_issues_thirteen_deletes(self):
+        """delete_chat_and_related_data deletes versions, poll and preview states, earlier media, transcripts, media, reaction history, reactions, messages, sync, topics, folder members, and chat."""
         db_manager, mock_session = _make_mock_db_manager()
         # State the probe result explicitly instead of leaning on AsyncMock's
         # truthy default: the chat is still present in another account.
@@ -1191,14 +1192,14 @@ class TestDeleteChatOperations:
 
         await adapter.delete_chat_and_related_data(100, account_id=1)
 
-        # 1 cross-account row lock + 11 deletes: versions, the earlier media's
-        # transcripts and the earlier media (036), the media's
-        # transcripts, media, the reaction history (037), reactions, messages,
-        # sync_status, forum_topics,
+        # 1 cross-account row lock + 13 deletes: versions, the poll and preview
+        # states (038), the earlier media's transcripts and the earlier media
+        # (036), the media's transcripts, media, the reaction history (037),
+        # reactions, messages, sync_status, forum_topics,
         # chat_folder_members (explicit - SQLite runs with foreign_keys off, so
         # their CASCADEs never fire), chat — plus the push-subscription orphan
         # probe (still present in another account, so no purge delete fires here).
-        assert mock_session.execute.await_count == 14
+        assert mock_session.execute.await_count == 15
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -2278,10 +2279,15 @@ class TestGetMessagesPaginated:
         reactions_result = MagicMock()
         reactions_result.scalars.return_value = []
 
+        # The newest poll and preview states of the page (038): none.
+        snapshots_result = MagicMock()
+        snapshots_result.all.return_value = []
+
         mock_session.execute.side_effect = [
             mock_result,
             media_result,
             versions_result,
+            snapshots_result,
             reactions_result,
             _empty_history_result(),
             _owner_map_result(),
@@ -2466,10 +2472,15 @@ class TestGetMessagesPaginated:
         reactions_result = MagicMock()
         reactions_result.scalars.return_value = []
 
+        # The newest poll and preview states of the page (038): none.
+        snapshots_result = MagicMock()
+        snapshots_result.all.return_value = []
+
         mock_session.execute.side_effect = [
             mock_result,
             media_result,
             version_count_result,
+            snapshots_result,
             reply_result,
             reactions_result,
             _empty_history_result(),
