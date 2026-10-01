@@ -25,6 +25,7 @@ from .models import (
     MediaTranscript,
     MediaVersion,
     Message,
+    MessageSnapshot,
     MessageVersion,
     Metadata,
     PushSubscription,
@@ -48,6 +49,7 @@ MIGRATION_MODELS = [
     Chat,
     Message,
     MessageVersion,
+    MessageSnapshot,
     Media,
     MediaVersion,
     MediaTranscript,
@@ -76,7 +78,7 @@ MIGRATION_EXCLUDED = {
 
 # Tables whose integer ``id`` is a serial. Rows are copied with their ids, so
 # the sequence has to move past them or the next insert collides with a copied row.
-SERIAL_ID_MODELS = [MediaTranscript, MediaVersion]
+SERIAL_ID_MODELS = [MediaTranscript, MediaVersion, MessageSnapshot]
 
 
 async def _reset_id_sequence(target: DatabaseManager, model) -> None:

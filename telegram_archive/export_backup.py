@@ -68,7 +68,9 @@ class BackupExporter:
         # Messages, each with every earlier text the archive kept of it under
         # ``versions`` whatever the version's date, and the flat
         # ``message_versions`` list, windowed by the version's own date and
-        # without the account. One snapshot, so they cannot disagree.
+        # without the account. One snapshot, so they cannot disagree. Each
+        # message also carries ``snapshots``: the later states of its poll or
+        # link preview the archive kept, oldest first.
         messages, message_versions = await self.db.get_messages_and_versions_by_date_range(chat_id, start_dt, end_dt)
         # Voice transcripts sit on the message whose media they transcribe. The
         # account is part of the key: two accounts' private chats with the same
@@ -95,6 +97,7 @@ class BackupExporter:
                 "total_chats": len(chats_dict),
                 "total_message_versions": len(message_versions),
                 "total_transcripts": sum(len(message.get("transcripts", ())) for message in messages),
+                "total_message_snapshots": sum(len(message.get("snapshots", ())) for message in messages),
             },
             "chats": chats,
             "messages": messages,

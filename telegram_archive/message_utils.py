@@ -792,6 +792,81 @@ def extract_webpage_preview(media: object) -> dict | None:
     return preview or None
 
 
+def _poll_text(value: object) -> str:
+    """A poll question or answer as plain text: a string, or ``TextWithEntities.text``."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    text = getattr(value, "text", None)
+    return text if isinstance(text, str) else str(value)
+
+
+def extract_poll_results(results: object) -> dict | None:
+    """A poll's results as ``raw_data["poll"]["results"]`` holds them, or None.
+
+    ``results`` is the ``PollResults`` Telegram sends beside a poll, and alone
+    in an ``UpdateMessagePoll``. Each option's vote count comes with its
+    option bytes in base64. Telegram leaves the per-option counts out while
+    the account has not voted, and the list is then empty; ``total_voters``
+    is None when Telegram did not send it. None on a payload that does not
+    parse, so a broken one never stands for "no votes".
+    """
+    if results is None:
+        return None
+    try:
+        results_list = []
+        if results.results:
+            for r in results.results:
+                results_list.append(
+                    {
+                        "option": base64.b64encode(r.option).decode("ascii"),
+                        "voters": r.voters,
+                        "correct": r.correct,
+                    }
+                )
+        return {"total_voters": results.total_voters, "results": results_list}
+    except Exception as e:
+        logger.warning(f"Error parsing poll results: {e}")
+        return None
+
+
+def extract_poll_state(poll: object, results: object) -> dict:
+    """A poll as ``raw_data["poll"]`` holds it: the question, answers, flags and results.
+
+    The backup and the listener store this shape when they first capture a
+    poll, and ``message_snapshots`` keeps later states in it. ``poll`` may be
+    None (an ``UpdateMessagePoll`` can carry the results alone): only
+    ``results`` is filled then.
+    """
+    results_data = extract_poll_results(results)
+    if poll is None:
+        return {"results": results_data}
+    return {
+        "id": getattr(poll, "id", None),
+        "question": _poll_text(getattr(poll, "question", "")),
+        "answers": [
+            {
+                "text": _poll_text(getattr(a, "text", "")),
+                "option": base64.b64encode(a.option).decode("ascii"),
+            }
+            for a in poll.answers
+        ],
+        "closed": poll.closed,
+        "public_voters": poll.public_voters,
+        "multiple_choice": poll.multiple_choice,
+        "quiz": poll.quiz,
+        "results": results_data,
+    }
+
+
+def extract_media_poll(media: object) -> dict | None:
+    """The poll of a ``MessageMediaPoll`` in ``raw_data["poll"]`` shape, or None for any other media."""
+    if type(media).__name__ != "MessageMediaPoll":
+        return None
+    return extract_poll_state(getattr(media, "poll", None), getattr(media, "results", None))
+
+
 # Every host YouTube serves watch pages from. Matched as whole labels (exact
 # host, or a subdomain of one) so ``youtube.com.example.net`` and
 # ``notyoutube.com`` are NOT YouTube — a plain substring test would call both.

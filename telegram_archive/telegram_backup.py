@@ -4,7 +4,6 @@ Handles Telegram client connection, message fetching, and incremental backup log
 """
 
 import asyncio
-import base64
 import inspect
 import json
 import logging
@@ -69,6 +68,7 @@ from .message_utils import (
     extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
+    extract_poll_state,
     extract_reactions,
     extract_topic_id,
     extract_webpage_preview,
@@ -2812,6 +2812,11 @@ class TelegramBackup:
                         if media_replaced:
                             await self._download_replaced_media(remote_msg, chat_id)
 
+                    # A poll's votes or closing, or a changed link preview, moves no
+                    # edit_date: the message is in hand, so its state is compared
+                    # with the newest kept on every pass.
+                    await self._keep_snapshots(remote_msg, chat_id, "sync")
+
                     # Piggyback reaction reconcile (#221): the full message is already
                     # in hand, so harvest its reactions at zero extra API cost. Skip
                     # None (extraction failure) and min payloads (partial; may omit the
@@ -3484,46 +3489,10 @@ class TelegramBackup:
             # Handle Polls specially (store structure in raw_data, do not download)
             # v6.0.0: Poll type is detected by presence of raw_data['poll']
             if isinstance(message.media, MessageMediaPoll):
-                poll = message.media.poll
-                results = message.media.results
-
-                # Parse results if available
-                results_data = None
-                if results:
-                    try:
-                        results_list = []
-                        if results.results:
-                            for r in results.results:
-                                results_list.append(
-                                    {
-                                        "option": base64.b64encode(r.option).decode("ascii"),
-                                        "voters": r.voters,
-                                        "correct": r.correct,
-                                    }
-                                )
-                        results_data = {"total_voters": results.total_voters, "results": results_list}
-                    except Exception as e:
-                        logger.warning(f"Error parsing poll results: {e}")
-
-                # Store poll structure
-                # Convert TextWithEntities to strings for JSON serialization
-                question_text = self._text_with_entities_to_string(getattr(poll, "question", ""))
-                message_data["raw_data"]["poll"] = {
-                    "id": getattr(poll, "id", None),
-                    "question": question_text,
-                    "answers": [
-                        {
-                            "text": self._text_with_entities_to_string(getattr(a, "text", "")),
-                            "option": base64.b64encode(a.option).decode("ascii"),
-                        }
-                        for a in poll.answers
-                    ],
-                    "closed": poll.closed,
-                    "public_voters": poll.public_voters,
-                    "multiple_choice": poll.multiple_choice,
-                    "quiz": poll.quiz,
-                    "results": results_data,
-                }
+                # The listener stores the same shape (extract_poll_state); a
+                # later read with other votes or a closed poll adds a
+                # message_snapshots row and leaves this first capture alone.
+                message_data["raw_data"]["poll"] = extract_poll_state(message.media.poll, message.media.results)
 
             elif self.config.should_download_media_for_chat(chat_id):
                 # v6.0.0: Download media and store data for later insertion
@@ -3947,6 +3916,25 @@ class TelegramBackup:
             edit_hide=message_edit_hide(message),
         )
         return isinstance(row, dict) and row.get("replaced") is True
+
+    async def _keep_snapshots(self, message: Message, chat_id: int, source: str) -> None:
+        """Keep the poll or link-preview state a read shows when it differs from the newest kept.
+
+        ``raw_data`` keeps the first capture; ``record_message_snapshots``
+        adds a ``message_snapshots`` row for a later state and nothing when it
+        matches. Live locations are not followed.
+        """
+        media = getattr(message, "media", None)
+        observed = {}
+        if isinstance(media, MessageMediaPoll):
+            observed["poll"] = extract_poll_state(media.poll, media.results)
+        preview = extract_webpage_preview(media)
+        if preview is not None:
+            observed["preview"] = preview
+        if observed:
+            await self.db.record_message_snapshots(
+                chat_id, message.id, observed, account_id=self.account_id, source=source
+            )
 
     async def _apply_edit(self, message: Message, chat_id: int, source: str, *, media_changed: bool) -> str:
         """Apply a read's text, formatting and edit date to the archived message; the outcome.

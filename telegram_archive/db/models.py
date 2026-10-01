@@ -593,6 +593,45 @@ class MediaVersion(Base):
     )
 
 
+class MessageSnapshot(Base):
+    """A later state of a message's poll or link preview (037).
+
+    ``raw_data["poll"]`` and ``raw_data["webpage"]`` keep the state first
+    captured and never change. When a later read shows another state (votes,
+    results or closing for a poll; the card's fields for a preview), a row is
+    added here. Nothing is written when the state matches the newest one kept.
+    Live locations are not followed.
+
+    ``kind`` is ``poll`` or ``preview``. ``payload`` is the whole state as
+    JSON, the shape of ``raw_data["poll"]`` or ``raw_data["webpage"]``.
+    ``observed_at`` is when the archive saw it, and ``source`` the path that
+    saw it: ``listener``, ``sync`` or ``backup``. Rows are never updated.
+    """
+
+    __tablename__ = "message_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    source: Mapped[str | None] = mapped_column(String(16))
+
+    __table_args__ = (
+        # Inert on SQLite like message_versions' CASCADE: the explicit deletes
+        # in delete_message and delete_chat_and_related_data do the work.
+        ForeignKeyConstraint(
+            ["account_id", "message_id", "chat_id"],
+            ["messages.account_id", "messages.id", "messages.chat_id"],
+            name="fk_message_snapshots_message",
+            ondelete="CASCADE",
+        ),
+        Index("ix_message_snapshots_message", "account_id", "chat_id", "message_id"),
+    )
+
+
 class Reaction(Base):
     """Reactions table - message reactions."""
 
