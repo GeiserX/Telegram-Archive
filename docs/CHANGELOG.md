@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Added
+- **Both chat exports list media, so every transcript points at a media in the file.** The viewer's **Export chat** and `telegram-archive export` give each message a `media` list: its current media with `media_id`, type, file name, size, MIME type, width, height and duration. No file path and no file leaves the archive. Each entry of a message's `versions` gains `media` too: the earlier media an edit replaced, under the version it was shown with, paired as the edit history pairs them. Earlier media with no text version of its moment is listed as its own entry, with `text` null and `media_only` true. A transcript of a replaced voice note used to name a media the file never listed. Now each transcript's `media_id` matches a media on its message or under one of its versions. Each export reads its messages, versions, media and transcripts from one snapshot, so a backup running meanwhile, the voice and audio twin cleanup included, cannot leave a transcript pointing at nothing. The viewer's export still reads one message's rows at a time, however long the chat. See [Export](reference/api.md#export).
+
+### Changed
+- **Breaking: both chat exports drop the flat `message_versions` list.** Each message's `versions` is now the one complete list: every entry has `text`, `date`, `captured_at`, `source`, `entities`, `rich_message` and `media`. The flat list was picked by the version's own date, so it could hold versions of messages outside the window. In the command's file it also did not say which account kept each version. A script that read `message_versions` must read each message's `versions`. In the command's file, `total_message_versions` now counts the entries under the messages. See [Upgrading to 9.0](operations/upgrading.md#upgrading-to-90).
+
 ## [8.19.0] - 2026-10-01
 
 Edits are kept whole. An edit keeps its formatting, says which path saw it, and keeps a photo or file it replaced, so the history panel shows every version as it looked. A reaction no longer marks a message edited, a burst of reactions no longer drops real edits, and an edit of a message the listener had not stored is kept. The viewer shows reactions that were taken back and opens What changed for one chat, a chat export says which messages were deleted or edited, and the browser now asks the viewer again before it reuses cached media. Upgrading runs migrations 034, 035 and 036.

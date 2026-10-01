@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.0.0 | Scripts that read a chat export must change: the flat `message_versions` list is gone. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.19.0 | Nothing to set. The first start runs migrations 034, 035 and 036, which add nullable columns and one new table, `media_versions`, and copy no data. `MASS_OPERATION_THRESHOLD` now counts deletions only, since edits are no longer limited. With `DELETION_MODE=hard`, deleting a chat, or `SKIP_MEDIA_DELETE_EXISTING` for the chats in `SKIP_MEDIA_CHAT_IDS`, the earlier media an edit replaced is removed with the message's current media. A message archived before this release keeps a pencil from a reaction-only edit until a backup reads it again. |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
 | 8.17.0 | Migration 033 runs on start. The module is now `telegram_archive`, and `python -m src` keeps working. See [Upgrading to 8.17.0](#upgrading-to-8170). |
@@ -91,6 +92,20 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.5.0 | Round video messages captured before this release stay typed as ordinary videos. Run `reclassify-round-videos` once to correct them, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
+
+## Upgrading to 9.0 { #upgrading-to-90 }
+
+### Chat exports { #exports-90 }
+
+Both chat exports, the viewer's **Export chat** and `telegram-archive export`, change shape. A script that reads them must change:
+
+- **`message_versions` is gone.** Read the `versions` list on each message instead. An entry no longer carries `chat_id` and `message_id`: it belongs to the message it sits under. In the command's file that message has `chat_id` and `account_id`.
+- **The window applies to the message, not to the version.** The flat list picked versions by their own date. `versions` holds every version of each exported message, whatever its date. A version of a message sent outside the window is no longer in the file.
+- **Each version is complete.** It has `source`, `entities` and `rich_message`, which only the flat list had before, and `media`.
+- **Messages and versions list media.** Each message has `media` and each version has `media`, as lists of `media_id`, `type`, `file_name`, `file_size`, `mime_type`, `width`, `height` and `duration`. A version that holds only earlier media has `text` null and `media_only` true. A script that rejects unknown keys must accept these.
+- **`total_message_versions` counts what is under the messages.** In the command's `statistics` it is the number of entries in every message's `versions`, media-only entries included.
+
+Every transcript in a file now names a media listed in the same file. The fields are in [Export](../reference/api.md#export) and [export](../reference/cli.md#export).
 
 ## Upgrading to 8.17.0 { #upgrading-to-8170 }
 

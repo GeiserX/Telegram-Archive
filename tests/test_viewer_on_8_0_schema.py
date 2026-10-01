@@ -53,7 +53,8 @@ VIEWER_USERNAME = "stage-verify-viewer"
 VIEWER_PASSWORD = "viewer-pass@test/value"  # obvious fake
 VIEWER_SALT = "stage-verify-salt"
 
-# The 21 OPTIONAL-UNSCOPED reads from the 8.0 contract manifest. Every method
+# The OPTIONAL-UNSCOPED reads from the 8.0 contract manifest (9.0 dropped the
+# two that served the exports' flat version list). Every method
 # here must keep ``account_id`` keyword-only WITH default None: the moment one
 # grows a required account_id, telegram_archive/web/ (and the deployed MCP server fronting
 # it) breaks without any web code having changed.
@@ -64,8 +65,6 @@ OPTIONAL_UNSCOPED_METHODS = (
     "find_message_by_date",
     "sender_has_message_in_chats",
     "get_message_versions",
-    "get_message_versions_by_date_range",
-    "iter_message_versions_for_export",
     "get_chat_stats",
     "get_media_paginated",
     "get_media_counts",
@@ -465,7 +464,27 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(export["chat"]["id"], CHAT_A)
             self.assertEqual(export["chat"]["ref"], self.ref_a)
             self.assertEqual(len(export["messages"]), 30)
-            self.assertEqual(export["message_versions"], [])
+            # 9.0 dropped the flat list: every version sits under its message.
+            self.assertNotIn("message_versions", export)
+            # Each message lists its media without the file path; message 30
+            # holds the downloaded photo.
+            by_id = {m["id"]: m for m in export["messages"]}
+            self.assertEqual(
+                by_id[30]["media"],
+                [
+                    {
+                        "media_id": f"{CHAT_A}_30_photo",
+                        "type": "photo",
+                        "file_name": "30_photo.jpg",
+                        "file_size": 3,
+                        "mime_type": "image/jpeg",
+                        "width": None,
+                        "height": None,
+                        "duration": None,
+                    }
+                ],
+            )
+            self.assertEqual(by_id[1]["media"], [])
             # Each message says whether it was deleted or edited, with its
             # kept versions: archive state, not a copy of the live chat.
             first = export["messages"][0]

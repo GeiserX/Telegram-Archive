@@ -369,7 +369,7 @@ Deletions appear here only when the archive learns about them: the listener runs
 
 ![The Export chat dialog with its From and To days](../images/screenshots/export-desktop.png)
 
-The file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date` and, under `versions`, every earlier text the archive kept. The fields are in [Export](../reference/api.md#export). It holds no media files.
+The file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date`, its media under `media` and, under `versions`, every earlier text and media the archive kept. Media is listed by name, type and size, so each transcript points at a media in the file. The fields are in [Export](../reference/api.md#export). It holds no media files.
 
 [No-download logins](access.md#no-download-logins) cannot export, and have no **More actions** menu.
 

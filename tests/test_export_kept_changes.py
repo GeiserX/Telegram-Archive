@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.models import MessageVersion
 from telegram_archive.export_backup import BackupExporter
 
@@ -189,7 +190,8 @@ class TestViewerExport:
                     SENT + timedelta(hours=message_id, seconds=n),
                     account_id=1,
                 )
-        with patch.object(real_adapter, "_export_version_dict", wraps=real_adapter._export_version_dict) as built:
+        counted = patch.object(DatabaseAdapter, "_export_version_dict", wraps=DatabaseAdapter._export_version_dict)
+        with counted as built:
             stream = real_adapter.get_messages_for_export(CHAT, account_id=1)
             exported = [await anext(stream)]
             assert built.call_count == 2  # message 1's versions, none of message 2's yet
@@ -219,18 +221,17 @@ class TestViewerExport:
             "second draft",
         ]
 
-    async def test_a_message_with_two_media_repeats_with_the_same_versions(self, real_adapter):
+    async def test_a_message_with_two_media_is_listed_once_with_its_versions(self, real_adapter):
         await _seed(real_adapter)
         for media_id in ("fixture-a", "fixture-b"):
             await real_adapter.insert_media(
                 {"id": media_id, "message_id": 1, "chat_id": CHAT, "type": "photo"}, account_id=1
             )
-        exported = [m async for m in real_adapter.get_messages_for_export(CHAT, include_media=True, account_id=1)]
-        assert [(m["id"], [v["text"] for v in m["versions"]]) for m in exported] == [
-            (1, ["first draft", "second draft"]),
-            (1, ["first draft", "second draft"]),
-            (2, []),
-            (3, []),
+        exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1)]
+        assert [(m["id"], len(m["media"]), [v["text"] for v in m["versions"]]) for m in exported] == [
+            (1, 2, ["first draft", "second draft"]),
+            (2, 0, []),
+            (3, 0, []),
         ]
 
     async def test_an_edit_during_the_export_cannot_make_a_message_disagree_with_its_versions(self, real_adapter):
@@ -265,8 +266,8 @@ class TestCliExport:
             ("first draft", str(SENT)),
             ("second draft", str(FIRST_EDIT)),
         ]
-        flat = next(v for v in data["message_versions"] if v["text"] == "second draft")
-        assert edited["versions"][1]["date"] == flat["date"]
+        # 9.0 dropped the flat list: every version sits under its message.
+        assert "message_versions" not in data
         assert all(str(datetime.fromisoformat(v["captured_at"])) == v["captured_at"] for v in edited["versions"])
         assert [v["text"] for v in by_key[(2, 1)]["versions"]] == ["other account draft"]
 
@@ -275,7 +276,7 @@ class TestCliExport:
         assert deleted["deleted_at"] is not None
         assert deleted["versions"] == []
         assert by_key[(1, 3)]["versions"] == []
-        # The flat list keeps its meaning next to the new per-message lists.
+        # The versions listed under the messages.
         assert data["statistics"]["total_message_versions"] == 3
 
     async def test_a_windowed_export_keeps_versions_dated_after_the_window(self, real_adapter, tmp_path):
@@ -306,7 +307,7 @@ class TestCliExport:
     async def test_an_edit_during_the_export_cannot_make_a_message_disagree_with_its_versions(
         self, real_adapter, tmp_path
     ):
-        """Messages, their versions and the flat list come from one snapshot."""
+        """Messages, their versions, their media and their transcripts come from one snapshot."""
         await _seed(real_adapter)
         output = tmp_path / "export.json"
         with _edit_after_first_read(real_adapter, "execute"):

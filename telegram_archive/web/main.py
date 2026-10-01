@@ -4716,18 +4716,6 @@ async def export_chat(
                 first = False
                 # Ensure UTF-8 encoding for non-Latin characters
                 yield "    " + json.dumps(msg, ensure_ascii=False, default=str)
-            yield "\n  ],\n"
-            # Stream versions like messages: a chat's edit history can be large,
-            # so it must never be materialized into a single list/dumps here.
-            yield '  "message_versions": [\n'
-            first_version = True
-            async for version in db.iter_message_versions_for_export(
-                chat.chat_id, account_id=chat.account_id, from_date=parsed_from, to_date=parsed_to
-            ):
-                if not first_version:
-                    yield ",\n"
-                first_version = False
-                yield "    " + json.dumps(version, ensure_ascii=False, default=str)
             yield "\n  ]\n"
             yield "}"
 

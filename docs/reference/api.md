@@ -326,8 +326,7 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 {
   "chat": {"id": -1001234567890, "ref": "<ref>", "type": "channel", "title": "Example", "username": null},
   "filters": {"from": "2026-06-01", "to": "2026-06-30"},
-  "messages": [],
-  "message_versions": []
+  "messages": []
 }
 ```
 
@@ -340,11 +339,68 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `is_deleted` | `true` when the message was deleted in Telegram. The archive keeps it, so the export includes it. |
 | `deleted_at` | When the archive noticed the deletion, ISO 8601 UTC, or `null`. |
 | `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
-| `versions` | Every earlier text the archive kept of the message, oldest first, whatever its date. Each has `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced). An empty list means the archive kept no earlier text. |
+| `media` | The message's current media, as a list of [export media](#export-media). Usually one entry. A message can hold more than one media row, and the first entry is the one the viewer shows. An empty list means the message has no media. |
+| `versions` | Every earlier version the archive kept of the message, oldest first, whatever its date. An empty list means the archive kept none. |
+| `transcripts` | Present only when the message's media has transcripts: every transcript row, newest first. Each names its media by `media_id`. |
 
-A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions, with the fields of [Message versions](#message-versions), picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
+Each entry of `versions` has these fields:
 
-The messages and their `versions` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
+| Field | Content |
+|-------|---------|
+| `text` | The text of that version. Null on a `media_only` entry. |
+| `date` | When that text was current in Telegram, ISO 8601 UTC. |
+| `captured_at` | When the archive saw it replaced, ISO 8601 UTC. |
+| `source`, `entities`, `rich_message` | As in [Message versions](#message-versions). |
+| `media` | The earlier media this version was shown with, kept when an edit replaced the photo or file, as a list of [export media](#export-media). Empty when the edit kept the media. |
+| `media_only` | Present and `true` only on an entry that holds earlier media and no text: the text version of that moment could not be written. |
+
+The export pairs earlier media with versions the way the edit history does. It sits under the text version with the same `date`.
+
+### Export media { #export-media }
+
+Each media entry, current or earlier, has these fields. None is a file path, and the export holds no files.
+
+| Field | Content |
+|-------|---------|
+| `media_id` | The id the media's transcripts name. An earlier media keeps the id it had before the edit replaced it. |
+| `type` | `photo`, `video`, `voice`, `audio`, `document` and the other media types. |
+| `file_name` | The stored file name, or `null`. |
+| `file_size` | Bytes, or `null`. |
+| `mime_type` | Or `null`. |
+| `width`, `height` | Pixels, or `null`. |
+| `duration` | Seconds, or `null`. |
+
+So every transcript in the file names a media listed in the same file, on its message or under one of its versions. A voice note whose audio an edit replaced, with a transcript of each audio:
+
+```json
+{
+  "id": 1270,
+  "text": "",
+  "edit_date": "2026-10-01T10:40:00",
+  "media": [
+    {"media_id": "-1001900000001_1270_voice_v1", "type": "voice", "file_name": "1270_second.ogg",
+     "file_size": 9000, "mime_type": "audio/ogg", "width": null, "height": null, "duration": 9}
+  ],
+  "versions": [
+    {
+      "text": "", "date": "2026-10-01T10:38:00", "captured_at": "2026-10-01T10:40:00",
+      "source": "listener", "entities": null, "rich_message": null,
+      "media": [
+        {"media_id": "-1001900000001_1270_voice", "type": "voice", "file_name": "1270_first.ogg",
+         "file_size": 7000, "mime_type": "audio/ogg", "width": null, "height": null, "duration": 7}
+      ]
+    }
+  ],
+  "transcripts": [
+    {"media_id": "-1001900000001_1270_voice_v1", "text": "Meet at seven thirty at the north lot.", "...": "..."},
+    {"media_id": "-1001900000001_1270_voice", "text": "Meet at eight at the south lot.", "...": "..."}
+  ]
+}
+```
+
+Before 9.0 the file also ended with a flat `message_versions` list. It is gone: every version is under its message. See [Upgrading to 9.0](../operations/upgrading.md#upgrading-to-90).
+
+Everything in the file is read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions, its media or its transcripts. The export reads a message's versions and media as it writes that message, so a long chat is never held in memory at once. If they ever stop lining up with the messages, the export stops with an error instead of writing messages without them. The file then ends early and is not valid JSON.
 
 ## Transcripts
 
