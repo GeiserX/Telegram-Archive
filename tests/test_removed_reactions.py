@@ -3,8 +3,11 @@
 ``reconcile_reactions`` keeps a reaction that left Telegram as a tombstone
 (``removed_at``, #219). The page read used to filter those rows out, so the
 viewer could never show what the archive kept. It now returns them as
-``removed_reactions``: one entry per emoji, with the count it had and when the
-archive noticed it gone, newest first, and never inside the live count.
+``removed_reactions``: one entry per emoji, newest first, never inside the live
+count. Since 037 the entry is the emoji's latest drop in ``reaction_history``:
+how many went, the count before (a partial drop keeps it), when the archive
+noticed, and when an emoji taken back to zero came back. The page also returns
+the history itself as ``reaction_history``.
 
 These run on a real engine, SQLite and PostgreSQL (``real_adapter``), through
 the same writer the backup and the listener use.
@@ -14,7 +17,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import update
 
-from telegram_archive.db.models import Account, Reaction
+from telegram_archive.db.models import Account, Reaction, ReactionHistory
 
 CHAT_ID = -100900
 BASE_DATE = datetime(2026, 9, 1, 12, 0, 0)
@@ -42,11 +45,22 @@ async def _seed(adapter, *accounts: int) -> None:
 
 
 async def _set_removed_at(adapter, message_id: int, emoji: str, when: datetime) -> None:
+    """Move a removal in time: the tombstone and the history row that recorded it."""
     async with adapter.db_manager.async_session_factory() as session:
         await session.execute(
             update(Reaction)
             .where(Reaction.chat_id == CHAT_ID, Reaction.message_id == message_id, Reaction.emoji == emoji)
             .values(removed_at=when)
+        )
+        await session.execute(
+            update(ReactionHistory)
+            .where(
+                ReactionHistory.chat_id == CHAT_ID,
+                ReactionHistory.message_id == message_id,
+                ReactionHistory.emoji == emoji,
+                ReactionHistory.count == 0,
+            )
+            .values(observed_at=when)
         )
         await session.commit()
 
@@ -82,7 +96,7 @@ class TestRemovedReactionsOnThePage:
         assert page[1]["reactions"] == []
         assert [(r["emoji"], r["count"]) for r in page[1]["removed_reactions"]] == [("😮", 2)]
 
-    async def test_an_emoji_that_comes_back_is_live_again_and_not_listed_as_removed(self, real_adapter):
+    async def test_an_emoji_that_comes_back_is_live_again_and_keeps_its_removal(self, real_adapter):
         await _seed(real_adapter, 1)
         await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": "🔥", "count": 1}], account_id=1)
         await real_adapter.reconcile_reactions(1, CHAT_ID, [], account_id=1)
@@ -90,7 +104,50 @@ class TestRemovedReactionsOnThePage:
 
         page = await _page(real_adapter)
         assert [(r["emoji"], r["count"]) for r in page[1]["reactions"]] == [("🔥", 4)]
-        assert page[1]["removed_reactions"] == []
+        [removed] = page[1]["removed_reactions"]
+        assert (removed["emoji"], removed["count"], removed["count_before"]) == ("🔥", 1, 1)
+        assert removed["removed_at"] < removed["back_at"]
+
+    async def test_a_partial_drop_is_listed_with_the_count_before_it(self, real_adapter):
+        await _seed(real_adapter, 1)
+        await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": "❤️", "count": 7}], account_id=1)
+        await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": "❤️", "count": 5}], account_id=1)
+
+        page = await _page(real_adapter)
+        assert page[1]["reactions"] == [{"emoji": "❤️", "count": 5, "user_ids": []}]
+        [removed] = page[1]["removed_reactions"]
+        assert (removed["emoji"], removed["count"], removed["count_before"], removed["back_at"]) == ("❤️", 2, 7, None)
+
+    async def test_only_the_latest_drop_of_an_emoji_is_listed(self, real_adapter):
+        """7 to 5, back up to 6, then 6 to 3: the list says "3 of 6"; the whole
+        story stays in reaction_history."""
+        await _seed(real_adapter, 1)
+        for n in (7, 5, 6, 3):
+            await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": "❤️", "count": n}], account_id=1)
+
+        page = await _page(real_adapter)
+        assert [(r["count"], r["count_before"]) for r in page[1]["removed_reactions"]] == [(3, 6)]
+        assert [(h["count"], h["previous_count"]) for h in page[1]["reaction_history"]] == [
+            (7, None),
+            (5, 7),
+            (6, 5),
+            (3, 6),
+        ]
+
+    async def test_the_page_returns_every_kept_state_oldest_first(self, real_adapter):
+        await _seed(real_adapter, 1)
+        await real_adapter.reconcile_reactions(2, CHAT_ID, [{"emoji": "😮", "count": 1}], account_id=1, source="backup")
+        await real_adapter.reconcile_reactions(2, CHAT_ID, [], account_id=1, source="listener")
+
+        page = await _page(real_adapter)
+        history = page[2]["reaction_history"]
+        assert [(h["emoji"], h["count"], h["previous_count"], h["source"]) for h in history] == [
+            ("😮", 1, None, "backup"),
+            ("😮", 0, 1, "listener"),
+        ]
+        assert all(isinstance(h["observed_at"], datetime) for h in history)
+        assert set(history[0]) == {"emoji", "count", "previous_count", "observed_at", "source"}
+        assert page[1]["reaction_history"] == []
 
     async def test_newest_removal_first(self, real_adapter):
         await _seed(real_adapter, 1)
@@ -121,6 +178,8 @@ class TestRemovedReactionsOnThePage:
         second = await _page(real_adapter, account_id=2)
         assert [(r["emoji"], r["count"]) for r in first[1]["removed_reactions"]] == [("👍", 1)]
         assert [(r["emoji"], r["count"]) for r in second[1]["removed_reactions"]] == [("🎉", 5)]
+        assert {h["emoji"] for h in first[1]["reaction_history"]} == {"👍"}
+        assert {h["emoji"] for h in second[1]["reaction_history"]} == {"🎉"}
 
     async def test_rows_reconcile_never_writes_still_read_right(self, real_adapter):
         """reconcile_reactions keeps one row per emoji, but the read must not

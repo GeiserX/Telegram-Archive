@@ -238,7 +238,7 @@ EXCLUDE_DELETE_EXISTING=true
 
 On each run, the backup checks every chat in an exclude list. If the chat appears in that run's dialog lists, the backup deletes:
 
-- its messages, message versions and reactions
+- its messages, message versions, reactions and reaction history
 - its media rows and their transcripts
 - its sync position, forum topics and folder memberships
 - the chat itself

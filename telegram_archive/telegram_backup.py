@@ -2894,7 +2894,7 @@ class TelegramBackup:
             elif not observed and msg["id"] not in stored_ids:
                 continue
             await self.db.reconcile_reactions(
-                msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id
+                msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id, source="backup"
             )
 
     async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
@@ -3202,7 +3202,12 @@ class TelegramBackup:
                         observed = extract_reactions(reactions_obj)
                         if observed is not None:
                             await self.db.reconcile_reactions(
-                                msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                                msg_id,
+                                chat_id,
+                                observed,
+                                mark_removed=True,
+                                account_id=self.account_id,
+                                source="backup",
                             )
 
             except Exception as e:
@@ -3468,7 +3473,7 @@ class TelegramBackup:
                         continue
                     if (
                         await self.db.reconcile_reactions(
-                            u.msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                            u.msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id, source="backup"
                         )
                         == "reconciled"
                     ):
@@ -3503,7 +3508,7 @@ class TelegramBackup:
                     continue
                 if (
                     await self.db.reconcile_reactions(
-                        msg.id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                        msg.id, chat_id, observed, mark_removed=True, account_id=self.account_id, source="backup"
                     )
                     == "reconciled"
                 ):
