@@ -21,7 +21,9 @@ quiet chip: on a photo beside live reactions, on a photo with no caption,
 on the only reaction of an outgoing message, on a message deleted later, and
 a day after the message. Every reaction has its history (reaction_history):
 on one photo seven hearts dropped to five, and a surprised face was taken
-back and given again.
+back and given again. A poll gained votes after its first capture and was
+then closed, and a channel post's link card changed a day later: the archive
+keeps those later states beside the first (message_snapshots).
 
 Usage:
     python scripts/generate_dummy_db.py --data-dir ./demo-data
@@ -250,6 +252,9 @@ class ChatScript:
         # (message id, emoji) -> [(count, when)]: the states the archive saw,
         # oldest first, for a reaction whose count moved after it first came.
         self.reaction_states: dict[tuple[int, str], list[tuple[int, datetime]]] = {}
+        # (message id, kind, payload, when the archive saw it, the path that saw
+        # it): later states of a poll or link preview (message_snapshots).
+        self.snapshots: list[tuple[int, str, dict, datetime, str]] = []
         self.by_id: dict[int, dict] = {}
 
     def add(
@@ -337,6 +342,10 @@ class ChatScript:
         self.messages.append(msg)
         self.by_id[mid] = msg
         return mid
+
+    def snapshot(self, mid: int, kind: str, payload: dict, when: datetime, source: str = "listener") -> None:
+        """A later state of the message's poll or link preview; raw_data keeps the first."""
+        self.snapshots.append((mid, kind, payload, when, source))
 
     def take_back(self, mid: int, emoji: str, count: int, when: datetime) -> None:
         """A reaction taken back: stored as the backup stores it, one row per
@@ -531,7 +540,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         },
         react={"👍": 3},
     )
-    s.add(
+    poll = s.add(
         t + timedelta(minutes=66),
         ORSON,
         "",
@@ -557,6 +566,45 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
                 },
             }
         },
+    )
+    # Votes kept coming after the first capture, then Orson closed the poll:
+    # the archive keeps the first state in raw_data and the later ones beside it.
+    first_poll = s.by_id[poll]["raw_data"]["poll"]
+    s.snapshot(
+        poll,
+        "poll",
+        {
+            **first_poll,
+            "results": {
+                **first_poll["results"],
+                "total_voters": 13,
+                "results": [
+                    {"option": "MA==", "voters": 7},
+                    {"option": "MQ==", "voters": 2},
+                    {"option": "Mg==", "voters": 4},
+                ],
+            },
+        },
+        t + timedelta(minutes=110),
+    )
+    s.snapshot(
+        poll,
+        "poll",
+        {
+            **first_poll,
+            "closed": True,
+            "results": {
+                **first_poll["results"],
+                "total_voters": 14,
+                "results": [
+                    {"option": "MA==", "voters": 8},
+                    {"option": "MQ==", "voters": 2},
+                    {"option": "Mg==", "voters": 4},
+                ],
+            },
+        },
+        t + timedelta(minutes=190),
+        "sync",
     )
     s.add(t + timedelta(minutes=70), HUGO, "", media={"type": "sticker"}, raw={"sticker": {"emoji": "☀️"}})
     # Sent with another photo, which Kofi replaced three minutes later with
@@ -1096,7 +1144,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
                 "title": "Longer weekend hours at the town library",
                 "description": "From next month the library stays open until 6pm on Saturdays and Sundays.",
             }
-        s.add(
+        mid = s.add(
             when,
             None,
             text,
@@ -1104,6 +1152,16 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
             raw=raw,
             react={"👍": rng.randint(8, 60), "❤️": rng.randint(2, 30)} if seed else {"👍": rng.randint(3, 25)},
         )
+        if "webpage" in raw:
+            # The page changed after the post was archived: the card the archive
+            # saw later is kept beside the first one.
+            s.snapshot(
+                mid,
+                "preview",
+                {**raw["webpage"], "description": "From next month the library stays open until 7pm at weekends."},
+                when + timedelta(days=1, hours=2),
+                "sync",
+            )
     scripts.append(s)
 
     # --- Work account ---------------------------------------------------------------------
@@ -1275,6 +1333,7 @@ async def seed(data_dir: Path) -> None:
         AvatarHistory,
         MediaTranscript,
         MediaVersion,
+        MessageSnapshot,
         MessageVersion,
         Reaction,
         ReactionHistory,
@@ -1444,6 +1503,18 @@ async def seed(data_dir: Path) -> None:
                             captured_at=sent_msg["edit_date"],
                             source="listener",
                             **earlier,
+                        )
+                    )
+                for mid, kind, payload, when, source in s.snapshots:
+                    await session.execute(
+                        insert(MessageSnapshot).values(
+                            account_id=account,
+                            chat_id=s.chat_id,
+                            message_id=mid,
+                            kind=kind,
+                            payload=json.dumps(payload),
+                            observed_at=when,
+                            source=source,
                         )
                     )
                 await session.commit()

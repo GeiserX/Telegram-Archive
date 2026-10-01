@@ -515,13 +515,20 @@ class TestUpsertKeepsPayloads:
         await real_adapter.insert_message(_row(11, {"forward_from_name": "Channel A"}, source="import"), account_id=1)
         assert await _raw_data(real_adapter, CHAT_ID, 11) == {**payload, "forward_from_name": "Channel A"}
 
-    async def test_a_newer_poll_tally_still_replaces_the_old_one(self, real_adapter):
+    async def test_a_newer_poll_tally_keeps_the_first_capture_and_adds_a_snapshot(self, real_adapter):
+        # raw_data keeps a poll as first captured; a newer tally is a
+        # message_snapshots row (9C), never a replacement.
+        from telegram_archive.db.models import MessageSnapshot
+
         await _seed_chat(real_adapter)
         old = {"poll": {"question": "Q", "results": {"total_voters": 1}}}
         new = {"poll": {"question": "Q", "results": {"total_voters": 9}}}
         await real_adapter.insert_message(_row(12, old), account_id=1)
         await real_adapter.insert_message(_row(12, new), account_id=1)
-        assert (await _raw_data(real_adapter, CHAT_ID, 12))["poll"]["results"]["total_voters"] == 9
+        assert (await _raw_data(real_adapter, CHAT_ID, 12))["poll"]["results"]["total_voters"] == 1
+        async with real_adapter.db_manager.async_session_factory() as session:
+            rows = (await session.execute(select(MessageSnapshot.payload))).scalars().all()
+        assert [json.loads(payload)["results"]["total_voters"] for payload in rows] == [9]
 
     async def test_a_text_edit_with_other_extras_keeps_the_payload(self, real_adapter):
         await _seed_chat(real_adapter)
