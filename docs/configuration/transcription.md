@@ -48,7 +48,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     TRANSCRIPTION_PRESET=auto
     ```
 
-    The stock `docker-compose.yml` has a commented `akou` service block. It pins `drumsergio/akou:0.5.2` and makes akou reachable as `http://akou:8476`. Before you uncomment it:
+    The stock `docker-compose.yml` has a commented `akou` service block. It pins `drumsergio/akou:0.5.4` and makes akou reachable as `http://akou:8476`. Before you uncomment it:
 
     1. The image runs as uid 1000. Create its data and models folders and give them to that user:
 
@@ -59,7 +59,7 @@ Set the variables below on the backup container. The key goes in `TRANSCRIPTION_
     2. Pull the models once before the first start:
 
         ```bash
-        docker run --rm -v ./akou/data:/data -v ./akou/models:/models drumsergio/akou:0.5.2 models pull fast
+        docker run --rm -v ./akou/data:/data -v ./akou/models:/models drumsergio/akou:0.5.4 models pull fast
         ```
 
     3. In a container, akou must accept connections from other containers. It only does that when its settings say it runs behind a proxy. Set `server.behind_proxy` to `true` in akou's settings.

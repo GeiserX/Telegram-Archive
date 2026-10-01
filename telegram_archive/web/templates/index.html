@@ -12943,9 +12943,12 @@
                             }
                             // Update message text in current view. Message rows carry no ref,
                             // but every row in the pane belongs to selectedChat, and the guard
-                            // above already matched the frame's chat_ref against it.
-                            const editMsg = messages.value.find(m => m.id === data.message_id)
-                            if (editMsg) {
+                            // above already matched the frame's chat_ref against it. Every row
+                            // the pane can show takes the edit: the loaded window (older rows,
+                            // a search, a filter and a pinned jump window included, which the
+                            // 3 s refresh of the newest 50 never reaches) and the pinned list.
+                            const editRows = new Set([...messages.value, ...pinnedMessages.value].filter(m => m.id === data.message_id))
+                            for (const editMsg of editRows) {
                                 editMsg.text = data.new_text
                                 editMsg.edit_date = data.edit_date
                                 editMsg.edit_hide = data.edit_hide ? 1 : 0
@@ -12957,6 +12960,14 @@
                                     if (Array.isArray(data.entities) && data.entities.length) next.entities = data.entities
                                     else delete next.entities
                                     editMsg.raw_data = next
+                                }
+                                // The edit replaced the photo or file: the frame carries the
+                                // message's current media, with its new URL. No media key: the
+                                // media did not change (or did not fit the frame) and stays.
+                                if (data.media && typeof data.media === 'object') {
+                                    editMsg.media = { ...data.media }
+                                    // The earlier file's load failure says nothing about this one.
+                                    editMsg.mediaLoadFailed = false
                                 }
                                 // Every edit frame is an applied edit, and every applied
                                 // edit keeps the version it replaced.

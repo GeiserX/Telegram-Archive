@@ -193,8 +193,16 @@ def _clamp(value: str | None, max_length: int) -> str | None:
 
 
 def _has_raw_payload(value: Any) -> bool:
-    """True when a serialised raw_data blob carries anything worth keeping."""
-    return bool(value) and value != "{}"
+    """True when a serialised raw_data blob carries anything worth keeping.
+
+    An empty formatting list alone (``{"entities": []}``, a read of a message
+    with no formatting and no other extras, since 9.0) is no payload either:
+    it must not replace extras another writer archived, just as ``"{}"`` does not.
+    """
+    if not value or value == "{}":
+        return False
+    raw = _raw_data_dict(value)
+    return raw is None or any(key != "entities" or entity_list != [] for key, entity_list in raw.items())
 
 
 def parse_entitlement_column(raw: str | None, element_type: type) -> set | None:
@@ -615,18 +623,22 @@ def _keep_archived_formatting(archived_raw_data: Any, incoming_raw_data: str) ->
     For a write that is not an edit (an import that renders text its own way,
     an older read, an edit Telegram hides). The archived formatting keys win;
     a key the archive does not have is filled from the incoming payload.
+    An empty formatting list never fills one: a row archived before 9.0 has
+    its formatting unknown, and stays so until a read brings some.
     """
-    archived = _raw_data_dict(archived_raw_data)
+    archived = _raw_data_dict(archived_raw_data) or {}
     incoming = _raw_data_dict(incoming_raw_data)
-    if not archived or incoming is None:
+    if incoming is None:
         return incoming_raw_data
     merged = dict(incoming)
     for key in _FORMATTING_KEYS:
         if key in archived:
             merged[key] = archived[key]
+        elif key == "entities" and merged.get(key) == []:
+            merged.pop(key)
     if merged == incoming:
         return incoming_raw_data
-    return json.dumps(merged)
+    return json.dumps(merged) if merged else "{}"
 
 
 def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
@@ -1233,7 +1245,9 @@ class DatabaseAdapter:
                 and _has_raw_payload(archived_raw_data)
                 and _raw_data_dict(archived_raw_data) is not None
             ):
-                update_values["raw_data"] = _with_formatting_of(archived_raw_data, "{}")
+                # The read's empty formatting list, when it has one, says the
+                # new text has none, and stays known.
+                update_values["raw_data"] = _with_formatting_of(archived_raw_data, values.get("raw_data") or "{}")
         elif "raw_data" in update_values:
             update_values["raw_data"] = _keep_archived_formatting(existing.raw_data, update_values["raw_data"])
         # Whatever wrote raw_data above, a media payload the archive holds and
@@ -2663,7 +2677,9 @@ class DatabaseAdapter:
         json; a row whose raw_data is unparseable is left untouched (never
         destroy unrelated capture payloads for a formatting refresh). None
         drops a key: an edit that no longer carries formatting, or no longer
-        is a Rich Text Editor message, must not keep the stale value.
+        is a Rich Text Editor message, must not keep the stale value. Entities
+        are the exception since 9.0: None becomes an empty list, so the text is
+        known to have no formatting and a later edit that adds some is an edit.
         """
         try:
             raw = json.loads(message.raw_data) if message.raw_data else {}
@@ -2672,7 +2688,7 @@ class DatabaseAdapter:
         if not isinstance(raw, dict):
             return False
         changed = False
-        for key, value in (("entities", entities), ("rich_message", rich_message)):
+        for key, value in (("entities", entities or []), ("rich_message", rich_message)):
             if value is None:
                 if key in raw:
                     raw.pop(key)

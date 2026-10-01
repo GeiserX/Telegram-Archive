@@ -1,0 +1,19 @@
+/* 6, C: the hint takes the rest of the chip's bar, in the time colour, with
+   its button in the link colour. */
+.mockup-period-hint {
+    margin-inline-start: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    color: rgb(var(--tg-meta));
+}
+.mockup-period-all {
+    font-weight: 600;
+    color: rgb(var(--tg-accent-strong));
+    background: none;
+    border: 0;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}

@@ -391,11 +391,13 @@ Event frames all carry `type` and `chat_ref`:
 | `type` | Fields |
 |--------|--------|
 | `new_message` | `message` |
-| `edit` | `message_id`, `new_text`, `edit_date`, `edit_hide`, and `entities` when the frame carries the new formatting (left out when `new_text` was cut to fit) |
+| `edit` | `message_id`, `new_text`, `edit_date`, `edit_hide`, and `entities` when the frame carries the new formatting (left out when `new_text` was cut to fit). `media` when the edit replaced the photo or file (see below) |
 | `delete` | `message_id`, `deletion_mode`, `deleted_at` |
 | `pin` | `message_ids`, `pinned` |
 | `reaction` | `message_id`, `reactions` (the live set; an emoji missing from it was taken back) |
 | `transcript` | `message_id`, `transcript_id`, `status` |
+
+The nested `media` of a `new_message` frame's `message`, and of an `edit` frame, has the shape `/api/chats/{ref}/messages` gives a message's `media`: `id` is the `{message_id}_{type}` key, and `url` is the ref-addressed `/media/` URL, or null when the file is not on disk. The URL of media an edit replaced ends in `?v={n}`, so a browser never shows the earlier file from its cache. A login whose downloads are off gets `url` and `file_path` null and `no_download: true`, as on the messages route. An `edit` frame without `media` says the media did not change. It is also left out when the frame would pass PostgreSQL's notification size limit, after the `entities`; the text is never left out.
 
 The viewer closes a socket with 4001 `Session revoked` when its session ends: logout, expiry, eviction, an admin change to the viewer account or share token behind it, or the end-all action. How updates reach the viewer is in [Live updates and notifications](../viewer/live-updates.md).
 

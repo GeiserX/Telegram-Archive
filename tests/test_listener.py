@@ -986,7 +986,9 @@ class TestEventHandlers:
         asyncio.run(handlers[events.MessageEdited](event))
 
         assert listener.stats["edits_applied"] == 0
-        assert listener.stats["edits_skipped"] == 1
+        # 8.4C (9.0): counted as stored, in a figure of its own, not as skipped.
+        assert listener.stats["edits_stored_as_new"] == 1
+        assert listener.stats["edits_skipped"] == 0
         listener.db.insert_message.assert_called_once()
         stored = listener.db.insert_message.call_args.args[0]
         assert stored["id"] == 77
@@ -994,6 +996,8 @@ class TestEventHandlers:
         assert stored["text"] == "Edited later"
         assert stored["edit_date"] == event.message.edit_date
         assert stored["edit_hide"] == 0
+        # 8.1B (9.0): the new-message path stores "no formatting" as an empty list.
+        assert stored["raw_data"]["entities"] == []
 
     def test_on_message_edited_not_found_keeps_listen_new_messages(self, listener_with_handlers, full_config):
         """The new-message path keeps its own switch: with LISTEN_NEW_MESSAGES off
@@ -1005,6 +1009,9 @@ class TestEventHandlers:
         asyncio.run(handlers[events.MessageEdited](self._edit_event()))
 
         listener.db.insert_message.assert_not_called()
+        # Nothing was stored, so it is not counted as stored.
+        assert listener.stats["edits_stored_as_new"] == 0
+        assert listener.stats["edits_skipped"] == 1
 
     def test_on_message_edited_already_current_stores_nothing_new(self, listener_with_handlers):
         """Only not_found stores the message; an edit the archive already has does not."""
@@ -1015,6 +1022,7 @@ class TestEventHandlers:
 
         listener.db.insert_message.assert_not_called()
         assert listener.stats["edits_skipped"] == 1
+        assert listener.stats["edits_stored_as_new"] == 0
 
     def test_on_message_edited_passes_telegrams_edit_hide(self, listener_with_handlers):
         """The flag Telegram sends with an edit is written beside its edit_date."""
@@ -1033,6 +1041,7 @@ class TestEventHandlers:
         listener, handlers = listener_with_handlers
         listener._notifier = MagicMock()
         listener._notifier.notify = AsyncMock()
+        listener._fire_event_webhook = AsyncMock()
         listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
 
         asyncio.run(handlers[events.MessageEdited](self._edit_event(text="Unchanged", edit_hide=True)))
@@ -1041,9 +1050,13 @@ class TestEventHandlers:
         assert listener.db.insert_message.call_args.args[0]["edit_hide"] == 1
         sent = [call.args[0] for call in listener._notifier.notify.await_args_list]
         assert NotificationType.NEW_MESSAGE not in sent
+        # 8.4C: still no live edit frame and no message_edited webhook.
+        assert NotificationType.EDIT not in sent
+        listener._fire_event_webhook.assert_not_awaited()
         assert listener.stats["new_messages_received"] == 0
         assert listener.stats["new_messages_saved"] == 0
-        assert listener.stats["edits_skipped"] == 1
+        assert listener.stats["edits_stored_as_new"] == 1
+        assert listener.stats["edits_skipped"] == 0
 
     def test_on_new_message_still_announces_a_new_message(self, listener_with_handlers):
         """The quiet path is only for edits: a real new message is announced."""
