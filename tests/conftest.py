@@ -328,6 +328,7 @@ def scoped_chat_source(rows: list[dict]):
         account_id=None,
         scope=None,
         fold_shared=False,
+        with_preview=False,
     ):
         visible = _visible(scope, fold_shared)
         return visible[offset:] if limit is None else visible[offset : offset + limit]
