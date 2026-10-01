@@ -289,9 +289,11 @@ class TestNoNPlusOne:
         assert len(reply_statements) == 1, counter.statements
         # Six, not five, since a page also stamps sender_account_id: the sixth
         # is the one-row-per-account owner map, read once per adapter and then
-        # cached. The ceiling is what matters — it is a constant, which is the
-        # property test_query_count_is_flat_as_replies_grow proves directly.
-        assert counter.count <= 6, counter.statements
+        # cached. Seven since the page also reads its poll and preview
+        # snapshots (037) in one grouped statement. The ceiling is what
+        # matters — it is a constant, which is the property
+        # test_query_count_is_flat_as_replies_grow proves directly.
+        assert counter.count <= 7, counter.statements
 
     async def test_page_without_replies_skips_the_reply_query(self, env):
         adapter, engine, db_manager = await _make_adapter()

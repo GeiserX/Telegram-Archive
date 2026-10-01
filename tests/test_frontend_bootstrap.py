@@ -5676,8 +5676,9 @@ def test_poll_vote_count_shares_the_time_line():
     html = INDEX_HTML.read_text(encoding="utf-8")
     body = html[html.index('<div class="message-body" dir="auto">') :]
     body = body[: body.index('<span class="message-meta" dir="ltr">')]
-    assert '<span v-if="msg.raw_data?.poll?.results" class="poll-votes text-tg-meta">' in body
-    poll = html[html.index('<div v-if="msg.raw_data?.poll" class="poll') :]
+    # The count reads the poll's newest kept state (message_snapshots, 037).
+    assert '<span v-if="currentPoll(msg)?.results" class="poll-votes text-tg-meta">' in body
+    poll = html[html.index('<div v-if="currentPoll(msg)" class="poll') :]
     poll = poll[: poll.index("<!-- Extended media chip")]
     assert "poll-votes" not in poll
 

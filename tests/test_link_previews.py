@@ -109,13 +109,18 @@ class TestViewerCard(unittest.TestCase):
 
     def test_card_renders_from_raw_data_and_guards_the_scheme(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        self.assertIn('v-if="msg.raw_data?.webpage"', html)
+        # The card draws the newest kept state (message_snapshots, 037) over
+        # the first capture in raw_data.
+        self.assertIn('v-if="currentPreview(msg)"', html)
+        self.assertIn(
+            "const currentPreview = (msg) => msg?.snapshots?.preview?.payload || msg?.raw_data?.webpage || null", html
+        )
         # The clickable title exists only behind the scheme guard, so a
         # javascript: URL can never become a clickable card.
-        self.assertIn('v-if="isHttpUrl(msg.raw_data.webpage.url)"', html)
+        self.assertIn('v-if="isHttpUrl(currentPreview(msg).url)"', html)
         self.assertIn("const isHttpUrl = (url) => /^https?:\\/\\//i.test(url || '')", html)
         # Card text renders through Vue interpolation (escaped), never v-html.
-        card = html.split('v-if="msg.raw_data?.webpage"', 1)[1].split("</div>\n\n", 1)[0]
+        card = html.split('v-if="currentPreview(msg)"', 1)[1].split("</div>\n\n", 1)[0]
         self.assertNotIn("v-html", card)
 
 
