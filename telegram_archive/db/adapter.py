@@ -17,7 +17,7 @@ import shutil
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any
 
@@ -109,11 +109,39 @@ SUPERGROUP_ID_CEILING = -(10**12)
 EXPORT_MESSAGE_ORDER = (Message.date.asc(), Message.account_id.asc(), Message.id.asc())
 
 # Media transcripts (032). ``status`` only advances along this rank; a row at
-# a terminal status is never written again. The drain query retries a media
-# whose newest row failed only while it has fewer than this many failed rows.
+# a terminal status is never written again.
 TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
 TRANSCRIPT_TERMINAL_STATUSES = frozenset({"done", "failed", "skipped"})
+# Failure reasons about the archive's copy of the file, and about the server
+# rather than the file: a repair of the disk or of the server makes them go
+# away, so they say nothing about whether the audio can be transcribed.
+# akou's own rule agrees: only ``decode_failed`` and ``too_long`` are the
+# caller's file, the rest is the server's.
+TRANSCRIPT_FILE_ERRORS = frozenset({"file_missing", "file_unreadable"})
+TRANSCRIPT_SERVER_ERRORS = frozenset(
+    {
+        "engine_unavailable",
+        "models_missing",
+        "model_download_failed",
+        "not_found",
+        "expired",
+        "invalid_job",
+        "invalid_json",
+    }
+)
+TRANSCRIPT_ENVIRONMENT_ERRORS = TRANSCRIPT_FILE_ERRORS | TRANSCRIPT_SERVER_ERRORS
+# The drain retries a media whose newest row failed while it has fewer than
+# this many failed rows for any other reason (about the file's content or the
+# request)...
 TRANSCRIPT_MAX_FAILED_ROWS = 3
+# ...and fewer than this many failed rows in all, which ends a file the server
+# keeps failing on while it finishes others.
+TRANSCRIPT_MAX_ANY_FAILED_ROWS = 10
+# A server failure with no transcript finished since is retried by one probe a
+# drain: at once after the media's first failed row, then once the newest is
+# older than this, doubled for each failed row after the second.
+TRANSCRIPT_PROBE_WAIT = timedelta(hours=1)
+TRANSCRIPT_PROBE_CANDIDATES = 20
 TRANSCRIPT_JSON_COLUMNS = frozenset({"models", "words", "segments"})
 TRANSCRIPT_FILL_COLUMNS = frozenset(
     {
@@ -8644,10 +8672,10 @@ class DatabaseAdapter:
         inserted and that row is returned, so a drain that runs twice and the
         viewer's ask-now route share one row. ``done`` or ``skipped``: None,
         and no row, unless ``force`` says the user asked for another
-        transcript. ``failed``: a new row (the drain query caps those at
-        three per media). Two processes racing past the read both try to
-        insert; the partial unique index on open rows stops the second, and
-        the loser returns the winner's row as if it were its own.
+        transcript. ``failed``: a new row (the drain query decides whether
+        a failed media is tried again). Two processes racing past the read
+        both try to insert; the partial unique index on open rows stops the
+        second, and the loser returns the winner's row as if it were its own.
         """
         async with self.db_manager.async_session_factory() as session:
             newest = await self._newest_transcript(session, media_id, account_id)
@@ -9035,8 +9063,25 @@ class DatabaseAdapter:
         A media qualifies when its newest transcript row is missing, or is
         ``queued`` with no ``job_id`` and older than ``stale_before`` (a
         process died between the insert and the submit; the row is reused),
-        or is ``failed`` while fewer than three failed rows exist for it. A
-        ``done`` or ``skipped`` newest row ends the loop for that media.
+        or is ``failed`` under the retry rule below. A ``done`` or ``skipped``
+        newest row ends the loop for that media.
+
+        The retry rule reads each failed row's reason, so rows written before
+        it follow it too. A failure about the file's content or the request
+        counts: three of them end the retries. A failure in
+        ``TRANSCRIPT_ENVIRONMENT_ERRORS`` does not count, since a repair of
+        the disk or the server makes it go away. A file failure (missing,
+        unreadable) qualifies on every drain and sorts after the rest of its
+        priority tier; ``transcribe_media`` writes nothing while the file is
+        still missing or unreadable. A server failure qualifies once the
+        server finished a transcript of its own (not a copy) after it. With
+        none since, the server may still be broken, and one such media per
+        drain goes as a probe, from a query of its own: the first in
+        priority order, longest waiting first, whose wait is over: none
+        after its first failed row, then ``TRANSCRIPT_PROBE_WAIT`` after
+        the second, doubled for each failed row after that. Ten
+        failed rows of any reason end the retries, which stops a file the
+        server keeps failing on while it finishes others.
 
         A media with no row of its own qualifies even when its account
         already holds a ``done`` transcript of the same audio: the drain's
@@ -9056,8 +9101,8 @@ class DatabaseAdapter:
         its type: the type filter of the main query would otherwise strand
         a pressed file of a type outside ``types`` for good. Then newest download
         first, at most ``per_run`` rows. Each result carries the media
-        columns and ``transcript``: the newest row's id, status and job_id,
-        or None.
+        columns and ``transcript``: the newest row's id, status, job_id and
+        error, or None.
 
         The ask-now rows are read by a query of their own, from the few
         open transcript rows. OR-ing them into the type filter of the main
@@ -9066,8 +9111,8 @@ class DatabaseAdapter:
 
         ``priority_chat_ids`` (TRANSCRIPTION_PRIORITY_CHAT_IDS) orders the
         main query only: media of those chats first, in list order, then
-        the rest. It never widens what qualifies, and the ask-now rows still
-        come before all of it.
+        the rest, and the probe. It never widens what qualifies, and the
+        ask-now rows still come before all of it.
         """
         wanted = sorted({t for t in types if isinstance(t, str) and t in TRANSCRIBABLE_TYPES})
         if not wanted or per_run <= 0:
@@ -9084,17 +9129,35 @@ class DatabaseAdapter:
             .correlate(Media)
             .scalar_subquery()
         )
-        failed_rows = (
-            select(func.count(MediaTranscript.id))
-            .where(
-                and_(
-                    MediaTranscript.account_id == Media.account_id,
-                    MediaTranscript.media_id == Media.id,
-                    MediaTranscript.status == "failed",
+
+        def failed_count(*conditions):
+            return (
+                select(func.count(MediaTranscript.id))
+                .where(
+                    and_(
+                        MediaTranscript.account_id == Media.account_id,
+                        MediaTranscript.media_id == Media.id,
+                        MediaTranscript.status == "failed",
+                        *conditions,
+                    )
                 )
+                .correlate(Media)
+                .scalar_subquery()
             )
-            .correlate(Media)
-            .scalar_subquery()
+
+        failed_rows = failed_count()
+        counted_rows = failed_count(
+            or_(MediaTranscript.error.is_(None), MediaTranscript.error.not_in(TRANSCRIPT_ENVIRONMENT_ERRORS))
+        )
+        failed_at = func.coalesce(newest.completed_at, newest.requested_at)
+        # NOT of a comparison with a NULL reason is NULL, never true: the reason is tested for NULL first.
+        server_failure = and_(
+            newest.status == "failed", newest.error.is_not(None), newest.error.in_(TRANSCRIPT_SERVER_ERRORS)
+        )
+        retryable = and_(
+            newest.status == "failed",
+            counted_rows < TRANSCRIPT_MAX_FAILED_ROWS,
+            failed_rows < TRANSCRIPT_MAX_ANY_FAILED_ROWS,
         )
         # Newest download first in both queries.
         order = (nulls_last(Media.download_date.desc()), Media.id.desc())
@@ -9102,9 +9165,15 @@ class DatabaseAdapter:
         for chat_id in priority_chat_ids:
             if isinstance(chat_id, int) and not isinstance(chat_id, bool):
                 ranks.setdefault(chat_id, len(ranks))
-        main_order = (case(ranks, value=Media.chat_id, else_=len(ranks)), *order) if ranks else order
+        rank = (case(ranks, value=Media.chat_id, else_=len(ranks)),) if ranks else ()
+        # A file still missing or unreadable is checked again on every drain
+        # and writes nothing while it stays that way: it goes after the rest
+        # of its priority tier, so such files never hold the budget.
+        waits_for_file = case((and_(newest.status == "failed", newest.error.in_(TRANSCRIPT_FILE_ERRORS)), 1), else_=0)
+        main_order = (*rank, waits_for_file, *order)
+        columns = (Media, newest.id, newest.status, newest.job_id, newest.error)
         asked_stmt = (
-            select(Media, newest.id, newest.status, newest.job_id)
+            select(*columns)
             .join(newest, and_(newest.account_id == Media.account_id, newest.media_id == Media.id))
             .where(
                 and_(
@@ -9119,37 +9188,69 @@ class DatabaseAdapter:
             .order_by(*order)
             .limit(per_run)
         )
-        stmt = (
-            select(Media, newest.id, newest.status, newest.job_id)
-            .outerjoin(
-                newest,
-                and_(newest.account_id == Media.account_id, newest.media_id == Media.id, newest.id == newest_id),
-            )
+        newest_join = and_(newest.account_id == Media.account_id, newest.media_id == Media.id, newest.id == newest_id)
+        wanted_media = and_(Media.account_id == account_id, Media.downloaded == 1, Media.type.in_(wanted), has_sound)
+        last_done = (
+            select(func.max(MediaTranscript.completed_at))
             .where(
                 and_(
-                    Media.account_id == account_id,
-                    Media.downloaded == 1,
-                    Media.type.in_(wanted),
-                    has_sound,
-                    or_(
-                        newest.id.is_(None),
-                        and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
-                        and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
-                    ),
+                    MediaTranscript.account_id == account_id,
+                    MediaTranscript.status == "done",
+                    MediaTranscript.copied_from_id.is_(None),
                 )
             )
-            .order_by(*main_order)
-            .limit(per_run)
+            .scalar_subquery()
         )
         async with self.db_manager.async_session_factory() as session:
+            # When the server last finished a transcript of its own (a copy is
+            # no answer from it): a server failure from before then is retried.
+            finished_at = (await session.execute(select(last_done))).scalar()
+            server_retry = failed_at < finished_at if finished_at is not None else false()
+            stmt = (
+                select(*columns)
+                .outerjoin(newest, newest_join)
+                .where(
+                    and_(
+                        wanted_media,
+                        or_(
+                            newest.id.is_(None),
+                            and_(
+                                newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before
+                            ),
+                            and_(retryable, or_(not_(server_failure), server_retry)),
+                        ),
+                    )
+                )
+                .order_by(*main_order)
+                .limit(per_run)
+            )
             found = list(await session.execute(asked_stmt))
             if len(found) < per_run:
-                asked_ids = {media.id for media, *_ in found}
+                seen = {media.id for media, *_ in found}
                 for match in await session.execute(stmt):
-                    if match[0].id not in asked_ids:
+                    if match[0].id not in seen:
                         found.append(match)
+            if len(found) < per_run:
+                # No transcript finished since these failed: the server may still
+                # be broken, so one of them goes as a probe instead of all. The
+                # first in priority order whose wait is over, longest waiting
+                # first; its answer, done or not, tells the next drain.
+                probe_stmt = (
+                    select(*columns, failed_rows, failed_at)
+                    .join(newest, newest_join)
+                    .where(and_(wanted_media, retryable, server_failure, not_(server_retry)))
+                    .order_by(*rank, failed_at, newest.id)
+                    .limit(TRANSCRIPT_PROBE_CANDIDATES)
+                )
+                seen = {media.id for media, *_ in found}
+                now = utcnow_naive()
+                for *match, failures, failed_time in await session.execute(probe_stmt):
+                    wait = TRANSCRIPT_PROBE_WAIT * 2 ** (failures - 2) if failures > 1 else timedelta(0)
+                    if match[0].id not in seen and failed_time is not None and failed_time <= now - wait:
+                        found.append(match)
+                        break
             rows = []
-            for media, transcript_id, transcript_status, transcript_job_id in found[:per_run]:
+            for media, transcript_id, transcript_status, transcript_job_id, transcript_error in found[:per_run]:
                 rows.append(
                     {
                         "id": media.id,
@@ -9164,7 +9265,12 @@ class DatabaseAdapter:
                         "duration": media.duration,
                         "content_hash": media.content_hash,
                         "transcript": (
-                            {"id": transcript_id, "status": transcript_status, "job_id": transcript_job_id}
+                            {
+                                "id": transcript_id,
+                                "status": transcript_status,
+                                "job_id": transcript_job_id,
+                                "error": transcript_error,
+                            }
                             if transcript_id is not None
                             else None
                         ),
