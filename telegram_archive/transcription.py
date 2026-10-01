@@ -1258,6 +1258,15 @@ async def transcribe_media(
     content_hash = media.get("content_hash")
     if not isinstance(content_hash, str) or not content_hash:
         content_hash = None
+    # The file is checked and repaired before anything else, the transcript
+    # copy included: the copy never reads the file, so answering from a twin
+    # first would leave the row downloaded with nothing behind its path.
+    media_root = getattr(config, "media_path", "")
+    path = resolve_stored_media_path(media.get("file_path"), media_root)
+    if not path or not os.path.isfile(path):
+        repaired = await repair_media_row(db, media, media_root, account_id=account_id)
+        if repaired == REFETCH:
+            return "refetch"
     if content_hash is not None:
         copied = await _copy_transcript(
             config, db, media, content_hash, account_id=account_id, client=client, server=server, notifier=notifier
@@ -1268,12 +1277,6 @@ async def transcribe_media(
     if not isinstance(max_seconds, int) or isinstance(max_seconds, bool):
         max_seconds = None
     duration = _number(media.get("duration"))
-    media_root = getattr(config, "media_path", "")
-    path = resolve_stored_media_path(media.get("file_path"), media_root)
-    if not path or not os.path.isfile(path):
-        repaired = await repair_media_row(db, media, media_root, account_id=account_id)
-        if repaired == REFETCH:
-            return "refetch"
 
     async def skip(reason: str) -> str:
         row = await db.mark_media_transcript_skipped(

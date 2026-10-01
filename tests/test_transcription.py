@@ -2247,6 +2247,27 @@ class TestCopyAcrossAccounts:
         assert [(r["id"], r["message_id"]) for r in exported] == [(copy["id"], 7)]
         assert "copied_from_id" not in exported[0], "the source's id may name a row the reader cannot see"
 
+    async def test_a_twin_answer_is_not_copied_onto_a_row_whose_file_is_gone(self, real_adapter, tmp_path):
+        """The copy never reads the file, so it used to answer first and leave the
+        row downloaded with nothing behind its path. The file is checked first:
+        with no copy on disk the row goes back to the download, and the twin's
+        answer is copied by a later drain, once the file is there again."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video")
+        await _done_source(real_adapter, 1, "m_1_video")
+        os.remove(tmp_path / "account2" / "m_7_video.mp4")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"video"})
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert stats == _stats(refetch=1)
+        assert await real_adapter.list_media_transcripts("m_7_video", account_id=2) == []
+        [media] = await real_adapter.get_media_for_chat(CHAT, account_id=2)
+        assert media["downloaded"] == 0
+
     async def test_another_preset_or_the_same_media_asking_again_is_sent(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
         await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
