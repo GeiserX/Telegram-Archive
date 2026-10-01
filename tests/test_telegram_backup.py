@@ -508,9 +508,9 @@ class TestBackupCheckpointing(unittest.TestCase):
         backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"}, account_id=1)
         # Reconciled once per message: empty snapshot for msg 1, the aggregate for msg 2.
         self.assertEqual(backup.db.reconcile_reactions.await_count, 2)
-        backup.db.reconcile_reactions.assert_any_await(1, 100, [], mark_removed=True, account_id=1)
+        backup.db.reconcile_reactions.assert_any_await(1, 100, [], mark_removed=True, account_id=1, source="backup")
         backup.db.reconcile_reactions.assert_any_await(
-            2, 100, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1
+            2, 100, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1, source="backup"
         )
 
 
@@ -2055,7 +2055,7 @@ class TestCommitBatchReactions(unittest.TestCase):
         self._run(self.backup._commit_batch(batch, 100))
 
         self.backup.db.reconcile_reactions.assert_any_await(
-            1, 100, [{"emoji": "heart", "count": 5}], mark_removed=True, account_id=1
+            1, 100, [{"emoji": "heart", "count": 5}], mark_removed=True, account_id=1, source="backup"
         )
 
     def test_empty_reactions_still_reconciled(self):
@@ -2068,7 +2068,9 @@ class TestCommitBatchReactions(unittest.TestCase):
         self._run(self.backup._commit_batch(batch, 100))
 
         self.backup.db.get_message_ids_with_reaction_rows.assert_awaited_once_with(100, [3], account_id=1)
-        self.backup.db.reconcile_reactions.assert_awaited_once_with(3, 100, [], mark_removed=True, account_id=1)
+        self.backup.db.reconcile_reactions.assert_awaited_once_with(
+            3, 100, [], mark_removed=True, account_id=1, source="backup"
+        )
 
     def test_extraction_failure_skips_reconcile(self):
         """#219: a None snapshot means extraction FAILED (shape drift) — skip

@@ -85,6 +85,7 @@ from .models import (
     Metadata,
     PushSubscription,
     Reaction,
+    ReactionHistory,
     SyncStatus,
     User,
     ViewerAccount,
@@ -2348,7 +2349,16 @@ class DatabaseAdapter:
                     and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id)
                 )
             )
-            # Delete reactions
+            # Delete reactions and their history
+            await session.execute(
+                delete(ReactionHistory).where(
+                    and_(
+                        ReactionHistory.account_id == account_id,
+                        ReactionHistory.chat_id == chat_id,
+                        ReactionHistory.message_id == message_id,
+                    )
+                )
+            )
             await session.execute(
                 delete(Reaction).where(
                     and_(
@@ -5166,6 +5176,7 @@ class DatabaseAdapter:
         *,
         account_id: int,
         mark_removed: bool = True,
+        source: str | None = None,
         _after_seq_reset: bool = False,
     ) -> str:
         """Reconcile a message's reactions against a fresh FULL snapshot (#219).
@@ -5191,7 +5202,13 @@ class DatabaseAdapter:
           deleted — this branch runs even when ``observed`` is empty;
         - is a no-op when the message is not archived (best-effort; never stubs a
           synthetic message row, which would render blank in the viewer and, with
-          the FK having no CASCADE, raise on PostgreSQL).
+          the FK having no CASCADE, raise on PostgreSQL);
+        - adds a ``reaction_history`` row for every emoji whose count differs
+          from the newest row kept for it (0 when it went), tagged with
+          ``source``, so a count that drops without reaching zero and an emoji
+          that comes back both keep their earlier state. An emoji with a
+          ``reactions`` row and no history first gets the baseline that row
+          stands for (``_reaction_baseline``), the same one migration 037 seeds.
 
         Returns ``"reconciled"`` | ``"noop"`` | ``"no_message"``.
         """
@@ -5223,6 +5240,12 @@ class DatabaseAdapter:
             by_emoji: dict[str, list[Reaction]] = {}
             for r in existing_rows:
                 by_emoji.setdefault(r.emoji, []).append(r)
+            # What each emoji's rows held before this reconcile changes them, for
+            # the baseline of an emoji that has no history yet.
+            baseline_rows = {
+                emoji: [(r.count, r.created_at, r.removed_at) for r in rows] for emoji, rows in by_emoji.items()
+            }
+            newest_kept = await self._newest_reaction_history(session, account_id, chat_id, message_id)
 
             # Authoritative per-emoji counts from the snapshot (later duplicates of an
             # emoji are summed defensively; the extractor yields one entry per emoji).
@@ -5293,7 +5316,39 @@ class DatabaseAdapter:
                         await session.delete(row)
                         changed = True
 
-            if not changed:
+            # The history: one row per emoji whose count moved.
+            history_written = False
+            for emoji in sorted(set(by_emoji) | set(desired)):
+                new_count = desired.get(emoji, 0)
+                kept = newest_kept.get(emoji)
+                if kept is None and emoji in by_emoji:
+                    for row in self._reaction_baseline(
+                        baseline_rows[emoji],
+                        account_id=account_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        emoji=emoji,
+                        now=now,
+                    ):
+                        session.add(row)
+                        kept = row.count
+                    history_written = True
+                if kept != new_count:
+                    session.add(
+                        ReactionHistory(
+                            account_id=account_id,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            emoji=emoji,
+                            count=new_count,
+                            previous_count=kept,
+                            observed_at=now,
+                            source=source,
+                        )
+                    )
+                    history_written = True
+
+            if not changed and not history_written:
                 return "noop"
 
             try:
@@ -5314,10 +5369,76 @@ class DatabaseAdapter:
                         observed,
                         account_id=account_id,
                         mark_removed=mark_removed,
+                        source=source,
                         _after_seq_reset=True,
                     )
                 raise
-            return "reconciled"
+            return "reconciled" if changed else "noop"
+
+    @staticmethod
+    async def _newest_reaction_history(session, account_id: int, chat_id: int, message_id: int) -> dict[str, int]:
+        """The count of the newest ``reaction_history`` row per emoji of one message."""
+        ranked = (
+            select(
+                ReactionHistory.emoji,
+                ReactionHistory.count,
+                func.row_number()
+                .over(
+                    partition_by=ReactionHistory.emoji,
+                    order_by=(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc()),
+                )
+                .label("rank"),
+            )
+            .where(
+                ReactionHistory.account_id == account_id,
+                ReactionHistory.chat_id == chat_id,
+                ReactionHistory.message_id == message_id,
+            )
+            .subquery()
+        )
+        result = await session.execute(select(ranked.c.emoji, ranked.c.count).where(ranked.c.rank == 1))
+        return {row.emoji: row.count for row in result}
+
+    @staticmethod
+    def _reaction_baseline(
+        rows: list[tuple[int | None, datetime | None, datetime | None]],
+        *,
+        account_id: int,
+        chat_id: int,
+        message_id: int,
+        emoji: str,
+        now: datetime,
+    ) -> list[ReactionHistory]:
+        """The history an emoji's ``reactions`` rows stand for, before it had any.
+
+        ``rows`` are (count, created_at, removed_at) as stored before this
+        reconcile. One row with the last count they held: the live rows' sum
+        when any is live, else every row's (the count it had when it went), a
+        tombstone without a positive count read as one, as the page read shows
+        it. It is dated when the archive first saw the
+        emoji. An emoji taken back gets a second row, count 0, dated by its
+        latest tombstone. Migration 037 seeds exactly this, in SQL.
+        """
+        live = [count or 0 for count, _created, removed in rows if removed is None]
+        if live:
+            total = sum(live)
+        else:
+            total = sum(count if count and count > 0 else 1 for count, _created, _removed in rows)
+        total = total if total > 0 else 1
+        first_seen = min((created or removed or now) for _count, created, removed in rows)
+        key = {"account_id": account_id, "chat_id": chat_id, "message_id": message_id, "emoji": emoji}
+        baseline = [ReactionHistory(**key, count=total, previous_count=None, observed_at=first_seen, source="baseline")]
+        if not live:
+            baseline.append(
+                ReactionHistory(
+                    **key,
+                    count=0,
+                    previous_count=total,
+                    observed_at=max(removed for _count, _created, removed in rows if removed is not None),
+                    source="baseline",
+                )
+            )
+        return baseline
 
     # ========== Sync Status Operations ==========
 
@@ -5617,7 +5738,12 @@ class DatabaseAdapter:
             chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
             await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
             await session.execute(delete(Media).where(chat_media))
-            # Delete reactions
+            # Delete reactions and their history
+            await session.execute(
+                delete(ReactionHistory).where(
+                    and_(ReactionHistory.account_id == account_id, ReactionHistory.chat_id == chat_id)
+                )
+            )
             await session.execute(
                 delete(Reaction).where(and_(Reaction.account_id == account_id, Reaction.chat_id == chat_id))
             )

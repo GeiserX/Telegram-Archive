@@ -75,7 +75,7 @@ Deletions are ignored unless `LISTEN_DELETIONS=true`. `DELETION_MODE` then decid
 | Mode | Effect |
 |------|--------|
 | `soft` (default) | The listener marks the message deleted, keeps it, and records the first deletion time. The viewer keeps its text and marks it with a faint wash and `deleted` before its time, and lists it in **What changed**. |
-| `hard` | The message row is removed, together with its saved versions, its media rows, their transcripts and its reactions. |
+| `hard` | The message row is removed, together with its saved versions, its media rows, their transcripts, its reactions and their history. |
 
 !!! tip "Keep evidence with soft mode"
     If the archive exists to keep a record of what was said, use `soft`. A hard deletion cannot be undone.
@@ -93,7 +93,7 @@ Pins and unpins are always captured while the listener runs. No setting turns th
 
 ## Reactions
 
-With `LISTEN_REACTIONS=true`, the listener stores per-emoji counts. It never stores who reacted. Updates are buffered per message and written every `REACTION_DEBOUNCE_SECONDS`, so a burst of changes becomes one write. When an emoji disappears, the listener marks it removed and keeps the row. Reactions on messages that are not in the archive are skipped.
+With `LISTEN_REACTIONS=true`, the listener stores per-emoji counts. It never stores who reacted. Updates are buffered per message and written every `REACTION_DEBOUNCE_SECONDS`, so a burst of changes becomes one write. When an emoji disappears, the listener marks it removed and keeps the row. Every change of an emoji's count also adds a row to the reaction history, so a count that drops from 7 to 5 keeps the 7, and an emoji that is taken back and given again keeps its removal. The backup writes the same history when it reads reactions. Reactions on messages that are not in the archive are skipped.
 
 The listener can miss some reaction changes. Telegram does not reliably push reactions that you add from another device. The listener narrows the gap by also reading the reactions carried on edits and on new messages. It skips partial reaction objects (Telegram flags them `min`), because those can leave out your own reaction. That includes live reaction updates: a partial one is not written and the viewer gets no live change for it, so the reactions catch up at the next full snapshot, from a backup or the re-sweep. To correct counts on older messages, set `REACTION_RESWEEP_DAYS` so each scheduled backup re-checks recent days. See [Schedule and backup tuning](schedule.md).
 

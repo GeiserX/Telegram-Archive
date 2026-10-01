@@ -163,7 +163,7 @@ It reads the target from the same settings as every other command: `DATABASE_URL
 
 Each source Telegram account is added to the target under the next free account id. Every row the account owns follows it under that id:
 
-- its chats, messages, edit history, reactions, media rows and transcripts
+- its chats, messages, edit history, reactions and their history, media rows and transcripts
 - forum topics, folders and folder membership, its [positions](../reference/glossary.md#position) and avatar history
 - its per-account records: followed chat migrations, failed-message records and import progress
 

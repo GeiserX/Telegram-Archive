@@ -637,7 +637,7 @@ class TelegramListener:
         for (chat_id, message_id), observed in pending.items():
             try:
                 outcome = await self.db.reconcile_reactions(
-                    message_id, chat_id, observed, account_id=self.account_id, mark_removed=True
+                    message_id, chat_id, observed, account_id=self.account_id, mark_removed=True, source="listener"
                 )
                 if outcome == "reconciled":
                     self.stats["reactions_applied"] += 1

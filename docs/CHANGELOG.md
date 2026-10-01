@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Fixed
+- **Reactions keep every state the archive saw.** A count that dropped without reaching zero, say from 7 to 5, was written over the earlier count, and an emoji that was taken back and given again lost its removal. A new `reaction_history` table now keeps one row per state of an emoji on a message: `count` (0 when taken back), `previous_count`, `observed_at` and `source` (`listener`, `backup`, or `baseline` for rows copied when the history began). The listener and the backup add a row whenever a count differs from the newest one kept, and never change or remove a row. It stores counts per emoji, like `reactions`, never who reacted. `DELETION_MODE=hard`, deleting a chat and `EXCLUDE_DELETE_EXISTING` remove a message's history with its reactions; `telegram-archive merge` and the move to PostgreSQL copy it. Upgrading runs migration 037, which seeds the history from the reactions already kept. See [Reactions](configuration/listener.md#reactions).
+
 ## [8.19.0] - 2026-10-01
 
 Edits are kept whole. An edit keeps its formatting, says which path saw it, and keeps a photo or file it replaced, so the history panel shows every version as it looked. A reaction no longer marks a message edited, a burst of reactions no longer drops real edits, and an edit of a message the listener had not stored is kept. The viewer shows reactions that were taken back and opens What changed for one chat, a chat export says which messages were deleted or edited, and the browser now asks the viewer again before it reuses cached media. Upgrading runs migrations 034, 035 and 036.
