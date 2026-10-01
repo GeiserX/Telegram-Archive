@@ -165,6 +165,7 @@ One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. Th
 - A press always gets one more attempt, whatever happened before.
 - A queued file that never got a job is sent again after 10 minutes.
 - An unreachable server spends no retry. The file stays queued.
+- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the media is marked not downloaded, the next backup downloads it again, and a later drain sends it.
 - Changing the language, preset, speaker labels or server means files are sent again instead of reusing earlier results. On the OpenAI endpoint the model and the hotwords count too. On Deepgram, AssemblyAI and ElevenLabs the model counts and the hotwords do not.
 - The same audio already transcribed with the same settings, in this account or another, is copied instead of sent.
 
@@ -236,7 +237,7 @@ Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets
 
 | Reason | Text shown |
 |---|---|
-| `file_missing` | The audio file is missing |
+| `file_missing` | The audio file is missing. Only an entry this process cannot read, such as a link into a store outside the mount, ends this way |
 | `expired` | The server dropped the job before it finished |
 | `cancelled` | Cancelled on the transcription server |
 | `not_found` | The transcription server no longer knows this job |
@@ -325,7 +326,7 @@ Transcription logs never contain the key, media ids, file names or transcript te
 
 | What you see | What it means |
 |---|---|
-| `Transcription drain: N done, N copied, N failed, N skipped, N submitted, N refused, N unreachable of N media; N filled from the event feed, N from the poll` | The INFO summary each drain logs. With no server set, the drain logs only at debug level. |
+| `Transcription drain: N done, N copied, N failed, N skipped, N submitted, N refused, N unreachable, N sent back to download of N media; N filled from the event feed, N from the poll` | The INFO summary each drain logs. With no server set, the drain logs only at debug level. |
 | `TRANSCRIPTION_PROVIDER=akou but the server did not answer as akou with jobs; nothing sent, the media stays queued` | The URL does not reach an akou server with the job API. Check the URL, or use `auto` or `openai`. |
 | Files stay queued and every drain ends early on an OpenAI-compatible server | The server answers `404`. Check that `TRANSCRIPTION_URL` has no `/v1` suffix and that the model exists. |
 | A warning to check `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_LANGUAGE` | Two files were refused with a 4xx error and none succeeded. The model or language is usually wrong for this provider. |
