@@ -113,7 +113,7 @@ The archive repairs both without asking Telegram when a copy is already on disk.
 
 With no copy on disk, the row is marked not downloaded and the next backup downloads it from Telegram. The download fills the `_shared` file under the name the link holds.
 
-Three places repair: [`check-media`](../reference/cli.md#check-media) checks every row and repairs with `--repair`, `VERIFY_MEDIA` repairs what it finds, and the transcription drain repairs a file before it sends it. A link into another store that this process cannot follow, such as a git-annex object outside the mount, is never touched. Locations, contacts, polls and the other metadata-only kinds have no file at all, so an old `.bin` path or link on such a row is never repaired or fetched.
+Three places repair: [`check-media`](../reference/cli.md#check-media) checks every row and repairs with `--repair`, `VERIFY_MEDIA` repairs what it finds, and the transcription drain repairs a file before it sends it. Without `VERIFY_MEDIA`, a backup run that reads a downloaded row behind a broken link fetches it again, where the media settings allow, and ends with one warning: how many it met, and the `check-media` command to run. It counts only the rows the run reads, so run `check-media` to find the rest. A link into another store that this process cannot follow, such as a git-annex object outside the mount, is never touched. Locations, contacts, polls and the other metadata-only kinds have no file at all, so an old `.bin` path or link on such a row is never repaired or fetched.
 
 With `DEDUPLICATE_MEDIA=false`, files go straight into `media/<chat_id>/`. A file that already exists there is never downloaded again.
 
