@@ -2245,11 +2245,13 @@ class TestDownloadMediaSymlinkFallback:
     @patch("os.path.lexists", return_value=False)
     @patch("os.symlink", side_effect=OSError("symlinks not supported"))
     @patch("os.path.relpath", return_value="../_shared/file.jpg")
+    @patch("shutil.copy2")
     @patch("shutil.move")
-    async def test_symlink_failure_falls_back_to_move(
-        self, mock_move, mock_relpath, mock_symlink, mock_lexists, mock_makedirs, mock_exists
+    async def test_symlink_failure_falls_back_to_a_copy_and_never_moves_the_blob(
+        self, mock_move, mock_copy, mock_relpath, mock_symlink, mock_lexists, mock_makedirs, mock_exists
     ):
-        """When symlink fails, falls back to shutil.move."""
+        """When symlink fails, the chat folder gets a copy. The published blob is
+        never moved out of _shared, since another chat may already link to it."""
         from telethon.tl.types import MessageMediaPhoto
 
         config = _make_config(deduplicate_media=True)
@@ -2285,7 +2287,8 @@ class TestDownloadMediaSymlinkFallback:
         ):
             result = await listener._download_media(msg, -100)
         assert result is not None
-        mock_move.assert_called_once()
+        mock_move.assert_not_called()
+        mock_copy.assert_called_once()
 
 
 # ===========================================================================
