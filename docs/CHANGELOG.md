@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [Unreleased]
+
+### Added
+- **Polls and link previews keep their later states.** A poll's votes, results and closing, and a link preview Telegram fills in or changes, were never seen after the first capture. Each later state is now added to a new table, `message_snapshots`, with when the archive saw it and the path that saw it: the listener from edit events and poll updates, the sync and a backup from their reads. A state equal to the newest kept one adds nothing, and nothing is ever updated or removed except by `DELETION_MODE=hard` or deleting a chat. The viewer shows the newest state: the poll's results and total, **Final results** once closed, and the newest card. A quiet "updated" with the time follows when it differs from the first capture. `/api/chats/{ref}/messages` returns the newest state of each kind as `snapshots`, and both exports list every state per message, under the same chat and account restrictions. Live locations are not followed. Upgrading runs migration 037. See [Poll and link preview snapshots](reference/api.md#poll-and-link-preview-snapshots).
+
+### Changed
+- **Breaking:** `raw_data.poll` and `raw_data.webpage` now keep the first capture. A backup that read a message again used to replace them with what it saw, so the first capture was lost. They now stay as first captured, a missing one is filled once, and a later state goes to `snapshots`. A reader that wants the newest poll results or preview reads `snapshots` first.
+
+### Fixed
+- **The listener stores a poll.** A poll that arrived through the listener was saved without its question, answers and results, which only the backup captured. The listener now stores the same `raw_data.poll` as the backup.
+
 ## [8.19.0] - 2026-10-01
 
 Edits are kept whole. An edit keeps its formatting, says which path saw it, and keeps a photo or file it replaced, so the history panel shows every version as it looked. A reaction no longer marks a message edited, a burst of reactions no longer drops real edits, and an edit of a message the listener had not stored is kept. The viewer shows reactions that were taken back and opens What changed for one chat, a chat export says which messages were deleted or edited, and the browser now asks the viewer again before it reuses cached media. Upgrading runs migrations 034, 035 and 036.

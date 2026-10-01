@@ -228,6 +228,24 @@ Each message nests its media. `media.id` is the media key, `{message_id}_{type}`
 
 In `GET /api/chats/{chat_ref}/messages` each message carries its reactions in two lists. `reactions` holds the live ones, one entry per emoji with its `count`. `removed_reactions` holds the reactions taken back that the archive kept, newest first: one entry per emoji with `emoji`, `count` (how many it had when it went) and `removed_at` (when the archive noticed it gone, in UTC). An emoji that comes back moves to `reactions` again. Today that clears its earlier removal, so only the latest removal of an emoji is kept; this is a known limit, not the design. `removed_reactions` never names a person, because the archive stores counts per emoji. `reactions[].user_ids` can still list ids from rows written one per reactor before 7.23.0, until the backup or the listener reconciles that message again. `/messages/by-date` returns only `reactions`.
 
+In `GET /api/chats/{chat_ref}/messages` each message also carries `snapshots`, the newest state the archive kept of its poll and of its link preview. See [Poll and link preview snapshots](#poll-and-link-preview-snapshots).
+
+### Poll and link preview snapshots
+
+`raw_data.poll` and `raw_data.webpage` hold a poll and a link preview as the archive first captured them, and never change. When a later read shows another state, the archive adds a snapshot: a poll's votes, results or closing, or the preview card's fields. A read that shows the newest kept state adds nothing. The listener writes them from edit events and poll updates, and the backup and the sync from their reads. Live locations are not followed.
+
+`snapshots` is an object keyed by kind, `poll` or `preview`, and empty when the archive kept no later state. Each entry describes the newest state of that kind:
+
+| Field | Meaning |
+|-------|---------|
+| `payload` | The whole state, in the shape of `raw_data.poll` or `raw_data.webpage`. A poll state from an update that carried the results alone holds only `results`. |
+| `observed_at` | When the archive saw it, by the archive's own clock, in UTC. |
+| `source` | The path that saw it: `listener`, `sync` or `backup`. |
+| `count` | How many states of that kind the archive kept after the first capture. |
+| `differs_from_first` | False when the newest state is the same as the first capture again, for example after a vote was taken back. |
+
+The snapshots read through the same chat and account as the messages: a viewer restricted to some accounts sees only the snapshots its accounts wrote. Both exports list every state, oldest first.
+
 ### Message versions
 
 Each earlier version of an edited message has these fields:
@@ -341,10 +359,11 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 | `deleted_at` | When the archive noticed the deletion, ISO 8601 UTC, or `null`. |
 | `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
 | `versions` | Every earlier text the archive kept of the message, oldest first, whatever its date. Each has `text`, `date` (when that text was current in Telegram) and `captured_at` (when the archive saw it replaced). An empty list means the archive kept no earlier text. |
+| `snapshots` | Every later state of the message's poll or link preview the archive kept, oldest first. Each has `kind` (`poll` or `preview`), `payload`, `observed_at` (ISO 8601 UTC) and `source`, as in [Poll and link preview snapshots](#poll-and-link-preview-snapshots). The export has no `raw_data`, so the first capture is not in it. An empty list means no later state was kept. |
 
 A message with voice or media transcripts also has a `transcripts` list. `message_versions` is the older flat list of earlier versions, with the fields of [Message versions](#message-versions), picked by the version's own date in the same window. It stays for readers that use it; `versions` on each message is the complete one. The two lists need not match. `message_versions` is read after the messages, outside their snapshot, and picked by the version's date, so it can hold versions of messages sent before the window and edits a backup made while the file was written.
 
-The messages and their `versions` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
+The messages, their `versions` and their `snapshots` are read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions. The export reads a message's versions and snapshots as it writes that message, so a long edit history is never held in memory at once. If the versions ever stop lining up with the messages, the export stops with an error instead of writing messages without their versions. The file then ends early and is not valid JSON.
 
 ## Transcripts
 

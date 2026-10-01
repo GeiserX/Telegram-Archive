@@ -50,7 +50,7 @@ The listener skips forum topics listed in `SKIP_TOPIC_IDS`. That covers their ne
 
 ## New messages
 
-With `LISTEN_NEW_MESSAGES=true`, the listener saves each new message as it arrives. It stores the text, the sender, the chat, the album id, the link preview, the forward origin and the formatting.
+With `LISTEN_NEW_MESSAGES=true`, the listener saves each new message as it arrives. It stores the text, the sender, the chat, the album id, the link preview, a poll with its question, answers and results, the forward origin and the formatting.
 
 Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_MEDIA=true` the listener downloads it at once. It applies the same rules as the backup: the `DOWNLOAD_MEDIA` switch, the size cap, media types, document MIME types, YouTube previews, `SKIP_MEDIA_CHAT_IDS` and deduplication. See [Media downloads](media.md).
 
@@ -68,6 +68,12 @@ An edit that replaces the photo or file is an edit too, even with the same capti
 
 An edit that changes only the formatting, such as a word made bold, is an edit too: it saves a version with the old formatting, moves the edit time and fires the webhook, with the same old and new text. It needs an edit time newer than the stored one, since every edit moves it. The edit time counts whole seconds, and a bot can edit twice within one, so a live edit with other formatting at the stored edit time is applied too. The block tree of a Rich Text Editor message is formatting as well, and its old tree is kept in the version. An edit Telegram hides replaces no formatting. It only fills the formatting of a message archived before the archive kept formatting.
 
+## Polls and link previews
+
+A poll's votes and closing, and a link preview Telegram fills in or changes later, are kept beside the first capture. The first capture stays in the message's `raw_data`. Each later state the archive sees is added as a snapshot, and a state equal to the newest kept one adds nothing. The viewer shows the newest. See [Poll and link preview snapshots](../reference/api.md#poll-and-link-preview-snapshots).
+
+With `LISTEN_EDITS=true` the listener compares the poll and the preview of every edit event, whatever happened to the text, and keeps the poll updates Telegram sends when votes change. A poll update that names only the poll, not the message, is matched to the archived messages that hold it. That lookup reads the messages table, so its answer is kept in memory for the listener's run, and a poll the archive does not hold is not looked up again for 10 minutes. Telegram does not send a poll update for every vote in every chat, so the scheduled sync (`SYNC_DELETIONS_EDITS`) compares them too, on every message it reads, and so does a backup that reads a message again. A preview Telegram resolves only through a page update, with no edit of the message, is seen on the next such read. Live locations are not followed: they stay as first captured.
+
 ## Deletions
 
 Deletions are ignored unless `LISTEN_DELETIONS=true`. `DELETION_MODE` then decides what happens:
@@ -75,7 +81,7 @@ Deletions are ignored unless `LISTEN_DELETIONS=true`. `DELETION_MODE` then decid
 | Mode | Effect |
 |------|--------|
 | `soft` (default) | The listener marks the message deleted, keeps it, and records the first deletion time. The viewer keeps its text and marks it with a faint wash and `deleted` before its time, and lists it in **What changed**. |
-| `hard` | The message row is removed, together with its saved versions, its media rows, their transcripts and its reactions. |
+| `hard` | The message row is removed, together with its saved versions, its poll and link preview snapshots, its media rows, their transcripts and its reactions. |
 
 !!! tip "Keep evidence with soft mode"
     If the archive exists to keep a record of what was said, use `soft`. A hard deletion cannot be undone.

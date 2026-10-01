@@ -461,6 +461,34 @@ async function openReplacedMediaHistory(page) {
     await frameTopEdge(page)
 }
 
+// The demo's poll whose votes changed after the first capture and which was
+// then closed: the newest results, "Final results" and the quiet "updated"
+// note. The row is anchored for editedFrame.
+const POLL_TEXT = 'Where should we go next Sunday?'
+async function openPollSnapshot(page) {
+    await open(page)
+    await openGroup(page)
+    await centerOn(page, POLL_TEXT)
+    await frameTopEdge(page)
+    await page.locator('.message-row').filter({ hasText: POLL_TEXT }).last()
+        .evaluate((el) => { el.dataset.mockupAnchor = '1' })
+}
+
+// The demo channel's post whose link card changed after the first capture:
+// the newest card with its quiet "updated" line. Anchored for editedFrame.
+const CHANNEL = 'Harbor Town Weekly'
+const PREVIEW_TEXT = 'Longer weekend hours at the town library'
+async function openPreviewSnapshot(page) {
+    await open(page)
+    await page.locator('[data-chat-list] h3, .cursor-pointer h3').filter({ hasText: CHANNEL }).first().click()
+    await page.locator('.message-row').first().waitFor({ state: 'visible', timeout: 20000 })
+    await settle(page)
+    await centerOn(page, PREVIEW_TEXT)
+    await frameTopEdge(page)
+    await page.locator('.message-row').filter({ hasText: PREVIEW_TEXT }).last()
+        .evaluate((el) => { el.dataset.mockupAnchor = '1' })
+}
+
 // The peek: the pointer resting on the pencil of the demo's edited message.
 // The picture is cropped to the message column around it (peekFrame).
 async function openEditPeek(page) {
@@ -795,6 +823,14 @@ const desktopViews = {
         return editedFrame
     },
     '37-replaced-media': (page) => openReplacedMediaHistory(page),
+    '38-poll-snapshot': async (page) => {
+        await openPollSnapshot(page)
+        return editedFrame
+    },
+    '39-preview-snapshot': async (page) => {
+        await openPreviewSnapshot(page)
+        return editedFrame
+    },
 }
 
 const mobileViews = {
@@ -824,6 +860,8 @@ const mobileViews = {
     '34-changes-chat-mobile': (page) => openChangesForChat(page, true),
     '35-removed-reactions-mobile': (page) => openRemovedReactions(page),
     '36-removed-reactions-picture-mobile': (page) => openRemovedReactionsPicture(page),
+    '38-poll-snapshot-mobile': (page) => openPollSnapshot(page),
+    '39-preview-snapshot-mobile': (page) => openPreviewSnapshot(page),
 }
 
 // A share-link session: its own browser, opened through the link, so the

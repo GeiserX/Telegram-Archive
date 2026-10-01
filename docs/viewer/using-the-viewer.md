@@ -115,9 +115,9 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 - **Round videos** play in place as a circle, muted, while they are on screen. Click one to turn the sound on or off. They never open in the lightbox.
 - **GIFs** loop while they are on screen and pause when you scroll away.
 - **Stickers** in `.webp` show as images up to 200 px wide. Other stickers show the text "Animated Sticker".
-- **Polls and quizzes** show each answer with a percentage bar and the total votes.
+- **Polls and quizzes** show each answer with a percentage bar and the total votes, as the archive last saw them. A closed poll reads **Final results**. When the votes differ from the first capture, a quiet "updated" and the time the archive saw them follow the poll's kind; hover it for the full date. The first capture is kept.
 - **Dice, venues, invoices, stories, giveaways, live locations and games** show as a chip.
-- **Link previews** show the archived card with site name, title, description and image.
+- **Link previews** show the archived card with site name, title, description and image. When Telegram changed the card after the first capture, the newest card is shown with a quiet "updated" line and the time the archive saw it.
 
 When a file is not in the archive, a placeholder takes its place in the same shape: a photo or a video keeps its proportions, a round video its circle, and a voice message, an audio or a document its file row. A ring in the middle holds a sign for the reason, and two lines say what it is and why, with its size when the archive knows it, for example `24 MB · over the download limit`. The ring is not a button: nothing downloads from here. A file missing from the archive disk, the one fault among the reasons, shows an amber disc instead. [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer) lists each reason and the setting behind it.
 
