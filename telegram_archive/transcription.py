@@ -58,6 +58,7 @@ from typing import Any, BinaryIO
 
 import httpx
 
+from .media_integrity import REFETCH, repair_media_row
 from .message_utils import describe_exception, utcnow_naive
 from .realtime import NotificationType, RealtimeNotifier
 from .transcription_contract import (
@@ -1224,7 +1225,7 @@ async def transcribe_media(
     """One media to the server; the drain and the listener both call this.
 
     Returns ``done``, ``failed``, ``skipped``, ``submitted``, ``refused``,
-    ``unreachable``, ``stalled``, ``copied`` or ``noop``. The queued row is inserted first
+    ``unreachable``, ``stalled``, ``copied``, ``refetch`` or ``noop``. The queued row is inserted first
     (insert-if-absent, so a second call while one is open reuses it), the
     audio is hashed when the media row carries no hash, and the answer
     fills the same row: at once on the synchronous path, or with the job
@@ -1241,6 +1242,14 @@ async def transcribe_media(
     and the drain ends the run. A 413 is sent again as the Opus audio track
     when the file went out as stored, and ``skipped`` with ``too_large``
     when the track itself is refused: only that file is affected.
+
+    A media whose file is not at its path is repaired first, before any row
+    is queued: a copy already on disk is put back (``media_integrity``), and
+    a media with no copy anywhere is marked not downloaded and answers
+    ``refetch``. The next backup downloads it again and a later drain sends
+    it, so no failed row is spent on a file the archive can still get.
+    ``failed`` with ``file_missing`` is left for an entry that exists but
+    cannot be read from here.
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -1259,7 +1268,12 @@ async def transcribe_media(
     if not isinstance(max_seconds, int) or isinstance(max_seconds, bool):
         max_seconds = None
     duration = _number(media.get("duration"))
-    path = resolve_stored_media_path(media.get("file_path"), getattr(config, "media_path", ""))
+    media_root = getattr(config, "media_path", "")
+    path = resolve_stored_media_path(media.get("file_path"), media_root)
+    if not path or not os.path.isfile(path):
+        repaired = await repair_media_row(db, media, media_root, account_id=account_id)
+        if repaired == REFETCH:
+            return "refetch"
 
     async def skip(reason: str) -> str:
         row = await db.mark_media_transcript_skipped(
@@ -1568,6 +1582,7 @@ async def drain_transcriptions(
         "reconciled": 0,
         "polled": 0,
         "copied": 0,
+        "refetch": 0,
     }
     if getattr(config, "transcription_enabled", False) is not True:
         return stats
@@ -1653,7 +1668,8 @@ async def drain_transcriptions(
             # wait out the same timeouts, or get the same refusal.
             break
     logger.info(
-        "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable "
+        "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable, "
+        "%d sent back to download "
         "of %d media; %d filled from the event feed, %d from the poll",
         stats["done"],
         stats["copied"],
@@ -1662,6 +1678,7 @@ async def drain_transcriptions(
         stats["submitted"],
         stats["refused"],
         stats["unreachable"],
+        stats["refetch"],
         len(media_rows),
         stats["reconciled"],
         stats["polled"],

@@ -8,8 +8,10 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import stat
 import unicodedata
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -285,6 +287,74 @@ def resolve_shared_file_path(shared_dir: str, file_name: str, content_hash: str 
     return None
 
 
+def shared_link_target(path: str, shared_dir: str) -> str | None:
+    """The ``_shared`` path a chat-folder symlink names, or None.
+
+    None when ``path`` is not a symlink, or when the name it holds lies outside
+    ``shared_dir``. Only the link's own text is read: the target does not have
+    to exist. A link into some other store (git-annex keeps its objects under
+    ``.git/annex``) is not ours, and None keeps every caller away from it.
+    """
+    try:
+        target = os.readlink(path)
+    except OSError:
+        return None
+    if not os.path.isabs(target):
+        target = os.path.join(os.path.dirname(path), target)
+    target = os.path.normpath(target)
+    try:
+        parent = os.path.realpath(os.path.dirname(target))
+        root = os.path.realpath(shared_dir)
+    except OSError:
+        return None
+    if parent != root and not parent.startswith(root + os.sep):
+        return None
+    return os.path.join(parent, os.path.basename(target))
+
+
+def broken_shared_link_target(path: str, shared_dir: str) -> str | None:
+    """The missing ``_shared`` entry behind a broken chat-folder link, or None.
+
+    A link is broken in this sense only when the ``_shared`` entry it names is
+    gone. An entry that is present but cannot be followed from here (a
+    git-annex pointer whose object is not mounted, #143) is not broken: it is
+    trusted and left alone, as it always was.
+    """
+    target = shared_link_target(path, shared_dir)
+    if target is None or os.path.lexists(target):
+        return None
+    return target
+
+
+def place_copy(source: str, dest: str) -> None:
+    """Make ``dest`` hold the bytes of ``source``, never replacing an entry.
+
+    A hardlink when the filesystem allows one: no space is used and both names
+    keep the bytes, so neither can lose them while the other exists. Otherwise
+    a copy under a private ``.part`` name, renamed into place. Raises
+    FileExistsError when ``dest`` already exists, and OSError when neither way
+    works.
+    """
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    real = os.path.realpath(source)
+    try:
+        os.link(real, dest)
+        return
+    except FileExistsError:
+        raise
+    except OSError:
+        pass  # another device, or a filesystem without hardlinks
+    tmp = f"{dest}.{uuid.uuid4().hex}.part"
+    try:
+        shutil.copy2(real, tmp)
+        if os.path.lexists(dest):
+            raise FileExistsError(errno.EEXIST, "destination exists")
+        os.replace(tmp, dest)
+    finally:
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+
+
 async def deduplicate_shared_file(
     db: object,
     shared_file_path: str,
@@ -446,37 +516,22 @@ async def download_and_shard_media(
     # Resolve existing file in shared store (sharded or flat fallback)
     shared_file_path = resolve_shared_file_path(shared_dir, file_name, None)
 
-    if os.path.lexists(file_path):
+    # A chat link whose _shared entry is gone holds nothing. It is not trusted
+    # like a live entry: the bytes are brought back under the name the link
+    # already holds, so the link itself is never rewritten.
+    missing_target = broken_shared_link_target(file_path, shared_dir)
+
+    if os.path.lexists(file_path) and missing_target is None:
         # Chat symlink already exists — resolve hash if possible
         content_hash = None
         if shared_file_path and os.path.exists(shared_file_path):
             content_hash = await compute_file_hash_async(shared_file_path)
         return shared_file_path, content_hash
 
-    if shared_file_path:
+    if shared_file_path and (missing_target is None or os.path.isfile(shared_file_path)):
         # File exists in shared — create symlink. Hash only when target resolves.
         content_hash = await compute_file_hash_async(shared_file_path) if os.path.exists(shared_file_path) else None
-        try:
-            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-            try:
-                os.symlink(rel_path, file_path)
-            except FileExistsError:
-                pass
-            except OSError as e:
-                if e.errno == errno.EEXIST:
-                    if os.path.lexists(file_path):
-                        os.unlink(file_path)
-                    os.symlink(rel_path, file_path)
-                else:
-                    raise
-            logger.debug("Created symlink for deduplicated media")
-        except OSError as e:
-            # Type only: OSError embeds the offending path, and media paths
-            # carry the chat-id folder.
-            logger.warning(f"Symlink not supported, using direct path: {type(e).__name__}")
-            import shutil
-
-            shutil.copy2(shared_file_path, file_path)
+        _link_chat_entry(shared_file_path, chat_media_dir, file_path, missing_target, logger)
         return shared_file_path, content_hash
 
     # First time seeing this file — download to a unique .part name and KEEP the
@@ -521,34 +576,51 @@ async def download_and_shard_media(
     else:
         shared_file_path = tmp_shared_file_path
 
-    # Create symlink in chat directory (hardened for concurrent tasks)
+    _link_chat_entry(shared_file_path, chat_media_dir, file_path, missing_target, logger)
+    return shared_file_path, content_hash
+
+
+def _link_chat_entry(
+    shared_file_path: str,
+    chat_media_dir: str,
+    file_path: str,
+    missing_target: str | None,
+    logger: logging.Logger,
+) -> None:
+    """Point the chat-folder entry at a published ``_shared`` blob.
+
+    With ``missing_target`` set, the chat entry is a link whose ``_shared``
+    entry is gone: the blob is placed under that name and the link is left as
+    it is. Otherwise a relative symlink is created; an entry another task
+    created first is kept.
+
+    The blob is never moved out of ``_shared``. It is published under its final
+    name before this runs, so another chat may already link to it; moving it
+    into this chat's folder when a symlink cannot be made (2026-03 era code did
+    exactly that) left every other link to it pointing at nothing. Without
+    symlinks the chat folder gets a copy.
+    """
+    if missing_target is not None:
+        if os.path.realpath(missing_target) != os.path.realpath(shared_file_path):
+            try:
+                place_copy(shared_file_path, missing_target)
+            except FileExistsError:
+                pass  # another task restored it first
+        logger.debug("Restored the shared file behind a broken media link")
+        return
     try:
         rel_path = os.path.relpath(shared_file_path, chat_media_dir)
         try:
             os.symlink(rel_path, file_path)
         except FileExistsError:
-            # Another concurrent task already created this symlink — benign
+            # Another concurrent task already created this entry — benign
             pass
-        except OSError as e:
-            if e.errno == errno.EEXIST:
-                # Retry after removing stale entry
-                if os.path.lexists(file_path):
-                    os.unlink(file_path)
-                os.symlink(rel_path, file_path)
-            else:
-                raise
+        logger.debug("Created symlink for deduplicated media")
     except OSError as e:
-        # Type only, as in the sibling handler above: OSError stringifies with
-        # the offending path, and a media path carries the chat-id folder.
+        # Type only: OSError embeds the offending path, and media paths
+        # carry the chat-id folder.
         logger.warning(f"Symlink not supported, using direct path: {type(e).__name__}")
-        import shutil
-
-        if reused:
-            shutil.copy2(shared_file_path, file_path)
-        else:
-            shutil.move(shared_file_path, file_path)
-
-    return shared_file_path, content_hash
+        shutil.copy2(shared_file_path, file_path)
 
 
 def _photo_size_bytes(size: object) -> int:

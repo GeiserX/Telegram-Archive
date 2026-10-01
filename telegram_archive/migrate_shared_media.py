@@ -84,6 +84,12 @@ def migrate_shared_media(media_path: str) -> int:
         except OSError:
             continue
 
+    # Links named differently from the flat entry they point at: a duplicate
+    # reused an existing blob under another name (content-hash dedup). The
+    # per-name probe below cannot see them, and removing the flat entry would
+    # leave them pointing at nothing, so they are indexed once up front.
+    renamed_links = _index_renamed_flat_links(chat_dirs)
+
     migrated = 0
     deferred = 0
     for entry in flat_files:
@@ -112,7 +118,14 @@ def migrate_shared_media(media_path: str) -> int:
                     # DIFFERENT file can share the bucket and name (the bucket
                     # is only two hash characters), and relinking to it would
                     # silently swap the media's content.
-                    _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path, chat_dirs)
+                    _relink_chat_symlinks(
+                        media_path,
+                        shared_dir,
+                        entry.name,
+                        dest_path,
+                        chat_dirs,
+                        extra_links=renamed_links.get(entry.name, ()),
+                    )
                     os.remove(src_path)
                 else:
                     # Dangling link, or a different file occupying the name —
@@ -131,7 +144,15 @@ def migrate_shared_media(media_path: str) -> int:
             # only when every rollback landed — removes the bucket entry, so
             # the retry starts from the original state. A link whose rollback
             # failed stays aimed at the entry, which therefore must survive.
-            _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path, chat_dirs, unwind_path=dest_path)
+            _relink_chat_symlinks(
+                media_path,
+                shared_dir,
+                entry.name,
+                dest_path,
+                chat_dirs,
+                unwind_path=dest_path,
+                extra_links=renamed_links.get(entry.name, ()),
+            )
             os.unlink(src_path)
             migrated += 1
         except OSError:
@@ -182,6 +203,40 @@ def _create_bucket_entry(shared_dir: str, src_path: str, dest_path: str, is_syml
             raise
 
 
+def _names_flat_entry(target: str, file_name: str) -> bool:
+    """Whether a link's text names the flat ``_shared/<file_name>`` entry."""
+    old_rel_suffix = os.path.join("_shared", file_name)
+    return target.endswith(old_rel_suffix) or (
+        os.path.basename(os.path.dirname(target)) == "_shared" and os.path.basename(target) == file_name
+    )
+
+
+def _index_renamed_flat_links(chat_dirs: list[str]) -> dict[str, list[str]]:
+    """Chat-folder links that point at a flat ``_shared`` entry of ANOTHER name.
+
+    One scan of each chat folder. Links named like their entry are left out:
+    the per-name probe in ``_relink_chat_symlinks`` finds those, and leaving
+    them out keeps this index as small as the reused duplicates it exists for.
+    """
+    index: dict[str, list[str]] = {}
+    for chat_dir in chat_dirs:
+        try:
+            entries = list(os.scandir(chat_dir))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_symlink() or entry.name.endswith(".relink"):
+                continue
+            try:
+                target = os.readlink(entry.path)
+            except OSError:
+                continue
+            name = os.path.basename(target)
+            if name != entry.name and os.path.basename(os.path.dirname(target)) == "_shared":
+                index.setdefault(name, []).append(entry.path)
+    return index
+
+
 def _relink_chat_symlinks(
     media_path: str,
     shared_dir: str,
@@ -189,6 +244,7 @@ def _relink_chat_symlinks(
     new_target: str,
     chat_dirs: list[str],
     unwind_path: str | None = None,
+    extra_links: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Find and update chat-dir symlinks that pointed at the old flat shared path.
 
@@ -198,21 +254,19 @@ def _relink_chat_symlinks(
     only when EVERY rollback landed — a link whose rollback failed stays aimed
     at that entry, so removing it would dangle the link for good.
     """
-    old_rel_suffix = os.path.join("_shared", file_name)
     repointed: list[tuple[str, str]] = []
+    link_paths = [os.path.join(chat_dir, file_name) for chat_dir in chat_dirs]
+    link_paths.extend(extra_links)
 
     try:
-        for chat_dir in chat_dirs:
-            link_path = os.path.join(chat_dir, file_name)
+        for link_path in dict.fromkeys(link_paths):
             if not os.path.islink(link_path):
                 continue
 
             target = os.readlink(link_path)
             # Check if this symlink points to the old flat location
-            if target.endswith(old_rel_suffix) or (
-                os.path.basename(os.path.dirname(target)) == "_shared" and os.path.basename(target) == file_name
-            ):
-                _swap_symlink(link_path, os.path.relpath(new_target, chat_dir))
+            if _names_flat_entry(target, file_name):
+                _swap_symlink(link_path, os.path.relpath(new_target, os.path.dirname(link_path)))
                 repointed.append((link_path, target))
     except OSError:
         rollback_complete = True

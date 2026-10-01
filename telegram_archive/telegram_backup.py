@@ -56,9 +56,11 @@ from .folder_utils import (
     resolve_include_folder_chat_ids,
 )
 from .media_errors import is_media_location_error
+from .media_integrity import PRESENT, RESTORED, repair_media_row
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
+    broken_shared_link_target,
     build_media_filename,
     chat_title_for_log,
     classify_media_type,
@@ -1738,6 +1740,12 @@ class TelegramBackup:
         )
         return summary
 
+    def _broken_shared_link(self, path: str | None) -> str | None:
+        """The missing ``_shared`` entry behind a broken chat-folder link, or None."""
+        if not path:
+            return None
+        return broken_shared_link_target(path, os.path.join(self.config.media_path, "_shared"))
+
     async def _verify_and_redownload_media(self) -> None:
         """
         Verify all media files on disk and re-download missing/corrupted ones.
@@ -1762,6 +1770,7 @@ class TelegramBackup:
         missing_files = []
         corrupted_files = []
         skipped_symlinks = 0
+        broken_links = 0
         checked = 0
 
         # Phase 1: stream batches and keep only the records needing a
@@ -1781,6 +1790,11 @@ class TelegramBackup:
                 record["_resolved_path"] = file_path
                 if not file_path:
                     continue
+                # A location, contact or poll has no file to check. Older
+                # releases gave some such rows a .bin path and a link; that
+                # path is a leftover, not a missing file.
+                if record.get("type") in METADATA_ONLY_MEDIA_TYPES:
+                    continue
 
                 # Detect "truly missing" via lexists so an existing symlink
                 # whose ultimate target is unreachable (e.g. git-annex object
@@ -1793,9 +1807,16 @@ class TelegramBackup:
 
                 # Trust symlinks: their content is managed externally and may
                 # be unreachable from this process. We cannot meaningfully
-                # check size or emptiness without following the link.
+                # check size or emptiness without following the link. A link
+                # into _shared whose _shared entry is gone is the one
+                # exception: nothing anywhere holds its bytes, and trusting it
+                # is how such links survived unnoticed for months.
                 if os.path.islink(file_path):
-                    skipped_symlinks += 1
+                    if self._broken_shared_link(file_path):
+                        broken_links += 1
+                        missing_files.append(record)
+                    else:
+                        skipped_symlinks += 1
                     continue
 
                 # Check if file is empty (interrupted download)
@@ -1812,6 +1833,23 @@ class TelegramBackup:
                         corrupted_files.append(record)
 
         logger.info(f"Checked {checked} media records to verify")
+
+        # A missing file is first looked for on disk: under its name elsewhere
+        # in _shared, in the chat's other id-form folder, or at another row
+        # with the same content hash. Only what has no copy goes to Telegram.
+        restored = 0
+        if missing_files:
+            still_missing = []
+            for record in missing_files:
+                outcome = await repair_media_row(
+                    self.db, record, self.config.media_path, account_id=self.account_id, refetch=False
+                )
+                if outcome in (RESTORED, PRESENT):
+                    restored += 1
+                else:
+                    still_missing.append(record)
+            missing_files = still_missing
+            logger.info(f"Restored {restored} missing media files from copies on disk ({broken_links} broken links)")
 
         total_issues = len(missing_files) + len(corrupted_files)
         if total_issues == 0:
@@ -1906,7 +1944,14 @@ class TelegramBackup:
                         file_path = record.get("_resolved_path") or resolve_stored_media_path(
                             record.get("file_path"), self.config.media_path
                         )
-                        if not replaced and file_path and os.path.lexists(file_path):
+                        # A broken link is not sidestepped: it holds nothing, and
+                        # the download fills its _shared entry in place.
+                        if (
+                            not replaced
+                            and file_path
+                            and os.path.lexists(file_path)
+                            and not self._broken_shared_link(file_path)
+                        ):
                             backup_path = file_path + ".verify-bak"
                             os.replace(file_path, backup_path)
 
@@ -1969,7 +2014,7 @@ class TelegramBackup:
         # not because the archive lost bytes. Flipping downloaded=0 here would
         # discard a good file's pointer and queue a pointless retry — which is
         # what every imported row got, since none of them ever resolved (#310).
-        if file_path and os.path.lexists(file_path):
+        if file_path and os.path.lexists(file_path) and not self._broken_shared_link(file_path):
             return
         media_id = record.get("id")
         if media_id is None:
@@ -3592,6 +3637,52 @@ class TelegramBackup:
         except Exception as e:
             logger.warning(f"Failed to download avatar: {describe_exception(e)}")
 
+    async def _paths_still_named(self, entries: list[tuple[str, str | None]]) -> set[str]:
+        """The resolved paths among ``entries`` that a media row of any account still names.
+
+        ``entries`` pairs a resolved path with the value as stored. A row may
+        store the same file absolutely or relative to the media root, so every
+        form is asked for. On a database error every path counts as named: a
+        file is never removed on doubt.
+        """
+        if not entries:
+            return set()
+        root = os.path.abspath(self.config.media_path)
+        forms: dict[str, str] = {}
+        for resolved, stored in entries:
+            forms[resolved] = resolved
+            if stored:
+                forms[stored] = resolved
+            relative = os.path.relpath(resolved, root)
+            if not relative.startswith(".."):
+                forms[relative.replace(os.sep, "/")] = resolved
+        try:
+            named = await self.db.referenced_file_paths(list(forms))
+        except Exception as e:
+            logger.warning(f"Could not check which media files are still in use: {describe_exception(e)}")
+            return {resolved for resolved, _ in entries}
+        return {forms[value] for value in named if value in forms}
+
+    def _chat_folder_links_to(self, blob_path: str, file_name: str) -> bool:
+        """Whether any chat folder holds a link named ``file_name`` that leads to ``blob_path``.
+
+        One ``lstat`` per chat folder, never a walk of the folders. A link that
+        is not described by any row still keeps its blob.
+        """
+        media_root = self.config.media_path
+        blob_real = os.path.realpath(blob_path)
+        try:
+            folders = [e.path for e in os.scandir(media_root) if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return True  # cannot tell: keep the blob
+        for folder in folders:
+            if os.path.basename(folder) == "_shared":
+                continue
+            entry = os.path.join(folder, file_name)
+            if os.path.islink(entry) and os.path.realpath(entry) == blob_real:
+                return True
+        return False
+
     async def _cleanup_youtube_videos(self) -> None:
         """Remove YouTube link-preview videos a previous run downloaded (#440).
 
@@ -3627,18 +3718,39 @@ class TelegramBackup:
         deleted_files = 0
         deleted_symlinks = 0
         freed_bytes = 0
-        # content_hash -> file_name, so a blob referenced by several of these rows
-        # is considered exactly once after the rows are gone.
+        # file_name -> content_hash of every blob these rows name. Only a row
+        # with both is a candidate, as it always was.
         candidate_blobs: dict[str, str] = {}
+        entries: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
 
         for record in targets:
             content_hash = record.get("content_hash")
             file_name = record.get("file_name")
             if content_hash and file_name:
-                candidate_blobs.setdefault(content_hash, file_name)
-
+                candidate_blobs.setdefault(file_name, content_hash)
             file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
-            if not file_path or not os.path.lexists(file_path):
+            # Several rows can name one entry (the same video posted twice).
+            if file_path and os.path.lexists(file_path) and file_path not in seen_paths:
+                seen_paths.add(file_path)
+                entries.append((file_path, record.get("file_path")))
+
+        # Rows first, files second. A file is removed only when no row of any
+        # account names it once these rows are gone; if the rows cannot be
+        # deleted nothing is removed, and the next run tries again.
+        try:
+            deleted_records = await self.db.delete_media_records(
+                [r["id"] for r in targets], account_id=self.account_id, with_transcripts=True
+            )
+        except Exception as e:
+            logger.error(f"Could not delete YouTube link-preview media rows: {describe_exception(e)}")
+            return
+
+        kept = 0
+        still_named = await self._paths_still_named(entries)
+        for file_path, _stored in entries:
+            if file_path in still_named:
+                kept += 1
                 continue
             try:
                 if os.path.islink(file_path):
@@ -3652,34 +3764,25 @@ class TelegramBackup:
                 # Type only: an OSError message carries the chat-id folder.
                 logger.warning(f"Failed to delete a YouTube preview video: {type(e).__name__}")
 
-        try:
-            deleted_records = await self.db.delete_media_records(
-                [r["id"] for r in targets], account_id=self.account_id, with_transcripts=True
-            )
-        except Exception as e:
-            # The files are already gone and the rows are not. Stop here rather
-            # than reaping blobs against a refcount the surviving rows make
-            # wrong, and let the exception die here rather than abort the whole
-            # backup run: the next run re-reads the same rows, finds the files
-            # already absent, and retries the delete.
-            logger.error(f"Could not delete YouTube link-preview media rows: {describe_exception(e)}")
-            return
-
-        # Now that the rows are gone, any hash still counted is referenced by
-        # something we must not touch.
+        # A blob goes only when nothing refers to it any more: no row of any
+        # account by name or by content hash, and no chat-folder link.
         deleted_blobs = 0
         if candidate_blobs:
             shared_dir = os.path.join(self.config.media_path, "_shared")
             try:
-                still_referenced = await self.db.count_media_by_content_hash(list(candidate_blobs))
+                still_referenced = await self.db.count_shared_blob_references(list(candidate_blobs.items()))
             except Exception as e:
                 logger.warning(f"Skipping shared-store cleanup: {describe_exception(e)}")
                 still_referenced = dict.fromkeys(candidate_blobs, 1)  # assume referenced; never delete on doubt
-            for content_hash, file_name in candidate_blobs.items():
-                if still_referenced.get(content_hash):
+            for file_name, content_hash in candidate_blobs.items():
+                if still_referenced.get(file_name):
+                    kept += 1
                     continue
                 blob_path = resolve_shared_file_path(shared_dir, file_name, content_hash)
                 if not blob_path or os.path.islink(blob_path) or not os.path.isfile(blob_path):
+                    continue
+                if self._chat_folder_links_to(blob_path, file_name):
+                    kept += 1
                     continue
                 try:
                     blob_size = os.path.getsize(blob_path)
@@ -3688,6 +3791,8 @@ class TelegramBackup:
                     deleted_blobs += 1
                 except Exception as e:
                     logger.warning(f"Failed to delete a shared YouTube preview video: {type(e).__name__}")
+        if kept:
+            logger.info(f"Kept {kept} YouTube preview file(s) another row or link still uses")
 
         if deleted_records or deleted_files or deleted_symlinks or deleted_blobs:
             logger.info(
@@ -3721,27 +3826,39 @@ class TelegramBackup:
             deleted_records = 0
             freed_bytes = 0
 
+            entries: list[tuple[str, str | None]] = []
+            seen_paths: set[str] = set()
             for record in media_records:
                 # Imported rows never resolved here either, so the file survived
                 # while delete_media_for_chat below still dropped its row —
                 # orphaning bytes nothing in this codebase ever reclaims (#310).
                 file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
-                if file_path and os.path.exists(file_path):
-                    try:
-                        if os.path.islink(file_path):
-                            os.unlink(file_path)
-                            deleted_symlinks += 1
-                        else:
-                            freed_bytes += os.path.getsize(file_path)
-                            os.remove(file_path)
-                            deleted_files += 1
-                    except Exception as e:
-                        # Type only: the path in an OSError message carries the
-                        # chat-id folder.
-                        logger.warning(f"Failed to delete media file: {type(e).__name__}")
+                # Several rows can name one entry (the same sticker sent twice).
+                if file_path and os.path.exists(file_path) and file_path not in seen_paths:
+                    seen_paths.add(file_path)
+                    entries.append((file_path, record.get("file_path")))
 
-            # Delete all media records from database for this chat
+            # Rows first, files second: an entry another account's copy of
+            # the chat still names stays (every account's copy shares the
+            # chat folder), and a failed delete removes nothing.
             deleted_records = await self.db.delete_media_for_chat(chat_id, account_id=self.account_id)
+            still_named = await self._paths_still_named(entries)
+
+            for file_path, _stored in entries:
+                if file_path in still_named:
+                    continue
+                try:
+                    if os.path.islink(file_path):
+                        os.unlink(file_path)
+                        deleted_symlinks += 1
+                    else:
+                        freed_bytes += os.path.getsize(file_path)
+                        os.remove(file_path)
+                        deleted_files += 1
+                except Exception as e:
+                    # Type only: the path in an OSError message carries the
+                    # chat-id folder.
+                    logger.warning(f"Failed to delete media file: {type(e).__name__}")
 
             # Clean up empty chat media directory
             chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
@@ -4078,9 +4195,11 @@ class TelegramBackup:
         # adoption used to answer "downloaded: True" without ever looking at the
         # disk, so a verify pass counted a corrupted import as re-downloaded and
         # deleted the sidestepped original, destroying the only copy.
+        # A link whose _shared entry is gone holds no bytes, so it is not reused:
+        # the download below fills that entry under the name the link holds.
         if existing is not None and existing["downloaded"]:
             on_disk = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
-            if on_disk and os.path.lexists(on_disk):
+            if on_disk and os.path.lexists(on_disk) and not self._broken_shared_link(on_disk):
                 return existing
 
         # The video Telegram attaches to a YouTube link preview, when the archive
@@ -4189,16 +4308,22 @@ class TelegramBackup:
             else:
                 # No deduplication - download directly to chat directory.
                 # lexists short-circuits the download when a symlink is
-                # already recorded, even if its target is unreachable.
-                if not os.path.lexists(file_path):
+                # already recorded, even if its target is unreachable. A link
+                # left from a deduplicated period whose _shared entry is gone
+                # is the exception: the download lands under the name the link
+                # holds, and the link stays as it is.
+                missing_target = self._broken_shared_link(file_path)
+                if not os.path.lexists(file_path) or missing_target:
                     task_id = id(asyncio.current_task()) if asyncio.current_task() else 0
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     actual_path = await self._download_media_to_path(message, tmp_file_path, file_size, chat_id)
-                    file_path = finalize_atomic_download(
+                    landed = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,
-                        file_path,
+                        missing_target or file_path,
                     )
+                    if landed is None:
+                        file_path = None
                     if not file_path or not os.path.exists(file_path):
                         # Same retryable row as the dedup branch above.
                         logger.warning("Media download did not produce a file; recorded for retry")
