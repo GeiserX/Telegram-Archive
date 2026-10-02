@@ -462,6 +462,27 @@ class TestTelegramProxyConfig(unittest.TestCase):
             },
         )
 
+    def test_socks5_log_summary_retains_proxy_type_and_hides_credentials(self):
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_USERNAME": "synthetic-proxy-user",
+            "TELEGRAM_PROXY_PASSWORD": "synthetic-proxy-password",
+            "TELEGRAM_PROXY_RDNS": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            with self.assertLogs("telegram_archive.config", level="INFO") as captured:
+                config.log_summary()
+
+        output = "\n".join(captured.output)
+        self.assertIn("Telegram proxy enabled (type=socks5, rdns=True)", output)
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_USERNAME"], output)
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_PASSWORD"], output)
+
     def test_proxy_requires_required_fields(self):
         """Partial proxy configuration should fail fast."""
         env_vars = {
