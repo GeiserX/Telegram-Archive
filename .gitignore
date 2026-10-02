@@ -69,3 +69,6 @@ site/
 
 # Local viewer design rig (docs/design/rig)
 .ui-data/
+
+# Beads tracker: never published from this public repository. The tracker syncs to a private remote.
+.beads/
