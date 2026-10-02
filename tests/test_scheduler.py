@@ -1333,3 +1333,75 @@ class TestListenerRestartCatchUp:
         assert "catch_up" not in calls
         assert entry.listener is None
         assert entry.listener_task is None
+
+
+class TestCaptureModeLogging:
+    def _config(self, schedule, enable_listener=True):
+        config = MagicMock()
+        config.schedule = schedule
+        config.enable_listener = enable_listener
+        return config
+
+    def test_listener_on(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        assert capture_mode_lines(self._config("0 3 * * *")) == [
+            "Capture mode: real time; full pass on SCHEDULE (0 3 * * *)"
+        ]
+
+    def test_listener_off(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        assert capture_mode_lines(self._config("0 * * * *", enable_listener=False)) == [
+            "Capture mode: scheduled only (ENABLE_LISTENER=false); full pass on SCHEDULE (0 * * * *)"
+        ]
+
+    def test_an_hourly_pass_with_the_listener_on_gets_the_deprecation_note(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        lines = capture_mode_lines(self._config("0 * * * *"))
+
+        assert len(lines) == 2
+        assert "24 times a day" in lines[1]
+        assert "deprecated" in lines[1]
+
+    def test_the_old_six_hour_default_gets_no_note(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        assert len(capture_mode_lines(self._config("0 */6 * * *"))) == 1
+
+    def test_fires_in_next_day(self):
+        from datetime import datetime
+
+        from telegram_archive.scheduler import fires_in_next_day
+
+        start = datetime(2026, 1, 15, 7, 30).astimezone()
+        assert fires_in_next_day("0 * * * *", start) == 24
+        assert fires_in_next_day("0 3 * * *", start) == 1
+        assert fires_in_next_day("0 */6 * * *", start) == 4
+        assert fires_in_next_day("not a cron", start) is None
+
+    async def test_main_logs_exactly_one_capture_mode_line(self, caplog):
+        mock_config = MagicMock()
+        mock_config.schedule = "0 3 * * *"
+        mock_config.backup_path = "/data/backups"
+        mock_config.download_media = True
+        mock_config.chat_types = ["private"]
+        mock_config.enable_listener = True
+        mock_config.sync_deletions_edits = False
+        mock_config.accounts = []
+
+        with (
+            caplog.at_level("INFO", logger="telegram_archive.scheduler"),
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.BackupScheduler", return_value=AsyncMock()),
+        ):
+            from telegram_archive.scheduler import main
+
+            await main()
+
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Capture mode:")]
+        assert lines == ["Capture mode: real time; full pass on SCHEDULE (0 3 * * *)"]
+        assert not any("Real-time listener:" in r.getMessage() for r in caplog.records)

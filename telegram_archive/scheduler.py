@@ -2,8 +2,9 @@
 Scheduler for automated Telegram backups.
 Runs backup tasks on a configurable cron schedule.
 
-Optionally runs a real-time listener that catches message edits and deletions
-between scheduled backup runs (when ENABLE_LISTENER=true).
+Also runs the real-time listener, on by default since 9.2.0 (ENABLE_LISTENER),
+which saves new messages, edits, chat changes and reactions as they happen. The
+scheduled full pass then reconciles what the listener cannot see.
 
 SHARED CONNECTION ARCHITECTURE:
 Each configured account has a single TelegramClient shared between its backup
@@ -21,6 +22,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -699,6 +701,41 @@ class BackupScheduler:
                     loop.remove_signal_handler(signum)
 
 
+def fires_in_next_day(schedule: str, now: datetime | None = None) -> int | None:
+    """How often SCHEDULE fires in the 24 hours after ``now``; None when it does not parse."""
+    try:
+        trigger = CronTrigger.from_crontab(schedule)
+    except ValueError:
+        return None
+    start = now or datetime.now(trigger.timezone)
+    end = start + timedelta(days=1)
+    count = 0
+    fire = trigger.get_next_fire_time(None, start)
+    while fire is not None and fire < end:
+        count += 1
+        fire = trigger.get_next_fire_time(fire, fire + timedelta(microseconds=1))
+    return count
+
+
+# More full passes a day than this, with the listener on, gets the note below.
+_FREQUENT_PASSES_PER_DAY = 4
+
+
+def capture_mode_lines(config, now: datetime | None = None) -> list[str]:
+    """The startup lines that say how messages are captured: live, or only by the scheduled pass."""
+    if not config.enable_listener:
+        return [f"Capture mode: scheduled only (ENABLE_LISTENER=false); full pass on SCHEDULE ({config.schedule})"]
+    lines = [f"Capture mode: real time; full pass on SCHEDULE ({config.schedule})"]
+    fires = fires_in_next_day(config.schedule, now)
+    if fires is not None and fires > _FREQUENT_PASSES_PER_DAY:
+        lines.append(
+            f"SCHEDULE runs a full pass {fires} times a day. With the listener on, frequent full passes "
+            "are deprecated: they find little that is new and spend Telegram's rate limits. "
+            "A daily pass is enough (default 0 3 * * *)."
+        )
+    return lines
+
+
 async def main():
     """Main entry point for the scheduler."""
     try:
@@ -739,7 +776,8 @@ async def main():
                     f"+{include_count} include / -{exclude_count} exclude"
                 )
             logger.info(f"Capture scope [account {account.index}]: {scope}")
-        logger.info(f"Real-time listener: {'ENABLED' if config.enable_listener else 'disabled'}")
+        for line in capture_mode_lines(config):
+            logger.info(line)
         if config.sync_deletions_edits:
             logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
             logger.warning("   → Will re-check ALL messages for edits/deletions each run")
