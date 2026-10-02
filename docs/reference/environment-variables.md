@@ -89,16 +89,17 @@ Any non-empty `TG_ACCOUNT_<N>_API_ID`, `_API_HASH`, `_PHONE_NUMBER`, `_LABEL` or
 
 Feature page: [Log in to Telegram](../getting-started/telegram-login.md).
 
-Setting any of `TELEGRAM_PROXY_TYPE`, `_ADDR`, `_PORT`, `_USERNAME` or `_PASSWORD` turns the proxy on for every Telegram connection. `TYPE`, `ADDR` and `PORT` are then required.
+Setting any of `TELEGRAM_PROXY_TYPE`, `_ADDR`, `_PORT`, `_USERNAME`, `_PASSWORD` or `_SECRET` turns the proxy on for every Telegram connection. `TYPE`, `ADDR` and `PORT` are then required.
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="telegram_proxy_type"></span>`TELEGRAM_PROXY_TYPE` | unset | backup | Must be `socks5`, in any case. |
-| <span id="telegram_proxy_addr"></span>`TELEGRAM_PROXY_ADDR` | unset | backup | SOCKS5 host name or IP address. |
+| <span id="telegram_proxy_type"></span>`TELEGRAM_PROXY_TYPE` | unset | backup | `socks5` or `mtproxy`, in any case. |
+| <span id="telegram_proxy_addr"></span>`TELEGRAM_PROXY_ADDR` | unset | backup | Proxy host name or IP address. |
 | <span id="telegram_proxy_port"></span>`TELEGRAM_PROXY_PORT` | unset | backup | Integer from 1 to 65535. |
-| <span id="telegram_proxy_username"></span>`TELEGRAM_PROXY_USERNAME` | unset | backup | Must be set together with `TELEGRAM_PROXY_PASSWORD`. |
-| <span id="telegram_proxy_password"></span>`TELEGRAM_PROXY_PASSWORD` | unset | backup | Must be set together with `TELEGRAM_PROXY_USERNAME`. |
-| <span id="telegram_proxy_rdns"></span>`TELEGRAM_PROXY_RDNS` | `false` | backup | Resolve host names through the proxy. Boolean. It only modifies a proxy that is already on and never turns one on. |
+| <span id="telegram_proxy_username"></span>`TELEGRAM_PROXY_USERNAME` | unset | backup | SOCKS5 only. Must be set together with `TELEGRAM_PROXY_PASSWORD`; invalid for MTProxy. |
+| <span id="telegram_proxy_password"></span>`TELEGRAM_PROXY_PASSWORD` | unset | backup | SOCKS5 only. Must be set together with `TELEGRAM_PROXY_USERNAME`; invalid for MTProxy. |
+| <span id="telegram_proxy_secret"></span>`TELEGRAM_PROXY_SECRET` | unset | backup | Required for MTProxy; invalid for SOCKS5. Must be 32 hexadecimal characters, optionally prefixed with `dd`; a FakeTLS `ee` secret stops startup. Keep it in a protected `.env`. |
+| <span id="telegram_proxy_rdns"></span>`TELEGRAM_PROXY_RDNS` | `false` | backup | SOCKS5 host name resolution through the proxy. It does not enable a proxy on its own; MTProxy accepts only unset or false. |
 
 ## Schedule and paths {#schedule-and-paths}
 

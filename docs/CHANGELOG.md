@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **The backup can reach Telegram through an MTProxy.** `TELEGRAM_PROXY_TYPE=mtproxy` with `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT` and the new `TELEGRAM_PROXY_SECRET` sends every Telegram connection through a Telegram MTProxy: the login, the scheduled backup, the real-time listener and the helper scripts. The secret is 32 hexadecimal characters, optionally prefixed with `dd`, in any letter case. A FakeTLS `ee` secret, or any other form, stops startup with an error that names the variable and never shows the value. With MTProxy, a username, a password or `TELEGRAM_PROXY_RDNS=true` stops startup, and so does a secret set with SOCKS5. The secret is never logged, and `scripts/restore_chat.py` no longer logs the address it connects to. See [SOCKS5 or MTProxy transport](getting-started/telegram-login.md#socks5-or-mtproxy-transport).
+
 ## [9.0.0] - 2026-10-02
 
 The archive keeps more of what Telegram changes. An edit that replaces a photo or file keeps the old one, reactions keep every state the archive saw, and polls and link previews keep their later states. Locations, venues and contacts show as cards, the chat list shows each chat's newest message, and both chat exports list every kept version and media. `check-media` finds media files that are gone and puts them back, and `backfill-details` fills details older releases did not store. Several changes break scripts and API clients: read [Upgrading to 9.0](operations/upgrading.md#upgrading-to-90) first. The first start runs migrations 034 to 038.

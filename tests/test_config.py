@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -461,6 +462,27 @@ class TestTelegramProxyConfig(unittest.TestCase):
             },
         )
 
+    def test_socks5_log_summary_retains_proxy_type_and_hides_credentials(self):
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_USERNAME": "synthetic-proxy-user",
+            "TELEGRAM_PROXY_PASSWORD": "synthetic-proxy-password",
+            "TELEGRAM_PROXY_RDNS": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            with self.assertLogs("telegram_archive.config", level="INFO") as captured:
+                config.log_summary()
+
+        output = "\n".join(captured.output)
+        self.assertIn("Telegram proxy enabled (type=socks5, rdns=True)", output)
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_USERNAME"], output)
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_PASSWORD"], output)
+
     def test_proxy_requires_required_fields(self):
         """Partial proxy configuration should fail fast."""
         env_vars = {
@@ -531,7 +553,7 @@ class TestTelegramProxyConfig(unittest.TestCase):
         self.assertFalse(proxy["rdns"])
 
     def test_proxy_rejects_non_socks5_type(self):
-        """Only SOCKS5 is supported by this config surface."""
+        """Unsupported proxy types fail rather than silently disabling the proxy."""
         env_vars = {
             "CHAT_TYPES": "private",
             "BACKUP_PATH": self.temp_dir,
@@ -542,7 +564,7 @@ class TestTelegramProxyConfig(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
             build_telegram_proxy_from_env()
 
-        self.assertIn("TELEGRAM_PROXY_TYPE must be 'socks5'", str(ctx.exception))
+        self.assertIn("TELEGRAM_PROXY_TYPE must be 'socks5' or 'mtproxy'", str(ctx.exception))
 
     def test_proxy_rejects_invalid_rdns(self):
         """Proxy RDNS must be a boolean-like value."""
@@ -588,6 +610,209 @@ class TestTelegramProxyConfig(unittest.TestCase):
             Config()
 
         self.assertIn("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD", str(ctx.exception))
+
+    def test_mtproxy_uses_randomized_intermediate_connection(self):
+        from telethon.network.connection.tcpmtproxy import ConnectionTcpMTProxyRandomizedIntermediate
+
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "MTPROXY",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+            "TELEGRAM_PROXY_SECRET": "dd0123456789abcdef0123456789abcdef",
+            "TELEGRAM_PROXY_RDNS": "false",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            expected = {
+                "flood_sleep_threshold": 0,
+                **telegram_device_kwargs(config.telegram_device_model),
+                "connection": ConnectionTcpMTProxyRandomizedIntermediate,
+                "proxy": ("proxy.example.com", 1443, env_vars["TELEGRAM_PROXY_SECRET"]),
+            }
+            self.assertEqual(config.get_telegram_client_kwargs(), expected)
+            self.assertEqual(build_telegram_client_kwargs(), expected)
+            with self.assertLogs("telegram_archive.config", level="INFO") as captured:
+                config.log_summary()
+            self.assertIn("type=mtproxy", "\n".join(captured.output))
+            self.assertNotIn(env_vars["TELEGRAM_PROXY_SECRET"], "\n".join(captured.output))
+
+    def test_mtproxy_required_fields_and_false_rdns(self):
+        env_vars = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+            "TELEGRAM_PROXY_SECRET": "dd0123456789abcdef0123456789abcdef",
+        }
+        for rdns in ("", "false", "0", "no", "off"):
+            with self.subTest(rdns=rdns), patch.dict(os.environ, {**env_vars, "TELEGRAM_PROXY_RDNS": rdns}, clear=True):
+                self.assertEqual(build_telegram_proxy_from_env()["proxy_type"], "mtproxy")
+        for missing in ("TELEGRAM_PROXY_TYPE", "TELEGRAM_PROXY_ADDR", "TELEGRAM_PROXY_PORT"):
+            with self.subTest(missing=missing), patch.dict(os.environ, {**env_vars, missing: ""}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    build_telegram_proxy_from_env()
+                self.assertIn(missing, str(ctx.exception))
+                self.assertNotIn(env_vars["TELEGRAM_PROXY_SECRET"], str(ctx.exception))
+
+    def test_mtproxy_requires_secret_without_revealing_it(self):
+        env_vars = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+        }
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
+        self.assertIn("TELEGRAM_PROXY_SECRET is required", str(ctx.exception))
+
+    def test_mtproxy_rejects_socks_credentials(self):
+        env_vars = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+            "TELEGRAM_PROXY_SECRET": "0123456789abcdef0123456789abcdef",
+            "TELEGRAM_PROXY_USERNAME": "user",
+            "TELEGRAM_PROXY_PASSWORD": "password",
+        }
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
+        self.assertIn("invalid for MTProxy", str(ctx.exception))
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_SECRET"], str(ctx.exception))
+
+    def test_mtproxy_rejects_rdns_true(self):
+        env_vars = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+            "TELEGRAM_PROXY_SECRET": "0123456789abcdef0123456789abcdef",
+            "TELEGRAM_PROXY_RDNS": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
+        self.assertIn("TELEGRAM_PROXY_RDNS must be false", str(ctx.exception))
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_SECRET"], str(ctx.exception))
+
+    def test_mtproxy_secret_forms_keep_the_full_key(self):
+        from telethon.network.connection.tcpmtproxy import TcpMTProxy
+
+        base = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+        }
+        cases = {
+            "0123456789abcdef0123456789abcdef": "0123456789abcdef0123456789abcdef",
+            "dd0123456789abcdef0123456789abcdef": "0123456789abcdef0123456789abcdef",
+            "DD0123456789ABCDEF0123456789ABCDEF": "0123456789abcdef0123456789abcdef",
+            # Plain keys whose first byte is dd or ee: Telethon would strip it
+            # as a prefix and be left with 15 bytes.
+            "ee23456789abcdef0123456789abcdef": "ee23456789abcdef0123456789abcdef",
+            "dd23456789abcdef0123456789abcdef": "dd23456789abcdef0123456789abcdef",
+        }
+        for raw, key in cases.items():
+            with self.subTest(secret=raw), patch.dict(os.environ, {**base, "TELEGRAM_PROXY_SECRET": raw}, clear=True):
+                self.assertEqual(build_telegram_proxy_from_env()["secret"], key)
+                passed = build_telegram_client_kwargs()["proxy"][2]
+                self.assertEqual(passed, "dd" + key)
+                self.assertEqual(TcpMTProxy.normalize_secret(passed), bytes.fromhex(key))
+
+    def test_mtproxy_rejects_malformed_secret_without_revealing_it(self):
+        base = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+        }
+        key = "0123456789abcdef0123456789abcdef"
+        cases = {
+            "ee" + key + "6578616d706c652e636f6d": "FakeTLS (ee) secrets are not supported",
+            "EE" + key + "6578616d706c652e636f6d": "FakeTLS (ee) secrets are not supported",
+            key[:30]: "must be 32 hexadecimal characters",
+            key + "ab": "must be 32 hexadecimal characters",
+            "ASNFZ4mrze8BI0VniavN7w==": "must be 32 hexadecimal characters",
+            "private-proxy-secret": "must be 32 hexadecimal characters",
+        }
+        for raw, message in cases.items():
+            with self.subTest(secret=raw), patch.dict(os.environ, {**base, "TELEGRAM_PROXY_SECRET": raw}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    build_telegram_proxy_from_env()
+                self.assertIn("TELEGRAM_PROXY_SECRET", str(ctx.exception))
+                self.assertIn(message, str(ctx.exception))
+                self.assertNotIn(raw, str(ctx.exception))
+
+    def test_lone_mtproxy_secret_is_an_incomplete_proxy(self):
+        secret = "dd0123456789abcdef0123456789abcdef"
+        with (
+            patch.dict(os.environ, {"TELEGRAM_PROXY_SECRET": secret}, clear=True),
+            self.assertRaises(ValueError) as ctx,
+        ):
+            build_telegram_proxy_from_env()
+        self.assertIn("Telegram proxy configuration is incomplete", str(ctx.exception))
+        self.assertNotIn(secret, str(ctx.exception))
+
+    def test_socks5_rejects_mtproxy_secret(self):
+        env_vars = {
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_SECRET": "private-proxy-secret",
+        }
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
+        self.assertIn("TELEGRAM_PROXY_SECRET is invalid for SOCKS5", str(ctx.exception))
+        self.assertNotIn(env_vars["TELEGRAM_PROXY_SECRET"], str(ctx.exception))
+
+    def test_viewer_config_import_does_not_require_telethon(self):
+        script = (
+            "import sys; sys.modules['telethon'] = None; "
+            "from telegram_archive.config import build_telegram_proxy_from_env; "
+            "assert build_telegram_proxy_from_env() is None"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "TELEGRAM_PROXY_TYPE": "",
+                "TELEGRAM_PROXY_ADDR": "",
+                "TELEGRAM_PROXY_PORT": "",
+                "TELEGRAM_PROXY_SECRET": "",
+                "TELEGRAM_PROXY_USERNAME": "",
+                "TELEGRAM_PROXY_PASSWORD": "",
+            },
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The viewer also constructs Config when a proxy is configured;
+        # only creating a Telegram client should import Telethon.
+        script = (
+            "import sys; sys.modules['telethon'] = None; "
+            "from telegram_archive.config import Config; "
+            "config = Config(); assert config.telegram_proxy['proxy_type'] == 'mtproxy'; "
+            "config.log_summary()"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "BACKUP_PATH": self.temp_dir,
+                "SESSION_DIR": self.temp_dir,
+                "DB_PATH": os.path.join(self.temp_dir, "test.db"),
+                "CHAT_TYPES": "private",
+                "TELEGRAM_PROXY_TYPE": "mtproxy",
+                "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+                "TELEGRAM_PROXY_PORT": "1443",
+                "TELEGRAM_PROXY_SECRET": "dd0123456789abcdef0123456789abcdef",
+                # Blank, so load_dotenv cannot fill them from a developer's .env.
+                "TELEGRAM_PROXY_USERNAME": "",
+                "TELEGRAM_PROXY_PASSWORD": "",
+                "TELEGRAM_PROXY_RDNS": "",
+            },
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestSkipTopicIds(unittest.TestCase):
