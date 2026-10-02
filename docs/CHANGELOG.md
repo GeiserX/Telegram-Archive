@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.1.0] - 2026-10-02
+
+The backup can reach Telegram through an MTProxy. No migration runs and nothing changes for an install that does not set a proxy. Docker deployments only need the new pins.
+
 ### Added
 - **The backup can reach Telegram through an MTProxy.** `TELEGRAM_PROXY_TYPE=mtproxy` with `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT` and the new `TELEGRAM_PROXY_SECRET` sends every Telegram connection through a Telegram MTProxy: the login, the scheduled backup, the real-time listener and the helper scripts. The secret is 32 hexadecimal characters, optionally prefixed with `dd`, in any letter case. A FakeTLS `ee` secret, or any other form, stops startup with an error that names the variable and never shows the value. With MTProxy, a username, a password or `TELEGRAM_PROXY_RDNS=true` stops startup, and so does a secret set with SOCKS5. The secret is never logged, and `scripts/restore_chat.py` no longer logs the address it connects to. See [SOCKS5 or MTProxy transport](getting-started/telegram-login.md#socks5-or-mtproxy-transport).
 
