@@ -52,6 +52,33 @@ class TestConfig(unittest.TestCase):
             self.assertIsNone(config.api_hash)
             self.assertIsNone(config.phone)
 
+    def test_schedule_defaults_to_a_daily_pass_with_the_listener_on(self):
+        """9.2.0: the listener captures live, so the full pass only reconciles once a day."""
+        config = Config()
+
+        self.assertTrue(config.enable_listener)
+        self.assertEqual(config.schedule, "0 3 * * *")
+
+    def test_schedule_keeps_six_hours_with_the_listener_off(self):
+        """With the listener off the pass is the only capture: no quiet drop to once a day."""
+        with patch.dict(os.environ, {"ENABLE_LISTENER": "false"}):
+            self.assertEqual(Config().schedule, "0 */6 * * *")
+
+    def test_an_explicit_schedule_wins(self):
+        for listener in ("true", "false"):
+            with (
+                self.subTest(listener=listener),
+                patch.dict(os.environ, {"ENABLE_LISTENER": listener, "SCHEDULE": "0 * * * *"}),
+            ):
+                self.assertEqual(Config().schedule, "0 * * * *")
+
+    def test_an_empty_schedule_falls_back_to_the_default(self):
+        """The stock compose passes ${SCHEDULE:-}, an empty string when .env sets nothing."""
+        with patch.dict(os.environ, {"SCHEDULE": ""}):
+            self.assertEqual(Config().schedule, "0 3 * * *")
+        with patch.dict(os.environ, {"SCHEDULE": "", "ENABLE_LISTENER": "false"}):
+            self.assertEqual(Config().schedule, "0 */6 * * *")
+
     def test_validate_credentials_missing(self):
         """Test validation fails when credentials are missing."""
         # Config init will try to create dirs, so we rely on setUp's temp paths
@@ -2514,7 +2541,7 @@ class TestEventWebhookConfig(unittest.TestCase):
     def test_combination_warnings(self):
         """Startup names the exact reason a selected event can never fire."""
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
-            self._config().log_summary()  # ENABLE_LISTENER unset -> false
+            self._config(ENABLE_LISTENER="false").log_summary()
         self.assertTrue(any("ENABLE_LISTENER=false" in line for line in logs.output))
 
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:

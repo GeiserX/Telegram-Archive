@@ -687,9 +687,6 @@ class Config:
         self.api_hash = os.getenv("TELEGRAM_API_HASH")
         self.phone = os.getenv("TELEGRAM_PHONE")
 
-        # Backup schedule (cron format)
-        self.schedule = os.getenv("SCHEDULE", "0 */6 * * *")
-
         # Backup options
         self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
         self.download_media = _parse_bool_env("DOWNLOAD_MEDIA", True)
@@ -983,10 +980,19 @@ class Config:
         self.fill_gaps = _parse_bool_env("FILL_GAPS", False)
         self.gap_threshold = _parse_int_env("GAP_THRESHOLD", 50)
 
-        # Real-time listener mode
-        # When enabled, runs a background listener that catches message edits and deletions
-        # in real-time instead of batch-checking on each backup run
-        self.enable_listener = _parse_bool_env("ENABLE_LISTENER", False)
+        # Real-time listener (default ON since 9.2.0): new messages, their
+        # media, edits, chat actions and reactions are saved as they happen.
+        # The scheduled full pass below stays as a daily reconciliation.
+        self.enable_listener = _parse_bool_env("ENABLE_LISTENER", True)
+
+        # Backup schedule (cron format, process-local time, i.e. TZ). With the
+        # listener on, the full pass only reconciles what the listener cannot
+        # see (updates Telegram no longer replays after a long disconnect,
+        # reactions made from another device, chats joined while the backup was
+        # down, gap fill, the reaction re-sweep), so once a day is enough. With
+        # the listener off the pass is the only capture, so it keeps the old
+        # 6-hour default. An empty SCHEDULE falls back to the default too.
+        self.schedule = os.getenv("SCHEDULE") or ("0 3 * * *" if self.enable_listener else "0 */6 * * *")
 
         # Listener granular controls (only apply when ENABLE_LISTENER=true)
         # LISTEN_EDITS: Apply text edits to backed up messages (safe, just updates text)
@@ -1007,21 +1013,22 @@ class Config:
         # This provides true real-time backup but may increase API usage
         self.listen_new_messages = _parse_bool_env("LISTEN_NEW_MESSAGES", True)
 
-        # LISTEN_NEW_MESSAGES_MEDIA: Also download media in real-time (not just text)
-        # When disabled (default), media is marked for download on next scheduled backup
-        # When enabled, media is downloaded immediately - more API usage but instant availability
-        self.listen_new_messages_media = _parse_bool_env("LISTEN_NEW_MESSAGES_MEDIA", False)
+        # LISTEN_NEW_MESSAGES_MEDIA: Also download media in real-time (not just text).
+        # When enabled (default), media is downloaded as the message arrives.
+        # When disabled, the media row waits for the next scheduled full pass.
+        self.listen_new_messages_media = _parse_bool_env("LISTEN_NEW_MESSAGES_MEDIA", True)
 
         # LISTEN_CHAT_ACTIONS: Track chat photo changes, member joins/leaves, title changes
         # When enabled, updates to chat metadata are captured in real-time
         self.listen_chat_actions = _parse_bool_env("LISTEN_CHAT_ACTIONS", True)
 
         # LISTEN_REACTIONS: Capture message reactions in real-time (#219).
-        # DEFAULT FALSE (opt-in): reaction push is best-effort on a user client
-        # (Telegram gives no gap recovery and recommends polling), it is storm-prone
-        # on popular messages, and it captures aggregate per-emoji counts only.
-        # When off, reactions are still reconciled by the scheduled backup sweep.
-        self.listen_reactions = _parse_bool_env("LISTEN_REACTIONS", False)
+        # DEFAULT TRUE since 9.2.0. Reaction push is best-effort on a user client
+        # (reactions made from another device are not pushed reliably), bursts on
+        # popular messages are coalesced by REACTION_DEBOUNCE_SECONDS, and it
+        # captures aggregate per-emoji counts only. The scheduled full pass
+        # still reconciles reactions either way.
+        self.listen_reactions = _parse_bool_env("LISTEN_REACTIONS", True)
 
         # REACTION_DEBOUNCE_SECONDS: coalesce a burst of reaction updates for the same
         # message into one reconcile/broadcast. Each update carries the full current
@@ -1286,7 +1293,7 @@ class Config:
                 self.parallel_download_connections * self.parallel_download_part_size_kb,
             )
         if self.enable_listener:
-            logger.info("ENABLE_LISTENER enabled - will catch message edits/deletions in real-time")
+            logger.info("ENABLE_LISTENER enabled - new messages, edits and chat changes are saved as they happen")
             logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
             if self.listen_deletions:
                 if self.deletion_mode == "soft":
