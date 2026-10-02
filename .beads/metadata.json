@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "Telegram_Archive",
+  "project_id": "c0296dec-1a82-4e1c-9f57-7ea072212939"
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Strip Co-Authored-By lines from commit messages
+sed -i.bak '/Co-Authored-By/Id' "$1"
+# Remove trailing blank lines left behind
+sed -i.bak -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$1"
+rm -f "$1.bak"
