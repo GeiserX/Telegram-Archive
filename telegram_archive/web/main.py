@@ -3172,8 +3172,8 @@ async def get_chats(
         # NO limit, filtered in Python, then sliced. Every chat row in the
         # archive was materialised — each carrying the correlated MAX(date)
         # subquery — to render one page, so /api/chats went from slow to
-        # unusable as the archive grew (4,784 chats / ~2.7M messages: >120s for
-        # a viewer entitled to a single chat).
+        # unusable as the archive grew (on a large archive, >120s for a viewer
+        # entitled to a single chat).
         #
         # fold_shared is what turns two accounts' copies of one channel into
         # one row carrying both account ids (8.12). It rides into the SAME two

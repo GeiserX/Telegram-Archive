@@ -4,7 +4,7 @@ get_messages_paginated / get_all_chats' search filters both use
 ``Message.text.ILIKE('%term%')`` (leading wildcard - substring search, not a
 prefix match). A plain B-tree index can't serve that pattern at all, so every
 search was a sequential scan of the whole messages table, with cost growing
-linearly as the archive grows. Verified on a live ~100k-row instance:
+linearly as the archive grows. Verified on a live instance:
 
     EXPLAIN ANALYZE SELECT id FROM messages WHERE text ILIKE '%test%' LIMIT 20;
 
