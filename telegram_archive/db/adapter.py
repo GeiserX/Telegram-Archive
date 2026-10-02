@@ -10058,7 +10058,9 @@ class DatabaseAdapter:
 
         The retry rule reads each failed row's reason, so rows written before
         it follow it too. A failure about the file's content or the request
-        counts: three of them end the retries. A failure in
+        counts: three of them end the retries. A failure whose ``content_hash``
+        differs from the media's current one was about earlier bytes (a file
+        cut short and downloaded again since) and does not count. A failure in
         ``TRANSCRIPT_ENVIRONMENT_ERRORS`` does not count, since a repair of
         the disk or the server makes it go away. A file failure (missing,
         unreadable) qualifies on every drain; ``transcribe_media`` writes
@@ -10139,8 +10141,17 @@ class DatabaseAdapter:
             )
 
         failed_rows = failed_count()
+        # A failure about other bytes than the media holds now (a file cut
+        # short, downloaded again since) says nothing about the new file, so
+        # it does not count toward the three. The cap on failed rows in all
+        # stays as the backstop.
         counted_rows = failed_count(
-            or_(MediaTranscript.error.is_(None), MediaTranscript.error.not_in(TRANSCRIPT_ENVIRONMENT_ERRORS))
+            or_(MediaTranscript.error.is_(None), MediaTranscript.error.not_in(TRANSCRIPT_ENVIRONMENT_ERRORS)),
+            or_(
+                MediaTranscript.content_hash.is_(None),
+                Media.content_hash.is_(None),
+                MediaTranscript.content_hash == Media.content_hash,
+            ),
         )
         failed_at = func.coalesce(newest.completed_at, newest.requested_at)
         # NOT of a comparison with a NULL reason is NULL, never true: the reason is tested for NULL first.
