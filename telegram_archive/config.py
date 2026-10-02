@@ -167,7 +167,16 @@ def build_telegram_proxy_from_env() -> dict | None:
             raise ValueError("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD are invalid for MTProxy")
         if parsed_rdns:
             raise ValueError("TELEGRAM_PROXY_RDNS must be false for MTProxy")
-        return {"proxy_type": "mtproxy", "addr": proxy_addr, "port": parsed_port, "secret": proxy_secret}
+        # Telethon accepts more forms than it handles: it drops the domain of a
+        # FakeTLS ``ee`` secret, keeps an uppercase ``DD`` as key bytes, and
+        # fails only at connect for anything that is not 16 bytes. Check the
+        # format here, never echoing the value, and keep the bare 16-byte key.
+        secret = proxy_secret.lower()
+        if len(secret) > 32 and secret.startswith("ee"):
+            raise ValueError("TELEGRAM_PROXY_SECRET: FakeTLS (ee) secrets are not supported")
+        if not re.fullmatch(r"(dd)?[0-9a-f]{32}", secret):
+            raise ValueError("TELEGRAM_PROXY_SECRET must be 32 hexadecimal characters, optionally prefixed with dd")
+        return {"proxy_type": "mtproxy", "addr": proxy_addr, "port": parsed_port, "secret": secret[-32:]}
 
     if proxy_secret:
         raise ValueError("TELEGRAM_PROXY_SECRET is invalid for SOCKS5")
@@ -198,9 +207,12 @@ def _telegram_proxy_client_kwargs(proxy: dict | None) -> dict:
     if proxy["proxy_type"] == "mtproxy":
         from telethon.network.connection.tcpmtproxy import ConnectionTcpMTProxyRandomizedIntermediate
 
+        # Telethon strips a leading "dd" or "ee" before decoding. The fixed "dd"
+        # makes it strip exactly that, so a key whose own first byte is dd or
+        # ee keeps all 16 bytes; the codec is already randomized intermediate.
         return {
             "connection": ConnectionTcpMTProxyRandomizedIntermediate,
-            "proxy": (proxy["addr"], proxy["port"], proxy["secret"]),
+            "proxy": (proxy["addr"], proxy["port"], "dd" + proxy["secret"]),
         }
     return {"proxy": dict(proxy)}
 

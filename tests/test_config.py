@@ -649,7 +649,7 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_TYPE": "mtproxy",
             "TELEGRAM_PROXY_ADDR": "proxy.example.com",
             "TELEGRAM_PROXY_PORT": "1443",
-            "TELEGRAM_PROXY_SECRET": "private-proxy-secret",
+            "TELEGRAM_PROXY_SECRET": "0123456789abcdef0123456789abcdef",
             "TELEGRAM_PROXY_USERNAME": "user",
             "TELEGRAM_PROXY_PASSWORD": "password",
         }
@@ -663,13 +663,70 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_TYPE": "mtproxy",
             "TELEGRAM_PROXY_ADDR": "proxy.example.com",
             "TELEGRAM_PROXY_PORT": "1443",
-            "TELEGRAM_PROXY_SECRET": "private-proxy-secret",
+            "TELEGRAM_PROXY_SECRET": "0123456789abcdef0123456789abcdef",
             "TELEGRAM_PROXY_RDNS": "true",
         }
         with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
             build_telegram_proxy_from_env()
         self.assertIn("TELEGRAM_PROXY_RDNS must be false", str(ctx.exception))
         self.assertNotIn(env_vars["TELEGRAM_PROXY_SECRET"], str(ctx.exception))
+
+    def test_mtproxy_secret_forms_keep_the_full_key(self):
+        from telethon.network.connection.tcpmtproxy import TcpMTProxy
+
+        base = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+        }
+        cases = {
+            "0123456789abcdef0123456789abcdef": "0123456789abcdef0123456789abcdef",
+            "dd0123456789abcdef0123456789abcdef": "0123456789abcdef0123456789abcdef",
+            "DD0123456789ABCDEF0123456789ABCDEF": "0123456789abcdef0123456789abcdef",
+            # Plain keys whose first byte is dd or ee: Telethon would strip it
+            # as a prefix and be left with 15 bytes.
+            "ee23456789abcdef0123456789abcdef": "ee23456789abcdef0123456789abcdef",
+            "dd23456789abcdef0123456789abcdef": "dd23456789abcdef0123456789abcdef",
+        }
+        for raw, key in cases.items():
+            with self.subTest(secret=raw), patch.dict(os.environ, {**base, "TELEGRAM_PROXY_SECRET": raw}, clear=True):
+                self.assertEqual(build_telegram_proxy_from_env()["secret"], key)
+                passed = build_telegram_client_kwargs()["proxy"][2]
+                self.assertEqual(passed, "dd" + key)
+                self.assertEqual(TcpMTProxy.normalize_secret(passed), bytes.fromhex(key))
+
+    def test_mtproxy_rejects_malformed_secret_without_revealing_it(self):
+        base = {
+            "TELEGRAM_PROXY_TYPE": "mtproxy",
+            "TELEGRAM_PROXY_ADDR": "proxy.example.com",
+            "TELEGRAM_PROXY_PORT": "1443",
+        }
+        key = "0123456789abcdef0123456789abcdef"
+        cases = {
+            "ee" + key + "6578616d706c652e636f6d": "FakeTLS (ee) secrets are not supported",
+            "EE" + key + "6578616d706c652e636f6d": "FakeTLS (ee) secrets are not supported",
+            key[:30]: "must be 32 hexadecimal characters",
+            key + "ab": "must be 32 hexadecimal characters",
+            "ASNFZ4mrze8BI0VniavN7w==": "must be 32 hexadecimal characters",
+            "private-proxy-secret": "must be 32 hexadecimal characters",
+        }
+        for raw, message in cases.items():
+            with self.subTest(secret=raw), patch.dict(os.environ, {**base, "TELEGRAM_PROXY_SECRET": raw}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    build_telegram_proxy_from_env()
+                self.assertIn("TELEGRAM_PROXY_SECRET", str(ctx.exception))
+                self.assertIn(message, str(ctx.exception))
+                self.assertNotIn(raw, str(ctx.exception))
+
+    def test_lone_mtproxy_secret_is_an_incomplete_proxy(self):
+        secret = "dd0123456789abcdef0123456789abcdef"
+        with (
+            patch.dict(os.environ, {"TELEGRAM_PROXY_SECRET": secret}, clear=True),
+            self.assertRaises(ValueError) as ctx,
+        ):
+            build_telegram_proxy_from_env()
+        self.assertIn("Telegram proxy configuration is incomplete", str(ctx.exception))
+        self.assertNotIn(secret, str(ctx.exception))
 
     def test_socks5_rejects_mtproxy_secret(self):
         env_vars = {
@@ -727,6 +784,10 @@ class TestTelegramProxyConfig(unittest.TestCase):
                 "TELEGRAM_PROXY_ADDR": "proxy.example.com",
                 "TELEGRAM_PROXY_PORT": "1443",
                 "TELEGRAM_PROXY_SECRET": "dd0123456789abcdef0123456789abcdef",
+                # Blank, so load_dotenv cannot fill them from a developer's .env.
+                "TELEGRAM_PROXY_USERNAME": "",
+                "TELEGRAM_PROXY_PASSWORD": "",
+                "TELEGRAM_PROXY_RDNS": "",
             },
             check=False,
         )

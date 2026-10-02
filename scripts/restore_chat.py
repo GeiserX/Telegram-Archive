@@ -60,6 +60,8 @@ from telethon.errors import FloodWaitError, SlowModeWaitError
 from telegram_archive.config import build_telegram_client_kwargs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Telethon logs the connect address at INFO; with MTProxy that is the proxy host.
+logging.getLogger("telethon").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

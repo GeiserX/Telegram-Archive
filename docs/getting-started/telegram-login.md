@@ -189,7 +189,7 @@ The backup can reach Telegram through a SOCKS5 proxy or a Telegram MTProxy. Sett
 - `TELEGRAM_PROXY_TYPE` must be `socks5` or `mtproxy`, in any letter case.
 - `TELEGRAM_PROXY_PORT` must be a number from 1 to 65535.
 - For SOCKS5, `TELEGRAM_PROXY_USERNAME` and `TELEGRAM_PROXY_PASSWORD` must be set together, or not at all. `TELEGRAM_PROXY_SECRET` is invalid.
-- For MTProxy, `TELEGRAM_PROXY_SECRET` is required. Username and password are invalid, and `TELEGRAM_PROXY_RDNS` must be unset or false.
+- For MTProxy, `TELEGRAM_PROXY_SECRET` is required and must be 32 hexadecimal characters, optionally prefixed with `dd`, in any letter case. A FakeTLS `ee` secret stops startup. Username and password are invalid, and `TELEGRAM_PROXY_RDNS` must be unset or false.
 
 For SOCKS5, `TELEGRAM_PROXY_RDNS=true` makes the proxy look up host names. It has no effect unless the proxy is already on. When the proxy is on, it accepts 1/true/yes/on and 0/false/no/off, and any other value stops startup.
 
@@ -207,9 +207,9 @@ For MTProxy, use:
 TELEGRAM_PROXY_TYPE=mtproxy
 TELEGRAM_PROXY_ADDR=proxy.example.com
 TELEGRAM_PROXY_PORT=1443
-TELEGRAM_PROXY_SECRET=your-mtproxy-secret
+TELEGRAM_PROXY_SECRET=dd0123456789abcdef0123456789abcdef
 ```
 
-MTProxy uses Telethon's `ConnectionTcpMTProxyRandomizedIntermediate`. Use a 16-byte secret written as 32 hexadecimal characters, optionally prefixed with `dd`. This mode does not provide FakeTLS support for `ee` secrets.
+MTProxy uses Telethon's `ConnectionTcpMTProxyRandomizedIntermediate`, the transport for `dd` secrets, whether or not your secret carries the `dd` prefix. It does not speak FakeTLS, so proxies that accept only `ee` secrets cannot be used.
 
 The selected transport applies to every Telegram connection: the login, the scheduled backup, the real-time listener and the helper scripts. The `python-socks` library needed by SOCKS5 ships in the image and in the PyPI package. Keep proxy secrets in a protected `.env`; do not put them in command arguments or logs.
