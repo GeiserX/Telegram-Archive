@@ -417,6 +417,10 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.backup = _make_backup()
         self.backup.config.skip_media_chat_ids = set()
+        # The media folder is visibly there, with chat 1's folder in it, so a
+        # file missing from that folder is provably gone.
+        self.backup.config.media_path = self.temp_dir
+        os.makedirs(os.path.join(self.temp_dir, "1"))
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -480,7 +484,13 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
     def test_failed_redownload_of_missing_file_flips_the_row(self):
         """No file to preserve: the row must stop claiming downloaded=1."""
         self.backup.db.get_media_for_verification.return_value = [
-            {"id": "m3", "file_path": "/nonexistent/gone.jpg", "file_size": 100, "chat_id": 1, "message_id": 12}
+            {
+                "id": "m3",
+                "file_path": os.path.join(self.temp_dir, "1", "gone.jpg"),
+                "file_size": 100,
+                "chat_id": 1,
+                "message_id": 12,
+            }
         ]
         mock_msg = MagicMock()
         mock_msg.id = 12
@@ -563,7 +573,7 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
         """Missing file on disk triggers re-download attempt."""
         self.backup.db.get_media_for_verification.return_value = [
             {
-                "file_path": "/nonexistent/photo.jpg",
+                "file_path": os.path.join(self.temp_dir, "1", "photo.jpg"),
                 "file_size": 100,
                 "chat_id": 1,
                 "message_id": 10,
@@ -3356,6 +3366,11 @@ class TestVerifyMediaOuterException(unittest.TestCase):
         """Exception at chat level counts all records for that chat as failed."""
         backup = _make_backup()
         backup.config.skip_media_chat_ids = set()
+        # A media folder visibly there, or the run is skipped before any chat.
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        os.makedirs(os.path.join(media_root, "42"))
+        backup.config.media_path = media_root
 
         # Return records for one chat, then make groupby iteration fail
         records = [
@@ -3368,6 +3383,8 @@ class TestVerifyMediaOuterException(unittest.TestCase):
         backup.client.get_messages = AsyncMock(side_effect=Exception("outer chat error"))
 
         _run(backup._verify_and_redownload_media())
+
+        backup.client.get_messages.assert_awaited_once()
 
 
 # ===========================================================================

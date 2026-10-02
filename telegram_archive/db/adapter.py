@@ -149,6 +149,13 @@ class _ExportWalk:
 # changed; further apart, it is two.
 REACTION_EVENT_TOLERANCE_SECONDS = 900
 
+# The messages page returns at most this many of a message's newest reaction
+# states, plus, for each emoji, the states the viewer reads: its newest state,
+# its latest drop and the first state with a count after that drop (when it
+# came back). A busy channel post can hold hundreds of states; both exports
+# still return every one.
+PAGE_REACTION_HISTORY_LIMIT = 20
+
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again.
 TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
@@ -4509,8 +4516,10 @@ class DatabaseAdapter:
         under that id then moved to ``media_versions`` and the message's
         current media has another id and another file. So the file decides:
 
-        - the row under the id holds this file, or an unknown one, or both
-          are link previews (``_is_preview_refresh``): write there;
+        - the row under the id holds this file, or an unknown one (no
+          recorded ``telegram_file_id``; a guess from a file name does not
+          count), or both are link previews (``_is_preview_refresh``): write
+          there;
         - the id was kept as an earlier media of this very file: its file
           values are filled in the ``media_versions`` row, which had none,
           and nothing is written to the current media;
@@ -4538,8 +4547,10 @@ class DatabaseAdapter:
             )
         ).first()
         if row is not None:
-            stored = stored_media_file_id(row.telegram_file_id, row.file_name)
-            if stored is None or stored == file_id or _is_preview_refresh(row.type, media_data.get("type")):
+            # The recorded id only: an id read from an old file name is a guess
+            # and never keeps a download out of the row (reconcile_media_row).
+            stored = row.telegram_file_id
+            if stored is None or str(stored) == file_id or _is_preview_refresh(row.type, media_data.get("type")):
                 return media_id
             logger.debug("Media changed while it was downloading; the current media is left as it is")
             await self._keep_late_download(session, media_data, message, account_id=account_id)
@@ -5376,6 +5387,7 @@ class DatabaseAdapter:
                         Media.file_size,
                         Media.downloaded,
                         Media.content_hash,
+                        Media.skip_reason,
                     )
                     .where(
                         and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None)))
@@ -5399,6 +5411,7 @@ class DatabaseAdapter:
                     "file_size": r[6],
                     "downloaded": r[7],
                     "content_hash": r[8],
+                    "skip_reason": r[9],
                     "account_id": account_id,
                 }
                 for r in rows
@@ -5683,10 +5696,12 @@ class DatabaseAdapter:
         ``edit_date`` and ``edit_hide`` are the edit date and Telegram's
         hidden-edit flag of the message the caller read.
 
-        When the row holds another file and was not replaced (the read shows
-        no such edit, or the row could not be kept), it comes back with
-        ``"superseded": True``: it holds other media than the caller's, and
-        the caller must not download into it.
+        When the row holds another file by its recorded ``telegram_file_id``
+        and was not replaced (the read shows no such edit), or the row could
+        not be kept, it comes back with ``"superseded": True``: it holds other
+        media than the caller's, and the caller must not download into it. An
+        id read from an old file name is a guess: it can start a replacement
+        when the read shows an edit, and never makes a row superseded.
 
         A link preview's photo or document is not compared when the row holds
         a link preview too: Telegram crawls the page again and can serve
@@ -5753,16 +5768,20 @@ class DatabaseAdapter:
                         edit_date=edit_date,
                         edit_hide=edit_hide,
                     )
-                    if replaced is not None:
+                    if replaced is not None and not replaced.get("unkept"):
                         return replaced
                     # Not replaced here. Either another writer replaced it
                     # first (the row now holds this file), or the read shows
                     # no edit that can have replaced the media, or the row
-                    # could not be kept. Only the first may take a download.
+                    # could not be kept (``unkept``). Only the first may take
+                    # a download. Otherwise a row holds other media only when
+                    # its recorded id says so: an id read from an old file
+                    # name is a guess, and a guess never stops a download
+                    # (the row would wait for its file for good).
                     current = await self.reconcile_media_row(chat_id, message_id, None, account_id=account_id)
                     if current is not None:
-                        now = stored_media_file_id(current["telegram_file_id"], current["file_name"])
-                        if now is not None and now != str(telegram_file_id):
+                        now = current["telegram_file_id"]
+                        if replaced is not None or (now is not None and str(now) != str(telegram_file_id)):
                             current["superseded"] = True
                     return current
             if media_type and row.type != media_type:
@@ -5795,17 +5814,27 @@ class DatabaseAdapter:
         """True when a read shows an edit that can have replaced the media.
 
         Telegram moves a message's edit date when its photo or file is
-        swapped, and shows that edit. So the read must carry an edit date,
-        not hidden (a hidden edit is a reaction, #219), and not older than
-        the archived edit. The same date is allowed: the date has one-second
-        resolution and a bot can edit twice within one second. A read without
-        this evidence replaces nothing, whatever id it carries: a link preview
-        crawled again, or a stored id that does not name the file.
+        swapped, and shows that edit. So the read must carry an edit date not
+        older than the archived edit. The same date is allowed: the date has
+        one-second resolution and a bot can edit twice within one second.
+
+        A hidden edit (a reaction, #219) moves the date too and hides the edit
+        that came before it. When its date is newer than the archived edit
+        (or the message was never edited in the archive), the archive has not
+        read the message since before that date, so a photo or file swapped
+        in between shows up only as another id: that is a replacement. A
+        hidden read at the archived date or older replaces nothing.
+
+        A read without this evidence replaces nothing, whatever id it
+        carries: a link preview crawled again, or a stored id that does not
+        name the file.
         """
         read = _strip_tz(edit_date)
-        if read is None or edit_hide:
+        if read is None:
             return False
         archived = _strip_tz(message.edit_date)
+        if edit_hide:
+            return archived is None or read > archived
         return archived is None or read >= archived
 
     @staticmethod
@@ -5883,8 +5912,9 @@ class DatabaseAdapter:
 
         Returns the row as the caller should use it, or None when nothing was
         replaced: the row is gone or already holds this file (another path
-        replaced it first), the read shows no replacing edit, or the row
-        could not be kept.
+        replaced it first), or the read shows no replacing edit. A row that
+        could not be kept comes back as ``{"unkept": True}``, so
+        ``reconcile_media_row`` hands it back as superseded.
         """
         async with self.db_manager.async_session_factory() as session:
             message = await self._load_message_for_update(session, account_id, chat_id, message_id)
@@ -5977,7 +6007,7 @@ class DatabaseAdapter:
                 # new media into it, and the next read of the message tries again.
                 await session.rollback()
                 logger.warning("Could not keep replaced media as a version; the row is unchanged")
-                return None
+                return {"unkept": True}
             await session.commit()
             logger.debug("Kept replaced media as a version")
             return {
@@ -6224,6 +6254,23 @@ class DatabaseAdapter:
             stmt = update(Media).where(and_(Media.account_id == account_id, Media.id == media_id)).values(**values)
             await session.execute(stmt)
             await session.commit()
+
+    async def mark_media_downloaded(self, media_id: str, *, account_id: int) -> bool:
+        """Mark a row not downloaded as downloaded again; True when a row changed.
+
+        For ``check-media --repair``, after ``file_in_place`` found the row's own
+        file at its path: a row an outage marked, whose download attempts ran
+        out while the media volume was gone. Only ``downloaded`` changes; the
+        path, the attempt count and every other value stay as they are.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Media)
+                .where(and_(Media.account_id == account_id, Media.id == media_id, Media.downloaded == 0))
+                .values(downloaded=1)
+            )
+            await session.commit()
+            return bool(result.rowcount)
 
     async def count_capped_media_downloads(self, max_attempts: int, *, account_id: int) -> int:
         """Count downloadable media permanently skipped after hitting the retry cap (#212).
@@ -7218,7 +7265,7 @@ class DatabaseAdapter:
     # the database (PG_TSQUERY_FROM_SEARCH) and prefix terms get a flat row
     # estimate either way, so it always walks idx_messages_date backwards and
     # filters. That is 1 ms for a dense term and a full-table walk for a rare
-    # or absent one — 2 to 9 s on a 2.9M-row archive. The GIN index is the
+    # or absent one — 2 to 9 s on a large archive. The GIN index is the
     # opposite: its cost is the number of hits, so a rare term is milliseconds
     # and a single letter is over a second. So the search first asks the index
     # how many hits there are, capped, and takes the path that is bounded for
@@ -7228,7 +7275,7 @@ class DatabaseAdapter:
     # bounds — a dense term whose newest hit is millions of rows back — and
     # the sorted hit set answers when it fires. SQLite's FTS5 always drives
     # from the hit set, and sorting the keys before the joins is what keeps a
-    # common word cheap there (measured on a 155k-row archive: 87 ms against
+    # common word cheap there (measured on a mid-sized archive: 87 ms against
     # 667 ms for the joined walk), so SQLite takes that one path
     # unconditionally.
     GLOBAL_SEARCH_DENSE_HITS = 10_000
@@ -8023,84 +8070,165 @@ class DatabaseAdapter:
 
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
-            # Batch reactions: one query for the whole page instead of one
-            # get_reactions() call per message. Ties within the same emoji are
-            # broken by Reaction.id to match get_reactions' de-facto row order.
-            # The same read returns the reactions taken back (removed_at set,
-            # #219): they stay out of the live count and come back beside it as
-            # removed_reactions, so the viewer can show what the archive kept.
-            reactions_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
-            removed_by_message: dict[int, dict[str, dict[str, Any]]] = {mid: {} for mid in page_message_ids}
-            if page_message_ids:
-                reactions_stmt = (
-                    select(Reaction)
-                    .where(
-                        and_(
-                            Reaction.chat_id == chat_id,
-                            Reaction.message_id.in_(page_message_ids),
-                        )
-                    )
-                    .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
-                )
-                if account_id is not None:
-                    reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
-                reactions_result = await session.execute(reactions_stmt)
-                for r in reactions_result.scalars():
-                    if r.removed_at is not None:
-                        # One entry per emoji: the count it had when it went, and
-                        # the latest time the archive noticed it gone.
-                        removed = removed_by_message[r.message_id].get(r.emoji)
-                        if removed is None:
-                            removed_by_message[r.message_id][r.emoji] = {
-                                "emoji": r.emoji,
-                                "count": r.count or 1,
-                                "removed_at": r.removed_at,
-                            }
-                        else:
-                            removed["count"] += r.count or 1
-                            removed["removed_at"] = max(removed["removed_at"], r.removed_at)
-                        continue
-                    reactions_by_message[r.message_id].append(
-                        {"emoji": r.emoji, "user_id": r.user_id, "count": r.count}
-                    )
-
-            # Every kept state of the page's reactions (reaction_history), oldest
-            # first, from the same chat, messages and account as the rows above.
-            history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
-            if page_message_ids:
-                history_stmt = (
-                    select(ReactionHistory)
-                    .where(
-                        ReactionHistory.chat_id == chat_id,
-                        ReactionHistory.message_id.in_(page_message_ids),
-                    )
-                    .order_by(ReactionHistory.message_id, ReactionHistory.observed_at, ReactionHistory.id)
-                )
-                if account_id is not None:
-                    history_stmt = history_stmt.where(ReactionHistory.account_id == account_id)
-                for h in (await session.execute(history_stmt)).scalars():
-                    history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
-
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
 
-                reactions_by_emoji = {}
-                for reaction in reactions_by_message.get(msg["id"], []):
-                    emoji = reaction["emoji"]
-                    if emoji not in reactions_by_emoji:
-                        reactions_by_emoji[emoji] = {"emoji": emoji, "count": 0, "user_ids": []}
-                    reactions_by_emoji[emoji]["count"] += reaction.get("count", 1)
-                    if reaction.get("user_id"):
-                        reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
-                msg["reactions"] = list(reactions_by_emoji.values())
-                history = history_by_message.get(msg["id"], [])
-                msg["reaction_history"] = history
-                msg["removed_reactions"] = self._removed_reactions(
-                    history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
-                )
+            await self._attach_page_reactions(session, chat_id, messages, account_id)
 
             await self.attach_sender_accounts(messages)
             return messages
+
+    async def _attach_page_reactions(
+        self, session, chat_id: int, messages: list[dict[str, Any]], account_id: int | None
+    ) -> None:
+        """Give every row its ``reactions``, ``reaction_history`` (capped, with
+        ``reaction_history_omitted``) and ``removed_reactions``, in place.
+
+        Two statements whatever the number of rows: the reactions (live and
+        taken back) and the capped reaction history of the rows' ids
+        (``_page_reaction_history_query``), in the same chat and account. The messages page and the pinned list both call it, so the
+        same message shows the same chips in either.
+        """
+        page_message_ids = [msg["id"] for msg in messages]
+        # Batch reactions: one query for the whole page instead of one
+        # get_reactions() call per message. Ties within the same emoji are
+        # broken by Reaction.id to match get_reactions' de-facto row order.
+        # The same read returns the reactions taken back (removed_at set,
+        # #219): they stay out of the live count and come back beside it as
+        # removed_reactions, so the viewer can show what the archive kept.
+        reactions_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+        removed_by_message: dict[int, dict[str, dict[str, Any]]] = {mid: {} for mid in page_message_ids}
+        if page_message_ids:
+            reactions_stmt = (
+                select(Reaction)
+                .where(
+                    and_(
+                        Reaction.chat_id == chat_id,
+                        Reaction.message_id.in_(page_message_ids),
+                    )
+                )
+                .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
+            )
+            if account_id is not None:
+                reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
+            reactions_result = await session.execute(reactions_stmt)
+            for r in reactions_result.scalars():
+                if r.removed_at is not None:
+                    # One entry per emoji: the count it had when it went, and
+                    # the latest time the archive noticed it gone.
+                    removed = removed_by_message[r.message_id].get(r.emoji)
+                    if removed is None:
+                        removed_by_message[r.message_id][r.emoji] = {
+                            "emoji": r.emoji,
+                            "count": r.count or 1,
+                            "removed_at": r.removed_at,
+                        }
+                    else:
+                        removed["count"] += r.count or 1
+                        removed["removed_at"] = max(removed["removed_at"], r.removed_at)
+                    continue
+                reactions_by_message[r.message_id].append({"emoji": r.emoji, "user_id": r.user_id, "count": r.count})
+
+        # Every kept state of the page's reactions (reaction_history), oldest
+        # first, from the same chat, messages and account as the rows above.
+        # Capped in the query (PAGE_REACTION_HISTORY_LIMIT); ``total`` is
+        # how many states each message has, so the page can say what it cut.
+        history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+        history_totals: dict[tuple[int, int], int] = {}
+        if page_message_ids:
+            history_stmt = self._page_reaction_history_query(chat_id, page_message_ids, account_id)
+            for h in await session.execute(history_stmt):
+                history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
+                history_totals[(h.account_id, h.message_id)] = h.total
+        history_omitted: dict[int, int] = {}
+        for (_account, message_id), total in history_totals.items():
+            history_omitted[message_id] = history_omitted.get(message_id, 0) + total
+
+        for msg in messages:
+            reactions_by_emoji = {}
+            for reaction in reactions_by_message.get(msg["id"], []):
+                emoji = reaction["emoji"]
+                if emoji not in reactions_by_emoji:
+                    reactions_by_emoji[emoji] = {"emoji": emoji, "count": 0, "user_ids": []}
+                reactions_by_emoji[emoji]["count"] += reaction.get("count", 1)
+                if reaction.get("user_id"):
+                    reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
+            msg["reactions"] = list(reactions_by_emoji.values())
+            history = history_by_message.get(msg["id"], [])
+            msg["reaction_history"] = history
+            msg["reaction_history_omitted"] = history_omitted.get(msg["id"], 0) - len(history)
+            msg["removed_reactions"] = self._removed_reactions(
+                history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
+            )
+
+    @staticmethod
+    def _page_reaction_history_query(chat_id: int, message_ids: list[int], account_id: int | None):
+        """The reaction states the messages page returns, each message's oldest first.
+
+        Every state of a message within its ``PAGE_REACTION_HISTORY_LIMIT``
+        newest, and for each emoji the three states ``_removed_reactions``
+        reads whatever their age: the emoji's newest state (so an emoji with
+        history never falls back to its tombstone), its latest drop, and the
+        first state with a count after that drop. Each row also carries
+        ``total``, the number of states its message has.
+        """
+        per_message = (ReactionHistory.account_id, ReactionHistory.message_id)
+        per_emoji = (ReactionHistory.account_id, ReactionHistory.message_id, ReactionHistory.emoji)
+        conditions = [ReactionHistory.chat_id == chat_id, ReactionHistory.message_id.in_(message_ids)]
+        if account_id is not None:
+            conditions.append(ReactionHistory.account_id == account_id)
+        ranked = (
+            select(
+                ReactionHistory.id,
+                ReactionHistory.account_id,
+                ReactionHistory.message_id,
+                ReactionHistory.emoji,
+                ReactionHistory.count,
+                ReactionHistory.previous_count,
+                ReactionHistory.observed_at,
+                ReactionHistory.source,
+                func.row_number()
+                .over(
+                    partition_by=per_message, order_by=(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc())
+                )
+                .label("newest"),
+                func.row_number()
+                .over(partition_by=per_emoji, order_by=(ReactionHistory.observed_at, ReactionHistory.id))
+                .label("position"),
+                func.count().over(partition_by=per_message).label("total"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        r = ranked.c
+        emoji_of_ranked = (r.account_id, r.message_id, r.emoji)
+        is_drop = and_(r.previous_count.is_not(None), r["count"] < r.previous_count)
+        with_drop = select(
+            ranked,
+            func.max(r.position).over(partition_by=emoji_of_ranked).label("last_position"),
+            func.max(case((is_drop, r.position))).over(partition_by=emoji_of_ranked).label("drop_position"),
+        ).subquery()
+        d = with_drop.c
+        came_back = and_(d["count"] > 0, d.position > d.drop_position)
+        with_back = select(
+            with_drop,
+            func.min(case((came_back, d.position)))
+            .over(partition_by=(d.account_id, d.message_id, d.emoji))
+            .label("back_position"),
+        ).subquery()
+        b = with_back.c
+        return (
+            select(with_back)
+            .where(
+                or_(
+                    b.newest <= PAGE_REACTION_HISTORY_LIMIT,
+                    b.position == b.last_position,
+                    b.position == b.drop_position,
+                    b.position == b.back_position,
+                )
+            )
+            .order_by(b.message_id, b.observed_at, b.id)
+        )
 
     @staticmethod
     def _reaction_history_to_dict(row) -> dict[str, Any]:
@@ -8420,11 +8548,13 @@ class DatabaseAdapter:
             rows = result.all()
 
             messages = []
+            row_accounts: list[int] = []
             for row in rows:
                 msg = self._message_to_dict(row.Message)
                 msg["first_name"] = row.first_name
                 msg["last_name"] = row.last_name
                 msg["username"] = row.username
+                row_accounts.append(row.Message.account_id)
 
                 # v6.0.0: Media as nested object
                 if row.media_type:
@@ -8455,6 +8585,16 @@ class DatabaseAdapter:
 
             # One query for the whole pinned list, not one per pinned reply.
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
+
+            # The pinned-only view draws these rows with the chat's renderer, so
+            # they carry what the messages page gives a row: the newest kept poll
+            # and link preview, and the reactions with the ones taken back. Each
+            # is batched over the list, never read per row.
+            pinned_ids = [msg["id"] for msg in messages]
+            newest_snapshots = await self._newest_snapshots_of_page(session, chat_id, pinned_ids, account_id)
+            for account, msg in zip(row_accounts, messages, strict=True):
+                msg["snapshots"] = self._snapshots_for_row(msg, newest_snapshots.get((account, msg["id"]), {}))
+            await self._attach_page_reactions(session, chat_id, messages, account_id)
 
             await self.attach_sender_accounts(messages)
             return messages
@@ -8548,7 +8688,7 @@ class DatabaseAdapter:
 
         Yields message dictionaries with sender info, deleted messages
         included and marked by ``is_deleted``/``deleted_at``. Each carries
-        ``edit_date``, ``media`` (its current media, ``_export_media_dict``,
+        ``edit_date`` and its ``edit_hide`` flag, ``media`` (its current media, ``_export_media_dict``,
         never a file path) and ``versions``, every earlier text and media the
         archive kept of it (``_export_versions``, any date, oldest first). A
         message whose media has transcripts carries them all under
@@ -8559,8 +8699,10 @@ class DatabaseAdapter:
 
         ``include_media`` is for ``scripts/restore_chat.py``, which uploads
         the files again: each message also gets ``media_type`` and
-        ``media_path``, the stored path of its first media row, or None. The
-        viewer's export never passes it, so no file path leaves the archive.
+        ``media_path``, the stored path of its first media row, or None, and
+        ``media_files``, the ``type`` and ``path`` of every media row in the
+        order ``media`` lists them. The viewer's export never passes it, so no
+        file path leaves the archive.
         """
         conditions = [Message.chat_id == chat_id]
         if account_id is not None:
@@ -8580,6 +8722,7 @@ class DatabaseAdapter:
                 Message.reply_to_msg_id,
                 Message.sender_name,
                 Message.edit_date,
+                Message.edit_hide,
                 Message.is_deleted,
                 Message.deleted_at,
                 Message.raw_data,
@@ -8621,11 +8764,15 @@ class DatabaseAdapter:
                     "is_deleted": bool(row.is_deleted),
                     "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
                     "edit_date": row.edit_date.isoformat() if row.edit_date else None,
+                    # Telegram's flag for that edit_date, as the command's
+                    # export carries it: 1 when only the reactions moved it.
+                    "edit_hide": row.edit_hide if isinstance(row.edit_hide, int) else None,
                     "media": [self._export_media_dict(media_row) for media_row in media],
                 }
                 if include_media:
                     msg["media_type"] = media[0].type if media else None
                     msg["media_path"] = media[0].file_path if media else None
+                    msg["media_files"] = [{"type": media_row.type, "path": media_row.file_path} for media_row in media]
                 # A location, a contact, a poll and the other metadata-only
                 # kinds are the message's content: the card the viewer draws.
                 media_payload = _media_payloads_of(row.raw_data)

@@ -168,6 +168,7 @@ Each token login checks the presented token against every live token in turn, at
 A viewer account or share token with downloads off can read messages but cannot take files away:
 
 - Media files, thumbnails, chat exports and voice transcripts answer HTTP 403.
+- A shared contact shows its name and phone, and its vCard text is not sent.
 - A photo or a video keeps its place and proportions as a placeholder that says `hidden for this login`, or `hidden for this link` in a session opened through a share link. A voice message keeps its row, with its play button dimmed and "playback off for this login" (or "this link") beside its duration.
 - **Export chat** is not offered, and What changed shows no transcripts.
 - The lightbox has no download button, and search skips hits that match only inside a transcript.
@@ -188,7 +189,7 @@ The shipped example publishes port 8001 on every interface. It has no database v
 ```yaml
 services:
   telegram-channel-viewer:
-    image: drumsergio/telegram-archive-viewer:8.18.0
+    image: drumsergio/telegram-archive-viewer:9.0.0
     container_name: telegram-channel-viewer
     restart: unless-stopped
     ports:

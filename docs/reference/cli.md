@@ -219,7 +219,7 @@ telegram-archive [--data-dir PATH] check-media [--repair] [-c CHAT_ID]
 
 Checks every downloaded media row of every account: is its file where the row says? It reads the database and stats each row's path, a few calls per row, and never walks the media folder. It prints counts only, never ids, paths or names.
 
-A row whose path holds no file is a broken link (a link into `media/_shared` whose shared file is gone) or a missing file (nothing at the path). For each one it looks for a copy on disk, as described in [A missing shared file](../configuration/media.md#a-missing-shared-file). With `--repair`, a copy found is put back where the row points, never replacing anything, and a row with no copy is marked not downloaded, so the next backup run downloads it from Telegram. An entry this process cannot follow, such as a link into a git-annex store, is left alone and counted. A location, contact, poll or other metadata-only row has no file: it is counted as a placeholder, never as broken, and never marked to download again. Older releases gave some of these rows a `.bin` path and a link into `_shared`; that path is a leftover and stays as it is.
+A row whose path holds no file is a broken link (a link into `media/_shared` whose shared file is gone) or a missing file (nothing at the path). For each one it looks for a copy on disk, as described in [A missing shared file](../configuration/media.md#a-missing-shared-file). With `--repair`, a copy found is put back where the row points, never replacing anything, and a row with no copy is marked not downloaded, so the next backup run downloads it from Telegram. A row is marked only when the folder its path points into exists under the media folder; otherwise the file is not provably gone, and the row is counted as not marked and left as it is. A row marked not downloaded earlier whose own file is at its path again (the content hash matches, or without one the size is within 1% and the file is not empty) is counted, and `--repair` marks it downloaded again. That is the row a past outage of the media volume left behind after its download attempts ran out. An entry this process cannot follow, such as a link into a git-annex store, is left alone and counted. A location, contact, poll or other metadata-only row has no file: it is counted as a placeholder, never as broken, and never marked to download again. Older releases gave some of these rows a `.bin` path and a link into `_shared`; that path is a leftover and stays as it is.
 
 ```text
 Media check (dry run, nothing changed; run with --repair to fix):
@@ -231,7 +231,7 @@ Media check (dry run, nothing changed; run with --repair to fix):
   No copy on disk:           <n>  (--repair marks them to download again)
 ```
 
-A dry run exits 1 when it finds a broken link or a missing file, and 0 otherwise. A repair exits 0, or 1 when a copy could not be put back or a row could not be marked; the log says why. A row marked to download again keeps its path, so the download fills the target of the link it names, even when the current Telegram file name differs. When the configuration is invalid or the database cannot be reached, it prints `Media check failed: <error type>` on stderr and exits 1. It needs no Telegram session, so the backup service can keep running.
+When the media folder is missing, unreadable or empty, it prints `Media check: the media folder is not visible here (missing, unreadable or empty).`, checks and changes nothing, and exits 1. A dry run exits 1 when it finds a broken link, a missing file or a file back at its path, and 0 otherwise. A repair exits 0, or 1 when a copy could not be put back or a row could not be marked; the log says why. A row marked to download again keeps its path, so the download fills the target of the link it names, even when the current Telegram file name differs. When the configuration is invalid or the database cannot be reached, it prints `Media check failed: <error type>` on stderr and exits 1. It needs no Telegram session, so the backup service can keep running.
 
 ## list-chats { #list-chats }
 
@@ -450,7 +450,7 @@ Most of them find the database through the same variables as the application. `m
 |--------|---------|-------|
 | `auth_noninteractive.py` | Logs in without a terminal, in two steps. `send` requests the code and stores its hash beside the session file. `verify` signs in with the code, and the 2FA password when one is set. It covers the single legacy account only, from `TELEGRAM_*` variables. See [Log in to Telegram](../getting-started/telegram-login.md#log-in-without-a-terminal). | `send`, then `verify CODE [2FA_PASSWORD]`. `TELEGRAM_PHONE_CODE_HASH` can replace the stored hash. |
 | `migrate-sqlite-to-postgres.py` | Copies a SQLite archive into an empty PostgreSQL database and checks the row counts. Stop the backup container first. See [SQLite and PostgreSQL](../configuration/database.md#move-an-existing-sqlite-archive-to-postgresql). | `-s`/`--sqlite PATH`, `-p`/`--postgres URL`, `-b`/`--batch-size N` (default 1000), `-v`/`--verify-only`, `-n`/`--dry-run` |
-| `restore_chat.py` | Re-sends archived messages into a Telegram chat as the Telegram account of the session. Each message carries its original sender and time in its text. Media is uploaded again as new files. | See below. |
+| `restore_chat.py` | Re-sends archived messages into a Telegram chat as the Telegram account of the session. Each message carries its original sender and time in its text. Media is uploaded again as new files. Each file of a message becomes its own Telegram message: the first carries the text, the others follow without it, downloaded files first, then by media id, so the text is sent once. A file that hits a flood or slow-mode wait is sent again after the wait. | See below. |
 | `detect_albums.py` | Groups media sent close together into albums in older archives. | `--dry-run`, `--window SECONDS` (default 2) |
 | `deduplicate_media.py` | Moves duplicate media files into `media/_shared` and links them from the chat folders. | `--dry-run`, `-v`/`--verbose` |
 | `update_media_sizes.py` | Fills in missing media file sizes from the files on disk. | `--dry-run`, `--force` |
@@ -480,7 +480,7 @@ python scripts/restore_chat.py (--chat ID | --source-chat ID --dest-chat ID)
 | `--after` | `YYYY-MM-DD` | Only messages after this date. |
 | `--before` | `YYYY-MM-DD` | Only messages before this date. |
 | `--limit` | `N` | At most this many messages. |
-| `--delay` | `SECONDS` | Pause between messages. Default 2.0. |
+| `--delay` | `SECONDS` | Pause between messages, and between the files of one message. Default 2.0. |
 | `--no-media` | | Send text only. |
 | `--dry-run` | | Show what would be sent without sending. |
 

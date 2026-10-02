@@ -143,7 +143,7 @@ To check or run migrations by hand:
     telegram-archive --data-dir ./data migrate
     ```
 
-The newest revision is `036`, which keeps a message's earlier photo or file when an edit replaces it. There is no supported downgrade. To go back to an older release, restore the backup you took before upgrading. See [Upgrading](../operations/upgrading.md).
+The newest revision is `038`, in 9.0.0. There is no supported downgrade. To go back to an older release, restore the backup you took before upgrading. See [Upgrading](../operations/upgrading.md).
 
 ## Search
 
@@ -189,7 +189,7 @@ The backup image ships a mover script. The image entrypoint migrates the empty P
       --network telegram-archive_telegram-network \
       -v ./data/backups/telegram_backup.db:/sqlite.db:ro \
       -e DATABASE_URL=postgresql://telegram:change-me@postgres:5432/telegram_backup \
-      drumsergio/telegram-archive:8.18.0 \
+      drumsergio/telegram-archive:9.0.0 \
       python scripts/migrate-sqlite-to-postgres.py --sqlite /sqlite.db
     ```
 
@@ -215,7 +215,7 @@ Mover options:
 
 Without `--sqlite`, the mover takes the first existing file from `SQLITE_PATH`, `DATABASE_PATH`, `DATABASE_DIR/telegram_backup.db` and `DB_PATH`. Then it tries `/data/db/telegram_backup.db`, `/data/backups/telegram_backup.db` and `./telegram_backup.db`. Without `--postgres`, it uses `DATABASE_URL` when that contains `postgresql`, otherwise the `POSTGRES_*` variables, where `POSTGRES_HOST` is required.
 
-It copies each table in primary-key order and merges rows, so a row that already exists in the target is overwritten. Afterwards it resets the `media_transcripts`, `media_versions` and `reaction_history` id sequences and compares row counts table by table. The `reactions` sequence is not reset. The first new reaction after the move triggers the automatic recovery described in [Duplicate key errors on reactions](#duplicate-key-errors-on-reactions).
+It copies each table in primary-key order and merges rows, so a row that already exists in the target is overwritten. Afterwards it resets the `media_transcripts`, `media_versions`, `reaction_history` and `message_snapshots` id sequences and compares row counts table by table. The `reactions` sequence is not reset. The first new reaction after the move triggers the automatic recovery described in [Duplicate key errors on reactions](#duplicate-key-errors-on-reactions).
 
 !!! warning "Before you run the mover"
     - Point it only at an empty database.

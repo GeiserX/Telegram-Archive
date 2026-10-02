@@ -54,7 +54,7 @@ from .folder_utils import (
     resolve_include_folder_chat_ids,
 )
 from .media_errors import is_media_location_error
-from .media_integrity import PRESENT, RESTORED, repair_media_row
+from .media_integrity import PRESENT, RESTORED, missing_under_root, repair_media_row, visible_media_root
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     PAYLOAD_BACKFILL_TYPES,
@@ -645,21 +645,32 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
 
 
 def _failed_media_row(
-    media_id: str, media_type: str, message_id: int, chat_id: int, telegram_file_id: str | None = None
+    media_id: str,
+    media_type: str,
+    message_id: int,
+    chat_id: int,
+    telegram_file_id: str | None = None,
+    *,
+    keeps_flag: bool = False,
 ) -> dict:
     """The value-less media row a failed download leaves behind.
 
     downloaded=0 is what makes the failure retryable: the pending-media drain
     only sees rows, so a failure that leaves none is permanently silent. The
-    file's identity is kept, so a later edit that replaces the media is seen."""
-    return {
+    file's identity is kept, so a later edit that replaces the media is seen.
+    ``keeps_flag`` leaves the stored flag alone (no ``downloaded`` key, see
+    ``insert_media``): the row says downloaded and its file is not provably
+    gone."""
+    row = {
         "id": media_id,
         "type": media_type,
         "message_id": message_id,
         "chat_id": chat_id,
-        "downloaded": False,
         "telegram_file_id": telegram_file_id,
     }
+    if not keeps_flag:
+        row["downloaded"] = False
+    return row
 
 
 class TelegramBackup:
@@ -715,6 +726,10 @@ class TelegramBackup:
         # (#228). Loaded from the metadata KV at the start of each backup_all run
         # when FOLLOW_CHAT_MIGRATIONS is on; merged into the effective sweep scope.
         self._followed_migration_ids: set[int] = set()
+        # Ids of downloaded media rows this run found behind a broken link into
+        # _shared. Reset by each backup_all run, which ends with one count-only
+        # warning pointing at check-media.
+        self._broken_links_met: set[str] = set()
 
         logger.info("TelegramBackup initialized")
 
@@ -1068,6 +1083,7 @@ class TelegramBackup:
         This is the main entry point for scheduled backups.
         """
         self._description_fetch_paused = False  # a FloodWait pauses the fetch until the next run
+        self._broken_links_met = set()
         try:
             logger.info("Starting backup process...")
 
@@ -1635,6 +1651,7 @@ class TelegramBackup:
             logger.error(f"Backup failed: {describe_exception(e)}")
             raise
         finally:
+            self._warn_broken_media_links()
             # Always clear the in-progress flag, even on failure, so the viewer
             # doesn't show a stuck "backing up" indicator after a crash (#200).
             try:
@@ -1782,51 +1799,39 @@ class TelegramBackup:
             return None
         return broken_shared_link_target(path, os.path.join(self.config.media_path, "_shared"))
 
+    def _warn_broken_media_links(self) -> None:
+        """Tell the operator once per run that downloaded rows sit behind broken links.
+
+        Only the rows this run read are counted; nothing scans the table. An
+        archive that stored channel media before 4.0.5 can hold many more, and
+        without VERIFY_MEDIA nothing else tells the operator. With VERIFY_MEDIA
+        every row is checked and repaired each run, so there is nothing to add.
+        Count only: never a path, chat id or file name.
+        """
+        met = len(getattr(self, "_broken_links_met", ()))
+        if not met or getattr(self.config, "verify_media", False) is True:
+            return
+        logger.warning(
+            f"This run met {met} downloaded media file(s) whose link into media/_shared points at nothing. "
+            "An archive can hold more: run `telegram-archive check-media` to count them, "
+            "then `telegram-archive check-media --repair` to restore them."
+        )
+
     def _visible_media_root(self) -> str | None:
         """The real path of the media root when the archive's disk is visibly there, else None.
 
-        A missing, unreadable or empty media root means the command runs where
-        the media volume is not mounted (a host or PyPI install, a volume left
-        out, a root moved since capture). Every stored path would then read as
-        missing, so no path may be cleared on that evidence.
+        See ``media_integrity.visible_media_root``: every path that could read a
+        file as gone, and act on it, asks this first.
         """
-        root = self.config.media_path
-        try:
-            if not os.path.isdir(root):
-                return None
-            with os.scandir(root) as entries:
-                if next(entries, None) is None:
-                    return None
-        except OSError:
-            return None
-        return os.path.realpath(root)
+        return visible_media_root(self.config.media_path)
 
     @staticmethod
     def _missing_under_root(path: str, media_root: str) -> bool:
         """True when ``path`` is missing (or a dangling link) inside a visible media root.
 
-        Only a definite "no such file" counts: a permission error or a path
-        component that is not a directory says nothing about the file. The
-        parent directory must exist and lie under the media root, so a path
-        from another mount, or under a directory that is gone, is never read
-        as missing.
+        See ``media_integrity.missing_under_root``.
         """
-        try:
-            # stat() follows links: FileNotFoundError for a missing file and for a dangling link.
-            os.stat(path)
-            return False
-        except FileNotFoundError:
-            pass
-        except OSError:
-            return False
-        parent = os.path.dirname(path)
-        try:
-            if not os.path.isdir(parent):
-                return False
-            real_parent = os.path.realpath(parent)
-            return os.path.commonpath([real_parent, media_root]) == media_root
-        except OSError, ValueError:
-            return False
+        return missing_under_root(path, media_root)
 
     def _leftover_path_action(self, row: dict, media_root: str | None) -> tuple[str, dict | None]:
         """What to do with a metadata-only row's leftover ``file_path``: ("clear" | "keep", recovered contact).
@@ -2100,6 +2105,14 @@ class TelegramBackup:
         """
         logger.info("=" * 60)
         logger.info("Starting media verification...")
+        if self._visible_media_root() is None:
+            # Every stored path would read as missing, and each would be fetched
+            # again and, on failure, marked not downloaded.
+            logger.warning(
+                "Media verification skipped: the media folder is missing, unreadable or empty here. Nothing was changed"
+            )
+            logger.info("=" * 60)
+            return
 
         missing_files = []
         corrupted_files = []
@@ -2349,6 +2362,11 @@ class TelegramBackup:
         # discard a good file's pointer and queue a pointless retry — which is
         # what every imported row got, since none of them ever resolved (#310).
         if file_path and os.path.lexists(file_path) and not self._broken_shared_link(file_path):
+            return
+        # Only a file provably gone is handed back: the media folder is visibly
+        # there and the row's folder exists under it. A share that dropped
+        # mid-run makes every file read as missing.
+        if not self._missing_under_root(file_path, self._visible_media_root()):
             return
         media_id = record.get("id")
         if media_id is None:
@@ -4504,10 +4522,24 @@ class TelegramBackup:
         # deleted the sidestepped original, destroying the only copy.
         # A link whose _shared entry is gone holds no bytes, so it is not reused:
         # the download below fills that entry under the name the link holds.
+        # A row that says downloaded and whose file is not provably gone keeps
+        # that flag when a download fails: a share that dropped makes every
+        # file read as missing, and that is no evidence the file is gone.
+        keeps_flag = False
         if existing is not None and existing["downloaded"]:
             on_disk = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
-            if on_disk and os.path.lexists(on_disk) and not self._broken_shared_link(on_disk):
+            if on_disk and os.path.lexists(on_disk):
+                if not self._broken_shared_link(on_disk):
+                    return existing
+                if not hasattr(self, "_broken_links_met"):
+                    self._broken_links_met = set()
+                self._broken_links_met.add(existing["id"])
+            media_root = self._visible_media_root()
+            if media_root is None:
+                # The media folder is not visibly there: a download would land
+                # beside the volume, not on it. The row stays as it is.
                 return existing
+            keeps_flag = not self._missing_under_root(on_disk, media_root)
 
         # The video Telegram attaches to a YouTube link preview, when the archive
         # was not asked for it (#440). Declined AFTER the reuse branch above, so a
@@ -4602,7 +4634,9 @@ class TelegramBackup:
                     # None here made this failure shape permanently silent
                     # while the sibling exception path was retried every cycle.
                     logger.warning("Media download did not produce a file; recorded for retry")
-                    return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id)
+                    return _failed_media_row(
+                        media_id, media_type, message.id, chat_id, telegram_file_id, keeps_flag=keeps_flag
+                    )
 
                 # Backup-specific post-processing: update file_size from disk
                 if not shared_file_path:
@@ -4634,7 +4668,9 @@ class TelegramBackup:
                     if not file_path or not os.path.exists(file_path):
                         # Same retryable row as the dedup branch above.
                         logger.warning("Media download did not produce a file; recorded for retry")
-                        return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id)
+                        return _failed_media_row(
+                            media_id, media_type, message.id, chat_id, telegram_file_id, keeps_flag=keeps_flag
+                        )
                     logger.debug(f"Downloaded media: {file_name}")
 
                 # Update file_size and compute hash from disk
@@ -4680,7 +4716,7 @@ class TelegramBackup:
 
         except Exception as e:
             logger.error(f"Error downloading media: {describe_exception(e)}")
-            return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id)
+            return _failed_media_row(media_id, media_type, message.id, chat_id, telegram_file_id, keeps_flag=keeps_flag)
 
     def _should_parallelize(self, message, file_size: int) -> bool:
         """Decide whether this file should use the parallel chunked path.

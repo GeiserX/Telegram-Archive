@@ -1259,9 +1259,11 @@ async def transcribe_media(
     is queued: a copy already on disk is put back (``media_integrity``), and
     a media with no copy anywhere is marked not downloaded and answers
     ``refetch``. The next backup downloads it again and a later drain sends
-    it, so no failed row is spent on a file the archive can still get.
-    ``failed`` with ``file_missing`` is left for an entry that exists but
-    cannot be read from here. When the newest row already says
+    it, so no failed row is spent on a file the archive can still get. Only
+    a file provably gone is marked: with the media folder missing, unreadable
+    or empty here, or the row's folder not under it, the media row stays as
+    it is. ``failed`` with ``file_missing`` is left for that case and for an
+    entry that exists but cannot be read from here. When the newest row already says
     ``file_missing``, or ``file_unreadable``, and the file is still missing
     or unreadable, nothing is written and the answer is ``noop``: the drain
     tries again next time, and the file goes out once it is back.

@@ -39,6 +39,7 @@ from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .event_webhook import EventWebhookSender
+from .media_integrity import visible_media_root
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
@@ -88,9 +89,13 @@ _FRAME_MEDIA_KEYS = ("id", "type", "file_path", "file_name", "file_size", "mime_
 
 # The UpdateMessagePoll lookup cache (TelegramListener._poll_messages): how
 # many polls it holds, and how long a poll not found in the archive is not
-# looked up again.
+# looked up again. Each lookup reads the whole messages table, and the polls
+# not found are mostly in chats the archive does not keep, so a miss is kept
+# for hours. A poll this listener stores replaces its miss at once; the
+# backup's later reads and the sync compare the poll of every message they
+# read, and a poll's closing arrives as an edit, which needs no lookup.
 POLL_LOOKUP_CACHE_SIZE = 4096
-POLL_LOOKUP_MISS_SECONDS = 600
+POLL_LOOKUP_MISS_SECONDS = 6 * 60 * 60
 
 
 class MassOperationProtector:
@@ -1010,6 +1015,10 @@ class TelegramListener:
                 else None
             )
             if on_disk and os.path.lexists(on_disk):
+                return existing
+            if existing and existing.get("downloaded") and visible_media_root(self.config.media_path) is None:
+                # The media folder is not visibly there: the file is not known
+                # to be gone, and a download would land beside the volume.
                 return existing
             download_result = await self._download_media(message, chat_id)
             if not download_result:

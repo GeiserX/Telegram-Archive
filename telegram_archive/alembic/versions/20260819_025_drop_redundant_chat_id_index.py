@@ -13,7 +13,7 @@ get_pinned_messages, toggle_pinned, delete_chat_messages, the per-day
 export branches): none of them stop at chat_id alone without also ordering
 or bounding by date/id/is_pinned.
 
-Confirmed via ``pg_stat_user_indexes`` on a live ~385k-row archive:
+Confirmed via ``pg_stat_user_indexes`` on a live archive:
 ``idx_messages_chat_id`` sat at 0 scans while ``idx_messages_chat_id_id`` and
 ``idx_messages_chat_date_desc`` carried hundreds of thousands between them -
 the planner was already skipping the narrower index in favor of the

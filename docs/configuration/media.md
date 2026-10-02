@@ -113,7 +113,9 @@ The archive repairs both without asking Telegram when a copy is already on disk.
 
 With no copy on disk, the row is marked not downloaded and the next backup downloads it from Telegram. The download fills the `_shared` file under the name the link holds.
 
-Three places repair: [`check-media`](../reference/cli.md#check-media) checks every row and repairs with `--repair`, `VERIFY_MEDIA` repairs what it finds, and the transcription drain repairs a file before it sends it. A link into another store that this process cannot follow, such as a git-annex object outside the mount, is never touched. Locations, contacts, polls and the other metadata-only kinds have no file at all, so an old `.bin` path or link on such a row is never repaired or fetched.
+A row is marked only when its file is provably gone: the media folder is there and not empty, and the folder the row points into exists under it. A media volume that is not mounted, or a network share that dropped, makes every file look missing, so on that evidence no row changes. A row whose folder is gone, or whose path lies outside the media folder, is left as it is too.
+
+Three places repair: [`check-media`](../reference/cli.md#check-media) checks every row and repairs with `--repair`, `VERIFY_MEDIA` repairs what it finds, and the transcription drain repairs a file before it sends it. Without `VERIFY_MEDIA`, a backup run that reads a downloaded row behind a broken link fetches it again, where the media settings allow, and ends with one warning: how many it met, and the `check-media` command to run. It counts only the rows the run reads, so run `check-media` to find the rest. A link into another store that this process cannot follow, such as a git-annex object outside the mount, is never touched. Locations, contacts, polls and the other metadata-only kinds have no file at all, so an old `.bin` path or link on such a row is never repaired or fetched.
 
 With `DEDUPLICATE_MEDIA=false`, files go straight into `media/<chat_id>/`. A file that already exists there is never downloaded again.
 
@@ -160,7 +162,7 @@ Time spent waiting out a FloodWait during a download counts toward `DOWNLOAD_TIM
 
 ### Across runs
 
-A failed download leaves a pending row. At the end of every run, a retry pass takes up to 1000 pending rows for each account, fewest attempts first. Each failed retry adds one attempt. A message that was deleted, or no longer carries media, also spends an attempt. After `MEDIA_MAX_DOWNLOAD_ATTEMPTS` failed attempts, `5` by default, the file is no longer retried.
+A failed download leaves a pending row. A failed download of a file a row already holds, at a path that is not provably empty (the media folder is not there, or the row's folder is gone), leaves the row as it was. At the end of every run, a retry pass takes up to 1000 pending rows for each account, fewest attempts first. Each failed retry adds one attempt. A message that was deleted, or no longer carries media, also spends an attempt. After `MEDIA_MAX_DOWNLOAD_ATTEMPTS` failed attempts, `5` by default, the file is no longer retried.
 
 The run logs a warning with the number of files that gave up. Archive status in the viewer counts them as "Gave up after retries". See [Archive status](../viewer/using-the-viewer.md#archive-status). The viewer reads `MEDIA_MAX_DOWNLOAD_ATTEMPTS` to count these files, so set the same value in the viewer's environment block. See [Environment variables](../reference/environment-variables.md#media).
 
@@ -172,8 +174,9 @@ The run logs a warning with the number of files that gave up. Archive status in 
 - A missing file, a broken link included, is first restored from a copy on disk. See [A missing shared file](#a-missing-shared-file).
 - A symlink into `_shared` whose shared file is gone is a missing file. Other symlinks are trusted and not checked.
 - A damaged file is moved aside to `.verify-bak` and put back if the new download fails.
-- A missing file whose download fails goes back to pending, so the retry pass picks it up.
+- A missing file whose download fails goes back to pending, so the retry pass picks it up, when its folder exists under the media folder.
 - Chats in `SKIP_MEDIA_CHAT_IDS` are skipped.
+- When the media folder is missing, unreadable or empty, verification is skipped with a warning and nothing changes.
 
 Verification reads every media row on every run. Turn it on for one run after a disk problem or a restore, then turn it off again.
 

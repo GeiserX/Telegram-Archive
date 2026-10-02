@@ -486,6 +486,7 @@ const clearMessageVersionsCache = () => {{}}
 const isVersionsPanelOpenFor = () => false
 const isEditPeekFor = () => false
 const loadMessageVersions = () => {{}}
+const mediaRevision = {{ value: 0 }}
 const handle = (data) => {{
     switch (data.type) {{
         {_block("case 'edit':", "case 'reaction':")}
@@ -519,6 +520,29 @@ handle({json.dumps(frame)})
         frame_without = {key: value for key, value in self._MEDIA_FRAME.items() if key != "media"}
         out = self._handle(msg, frame_without)
         self.assertEqual(out["media"], self._OLD_MEDIA)
+
+    def test_a_replacing_edit_tells_the_gif_watcher_once_and_a_text_edit_does_not(self) -> None:
+        """A GIF or round video loads only once the watcher observes its element,
+        and the watcher runs on the list or on mediaRevision: the swap bumps it."""
+        msg = {"id": 5, "text": "Look", "version_count": 0, "media": self._OLD_MEDIA}
+        pinned = [{"id": 5, "text": "Look", "version_count": 0, "media": self._OLD_MEDIA}]
+        revision = self._handle(msg, self._MEDIA_FRAME, pinned=pinned, expression="mediaRevision.value")
+        self.assertGreaterEqual(revision, 1)
+        frame_without = {key: value for key, value in self._MEDIA_FRAME.items() if key != "media"}
+        self.assertEqual(self._handle(msg, frame_without, expression="mediaRevision.value"), 0)
+
+    def test_every_video_element_is_keyed_by_its_media_url(self) -> None:
+        """A replaced clip keeps its element type, so Vue would patch the same
+        <video>: a <source> src change never reloads it, and the lazy loader sets
+        a GIF's src only once. Keyed by the URL (the replacement adds ?v=), the new
+        clip gets a new element."""
+        videos = [chunk.split(">", 1)[0] for chunk in HTML.split("<video")[1:]]
+        # A <video :src> (the info panel, the lightbox) reloads when its src changes;
+        # the bubble's four load through a <source> or data-src and need the key.
+        bubble = [tag for tag in videos if "getMediaUrl(" in tag and ':src="' not in tag]
+        self.assertEqual(len(bubble), 4, bubble)
+        for tag in bubble:
+            self.assertRegex(tag, r':key="getMediaUrl\((msg|albumMsg)\)"', tag)
 
     def test_a_pinned_row_takes_the_edit_too(self) -> None:
         """The pinned-only list holds its own copy of the row, which no refresh of
