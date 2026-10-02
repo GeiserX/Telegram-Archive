@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.0.0
+        image: drumsergio/telegram-archive:9.1.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.0.0
+        image: drumsergio/telegram-archive-viewer:9.1.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.0.0`, `v9.0.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.1.0`, `v9.1.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
 | 9.0.0 | Scripts that read a chat export must change, and so must readers of `raw_data.poll`, `raw_data.webpage` and `raw_data.entities`, `/ws/updates` clients, and scripts that press the transcript button many times as a viewer login. The first start runs migrations 034 to 038; on a large archive it takes longer. After it, run `telegram-archive check-media` once, and `telegram-archive backfill-details --apply` once with the backup stopped. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
 | 8.17.0 | Migration 033 runs on start. The module is now `telegram_archive`, and `python -m src` keeps working. See [Upgrading to 8.17.0](#upgrading-to-8170). |
