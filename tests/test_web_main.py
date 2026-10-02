@@ -1095,6 +1095,35 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
         # The writer's payload is left as it was.
         self.assertEqual(message["media"]["id"], "-1000000000042_9_photo")
 
+    async def test_a_new_message_frame_keeps_a_contact_s_vcard_from_a_no_download_login(self):
+        """A shared contact's vCard text rides raw_data. The full login's frame keeps
+        it; the frame for a login whose downloads are off drops it and keeps the
+        name and phone the card shows, as the messages route does."""
+        contact = {"first_name": "Demo", "last_name": "Contact", "phone_number": "15550100", "vcard": "BEGIN:VCARD"}
+        message = {"id": 9, "text": "", "raw_data": {"contact": contact, "entities": []}}
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "data": {"message": message}}
+            )
+
+        frame = mock_bc.call_args[0][1]
+        self.assertEqual(frame["message"]["raw_data"]["contact"]["vcard"], "BEGIN:VCARD")
+        locked = mock_bc.call_args.kwargs["no_download_message"]["message"]
+        self.assertNotIn("vcard", locked["raw_data"]["contact"])
+        self.assertEqual(locked["raw_data"]["contact"]["phone_number"], "15550100")
+        self.assertEqual(locked["raw_data"]["entities"], [])
+        # The writer's payload is left as it was.
+        self.assertEqual(message["raw_data"]["contact"]["vcard"], "BEGIN:VCARD")
+
+    async def test_a_new_message_frame_with_nothing_to_hide_has_one_shape(self):
+        """No media and no vCard: every login gets the same frame."""
+        message = {"id": 9, "text": "hi", "raw_data": {"contact": {"first_name": "Demo", "phone_number": "1"}}}
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "data": {"message": message}}
+            )
+        self.assertIsNone(mock_bc.call_args.kwargs["no_download_message"])
+
     async def test_an_edit_frame_without_entities_says_nothing_about_them(self):
         """A frame whose text was cut to fit carries no entities; the relay adds none."""
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:

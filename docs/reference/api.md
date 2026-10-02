@@ -132,7 +132,7 @@ Master routes answer 403 `Admin access required` to everyone else. They also ans
 
 A chat route answers the same 404 `Chat not found` for a ref that does not exist, a malformed ref and a chat the caller may not see. What a caller may see combines the operator's `DISPLAY_CHAT_IDS` filter with the caller's `allowed_accounts` and `allowed_chat_refs` grants.
 
-Logins with `no_download` set get 403 `Downloads disabled for this account` on media bytes, thumbnails, transcript routes and export. In message payloads their media `file_path` and `url` are `null`, `downloaded` is `false` and transcripts are removed. Avatars stay available to them.
+Logins with `no_download` set get 403 `Downloads disabled for this account` on media bytes, thumbnails, transcript routes and export. In message payloads their media `file_path` and `url` are `null`, `downloaded` is `false`, transcripts are removed and a shared contact's `raw_data.contact.vcard` is left out. Avatars stay available to them.
 
 ## Health and status
 
@@ -221,7 +221,7 @@ All of these need a login that can see the chat.
 |-----------------|-----------|----------|
 | `GET /api/chats/{chat_ref}/messages` | `limit` default 50, 1 to 500. `offset`. `search`. `topic_id`. `deleted_only` and `edited_only`, default false. Cursor: `before_date` plus `before_id`, `before_id` alone, or `after_id`. See [Paging through messages](#paging-through-messages). | A JSON array of messages, newest first |
 | `GET /api/chats/{chat_ref}/messages/{message_id}/versions` | `limit` default 100, up to 500 | Earlier versions of an edited message, newest first: `[{chat_id, message_id, text, date, captured_at, source, entities, rich_message}]`, with `media` on a version whose photo or file an edit replaced. See [Message versions](#message-versions) |
-| `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first |
+| `GET /api/chats/{chat_ref}/pinned` | None | Pinned messages, newest first, each with the `snapshots`, `reactions`, `removed_reactions`, `reaction_history` and `reaction_history_omitted` the messages route gives it |
 | `GET /api/chats/{chat_ref}/messages/by-date` | `date` as `YYYY-MM-DD`. `timezone` as an IANA name, optional; defaults to the viewer's configured timezone. `topic_id`. | The first message on or after local midnight of that day, or 404 |
 | `GET /api/chats/{chat_ref}/messages/dates` | `month` as `YYYY-MM` and `timezone`, both required. `topic_id`. | `{month, timezone, topic_id, dates: ["YYYY-MM-DD", ...]}` |
 | `GET /api/chats/{chat_ref}/topics` | None | `{topics}` for a forum chat |
