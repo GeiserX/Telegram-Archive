@@ -149,6 +149,13 @@ class _ExportWalk:
 # changed; further apart, it is two.
 REACTION_EVENT_TOLERANCE_SECONDS = 900
 
+# The messages page returns at most this many of a message's newest reaction
+# states, plus, for each emoji, the states the viewer reads: its newest state,
+# its latest drop and the first state with a count after that drop (when it
+# came back). A busy channel post can hold hundreds of states; both exports
+# still return every one.
+PAGE_REACTION_HISTORY_LIMIT = 20
+
 # Media transcripts (032). ``status`` only advances along this rank; a row at
 # a terminal status is never written again.
 TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
@@ -8106,20 +8113,18 @@ class DatabaseAdapter:
 
             # Every kept state of the page's reactions (reaction_history), oldest
             # first, from the same chat, messages and account as the rows above.
+            # Capped in the query (PAGE_REACTION_HISTORY_LIMIT); ``total`` is
+            # how many states each message has, so the page can say what it cut.
             history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+            history_totals: dict[tuple[int, int], int] = {}
             if page_message_ids:
-                history_stmt = (
-                    select(ReactionHistory)
-                    .where(
-                        ReactionHistory.chat_id == chat_id,
-                        ReactionHistory.message_id.in_(page_message_ids),
-                    )
-                    .order_by(ReactionHistory.message_id, ReactionHistory.observed_at, ReactionHistory.id)
-                )
-                if account_id is not None:
-                    history_stmt = history_stmt.where(ReactionHistory.account_id == account_id)
-                for h in (await session.execute(history_stmt)).scalars():
+                history_stmt = self._page_reaction_history_query(chat_id, page_message_ids, account_id)
+                for h in await session.execute(history_stmt):
                     history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
+                    history_totals[(h.account_id, h.message_id)] = h.total
+            history_omitted: dict[int, int] = {}
+            for (_account, message_id), total in history_totals.items():
+                history_omitted[message_id] = history_omitted.get(message_id, 0) + total
 
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
@@ -8135,12 +8140,82 @@ class DatabaseAdapter:
                 msg["reactions"] = list(reactions_by_emoji.values())
                 history = history_by_message.get(msg["id"], [])
                 msg["reaction_history"] = history
+                msg["reaction_history_omitted"] = history_omitted.get(msg["id"], 0) - len(history)
                 msg["removed_reactions"] = self._removed_reactions(
                     history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
                 )
 
             await self.attach_sender_accounts(messages)
             return messages
+
+    @staticmethod
+    def _page_reaction_history_query(chat_id: int, message_ids: list[int], account_id: int | None):
+        """The reaction states the messages page returns, each message's oldest first.
+
+        Every state of a message within its ``PAGE_REACTION_HISTORY_LIMIT``
+        newest, and for each emoji the three states ``_removed_reactions``
+        reads whatever their age: the emoji's newest state (so an emoji with
+        history never falls back to its tombstone), its latest drop, and the
+        first state with a count after that drop. Each row also carries
+        ``total``, the number of states its message has.
+        """
+        per_message = (ReactionHistory.account_id, ReactionHistory.message_id)
+        per_emoji = (ReactionHistory.account_id, ReactionHistory.message_id, ReactionHistory.emoji)
+        conditions = [ReactionHistory.chat_id == chat_id, ReactionHistory.message_id.in_(message_ids)]
+        if account_id is not None:
+            conditions.append(ReactionHistory.account_id == account_id)
+        ranked = (
+            select(
+                ReactionHistory.id,
+                ReactionHistory.account_id,
+                ReactionHistory.message_id,
+                ReactionHistory.emoji,
+                ReactionHistory.count,
+                ReactionHistory.previous_count,
+                ReactionHistory.observed_at,
+                ReactionHistory.source,
+                func.row_number()
+                .over(
+                    partition_by=per_message, order_by=(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc())
+                )
+                .label("newest"),
+                func.row_number()
+                .over(partition_by=per_emoji, order_by=(ReactionHistory.observed_at, ReactionHistory.id))
+                .label("position"),
+                func.count().over(partition_by=per_message).label("total"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        r = ranked.c
+        emoji_of_ranked = (r.account_id, r.message_id, r.emoji)
+        is_drop = and_(r.previous_count.is_not(None), r["count"] < r.previous_count)
+        with_drop = select(
+            ranked,
+            func.max(r.position).over(partition_by=emoji_of_ranked).label("last_position"),
+            func.max(case((is_drop, r.position))).over(partition_by=emoji_of_ranked).label("drop_position"),
+        ).subquery()
+        d = with_drop.c
+        came_back = and_(d["count"] > 0, d.position > d.drop_position)
+        with_back = select(
+            with_drop,
+            func.min(case((came_back, d.position)))
+            .over(partition_by=(d.account_id, d.message_id, d.emoji))
+            .label("back_position"),
+        ).subquery()
+        b = with_back.c
+        return (
+            select(with_back)
+            .where(
+                or_(
+                    b.newest <= PAGE_REACTION_HISTORY_LIMIT,
+                    b.position == b.last_position,
+                    b.position == b.drop_position,
+                    b.position == b.back_position,
+                )
+            )
+            .order_by(b.message_id, b.observed_at, b.id)
+        )
 
     @staticmethod
     def _reaction_history_to_dict(row) -> dict[str, Any]:
@@ -8599,8 +8674,10 @@ class DatabaseAdapter:
 
         ``include_media`` is for ``scripts/restore_chat.py``, which uploads
         the files again: each message also gets ``media_type`` and
-        ``media_path``, the stored path of its first media row, or None. The
-        viewer's export never passes it, so no file path leaves the archive.
+        ``media_path``, the stored path of its first media row, or None, and
+        ``media_files``, the ``type`` and ``path`` of every media row in the
+        order ``media`` lists them. The viewer's export never passes it, so no
+        file path leaves the archive.
         """
         conditions = [Message.chat_id == chat_id]
         if account_id is not None:
@@ -8666,6 +8743,7 @@ class DatabaseAdapter:
                 if include_media:
                     msg["media_type"] = media[0].type if media else None
                     msg["media_path"] = media[0].file_path if media else None
+                    msg["media_files"] = [{"type": media_row.type, "path": media_row.file_path} for media_row in media]
                 # A location, a contact, a poll and the other metadata-only
                 # kinds are the message's content: the card the viewer draws.
                 media_payload = _media_payloads_of(row.raw_data)

@@ -726,6 +726,10 @@ class TelegramBackup:
         # (#228). Loaded from the metadata KV at the start of each backup_all run
         # when FOLLOW_CHAT_MIGRATIONS is on; merged into the effective sweep scope.
         self._followed_migration_ids: set[int] = set()
+        # Ids of downloaded media rows this run found behind a broken link into
+        # _shared. Reset by each backup_all run, which ends with one count-only
+        # warning pointing at check-media.
+        self._broken_links_met: set[str] = set()
 
         logger.info("TelegramBackup initialized")
 
@@ -1079,6 +1083,7 @@ class TelegramBackup:
         This is the main entry point for scheduled backups.
         """
         self._description_fetch_paused = False  # a FloodWait pauses the fetch until the next run
+        self._broken_links_met = set()
         try:
             logger.info("Starting backup process...")
 
@@ -1646,6 +1651,7 @@ class TelegramBackup:
             logger.error(f"Backup failed: {describe_exception(e)}")
             raise
         finally:
+            self._warn_broken_media_links()
             # Always clear the in-progress flag, even on failure, so the viewer
             # doesn't show a stuck "backing up" indicator after a crash (#200).
             try:
@@ -1792,6 +1798,24 @@ class TelegramBackup:
         if not path:
             return None
         return broken_shared_link_target(path, os.path.join(self.config.media_path, "_shared"))
+
+    def _warn_broken_media_links(self) -> None:
+        """Tell the operator once per run that downloaded rows sit behind broken links.
+
+        Only the rows this run read are counted; nothing scans the table. An
+        archive that stored channel media before 4.0.5 can hold many more, and
+        without VERIFY_MEDIA nothing else tells the operator. With VERIFY_MEDIA
+        every row is checked and repaired each run, so there is nothing to add.
+        Count only: never a path, chat id or file name.
+        """
+        met = len(getattr(self, "_broken_links_met", ()))
+        if not met or getattr(self.config, "verify_media", False) is True:
+            return
+        logger.warning(
+            f"This run met {met} downloaded media file(s) whose link into media/_shared points at nothing. "
+            "An archive can hold more: run `telegram-archive check-media` to count them, "
+            "then `telegram-archive check-media --repair` to restore them."
+        )
 
     def _visible_media_root(self) -> str | None:
         """The real path of the media root when the archive's disk is visibly there, else None.
@@ -4504,8 +4528,12 @@ class TelegramBackup:
         keeps_flag = False
         if existing is not None and existing["downloaded"]:
             on_disk = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
-            if on_disk and os.path.lexists(on_disk) and not self._broken_shared_link(on_disk):
-                return existing
+            if on_disk and os.path.lexists(on_disk):
+                if not self._broken_shared_link(on_disk):
+                    return existing
+                if not hasattr(self, "_broken_links_met"):
+                    self._broken_links_met = set()
+                self._broken_links_met.add(existing["id"])
             media_root = self._visible_media_root()
             if media_root is None:
                 # The media folder is not visibly there: a download would land
