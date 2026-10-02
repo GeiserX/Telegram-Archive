@@ -14,7 +14,7 @@ both exports return the snapshots, inside the same chat and account scope.
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -553,6 +553,50 @@ class TestListener:
         for _ in range(3):
             await handlers["on_message_poll"](UpdateMessagePoll(poll_id=POLL_ID, results=_results(1, 1)))
         listener.db.find_poll_messages.assert_awaited_once()
+
+    async def test_a_poll_not_archived_is_looked_up_again_only_after_hours(self, real_adapter):
+        """Each lookup reads the whole messages table, and polls not found are
+        mostly in chats the archive does not keep: a miss lasts 6 hours."""
+        await _seed_chat(real_adapter)
+        listener, handlers = _listener(real_adapter)
+        listener.db = SimpleNamespace(find_poll_messages=AsyncMock(return_value=[]))
+        clock = [1000.0]
+        update = UpdateMessagePoll(poll_id=POLL_ID, results=_results(1, 1))
+        with patch("telegram_archive.listener.time.monotonic", side_effect=lambda: clock[0]):
+            await handlers["on_message_poll"](update)
+            clock[0] += 11 * 60
+            await handlers["on_message_poll"](update)
+            assert listener.db.find_poll_messages.await_count == 1
+            clock[0] += 6 * 60 * 60
+            await handlers["on_message_poll"](update)
+        assert listener.db.find_poll_messages.await_count == 2
+
+    async def test_the_poll_lookup_cache_stays_bounded(self, real_adapter):
+        from telegram_archive.listener import POLL_LOOKUP_CACHE_SIZE
+
+        await _seed_chat(real_adapter)
+        listener, handlers = _listener(real_adapter)
+        listener.db = SimpleNamespace(find_poll_messages=AsyncMock(return_value=[]))
+        for poll_id in range(POLL_LOOKUP_CACHE_SIZE + 10):
+            await handlers["on_message_poll"](UpdateMessagePoll(poll_id=poll_id, results=_results(1, 1)))
+        assert len(listener._poll_messages) == POLL_LOOKUP_CACHE_SIZE
+
+    async def test_a_poll_the_listener_stores_replaces_its_miss(self, real_adapter):
+        await _seed_chat(real_adapter)
+        listener, handlers = _listener(real_adapter)
+        real_find = real_adapter.find_poll_messages
+        listener.db = SimpleNamespace(
+            find_poll_messages=AsyncMock(side_effect=real_find),
+            record_message_snapshots=real_adapter.record_message_snapshots,
+        )
+        await handlers["on_message_poll"](UpdateMessagePoll(poll_id=POLL_ID, results=_results(1, 1)))
+        await real_adapter.insert_message(_message_data({"poll": _poll_state(3, 1)}), account_id=1)
+        listener._remember_poll_message(_poll_state(3, 1), CHAT_ID, MESSAGE_ID, None)
+
+        await handlers["on_message_poll"](UpdateMessagePoll(poll_id=POLL_ID, results=_results(6, 1)))
+
+        listener.db.find_poll_messages.assert_awaited_once()
+        assert [json.loads(r.payload)["results"]["total_voters"] for r in await _snapshots(real_adapter)] == [7]
 
     async def _seed_in_topic(self, adapter, topic_id: int) -> None:
         await _seed_chat(adapter)
