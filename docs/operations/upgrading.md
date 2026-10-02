@@ -118,7 +118,7 @@ Every transcript in a file now names a media listed in the same file. The fields
 ### Scripts and API clients { #clients-90 }
 
 - **Poll and preview payloads.** `raw_data.poll` and `raw_data.webpage` keep the first capture. Read the newest poll results or preview from `snapshots` in `/api/chats/{ref}/messages` or in either export. See [Poll and link preview snapshots](../reference/api.md#poll-and-link-preview-snapshots).
-- **Empty formatting.** Messages archived from now on store `entities: []` in `raw_data` when they have no formatting, and an edit that removes all formatting leaves that list. Treat `[]` like a missing key. Messages archived before stay as they are.
+- **Empty formatting.** Messages archived from now on store `entities: []` in `raw_data` when they have no formatting, and an edit that removes all formatting leaves that list. `[]` means the message has no formatting. Messages archived before stay as they are, and a missing key on one of them still means the formatting was not recorded.
 - **Live frames.** An `edit` frame carries `edit_hide`, and `media` when the edit replaced the photo or file. The nested `media` of a `new_message` frame has the messages route's shape: the `{message_id}_{type}` key as `id`, a `url`, and no URL or path for a login whose downloads are off. See [Live updates over WebSocket](../reference/api.md#live-updates-over-websocket).
 - **Transcript presses.** For every login but the master, the transcript POST routes answer 429 with `Retry-After` past `TRANSCRIPTION_ASK_RATE_LIMIT` presses in 10 minutes (30 by default), or while `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50) wait for the backup. `0` turns either limit off. See [Transcripts](../reference/api.md#transcripts).
 
