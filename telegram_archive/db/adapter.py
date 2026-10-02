@@ -8623,7 +8623,7 @@ class DatabaseAdapter:
 
         Yields message dictionaries with sender info, deleted messages
         included and marked by ``is_deleted``/``deleted_at``. Each carries
-        ``edit_date``, ``media`` (its current media, ``_export_media_dict``,
+        ``edit_date`` and its ``edit_hide`` flag, ``media`` (its current media, ``_export_media_dict``,
         never a file path) and ``versions``, every earlier text and media the
         archive kept of it (``_export_versions``, any date, oldest first). A
         message whose media has transcripts carries them all under
@@ -8657,6 +8657,7 @@ class DatabaseAdapter:
                 Message.reply_to_msg_id,
                 Message.sender_name,
                 Message.edit_date,
+                Message.edit_hide,
                 Message.is_deleted,
                 Message.deleted_at,
                 Message.raw_data,
@@ -8698,6 +8699,9 @@ class DatabaseAdapter:
                     "is_deleted": bool(row.is_deleted),
                     "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
                     "edit_date": row.edit_date.isoformat() if row.edit_date else None,
+                    # Telegram's flag for that edit_date, as the command's
+                    # export carries it: 1 when only the reactions moved it.
+                    "edit_hide": row.edit_hide if isinstance(row.edit_hide, int) else None,
                     "media": [self._export_media_dict(media_row) for media_row in media],
                 }
                 if include_media:
