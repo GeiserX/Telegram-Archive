@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.2.0 | Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See [Upgrading to 9.2.0](#upgrading-to-920). |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
 | 9.0.0 | Scripts that read a chat export must change, and so must readers of `raw_data.poll`, `raw_data.webpage` and `raw_data.entities`, `/ws/updates` clients, and scripts that press the transcript button many times as a viewer login. The first start runs migrations 034 to 038; on a large archive it takes longer. After it, run `telegram-archive check-media` once, and `telegram-archive backfill-details --apply` once with the backup stopped. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
@@ -92,6 +93,12 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.5.0 | Round video messages captured before this release stay typed as ordinary videos. Run `reclassify-round-videos` once to correct them, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
+
+## Upgrading to 9.2.0 { #upgrading-to-920 }
+
+`check-media` now finds video and audio files that were cut short. A release from late 2025 stored some downloads that stopped early as complete files, and nothing in the archive knew. A dry run counts them as `Cut short` and exits 1, so a script or a health check that runs `check-media` reports them until they are repaired. Run `check-media --repair` once to mark them to download again. The next backup run downloads each one and replaces the short file only when its bytes are the start of the new download. See [A file cut short](../configuration/media.md#a-file-cut-short).
+
+The backup and the real-time listener now refuse a download shorter than the size Telegram declares for the file. The backup tries it again and then records it not downloaded, so the pending downloads retry it. Before, the short file was stored as complete.
 
 ## Upgrading to 9.0 { #upgrading-to-90 }
 
