@@ -1118,7 +1118,7 @@ class TestRunForeverListenerRestart:
 
             attempt = [0]
 
-            async def flaky_start_listener():
+            async def flaky_start_listener(**_kwargs):
                 attempt[0] += 1
                 if attempt[0] < 3:
                     # Mirrors the real _start_account_listener failure path:
@@ -1222,3 +1222,114 @@ class TestSchedulerMainLogging:
 
             MockBS.assert_called_once_with(mock_config)
             mock_scheduler_instance.run_forever.assert_called_once()
+
+
+# ===========================================================================
+# Catch-up on reconnect: handlers attached before the client is healed
+# ===========================================================================
+
+
+class _HealingConnection:
+    """A shared connection whose client died; ensure_connected() heals it in place."""
+
+    def __init__(self, calls: list, *, heal_ok: bool = True, authorized: bool = True):
+        from test_listener import _RecordingClient
+
+        self.calls = calls
+        self.client = _RecordingClient(calls)
+        self.client.is_connected = lambda: self._socket_up
+        authorized_result = authorized
+
+        async def is_user_authorized():
+            return authorized_result
+
+        self.client.is_user_authorized = is_user_authorized
+        self._socket_up = False
+        self._heal_ok = heal_ok
+        # The app-level flag stays True after Telethon's sender gives up (#265).
+        self.is_connected = True
+        self.me = MagicMock(id=1000001)
+
+    async def ensure_connected(self):
+        self.calls.append("client.connect")
+        if self._heal_ok:
+            self._socket_up = True
+        else:
+            self.is_connected = False
+            raise ConnectionError("network down")
+        return self.client
+
+
+def _catch_up_scheduler(connection):
+    from test_listener import _catch_up_config
+
+    from telegram_archive.scheduler import BackupScheduler
+
+    config = MagicMock()
+    config.enable_listener = True
+    config.for_account = MagicMock(return_value=_catch_up_config())
+    scheduler = BackupScheduler(config)
+    entry = _make_entry(connection=connection, row_id=7)
+    scheduler._accounts = [entry]
+    return scheduler, entry
+
+
+class TestListenerRestartCatchUp:
+    async def test_watchdog_restart_attaches_before_connecting_then_catches_up(self):
+        """Telethon replays an outage the moment it reconnects; the handlers must already be there."""
+        from test_listener import _catch_up_db
+
+        from telegram_archive.listener import TelegramListener
+
+        calls: list = []
+        connection = _HealingConnection(calls)
+
+        async def fake_sleep(seconds):
+            calls.append(f"sleep {seconds}")
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with (
+                patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()),
+                patch.object(TelegramListener, "run", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler._start_listener(delay=5)
+                await entry.listener_task
+
+        assert calls == ["add_event_handler"] * 7 + ["sleep 5", "client.connect", "catch_up"]
+        assert isinstance(entry.listener, TelegramListener)
+
+    async def test_a_failed_reconnect_detaches_the_new_handlers(self):
+        from test_listener import _catch_up_db
+
+        calls: list = []
+        connection = _HealingConnection(calls, heal_ok=False)
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()):
+                await scheduler._start_listener()
+
+        assert connection.client.handlers == []
+        assert calls.count("remove_event_handler") == 7
+        assert "catch_up" not in calls
+        assert entry.listener is None
+        assert entry.listener_task is None
+
+    async def test_a_failed_listener_connect_detaches_the_new_handlers(self):
+        """A revoked session fails connect(); the attached handlers must not stay on the shared client."""
+        from test_listener import _catch_up_db
+
+        calls: list = []
+        connection = _HealingConnection(calls, authorized=False)
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()):
+                await scheduler._start_listener()
+
+        assert connection.client.handlers == []
+        assert "catch_up" not in calls
+        assert entry.listener is None
+        assert entry.listener_task is None

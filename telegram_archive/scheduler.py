@@ -335,13 +335,14 @@ class BackupScheduler:
             await entry.connection.disconnect()
         self._accounts = []
 
-    async def _start_listener(self) -> None:
+    async def _start_listener(self, delay: float = 0.0) -> None:
         """Start the real-time listener for every account, if enabled.
 
         Idempotent per account: an entry whose listener task is alive is left
         untouched, so the watchdog can call this to revive only what died —
         healthy accounts' handlers are never re-registered (the duplicate-
-        handler trap _remove_handlers exists for).
+        handler trap _remove_handlers exists for). ``delay`` is the watchdog's
+        pause before it reconnects; see _start_account_listener.
         """
         if not self.config.enable_listener:
             return
@@ -353,26 +354,28 @@ class BackupScheduler:
         for entry in self._accounts:
             if entry.listener_task is not None and not entry.listener_task.done():
                 continue
-            await self._start_account_listener(entry)
+            await self._start_account_listener(entry, delay=delay)
 
-    async def _start_account_listener(self, entry: _AccountRuntime) -> None:
-        """Start one account's real-time listener on its shared connection."""
-        # ``TelegramConnection.is_connected`` is an app-level flag: it stays True
-        # after Telethon's sender exhausts its own reconnect budget (~55s) and
-        # marks itself disconnected, so it cannot tell us the socket is dead.
-        # Without re-establishing the connection here, the watchdog restarts the
-        # listener into "Shared client is not connected" every 5 seconds forever
-        # once an outage outlives Telethon's budget (#265). ensure_connected()
-        # checks the live client and calls connect() when it is down.
-        #
-        # This runs on the watchdog loop, which shares an event loop with the
-        # scheduled backup job, so it can fire while a backup is suspended at an
-        # await. That is safe because TelegramConnection heals the SAME client
-        # object in place and serialises healers on its own lock — the backup's
-        # client reference heals with it instead of being left behind. Skipping
-        # the heal while a backup holds the connection would be the wrong trade:
-        # a backup can run for hours, and the listener would stay dead for all
-        # of it, which is the outage #265 is about.
+    async def _heal_connection(self, entry: _AccountRuntime) -> None:
+        """Bring the account's shared client back if it is down. Logs, never raises.
+
+        ``TelegramConnection.is_connected`` is an app-level flag: it stays True
+        after Telethon's sender exhausts its own reconnect budget (~55s) and
+        marks itself disconnected, so it cannot tell us the socket is dead.
+        Without re-establishing the connection here, the watchdog restarts the
+        listener into "Shared client is not connected" every 5 seconds forever
+        once an outage outlives Telethon's budget (#265). ensure_connected()
+        checks the live client and calls connect() when it is down.
+
+        This runs on the watchdog loop, which shares an event loop with the
+        scheduled backup job, so it can fire while a backup is suspended at an
+        await. That is safe because TelegramConnection heals the SAME client
+        object in place and serialises healers on its own lock — the backup's
+        client reference heals with it instead of being left behind. Skipping
+        the heal while a backup holds the connection would be the wrong trade:
+        a backup can run for hours, and the listener would stay dead for all
+        of it, which is the outage #265 is about.
+        """
         try:
             await entry.connection.ensure_connected()
         except Exception as e:
@@ -383,37 +386,103 @@ class BackupScheduler:
                 f"{type(e).__name__}"
             )
 
-        if not entry.connection.is_connected:
-            logger.error(f"{entry.log_prefix}Cannot start listener: not connected to Telegram")
-            return
+    async def _attached_listener(self, entry: _AccountRuntime):
+        """A new listener on the account's current client, its handlers already attached."""
+        from .listener import TelegramListener
 
+        listener = await TelegramListener.create(
+            self.config.for_account(entry.account.index), client=entry.connection.client, account_id=entry.row_id
+        )
         try:
-            from .listener import TelegramListener
+            await listener.attach()
+        except BaseException:
+            await listener.close()
+            raise
+        return listener
 
-            logger.info(f"{entry.log_prefix}Starting real-time listener...")
+    async def _start_account_listener(self, entry: _AccountRuntime, delay: float = 0.0) -> None:
+        """Start one account's real-time listener on its shared connection.
 
-            # Normally resolved at startup; retried here for an account whose
-            # connection (or the database) was down back then.
-            if entry.row_id is None:
-                await self._resolve_account_rows()
-            if entry.row_id is None:
-                raise RuntimeError(f"account {entry.account.index} row not resolved")
+        Catch-up on reconnect: the handlers are attached BEFORE the client is
+        healed. Telethon starts its update loop inside connect() and, after an
+        outage longer than its 15-minute no-updates deadline, fetches
+        updates.getDifference within milliseconds; the replayed updates reach
+        only the handlers attached at that moment and are then gone, because the
+        update state has moved past them. listener.connect() then asks for the
+        difference itself (client.catch_up()), which covers shorter outages.
 
-            # Create listener with this account's shared client.
-            entry.listener = await TelegramListener.create(
-                self.config.for_account(entry.account.index), client=entry.connection.client, account_id=entry.row_id
-            )
-            await entry.listener.connect()
+        ``delay`` (the watchdog's pause) is spent with the new handlers already
+        attached, so a scheduled backup that heals the client during the pause
+        does not replay the outage into a client nobody listens to.
+        """
+        listener = None
+        try:
+            if not entry.connection.is_connected or entry.row_id is None:
+                # The connection never came up (one account of several failed at
+                # startup) or its row is unresolved, which needs the login. A
+                # client built now starts from a fresh update state, so there
+                # is nothing to replay yet: heal first, as before.
+                if delay:
+                    await asyncio.sleep(delay)
+                await self._heal_connection(entry)
+                if not entry.connection.is_connected:
+                    logger.error(f"{entry.log_prefix}Cannot start listener: not connected to Telegram")
+                    return
+                # Normally resolved at startup; retried here for an account whose
+                # connection (or the database) was down back then.
+                if entry.row_id is None:
+                    await self._resolve_account_rows()
+                if entry.row_id is None:
+                    raise RuntimeError(f"account {entry.account.index} row not resolved")
+                logger.info(f"{entry.log_prefix}Starting real-time listener...")
+                listener = await self._attached_listener(entry)
+            else:
+                logger.info(f"{entry.log_prefix}Starting real-time listener...")
+                client_before = entry.connection.client
+                listener = await self._attached_listener(entry)
+                if delay:
+                    await asyncio.sleep(delay)
+                await self._heal_connection(entry)
+                if not entry.connection.is_connected:
+                    logger.error(f"{entry.log_prefix}Cannot start listener: not connected to Telegram")
+                    await listener.close()
+                    listener = None
+                    return
+                if entry.connection.client is not client_before:
+                    # The heal built a new client (a restored session file only
+                    # reaches Telethon through a new client); move to it.
+                    await listener.close()
+                    listener = None
+                    listener = await self._attached_listener(entry)
+
+            # Checks the client and asks Telegram for what it missed.
+            await listener.connect()
 
             # Run listener in background task
+            entry.listener = listener
             task_name = (
                 "telegram_listener" if len(self._accounts) == 1 else f"telegram_listener_account{entry.account.index}"
             )
-            entry.listener_task = asyncio.create_task(entry.listener.run(), name=task_name)
+            entry.listener_task = asyncio.create_task(listener.run(), name=task_name)
             logger.info(f"{entry.log_prefix}Real-time listener started successfully")
 
+        except asyncio.CancelledError:
+            # Shutdown during the watchdog's pause: the listener was never
+            # handed to the entry, so teardown would not find it.
+            if listener is not None:
+                with contextlib.suppress(Exception):
+                    await listener.close()
+            raise
         except Exception as e:
             logger.error(f"{entry.log_prefix}Failed to start listener: {e}", exc_info=True)
+            # Detach what this attempt attached: a listener dropped with its
+            # handlers still on the shared client keeps dispatching beside the
+            # next attempt's (the duplicate-handler trap).
+            if listener is not None:
+                try:
+                    await listener.close()
+                except Exception as close_error:
+                    logger.warning(f"{entry.log_prefix}Listener cleanup failed: {type(close_error).__name__}")
             entry.listener = None
             entry.listener_task = None
 
@@ -594,8 +663,9 @@ class BackupScheduler:
 
                         logger.warning("Listener task not running, attempting restart...")
                         await self._stop_listener(only_dead=True)
-                        await asyncio.sleep(5)  # Brief pause before restart
-                        await self._start_listener()
+                        # Brief pause before reconnecting, spent with the new
+                        # handlers already attached (_start_account_listener).
+                        await self._start_listener(delay=5)
 
             except KeyboardInterrupt:
                 logger.info("Keyboard interrupt received")

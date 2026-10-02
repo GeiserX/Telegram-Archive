@@ -282,8 +282,8 @@ class TelegramListener:
 
     Safety features:
     - LISTEN_EDITS: Only sync edits if enabled (default: true)
-    - LISTEN_DELETIONS: Sync deletions with rate limiting (default: true)
-    - For zero deletions from backup, set LISTEN_DELETIONS=false
+    - LISTEN_DELETIONS: Sync deletions with rate limiting (default: false,
+      so nothing is removed from the backup unless it is turned on)
     """
 
     def __init__(
@@ -455,12 +455,49 @@ class TelegramListener:
         db = await create_adapter()
         return cls(config, db, client=client, account_id=account_id, account=account, account_resolver=account_resolver)
 
+    async def attach(self) -> None:
+        """Load the tracked chats, start the notifier and register the handlers.
+
+        No Telegram request is made here, so the scheduler can call it before it
+        heals a shared client: Telethon's update loop starts inside connect(),
+        and a difference it fetches there goes only to the handlers attached at
+        that moment. Idempotent: a second call registers nothing new.
+        """
+        if self._registered_handlers:
+            return
+        if self.client is None:
+            raise RuntimeError("attach() needs a client")
+        if self.account_id is None:
+            raise RuntimeError("attach() needs a resolved account")
+
+        # Load tracked chat IDs from database
+        await self._load_tracked_chats()
+
+        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite).
+        # Bound to THIS listener's own manager — never re-resolved from the
+        # process global: a cron backup starting inside connect()'s await
+        # window reassigns that global with a fresh engine, and its run-end
+        # dispose() would then tear the pool down under the notifier.
+        if self._notifier is None:
+            self._notifier = RealtimeNotifier(self.db.db_manager)
+            await self._notifier.init()
+            logger.info("Real-time notifier initialized")
+
+        # Register event handlers
+        self._register_handlers()
+
+        logger.info("Event handlers registered")
+
     async def connect(self) -> None:
         """
-        Connect to Telegram and set up event handlers.
+        Connect to Telegram, set up event handlers and catch up.
 
         If a client was provided in __init__, verifies it's connected.
-        Otherwise, creates a new client and connects.
+        Otherwise, creates a new client and connects. Ends with
+        ``client.catch_up()``, once the handlers are attached: the official apps
+        ask for updates.getDifference on every new session, and this is the same
+        request, so updates Telegram queued while this client was not listening
+        reach the handlers instead of being dropped.
         """
         # If using shared client, just verify it's connected
         if self.client is not None and not self._owns_client:
@@ -506,22 +543,16 @@ class TelegramListener:
         if self._account_resolver is not None and self.account_id is None:
             self.account_id = await self._account_resolver(self.client, self.db)
 
-        # Load tracked chat IDs from database
-        await self._load_tracked_chats()
+        # A no-op when the scheduler attached before healing the client.
+        await self.attach()
 
-        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite).
-        # Bound to THIS listener's own manager — never re-resolved from the
-        # process global: a cron backup starting inside connect()'s await
-        # window reassigns that global with a fresh engine, and its run-end
-        # dispose() would then tear the pool down under the notifier.
-        self._notifier = RealtimeNotifier(self.db.db_manager)
-        await self._notifier.init()
-        logger.info("Real-time notifier initialized")
-
-        # Register event handlers
-        self._register_handlers()
-
-        logger.info("Event handlers registered")
+        # Ask Telegram for what this client missed, now that every handler is
+        # attached (Telethon's own advice for catch_up). It queues
+        # updatesTooLong, so the update loop sends updates.getDifference from
+        # the state it holds in memory; a FloodWait there is handled inside
+        # Telethon, and updates.differenceTooLong is left to the full pass.
+        await self.client.catch_up()
+        logger.info("Catch-up requested")
 
     async def _load_tracked_chats(self) -> None:
         """Load list of chat IDs we're backing up (to filter events)."""
@@ -1977,7 +2008,7 @@ class TelegramListener:
 
         @self.client.on(events.Raw(types=[UpdateMessageReactions]))
         async def on_message_reactions(event) -> None:
-            """Handle real-time reaction changes (#219, opt-in via LISTEN_REACTIONS).
+            """Handle real-time reaction changes (#219, LISTEN_REACTIONS, on by default since 9.2.0).
 
             UpdateMessageReactions carries the FULL current aggregate snapshot with
             no gap recovery (best-effort). We coalesce bursts per message via the

@@ -1598,3 +1598,95 @@ class TestListenerEventHandling:
 
         # Should NOT process
         assert listener._should_process_chat(-1009999999999) is False
+
+
+class _RecordingClient:
+    """A shared client that records handler registration, catch-up and connects in order."""
+
+    def __init__(self, calls: list):
+        self.calls = calls
+        self.handlers = []
+
+    def is_connected(self):
+        return True
+
+    async def is_user_authorized(self):
+        return True
+
+    def on(self, event):
+        def register(callback):
+            self.calls.append("add_event_handler")
+            self.handlers.append(callback)
+            return callback
+
+        return register
+
+    def remove_event_handler(self, callback):
+        self.calls.append("remove_event_handler")
+        self.handlers.remove(callback)
+
+    async def catch_up(self):
+        self.calls.append("catch_up")
+
+
+def _catch_up_config():
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.mass_operation_threshold = 10
+    config.mass_operation_window_seconds = 30
+    config.skip_topic_ids = {}
+    return config
+
+
+def _catch_up_db():
+    db = AsyncMock()
+    db.get_all_chats = AsyncMock(return_value=[{"id": -1001234567890}])
+    db.get_metadata = AsyncMock(return_value=None)
+    db.db_manager = MagicMock(_is_sqlite=False)
+    return db
+
+
+class TestCatchUpOnConnect:
+    """connect() asks Telegram for missed updates only once every handler is attached.
+
+    Telethon's catch_up() queues updatesTooLong, which makes the update loop
+    send updates.getDifference; what it returns goes to the handlers attached at
+    that moment. The official apps send the same request on every new session.
+    """
+
+    async def test_connect_catches_up_after_every_handler(self):
+        calls: list = []
+        client = _RecordingClient(calls)
+        listener = TelegramListener(_catch_up_config(), _catch_up_db(), client=client, account_id=1)
+
+        await listener.connect()
+
+        assert calls.count("add_event_handler") == 7
+        assert calls[-1] == "catch_up"
+        assert calls.count("catch_up") == 1
+
+    async def test_attach_makes_no_request_and_is_idempotent(self):
+        calls: list = []
+        client = _RecordingClient(calls)
+        listener = TelegramListener(_catch_up_config(), _catch_up_db(), client=client, account_id=1)
+
+        await listener.attach()
+        await listener.attach()
+        await listener.connect()
+
+        assert calls.count("add_event_handler") == 7
+        assert calls == ["add_event_handler"] * 7 + ["catch_up"]
+        assert listener._tracked_chat_ids == {-1001234567890}
+
+    async def test_stop_detaches_what_attach_registered(self):
+        calls: list = []
+        client = _RecordingClient(calls)
+        listener = TelegramListener(_catch_up_config(), _catch_up_db(), client=client, account_id=1)
+
+        await listener.attach()
+        await listener.stop()
+
+        assert client.handlers == []
+        # A later attach on the same listener registers a fresh set.
+        await listener.attach()
+        assert len(client.handlers) == 7
