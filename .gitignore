@@ -70,5 +70,13 @@ site/
 # Local viewer design rig (docs/design/rig)
 .ui-data/
 
-# Beads tracker: never published from this public repository. The tracker syncs to a private remote.
-.beads/
+# Beads tracker data: never published from this public repository. The tracker syncs to a private Dolt remote;
+# only the scaffolding (config.yaml, README.md, hooks/, metadata.json, .gitignore) is committed.
+.beads/issues.jsonl
+.beads/interactions.jsonl
+.beads/dolt/
+.beads/embeddeddolt/
+.beads/backup/
+.beads/*.db
+.beads/.beads-credential-key
+.beads/.local_version
