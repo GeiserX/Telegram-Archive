@@ -54,8 +54,8 @@ Under the archive's name the sidebar says how fresh the archive is:
 | Line | Means |
 |------|-------|
 | Backed up today at 17:42 | the time of the last backup |
-| Live · backed up today at 17:42 | the [listener](../configuration/listener.md) is running, so new messages arrive as they are sent |
-| Backing up… | a backup is running now |
+| Live | the [listener](../configuration/listener.md) is running, so new messages arrive as they are sent. It stays Live while a full pass runs. Point at it to see when the last full pass ran. |
+| Backing up… | a backup is running now and no listener is |
 | Last backup did not finish | the master login only: the last run stopped before its statistics step. Click the line to open [Archive status](#archive-status). |
 | No backup yet | no backup has run |
 

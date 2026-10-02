@@ -11960,24 +11960,25 @@
                 // calm: live sync with a still dot, a backup running with a small
                 // ring, or when the last backup ran. Only the owner sees a backup
                 // that did not finish, in the warning colour, and it opens Archive
-                // status.
+                // status. With the listener up the line just says Live, even while
+                // the daily full pass runs: messages still arrive as they are sent,
+                // so the pass and its time are only in the title.
                 const sidebarStatusNow = () => {
                     if (loadingStats.value && !lastBackupTime.value) return { kind: 'loading', text: 'Loading…', title: '' }
                     const last = lastBackupTime.value
                     const zoned = last ? formatStamp(last, true) : ''
                     const health = backupHealth.value
-                    if (health === 'running') {
-                        return { kind: 'running', text: 'Backing up…', title: last ? `A backup is running. The one before ran on ${zoned}.` : 'A backup is running.' }
-                    }
                     if (health === 'unfinished' && userRole.value === 'master') {
                         return { kind: 'unfinished', text: 'Last backup did not finish', title: `The backup started on ${zoned} did not finish. Open Archive status.` }
                     }
                     if (listenerActive.value) {
-                        return {
-                            kind: 'live',
-                            text: last ? `Live · backed up ${formatAgo(last)}` : 'Live',
-                            title: `New messages arrive as they are sent.${last ? ` Last full backup: ${zoned}.` : ''}`,
-                        }
+                        const facts = ['New messages arrive as they are sent.']
+                        if (health === 'running') facts.push('A full pass is running.')
+                        if (last) facts.push(`${health === 'running' ? 'The one before ran on' : 'Last full pass:'} ${zoned}.`)
+                        return { kind: 'live', text: 'Live', title: facts.join(' ') }
+                    }
+                    if (health === 'running') {
+                        return { kind: 'running', text: 'Backing up…', title: last ? `A backup is running. The one before ran on ${zoned}.` : 'A backup is running.' }
                     }
                     if (!last) return { kind: 'never', text: 'No backup yet', title: '' }
                     return { kind: 'idle', text: `Backed up ${formatAgo(last)}`, title: `Last backup: ${zoned}` }
