@@ -60,6 +60,7 @@ class TestIterMediaForVerification:
             "file_size",
             "downloaded",
             "content_hash",
+            "skip_reason",
             "account_id",
         }
         assert sample["file_path"] == "media/m1.jpg"

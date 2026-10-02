@@ -19,6 +19,12 @@ the same name in the chat's other id-form folders, and at the path of any other
 row with the same content hash. When none is found the row is marked not
 downloaded, so the normal download path fetches it from Telegram again.
 
+A row is marked only when its file is provably gone: the media root is
+visibly there (it exists and is not empty) and the row's folder exists under
+it (``visible_media_root``, ``missing_under_root``). A media volume that is
+not mounted, or a share that dropped, makes every path read as missing; on
+that evidence no row changes.
+
 Everything here is a few ``lstat`` calls per row and a hash of each candidate.
 Nothing walks the media tree.
 """
@@ -56,11 +62,63 @@ KEPT = "kept"  # an entry exists but cannot be read from here: left alone
 # record and has no file. Older releases still gave some of these rows a
 # ``.bin`` path and a link; that path is a leftover, never a missing file.
 PLACEHOLDER = "placeholder"
+# The media root is missing, unreadable or empty here: nothing was looked at.
+NOT_VISIBLE = "not_visible"
 
 # A name that starts with a Telegram file id (a 64-bit number) names one
 # Telegram file wherever it appears. The fallback name for media without a file
 # id, ``<message_id>_<type>.<ext>``, names a different file in every chat.
 _TELEGRAM_FILE_NAME = re.compile(r"^\d{12,}")
+
+
+def visible_media_root(media_root: str | None) -> str | None:
+    """The real path of the media root when the archive's disk is visibly there, else None.
+
+    A missing, unreadable or empty media root means the process runs where
+    the media volume is not mounted (a host or PyPI install, a volume left
+    out, a share that dropped, a root moved since capture). Every stored path
+    would then read as missing, so no row may be changed on that evidence.
+    """
+    if not media_root:
+        return None
+    try:
+        if not os.path.isdir(media_root):
+            return None
+        with os.scandir(media_root) as entries:
+            if next(entries, None) is None:
+                return None
+    except OSError, TypeError, ValueError:
+        return None
+    return os.path.realpath(media_root)
+
+
+def missing_under_root(path: str | None, media_root: str | None) -> bool:
+    """True when ``path`` is missing (or a dangling link) inside a visible media root.
+
+    ``media_root`` is what ``visible_media_root`` returned. Only a definite
+    "no such file" counts: a permission error or a path component that is not
+    a directory says nothing about the file. The parent directory must exist
+    and lie under the media root, so a path from another mount, or under a
+    directory that is gone, is never read as missing.
+    """
+    if not path or not media_root:
+        return False
+    try:
+        # stat() follows links: FileNotFoundError for a missing file and for a dangling link.
+        os.stat(path)
+        return False
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    parent = os.path.dirname(path)
+    try:
+        if not os.path.isdir(parent):
+            return False
+        real_parent = os.path.realpath(parent)
+        return os.path.commonpath([real_parent, media_root]) == media_root
+    except OSError, ValueError:
+        return False
 
 
 def chat_folder_alternates(folder: str) -> list[str]:
@@ -248,19 +306,26 @@ async def inspect_media_row_with_db(db, row: dict[str, Any], media_root: str) ->
 async def repair_media_row(db, row: dict[str, Any], media_root: str, *, account_id: int, refetch: bool = True) -> str:
     """Make one row's path hold its file again, or hand it back to the download.
 
-    Returns PRESENT, RESTORED, REFETCH, MISSING (``refetch`` off), KEPT or
-    PLACEHOLDER. A metadata-only row is never repaired or fetched: it has no
+    Returns PRESENT, RESTORED, REFETCH, MISSING, KEPT, PLACEHOLDER or
+    NOT_VISIBLE. A metadata-only row is never repaired or fetched: it has no
     file to fetch.
     REFETCH marks the row not downloaded, which the pending-download retry of
     the next backup picks up. That download fills a broken link's ``_shared``
     entry under the name the link holds, so the link itself is never rewritten.
+    A row is marked only when its file is provably gone (``missing_under_root``):
+    otherwise, and with ``refetch`` off, a file with no copy is MISSING and the
+    row is left as it is. With the media root not visible here, nothing is
+    looked at and the answer is NOT_VISIBLE.
     """
+    root = visible_media_root(media_root)
+    if root is None:
+        return NOT_VISIBLE
     inspection = await inspect_media_row_with_db(db, row, media_root)
     if inspection.state in (PRESENT, KEPT, PLACEHOLDER):
         return inspection.state
     if inspection.state == RESTORABLE and restore_from_copy(inspection, media_root):
         return RESTORED
-    if not refetch or row.get("id") is None:
+    if not refetch or row.get("id") is None or not missing_under_root(inspection.path, root):
         return MISSING
     try:
         await db.mark_media_for_redownload(row["id"], account_id=row.get("account_id") or account_id, keep_path=True)
@@ -270,16 +335,37 @@ async def repair_media_row(db, row: dict[str, Any], media_root: str, *, account_
     return REFETCH
 
 
-async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int | None = None) -> dict[str, int]:
-    """Check every downloaded media row of every account, and repair with ``repair``.
+def file_in_place(row: dict[str, Any], media_root: str) -> bool:
+    """Whether a row marked not downloaded has its own file at its path after all.
 
-    The ``check-media`` command. Rows are read in batches, each costing a few
-    ``lstat`` calls; the media tree is never walked. Without ``repair`` nothing
-    is written. Counts only: never ids, paths or names.
+    For a row an outage marked: the share dropped, the file read as missing,
+    the row was marked and its download attempts ran out, and the file is
+    back. A known content hash decides alone; without one the size has to be
+    within the 1% VERIFY_MEDIA allows when the row knows it, and the file must
+    not be empty. A metadata-only row and a row skipped on purpose
+    (``skip_reason``) never count.
     """
-    from .db.models import DEFAULT_ACCOUNT_ID
+    if row.get("type") in METADATA_ONLY_MEDIA_TYPES or row.get("skip_reason"):
+        return False
+    path = resolve_stored_media_path(row.get("file_path"), media_root)
+    try:
+        if not path or not os.path.isfile(path):
+            return False
+        size = os.path.getsize(path)
+        if size <= 0:
+            return False
+        if row.get("content_hash"):
+            return compute_file_hash(path) == row["content_hash"]
+    except OSError:
+        return False
+    expected = row.get("file_size")
+    if expected and expected > 0:
+        return abs(size - expected) <= expected * 0.01
+    return True
 
-    report = {
+
+def _empty_report() -> dict[str, int]:
+    return {
         "checked": 0,
         "present": 0,
         "broken_links": 0,
@@ -291,7 +377,35 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
         "restore_failed": 0,
         "kept": 0,
         "placeholders": 0,
+        "not_provable": 0,
+        "recoverable": 0,
+        "recovered": 0,
+        "recover_failed": 0,
+        "media_root_not_visible": 0,
     }
+
+
+async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int | None = None) -> dict[str, int]:
+    """Check every downloaded media row of every account, and repair with ``repair``.
+
+    The ``check-media`` command. Rows are read in batches, each costing a few
+    ``lstat`` calls; the media tree is never walked. Without ``repair`` nothing
+    is written. Counts only: never ids, paths or names.
+
+    With the media root not visible here (missing, unreadable or empty),
+    nothing is checked or changed and ``media_root_not_visible`` is 1. A row
+    whose file is missing but whose folder is not under the media root is
+    counted in ``not_provable`` and never marked. A row marked not downloaded
+    whose own file is at its path (``file_in_place``) is counted in
+    ``recoverable``, and ``repair`` marks it downloaded again.
+    """
+    from .db.models import DEFAULT_ACCOUNT_ID
+
+    report = _empty_report()
+    root = visible_media_root(media_root)
+    if root is None:
+        report["media_root_not_visible"] = 1
+        return report
     try:
         account_ids = list(await db.get_account_ids()) or [DEFAULT_ACCOUNT_ID]
     except Exception:
@@ -299,9 +413,13 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
     for account_id in account_ids:
         async for batch in db.iter_media_for_verification(account_id=account_id):
             for row in batch:
-                if not row.get("downloaded"):
-                    continue
                 if chat_id is not None and row.get("chat_id") != chat_id:
+                    continue
+                if not row.get("downloaded"):
+                    if file_in_place(row, media_root):
+                        report["recoverable"] += 1
+                        if repair:
+                            await _mark_recovered(db, row, account_id, report)
                     continue
                 report["checked"] += 1
                 inspection = await inspect_media_row_with_db(db, row, media_root)
@@ -323,6 +441,11 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
                         else:
                             report["restore_failed"] += 1
                     continue
+                if not missing_under_root(inspection.path, root):
+                    # The row's folder is not under the media root here: the
+                    # file is not provably gone, so the row is never marked.
+                    report["not_provable"] += 1
+                    continue
                 if not repair:
                     report["refetch"] += 1
                     continue
@@ -337,8 +460,24 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
     return report
 
 
+async def _mark_recovered(db, row: dict[str, Any], account_id: int, report: dict[str, int]) -> None:
+    try:
+        changed = await db.mark_media_downloaded(row["id"], account_id=account_id)
+    except Exception as e:
+        logger.warning(f"Could not mark media downloaded: {type(e).__name__}")
+        report["recover_failed"] += 1
+        return
+    if changed:
+        report["recovered"] += 1
+
+
 def format_media_check(report: dict[str, int], *, repair: bool) -> list[str]:
     """The report as plain lines for a terminal."""
+    if report.get("media_root_not_visible"):
+        return [
+            "Media check: the media folder is not visible here (missing, unreadable or empty).",
+            "  Nothing was checked or changed. Mount the media volume, or set MEDIA_PATH, and run it again.",
+        ]
     if repair:
         head = "Media check and repair:"
     else:
@@ -364,6 +503,24 @@ def format_media_check(report: dict[str, int], *, repair: bool) -> list[str]:
             f"  Copy found on disk:        {report['restorable']}  (--repair puts it back)",
             f"  No copy on disk:           {report['refetch']}  (--repair marks them to download again)",
         ]
+    if report.get("not_provable"):
+        lines.append(
+            f"  Not marked:                {report['not_provable']}  "
+            "(the row's folder is not under the media folder here, so the file is not provably gone)"
+        )
+    if report.get("recoverable"):
+        if repair:
+            lines.append(
+                f"  Marked downloaded again:   {report.get('recovered', 0)}  "
+                "(marked not downloaded earlier, and the file is at its path)"
+            )
+            if report.get("recover_failed"):
+                lines.append(f"  Could not mark downloaded: {report['recover_failed']}  (see the log)")
+        else:
+            lines.append(
+                f"  File back at its path:     {report['recoverable']}  "
+                "(marked not downloaded earlier; --repair marks them downloaded again)"
+            )
     if report["kept"]:
         lines.append(f"  Left alone:                {report['kept']}  (an entry this process cannot read)")
     if report["placeholders"]:
@@ -377,6 +534,7 @@ def format_media_check(report: dict[str, int], *, repair: bool) -> list[str]:
 __all__ = [
     "KEPT",
     "MISSING",
+    "NOT_VISIBLE",
     "PLACEHOLDER",
     "PRESENT",
     "REFETCH",
@@ -385,10 +543,13 @@ __all__ = [
     "MediaInspection",
     "chat_folder_alternates",
     "check_media",
+    "file_in_place",
     "format_media_check",
     "inspect_media_row",
     "inspect_media_row_with_db",
+    "missing_under_root",
     "repair_media_row",
     "restore_from_copy",
     "shared_link_target",
+    "visible_media_root",
 ]

@@ -172,7 +172,7 @@ One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. Th
 - A press always gets one more attempt, whatever happened before.
 - A queued file that never got a job is sent again after 10 minutes.
 - An unreachable server spends no retry. The file stays queued.
-- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the media is marked not downloaded, the next backup downloads it again, and a later drain sends it.
+- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the media is marked not downloaded, the next backup downloads it again, and a later drain sends it. That happens only when the file is provably gone: with the media folder missing or empty, or the row's folder gone, the media row stays as it is and the file fails with `file_missing`, without counting toward the three.
 - Changing the language, preset, speaker labels or server means files are sent again instead of reusing earlier results. On the OpenAI endpoint the model and the hotwords count too. On Deepgram, AssemblyAI and ElevenLabs the model counts and the hotwords do not.
 - The same audio already transcribed with the same settings, in this account or another, is copied instead of sent.
 

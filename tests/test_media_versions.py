@@ -913,6 +913,81 @@ class TestSweepUpsertOfAMediaOnlyEdit:
         assert await _rows(real_adapter, MessageVersion) == []
 
 
+class TestAPendingDownloadNeverFreezes:
+    """A pending row the drain could never fill: it was skipped as holding
+    newer media and charged an attempt on every run until it gave up."""
+
+    async def _pending(self, adapter, **row) -> str:
+        await _seed(adapter)
+        pending_id = f"{CHAT_ID}_{MESSAGE_ID}_photo"
+        await adapter.insert_media(
+            {
+                "id": pending_id,
+                "type": "photo",
+                "message_id": MESSAGE_ID,
+                "chat_id": CHAT_ID,
+                "file_size": 4000,
+                "downloaded": False,
+                **row,
+            },
+            account_id=1,
+        )
+        return pending_id
+
+    @staticmethod
+    async def _attempts(adapter, media_id: str) -> int:
+        async with adapter.db_manager.async_session_factory() as session:
+            return (
+                await session.execute(select(Media.download_attempts).where(Media.id == media_id))
+            ).scalar_one_or_none() or 0
+
+    async def test_a_photo_swapped_before_a_reaction_is_downloaded(self, real_adapter, tmp_path, caplog):
+        media_root = str(tmp_path / "media")
+        pending_id = await self._pending(real_adapter, telegram_file_id=str(OLD_PHOTO))
+        reacted = _telegram_message(NEW_PHOTO, edit_date=EDITED)
+        reacted.edit_hide = True
+
+        backup = _backup(real_adapter, media_root, [reacted])
+        with caplog.at_level(logging.INFO, logger="telegram_archive.telegram_backup"):
+            await backup._retry_pending_media_downloads()
+
+        assert "Pending media retry: 1 downloaded" in caplog.text
+        (kept,) = await _rows(real_adapter, MediaVersion)
+        assert (kept.media_id, kept.telegram_file_id, kept.downloaded) == (pending_id, str(OLD_PHOTO), 0)
+        (media,) = await _rows(real_adapter, Media)
+        assert (media.telegram_file_id, media.downloaded, media.download_attempts) == (str(NEW_PHOTO), 1, 0)
+        assert _read(media_root, media.file_path) == f"photo {NEW_PHOTO}"
+
+    async def test_an_id_guessed_from_an_old_file_name_never_blocks_the_download(self, real_adapter, tmp_path, caplog):
+        """An early release kept the sender's own name, here one that starts
+        with seventeen digits. That number is not Telegram's id: the photo
+        Telegram serves is the same one, unedited, and it lands in the row."""
+        media_root = str(tmp_path / "media")
+        legacy_name = "10153940000000000_1234567890_n.jpg"
+        assert stored_media_file_id(None, legacy_name) == "10153940000000000"
+        pending_id = await self._pending(real_adapter, file_name=legacy_name)
+
+        backup = _backup(real_adapter, media_root, [_telegram_message(OLD_PHOTO)])
+        with caplog.at_level(logging.INFO, logger="telegram_archive.telegram_backup"):
+            await backup._retry_pending_media_downloads()
+
+        assert "Pending media retry: 1 downloaded" in caplog.text
+        assert await _rows(real_adapter, MediaVersion) == []
+        (media,) = await _rows(real_adapter, Media)
+        assert (media.id, media.telegram_file_id, media.downloaded) == (pending_id, str(OLD_PHOTO), 1)
+        assert await self._attempts(real_adapter, pending_id) == 0
+        assert _read(media_root, media.file_path) == f"photo {OLD_PHOTO}"
+
+    async def test_control_a_recorded_id_still_makes_a_row_superseded(self, real_adapter):
+        """A row whose recorded id differs, read with no edit, holds other media."""
+        await self._pending(real_adapter, telegram_file_id=str(NEW_PHOTO))
+        row = await real_adapter.reconcile_media_row(
+            CHAT_ID, MESSAGE_ID, "photo", account_id=1, telegram_file_id=str(OLD_PHOTO)
+        )
+        assert row["superseded"] is True
+        assert await _rows(real_adapter, MediaVersion) == []
+
+
 class TestAReplacementNeedsAVisibleEdit:
     async def test_a_read_without_an_edit_date_replaces_nothing(self, real_adapter, tmp_path):
         """A read of a message nobody edited that carries another file id (the
@@ -933,8 +1008,31 @@ class TestAReplacementNeedsAVisibleEdit:
         stats = await real_adapter.get_chat_stats(CHAT_ID, account_id=1, with_kept_changes=True)
         assert stats["edited_messages"] == 0
 
-    async def test_a_hidden_edit_replaces_nothing(self, real_adapter, tmp_path):
-        """A hidden edit is a reaction: Telegram shows the message as not edited."""
+    async def test_a_hidden_edit_at_the_archived_edit_time_replaces_nothing(self, real_adapter, tmp_path):
+        """A hidden edit at the edit time the archive holds is a reaction on the
+        state the archive already read."""
+        media_root = str(tmp_path / "media")
+        await _seed(real_adapter)
+        original = await _archive_old_photo(real_adapter, media_root)
+        await real_adapter.update_message_text(
+            CHAT_ID, MESSAGE_ID, "Look at this one", EDITED, account_id=1, source="listener"
+        )
+        listener, handlers = _listener(real_adapter, media_root)
+        reaction = _telegram_message(NEW_PHOTO, text="Look at this one", edit_date=EDITED)
+        reaction.edit_hide = True
+
+        await handlers[events.MessageEdited](_event(reaction))
+
+        listener.client.download_media.assert_not_awaited()
+        assert await _rows(real_adapter, MediaVersion) == []
+        (media,) = await _rows(real_adapter, Media)
+        assert (media.id, media.telegram_file_id) == (original["id"], str(OLD_PHOTO))
+
+    async def test_a_hidden_edit_newer_than_the_archive_shows_an_unseen_replacement(self, real_adapter, tmp_path):
+        """The photo was swapped while the listener was away, then someone
+        reacted. The reaction hides the swap's edit; its newer edit time and
+        the other file id are the evidence. The old photo is kept as a version
+        and the new one downloaded."""
         media_root = str(tmp_path / "media")
         await _seed(real_adapter)
         original = await _archive_old_photo(real_adapter, media_root)
@@ -944,11 +1042,11 @@ class TestAReplacementNeedsAVisibleEdit:
 
         await handlers[events.MessageEdited](_event(reaction))
 
-        listener.client.download_media.assert_not_awaited()
-        assert await _rows(real_adapter, MediaVersion) == []
-        assert await _rows(real_adapter, MessageVersion) == []
+        (kept,) = await _rows(real_adapter, MediaVersion)
+        assert (kept.media_id, kept.telegram_file_id) == (original["id"], str(OLD_PHOTO))
         (media,) = await _rows(real_adapter, Media)
-        assert (media.id, media.telegram_file_id) == (original["id"], str(OLD_PHOTO))
+        assert (media.telegram_file_id, media.downloaded) == (str(NEW_PHOTO), 1)
+        assert _read(media_root, media.file_path) == f"photo {NEW_PHOTO}"
 
 
 class TestLinkPreviews:

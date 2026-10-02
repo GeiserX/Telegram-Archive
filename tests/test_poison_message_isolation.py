@@ -317,6 +317,11 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
         self._assert_no_peer_id(cm.records)
 
     def test_media_verification_access_failure_logs_the_type_only(self):
+        # A media folder visibly there, or the run is skipped before any chat.
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        os.makedirs(os.path.join(media_root, "avatars"))
+        self.backup.config.media_path = media_root
         self.db.get_media_for_verification.return_value = [
             {"file_path": "/nonexistent/photo.jpg", "file_size": 100, "chat_id": -1001234567890, "message_id": 10}
         ]
@@ -325,6 +330,7 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
         with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as cm:
             _run(self.backup._verify_and_redownload_media())
 
+        self.backup.client.get_messages.assert_awaited_once()
         self._assert_no_peer_id(cm.records)
 
     def test_pending_media_retry_access_failure_logs_the_type_only(self):

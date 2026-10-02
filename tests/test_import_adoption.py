@@ -295,6 +295,8 @@ class TestSweepAdoptionHook(unittest.TestCase):
         removed the file it had just sidestepped, destroying the only copy."""
         media_root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        # The chat's folder is there and the file is not: provably gone.
+        os.makedirs(os.path.join(media_root, str(CHAT_ID)))
         backup = self._make_backup(media_root)
         backup.db.reconcile_media_row = AsyncMock(
             return_value={"id": IMPORT_ID, "type": "photo", "downloaded": True, "file_path": f"{CHAT_ID}/gone.jpg"}

@@ -138,8 +138,12 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
             "chat's other id-form folder, or at another row with the same content hash). "
             "With --repair a copy found on disk is put back, never replacing anything, and "
             "a file with no copy is marked not downloaded so the next backup fetches it "
-            "from Telegram again. Without --repair nothing is changed. Exit code 1 when "
-            "the dry run finds a file missing."
+            "from Telegram again, but only when its folder exists under the media folder. "
+            "A row marked not downloaded earlier whose file is back at its path is marked "
+            "downloaded again. Without --repair nothing is changed. When the media folder "
+            "is missing, unreadable or empty, nothing is checked or changed. Exit code 1 "
+            "when the media folder is not visible, when the dry run finds something to "
+            "fix, or when a repair fails."
         ),
     )
     check_media_parser.add_argument(
@@ -375,7 +379,7 @@ async def run_status(args) -> int:
 
 
 async def run_check_media(args) -> int:
-    """Run check-media: 1 when a dry run finds a file missing or a repair fails."""
+    """Run check-media: 1 when the media folder is not visible, a dry run finds something to fix, or a repair fails."""
     from .config import Config, setup_logging
     from .db import DatabaseAdapter, close_database, init_database
     from .media_integrity import check_media, format_media_check
@@ -397,9 +401,11 @@ async def run_check_media(args) -> int:
         return 1
     for line in format_media_check(report, repair=args.repair):
         print(line)
+    if report.get("media_root_not_visible"):
+        return 1
     if args.repair:
-        return 1 if report["restore_failed"] or report["refetch_failed"] else 0
-    return 1 if report["broken_links"] or report["missing_files"] else 0
+        return 1 if report["restore_failed"] or report["refetch_failed"] or report.get("recover_failed") else 0
+    return 1 if report["broken_links"] or report["missing_files"] or report.get("recoverable") else 0
 
 
 async def run_list_chats(args) -> int:

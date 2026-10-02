@@ -576,8 +576,10 @@ class TestDrain:
 
     async def test_a_missing_file_with_no_copy_goes_back_to_download_without_a_failed_row(self, real_adapter, tmp_path):
         """No file and no copy on disk: the media is marked not downloaded so the
-        next backup fetches it again, and no failed row is spent on it."""
-        await _media(real_adapter, tmp_path, "m_1_voice", on_disk=False)
+        next backup fetches it again, and no failed row is spent on it. The
+        chat's folder is there, so the file is provably gone."""
+        row = await _media(real_adapter, tmp_path, "m_1_voice", on_disk=False)
+        os.makedirs(os.path.dirname(row["file_path"]))
         server = FakeServer()
         config = _config(str(tmp_path))
         stats = await drain_transcriptions(

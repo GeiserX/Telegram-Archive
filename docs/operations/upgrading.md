@@ -131,7 +131,7 @@ Every transcript in a file now names a media listed in the same file. The fields
 
 ### Media files behind broken links { #media-check-90 }
 
-Run [`telegram-archive check-media`](../reference/cli.md#check-media) once after upgrading, and `telegram-archive check-media --repair` if it reports a broken link or a missing file. Archives that stored channel media before 4.0.5 can hold rows that say downloaded with no file behind them, and only `check-media`, `VERIFY_MEDIA` and the transcription drain look for them. A backup run without `VERIFY_MEDIA` now warns when it reads such a row, with a count only. See [A missing shared file](../configuration/media.md#a-missing-shared-file).
+Run [`telegram-archive check-media`](../reference/cli.md#check-media) once after upgrading, and `telegram-archive check-media --repair` if it reports a broken link or a missing file. With the media folder missing, unreadable or empty, `VERIFY_MEDIA` skips its run with a warning instead of fetching every file again, and `check-media` exits 1 without checking. Archives that stored channel media before 4.0.5 can hold rows that say downloaded with no file behind them, and only `check-media`, `VERIFY_MEDIA` and the transcription drain look for them. A backup run without `VERIFY_MEDIA` now warns when it reads such a row, with a count only. See [A missing shared file](../configuration/media.md#a-missing-shared-file).
 
 ## Upgrading to 8.17.0 { #upgrading-to-8170 }
 
