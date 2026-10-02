@@ -180,7 +180,7 @@ All of these need any login.
 |-----------------|-----------|----------|
 | `GET /api/accounts` | None | `{accounts: [{id, label}]}`. `label` is `TG_ACCOUNT_<N>_LABEL` when set; otherwise `default` for the first account and `account<N>` for the others. |
 | `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url`, `accounts` and `preview`, its newest message for the list's second line. See [The chat list preview](#the-chat-list-preview). |
-| `GET /api/chats/{chat_ref}` | None | One chat in the same shape as a list row |
+| `GET /api/chats/{chat_ref}` | None | One chat in the shape of a list row, without `preview` |
 | `GET /api/folders` | None | `{folders}` with chat counts limited to what the caller can see |
 | `GET /api/archived/count` | None | `{count}` |
 
@@ -398,11 +398,12 @@ Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoi
 |-------|---------|
 | `is_deleted` | `true` when the message was deleted in Telegram. The archive keeps it, so the export includes it. |
 | `deleted_at` | When the archive noticed the deletion, ISO 8601 UTC, or `null`. |
-| `edit_date` | When Telegram last marked the message edited, ISO 8601 UTC, or `null`. |
+| `edit_date` | The message's edit time in Telegram, ISO 8601 UTC, or `null`. Telegram also moves it when only the reactions change. |
+| `edit_hide` | Telegram's flag for that `edit_date`: 1 when it says the edit is not to be shown, as when only the reactions changed, 0 when it shows, and `null` when the source did not report it (a message archived before the archive kept the flag, or one from a Telegram export import). A null flag counts as shown. With `edit_hide` 1 Telegram shows no edit mark on the message. |
 | `media` | The message's current media, as a list of [export media](#export-media). Usually one entry. A message can hold more than one media row, and the first entry is the one the viewer shows. An empty list means the message has no media. |
 | `versions` | Every earlier version the archive kept of the message, oldest first, whatever its date. An empty list means the archive kept none. |
 | `reaction_history` | Every state of the message's reactions the archive kept, oldest first, whatever its date: `emoji`, `count` (0 when taken back), `previous_count`, `observed_at` (ISO 8601 UTC) and `source`, as in [the messages list](#messages). |
-| `snapshots` | Every later state of the message's poll or link preview the archive kept, oldest first. Each has `kind` (`poll` or `preview`), `payload`, `observed_at` (ISO 8601 UTC) and `source`, as in [Poll and link preview snapshots](#poll-and-link-preview-snapshots). The export has no `raw_data`, so the first capture is not in it. An empty list means no later state was kept. |
+| `snapshots` | Every later state of the message's poll or link preview the archive kept, oldest first. Each has `kind` (`poll` or `preview`), `payload`, `observed_at` (ISO 8601 UTC) and `source`, as in [Poll and link preview snapshots](#poll-and-link-preview-snapshots). The first capture of a poll is under `media_payload.poll`; the export has no `raw_data`, so the first capture of a link preview is not in it. An empty list means no later state was kept. |
 | `transcripts` | Present only when the message's media has transcripts: every transcript row, newest first. Each names its media by `media_id`. |
 
 A location, a contact, a poll or another kind with no file has a `media_payload` object, keyed and shaped as in `raw_data` (see [Paging through messages](#paging-through-messages)).

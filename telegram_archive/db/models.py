@@ -237,7 +237,7 @@ class Message(Base):
         # can't serve at all, so every search was a full sequential scan
         # that gets linearly slower as the archive grows. A GIN trigram
         # index turns it into a bounded-cost lookup regardless of table
-        # size (measured ~95x faster on a ~100k-row instance: 41.8ms ->
+        # size (measured ~95x faster on a live instance: 41.8ms ->
         # 0.4ms). ``postgresql_using``/``postgresql_ops`` are dialect-
         # scoped kwargs - SQLAlchemy drops them for every dialect other
         # than PostgreSQL. ddl_if scopes creation itself to PostgreSQL: a

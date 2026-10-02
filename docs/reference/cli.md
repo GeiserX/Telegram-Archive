@@ -480,7 +480,7 @@ python scripts/restore_chat.py (--chat ID | --source-chat ID --dest-chat ID)
 | `--after` | `YYYY-MM-DD` | Only messages after this date. |
 | `--before` | `YYYY-MM-DD` | Only messages before this date. |
 | `--limit` | `N` | At most this many messages. |
-| `--delay` | `SECONDS` | Pause between messages. Default 2.0. |
+| `--delay` | `SECONDS` | Pause between messages, and between the files of one message. Default 2.0. |
 | `--no-media` | | Send text only. |
 | `--dry-run` | | Show what would be sent without sending. |
 

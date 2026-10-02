@@ -5,7 +5,7 @@ costs an ffmpeg run (two at a time server-side, 15 s each). A grid that showed
 fifty tiles at once queued dozens of generations and starved everything behind
 them: on a cold cache the message list and the gallery's own item request sat
 for 7 to 39 seconds and were reset, so the pane read "Failed to load media"
-while the tab badges said there were 1,701 files.
+while the tab badges still counted the chat's files.
 
 These lift the real admission queue out of the template and run it under node,
 so they pin the behaviour rather than the source text. They run on the vendored

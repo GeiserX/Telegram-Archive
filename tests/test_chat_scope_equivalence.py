@@ -2,7 +2,7 @@
 
 ``/api/chats`` used to load EVERY chat row in the archive and drop the ones the
 viewer may not see in Python. That is correct and unusable: a viewer entitled to
-one chat paid for all 4,784 of them, each carrying a correlated ``MAX(date)``
+one chat paid for every chat in the archive, each carrying a correlated ``MAX(date)``
 subquery. The grant now rides into SQL as ``WHERE`` predicates, so the page, the
 ``total`` and the ordering all describe the same visible row set and a one-chat
 viewer touches one row.

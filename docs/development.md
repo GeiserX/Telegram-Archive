@@ -160,13 +160,13 @@ None of the fixing hooks touch `telegram_archive/web/static/vendor/`. Those vend
 A schema change needs an Alembic migration. Create it from the checkout:
 
 ```bash
-alembic -c telegram_archive/alembic.ini revision --rev-id 037 -m "add something"
+alembic -c telegram_archive/alembic.ini revision --rev-id 039 -m "add something"
 telegram-archive --data-dir ./data migrate
 ```
 
 `migrate` runs `alembic upgrade head` against the `./data` directory from the earlier section. A bare `alembic upgrade head` reads `BACKUP_PATH` from `.env`, which points at `/data/backups`.
 
-Alembic puts the time of day in the new file's name. Rename the file to the pattern the existing revisions use, such as `YYYYMMDD_036_add_something.py`.
+Alembic puts the time of day in the new file's name. Rename the file to the pattern the existing revisions use, such as `YYYYMMDD_039_add_something.py`.
 
 Revision ids are three-digit numbers in sequence, so pass the next one with `--rev-id` instead of taking the random id Alembic would generate. A new migration must also run safely on a database whose schema already has its change, because some databases are built without migration history. Guard each step by inspecting the table first. See [Migrations](configuration/database.md#migrations) for how the images run them.
 
