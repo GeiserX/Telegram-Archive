@@ -39,6 +39,7 @@ from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .event_webhook import EventWebhookSender
+from .media_integrity import visible_media_root
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
@@ -1010,6 +1011,10 @@ class TelegramListener:
                 else None
             )
             if on_disk and os.path.lexists(on_disk):
+                return existing
+            if existing and existing.get("downloaded") and visible_media_root(self.config.media_path) is None:
+                # The media folder is not visibly there: the file is not known
+                # to be gone, and a download would land beside the volume.
                 return existing
             download_result = await self._download_media(message, chat_id)
             if not download_result:

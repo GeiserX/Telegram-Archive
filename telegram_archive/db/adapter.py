@@ -4509,8 +4509,10 @@ class DatabaseAdapter:
         under that id then moved to ``media_versions`` and the message's
         current media has another id and another file. So the file decides:
 
-        - the row under the id holds this file, or an unknown one, or both
-          are link previews (``_is_preview_refresh``): write there;
+        - the row under the id holds this file, or an unknown one (no
+          recorded ``telegram_file_id``; a guess from a file name does not
+          count), or both are link previews (``_is_preview_refresh``): write
+          there;
         - the id was kept as an earlier media of this very file: its file
           values are filled in the ``media_versions`` row, which had none,
           and nothing is written to the current media;
@@ -4538,8 +4540,10 @@ class DatabaseAdapter:
             )
         ).first()
         if row is not None:
-            stored = stored_media_file_id(row.telegram_file_id, row.file_name)
-            if stored is None or stored == file_id or _is_preview_refresh(row.type, media_data.get("type")):
+            # The recorded id only: an id read from an old file name is a guess
+            # and never keeps a download out of the row (reconcile_media_row).
+            stored = row.telegram_file_id
+            if stored is None or str(stored) == file_id or _is_preview_refresh(row.type, media_data.get("type")):
                 return media_id
             logger.debug("Media changed while it was downloading; the current media is left as it is")
             await self._keep_late_download(session, media_data, message, account_id=account_id)
@@ -5376,6 +5380,7 @@ class DatabaseAdapter:
                         Media.file_size,
                         Media.downloaded,
                         Media.content_hash,
+                        Media.skip_reason,
                     )
                     .where(
                         and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None)))
@@ -5399,6 +5404,7 @@ class DatabaseAdapter:
                     "file_size": r[6],
                     "downloaded": r[7],
                     "content_hash": r[8],
+                    "skip_reason": r[9],
                     "account_id": account_id,
                 }
                 for r in rows
@@ -5683,10 +5689,12 @@ class DatabaseAdapter:
         ``edit_date`` and ``edit_hide`` are the edit date and Telegram's
         hidden-edit flag of the message the caller read.
 
-        When the row holds another file and was not replaced (the read shows
-        no such edit, or the row could not be kept), it comes back with
-        ``"superseded": True``: it holds other media than the caller's, and
-        the caller must not download into it.
+        When the row holds another file by its recorded ``telegram_file_id``
+        and was not replaced (the read shows no such edit), or the row could
+        not be kept, it comes back with ``"superseded": True``: it holds other
+        media than the caller's, and the caller must not download into it. An
+        id read from an old file name is a guess: it can start a replacement
+        when the read shows an edit, and never makes a row superseded.
 
         A link preview's photo or document is not compared when the row holds
         a link preview too: Telegram crawls the page again and can serve
@@ -5753,16 +5761,20 @@ class DatabaseAdapter:
                         edit_date=edit_date,
                         edit_hide=edit_hide,
                     )
-                    if replaced is not None:
+                    if replaced is not None and not replaced.get("unkept"):
                         return replaced
                     # Not replaced here. Either another writer replaced it
                     # first (the row now holds this file), or the read shows
                     # no edit that can have replaced the media, or the row
-                    # could not be kept. Only the first may take a download.
+                    # could not be kept (``unkept``). Only the first may take
+                    # a download. Otherwise a row holds other media only when
+                    # its recorded id says so: an id read from an old file
+                    # name is a guess, and a guess never stops a download
+                    # (the row would wait for its file for good).
                     current = await self.reconcile_media_row(chat_id, message_id, None, account_id=account_id)
                     if current is not None:
-                        now = stored_media_file_id(current["telegram_file_id"], current["file_name"])
-                        if now is not None and now != str(telegram_file_id):
+                        now = current["telegram_file_id"]
+                        if replaced is not None or (now is not None and str(now) != str(telegram_file_id)):
                             current["superseded"] = True
                     return current
             if media_type and row.type != media_type:
@@ -5795,17 +5807,27 @@ class DatabaseAdapter:
         """True when a read shows an edit that can have replaced the media.
 
         Telegram moves a message's edit date when its photo or file is
-        swapped, and shows that edit. So the read must carry an edit date,
-        not hidden (a hidden edit is a reaction, #219), and not older than
-        the archived edit. The same date is allowed: the date has one-second
-        resolution and a bot can edit twice within one second. A read without
-        this evidence replaces nothing, whatever id it carries: a link preview
-        crawled again, or a stored id that does not name the file.
+        swapped, and shows that edit. So the read must carry an edit date not
+        older than the archived edit. The same date is allowed: the date has
+        one-second resolution and a bot can edit twice within one second.
+
+        A hidden edit (a reaction, #219) moves the date too and hides the edit
+        that came before it. When its date is newer than the archived edit
+        (or the message was never edited in the archive), the archive has not
+        read the message since before that date, so a photo or file swapped
+        in between shows up only as another id: that is a replacement. A
+        hidden read at the archived date or older replaces nothing.
+
+        A read without this evidence replaces nothing, whatever id it
+        carries: a link preview crawled again, or a stored id that does not
+        name the file.
         """
         read = _strip_tz(edit_date)
-        if read is None or edit_hide:
+        if read is None:
             return False
         archived = _strip_tz(message.edit_date)
+        if edit_hide:
+            return archived is None or read > archived
         return archived is None or read >= archived
 
     @staticmethod
@@ -5883,8 +5905,9 @@ class DatabaseAdapter:
 
         Returns the row as the caller should use it, or None when nothing was
         replaced: the row is gone or already holds this file (another path
-        replaced it first), the read shows no replacing edit, or the row
-        could not be kept.
+        replaced it first), or the read shows no replacing edit. A row that
+        could not be kept comes back as ``{"unkept": True}``, so
+        ``reconcile_media_row`` hands it back as superseded.
         """
         async with self.db_manager.async_session_factory() as session:
             message = await self._load_message_for_update(session, account_id, chat_id, message_id)
@@ -5977,7 +6000,7 @@ class DatabaseAdapter:
                 # new media into it, and the next read of the message tries again.
                 await session.rollback()
                 logger.warning("Could not keep replaced media as a version; the row is unchanged")
-                return None
+                return {"unkept": True}
             await session.commit()
             logger.debug("Kept replaced media as a version")
             return {
@@ -6224,6 +6247,23 @@ class DatabaseAdapter:
             stmt = update(Media).where(and_(Media.account_id == account_id, Media.id == media_id)).values(**values)
             await session.execute(stmt)
             await session.commit()
+
+    async def mark_media_downloaded(self, media_id: str, *, account_id: int) -> bool:
+        """Mark a row not downloaded as downloaded again; True when a row changed.
+
+        For ``check-media --repair``, after ``file_in_place`` found the row's own
+        file at its path: a row an outage marked, whose download attempts ran
+        out while the media volume was gone. Only ``downloaded`` changes; the
+        path, the attempt count and every other value stay as they are.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Media)
+                .where(and_(Media.account_id == account_id, Media.id == media_id, Media.downloaded == 0))
+                .values(downloaded=1)
+            )
+            await session.commit()
+            return bool(result.rowcount)
 
     async def count_capped_media_downloads(self, max_attempts: int, *, account_id: int) -> int:
         """Count downloadable media permanently skipped after hitting the retry cap (#212).

@@ -2677,6 +2677,7 @@ class TestListenerReusesMediaAlreadyOnDisk:
         """The control: reuse must be decided by the disk, not by the flag."""
         listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
         config.media_path = str(tmp_path)
+        (tmp_path / "-100").mkdir()
         db.reconcile_media_row = AsyncMock(
             return_value={"id": "import_-100_4242", "type": "voice", "downloaded": True, "file_path": "-100/gone.ogg"}
         )
@@ -2685,6 +2686,21 @@ class TestListenerReusesMediaAlreadyOnDisk:
         await handlers[events.NewMessage](_media_event(_voice_media(duration=7, size=4321)))
 
         listener._download_media.assert_awaited()
+
+    async def test_a_media_folder_not_visible_downloads_nothing_over_a_stored_file(self, tmp_path):
+        """An empty or missing media folder (a volume not mounted) is no evidence
+        the stored file is gone: the row stays as it is."""
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        config.media_path = str(tmp_path / "media")
+        db.reconcile_media_row = AsyncMock(
+            return_value={"id": "import_-100_4242", "type": "voice", "downloaded": True, "file_path": "-100/held.ogg"}
+        )
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/voice.ogg", "voice.ogg", "h"))
+
+        await handlers[events.NewMessage](_media_event(_voice_media(duration=7, size=4321)))
+
+        listener._download_media.assert_not_awaited()
+        db.insert_media.assert_not_awaited()
 
 
 class TestRealtimeMediaAttributes:
