@@ -85,7 +85,7 @@ telegram-archive [--data-dir PATH] schedule
 
 Takes no flags.
 
-Runs the scheduler until stopped. The stock compose file runs this command. It does the same one-time media move as `backup`, starts the real-time listeners when `ENABLE_LISTENER=true`, and runs one backup straight away. After that it backs up on the `SCHEDULE` cron expression, `0 */6 * * *` by default. With `FILL_GAPS=true` it runs gap-fill after each backup. It writes a heartbeat file every 30 seconds for the container health check. See [Schedule and backup tuning](../configuration/schedule.md).
+Runs the scheduler until stopped. The stock compose file runs this command. It does the same one-time media move as `backup`, starts the real-time listeners (on by default, `ENABLE_LISTENER`), and runs one backup straight away. After that it runs a full pass on the `SCHEDULE` cron expression: `0 3 * * *` by default, or `0 */6 * * *` with `ENABLE_LISTENER=false`. It logs one `Capture mode:` line at startup that says which of the two it runs. With `FILL_GAPS=true` it runs gap-fill after each backup. It writes a heartbeat file every 30 seconds for the container health check. See [Schedule and backup tuning](../configuration/schedule.md).
 
 It prints log lines only. It runs until stopped. A configuration error or a fatal error exits 1.
 
@@ -177,10 +177,11 @@ The archive is unhealthy when one of these holds:
 - No backup run has ever started.
 - The last run did not finish. It is not running, and the statistics a run writes after its message sweep are older than its start.
 - `SCHEDULE` has fired twice since the last run started. One missed tick is allowed, because a tick that arrives while a run is still going is skipped. A run still going after two ticks counts as missed, so the first backup of a large archive reads `UNHEALTHY` until it completes.
+- `ENABLE_LISTENER` is on and fewer listeners are running than accounts are configured. With the daily default schedule, this is what reports a stopped backup within minutes. The account is named when the database holds no account beyond the configured ones; otherwise the count is given.
 
 The schedule check uses the local time of the command, as the scheduler does. Run it with the same `TZ` as the backup service. Inside the backup container this is already the case.
 
-The schedule check reads `SCHEDULE` even when runs are started another way, for example the one-shot [`backup`](#backup) command from a host cron. Set `SCHEDULE` to the real cadence, or the check reports missed runs.
+The schedule check reads `SCHEDULE` even when runs are started another way, for example the one-shot [`backup`](#backup) command from a host cron. Set `SCHEDULE` to the real cadence, or the check reports missed runs. Such a setup runs no listener, so set `ENABLE_LISTENER=false` for the command too, or it reports the missing listener.
 
 A database that does not exist yet is created empty and reads as `no backup has run yet`. Before you trust that verdict, check that `DATABASE_URL` or `BACKUP_PATH` points at the archive.
 

@@ -1,8 +1,8 @@
 """Is the archive healthy right now: one answer for the viewer and the command line.
 
 ``collect_status`` builds the payload the viewer's ``GET /api/status`` returns.
-``health_problems`` reads that payload against the ``SCHEDULE`` setting for
-``telegram-archive status``. Counts and timestamps only: never ids, titles or
+``health_problems`` reads that payload against the ``SCHEDULE`` and
+``ENABLE_LISTENER`` settings for ``telegram-archive status``. Counts and timestamps only: never ids, titles or
 content.
 
 The viewer image imports this module but ships without APScheduler, so the
@@ -82,17 +82,25 @@ def health_problems(
     schedule: str,
     now: datetime | None = None,
     timezone: tzinfo | None = None,
+    listener_accounts: int = 0,
 ) -> list[str]:
     """Why the archive is unhealthy, one sentence per reason. Empty means healthy.
 
-    Three reasons, all read from the status payload:
+    Four reasons, all read from the status payload:
 
     - no backup has ever started;
     - the last backup did not finish: it is not running, and the statistics it
       writes after its message sweep are older than its start;
     - the schedule missed a run: SCHEDULE has fired twice since the last backup
       started. One missed tick is tolerated, because a run still going when
-      the next tick fires skips that tick.
+      the next tick fires skips that tick;
+    - a listener is not running: ``listener_accounts`` is how many accounts
+      should have one (the configured accounts when ENABLE_LISTENER is on, 0
+      when it is off), and fewer are active. With the listener on, the
+      scheduled pass runs once a day, so this is what shows a stopped backup
+      within minutes. The account ids are named when the database holds no
+      rows beyond the configured accounts; otherwise only the count is, since
+      a row left by an account no longer configured never has a listener.
 
     The statistics are written after the message sweep and before the media
     retries, media verification, transcription and gap-fill, so a failure in
@@ -128,7 +136,20 @@ def health_problems(
             f"no backup has started since the run SCHEDULE ({schedule}) expected at "
             f"{fires[0].astimezone(UTC).isoformat()}"
         )
+    problems.extend(_listener_problems(status.get("listeners") or [], listener_accounts))
     return problems
+
+
+def _listener_problems(listeners: list[dict[str, Any]], expected: int) -> list[str]:
+    """One sentence per missing listener, or one for the shortfall when ids would mislead."""
+    active = sum(1 for listener in listeners if listener["active"])
+    missing = expected - active
+    if missing <= 0:
+        return []
+    inactive = [listener["account_id"] for listener in listeners if not listener["active"]]
+    if len(inactive) == missing:
+        return [f"the listener of account {account_id} is not running" for account_id in inactive]
+    return [f"{missing} of {expected} configured account(s) have no running listener"]
 
 
 def _format_bytes(size: int | None) -> str:
