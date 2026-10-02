@@ -2,17 +2,33 @@
 
 ## What it is
 
-A scheduled backup only sees Telegram when it runs. The listener keeps each account connected between runs and writes changes into the archive as they happen.
+A scheduled backup only sees Telegram when it runs. The listener keeps each account connected between runs and writes changes into the archive as they happen: new messages and their media, edits, chat actions and reactions.
 
-`ENABLE_LISTENER` turns the listener on. It defaults to `false`.
+The listener is on by default since 9.2.0. `ENABLE_LISTENER` turns it off:
 
 ```ini
-ENABLE_LISTENER=true
+ENABLE_LISTENER=false
 ```
+
+With the listener off, the scheduled full pass is the only capture, and `SCHEDULE` defaults to every 6 hours instead of once a day. See [Schedule and backup tuning](schedule.md).
 
 The supported way to run the listener is the `schedule` command. The shipped compose file runs that command in the backup container. The scheduler starts one listener per configured account, on that account's shared Telegram connection. A one-shot `telegram-archive backup` never starts it.
 
 A watchdog checks the listeners once a second and restarts a dead one after a 5-second pause. Healthy accounts are left alone.
+
+## Catching up after a disconnect
+
+Telegram keeps the updates a client missed for a while and hands them over when the client asks for them. The official apps ask on every new connection, and the listener does the same. Each time a listener starts or restarts, it first attaches its handlers and only then reconnects and asks Telegram for what it missed. Messages, edits and reactions from the outage are then saved as if they had just happened.
+
+A short network blip that the Telegram library reconnects by itself is covered too. The handlers stay attached, and the missed updates arrive once the library notices the gap, within 15 minutes at most.
+
+Some things are not replayed:
+
+- A process restart. A stopped container keeps no update state, so a restart runs the startup backup instead. That pass fetches new messages. Edits, deletions and reactions to older messages made while the process was stopped are caught only by `SYNC_DELETIONS_EDITS`, the reaction re-sweep, or a later read of the same messages.
+- A very long outage. When Telegram answers that too much was missed, the listener drops the replay and the next full pass fetches the new messages.
+- Reactions you add from another device, which Telegram does not always push. See [Reactions](#reactions).
+
+That is why the daily full pass stays on.
 
 !!! warning "Standalone entry point"
     `python -m telegram_archive.listener` starts a second Telegram client per account. Use `schedule` with `ENABLE_LISTENER=true` instead. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
@@ -24,12 +40,12 @@ The `LISTEN_*` switches and `REACTION_DEBOUNCE_SECONDS` take effect only when `E
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `LISTEN_NEW_MESSAGES` | `true` | Save new messages as they arrive. |
-| `LISTEN_NEW_MESSAGES_MEDIA` | `false` | Download the media of new messages at once instead of at the next backup run. |
+| `LISTEN_NEW_MESSAGES_MEDIA` | `true` | Download the media of new messages at once instead of at the next backup run. |
 | `LISTEN_EDITS` | `true` | Apply text edits and keep the previous text as a version. |
 | `LISTEN_DELETIONS` | `false` | Process deletions. When off, deletions are only counted. |
 | `DELETION_MODE` | `soft` | `soft` marks a message deleted and keeps it. `hard` removes it. Also governs the `SYNC_DELETIONS_EDITS` pass of the scheduled backup. |
 | `LISTEN_CHAT_ACTIONS` | `true` | Save service messages such as joins, leaves, title and photo changes. |
-| `LISTEN_REACTIONS` | `false` | Capture per-emoji reaction counts live. |
+| `LISTEN_REACTIONS` | `true` | Capture per-emoji reaction counts live. |
 | `REACTION_DEBOUNCE_SECONDS` | `1.5` | How often buffered reaction updates are written. Values below `0.1` are raised to `0.1`. |
 
 For the rate-limit settings, see [Mass-operation protection](#mass-operation-protection).
@@ -52,7 +68,7 @@ The listener skips forum topics listed in `SKIP_TOPIC_IDS`. That covers their ne
 
 With `LISTEN_NEW_MESSAGES=true`, the listener saves each new message as it arrives. It stores the text, the sender, the chat, the album id, the link preview, a poll with its question, answers and results, the forward origin and the formatting.
 
-Media waits for the next scheduled backup by default. With `LISTEN_NEW_MESSAGES_MEDIA=true` the listener downloads it at once. It applies the same rules as the backup: the `DOWNLOAD_MEDIA` switch, the size cap, media types, document MIME types, YouTube previews, `SKIP_MEDIA_CHAT_IDS` and deduplication. See [Media downloads](media.md).
+The listener downloads the media at once by default. With `LISTEN_NEW_MESSAGES_MEDIA=false` it waits for the next scheduled backup. It applies the same rules as the backup: the `DOWNLOAD_MEDIA` switch, the size cap, media types, document MIME types, YouTube previews, `SKIP_MEDIA_CHAT_IDS` and deduplication. See [Media downloads](media.md).
 
 ## Edits
 
@@ -130,7 +146,9 @@ The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the sch
 
 ## Checking that it runs
 
-In the viewer, the sidebar header shows **Live**, with a green dot and the last backup time, under the archive's name while a listener is active. For the master login, the **Live sync** section of Archive status shows one row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+In the viewer, the sidebar header shows **Live**, with a green dot, under the archive's name while a listener is active. It stays **Live** while the full pass runs. Its tooltip gives the time of the last full pass. For the master login, the **Live sync** section of Archive status shows one row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
+
+On the command line, `telegram-archive status` exits 1 when a configured account has no running listener while `ENABLE_LISTENER` is on. See [CLI](../reference/cli.md).
 
 When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter. The edit counters are:
 

@@ -142,7 +142,7 @@ Everything that is not a chat filter applies to all accounts. That includes `DOW
 - If one account fails, the error is logged with its index and the other accounts continue.
 - After login, the backup uses the Telegram user id to match each account to its data row. Changing the order of the `TG_ACCOUNT_<N>` numbers does not move data between accounts.
 - All accounts share one owner id, one last backup time and one "backup running" flag. Each value shows whichever account updated it last.
-- With `ENABLE_LISTENER=true`, each account gets its own listener. See [Real-time listener](listener.md).
+- Each account gets its own listener, unless `ENABLE_LISTENER=false`. See [Real-time listener](listener.md).
 
 ## In the viewer
 
