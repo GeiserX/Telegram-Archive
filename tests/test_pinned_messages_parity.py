@@ -122,7 +122,8 @@ async def test_a_pinned_message_shows_the_chat_s_reactions_and_the_ones_taken_ba
     assert [(r["emoji"], r["count"]) for r in pinned["reactions"]] == [("👍", 1)]
     taken_back = {r["emoji"]: (r["count"], r["count_before"]) for r in pinned["removed_reactions"]}
     assert taken_back == {"👍": (2, 3), "❤": (1, 1)}
-    for key in ("reactions", "removed_reactions", "reaction_history"):
+    assert pinned["reaction_history_omitted"] == 0
+    for key in ("reactions", "removed_reactions", "reaction_history", "reaction_history_omitted"):
         assert pinned[key] == page[key], key
 
 
@@ -165,3 +166,22 @@ async def test_the_pinned_list_costs_the_same_statements_for_one_pin_or_many(rea
     # Pinned rows, snapshot groups, snapshot rows, reactions, reaction history:
     # five whatever the number of pins (no pinned reply here, so no reply read).
     assert many == one == 5
+
+
+async def test_the_pinned_list_caps_the_reaction_history_like_the_page(main_mod, real_adapter):
+    from telegram_archive.db.adapter import PAGE_REACTION_HISTORY_LIMIT
+
+    await _seed(real_adapter)
+    for count in range(2, PAGE_REACTION_HISTORY_LIMIT + 8):
+        await real_adapter.reconcile_reactions(
+            POLL_ID, CHAT_ID, [{"emoji": "🔥", "count": count}], account_id=2, source="listener"
+        )
+    main_mod.db = real_adapter
+    user = main_mod.UserContext(username="viewer", role="viewer")
+
+    pinned = await _pinned_row(main_mod, _chat(main_mod, 2), user)
+    page = await _page_row(main_mod, _chat(main_mod, 2), user)
+
+    assert pinned["reaction_history_omitted"] > 0
+    for key in ("reaction_history", "reaction_history_omitted", "removed_reactions"):
+        assert pinned[key] == page[key], key
