@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from telegram_archive.db.adapter import DatabaseAdapter
 from telegram_archive.db.base import DatabaseManager
-from telegram_archive.db.models import Base, Media, Message, Reaction
+from telegram_archive.db.models import Base, Media, Message, MessageSnapshot, Reaction
 
 CHAT_ID = -500
 LONG_REPLY_TEXT = "L" * 150
@@ -124,6 +124,21 @@ class TestMessagesPageBatchingShape:
     @pytest.mark.asyncio
     async def test_page_fetch_issues_constant_number_of_queries(self, adapter):
         await _seed_page(adapter)
+        # One later poll state on the page, so the snapshot read's second
+        # statement (the newest rows by id) runs and is counted too.
+        async with adapter.db_manager.async_session_factory() as session:
+            session.add(
+                MessageSnapshot(
+                    account_id=1,
+                    chat_id=CHAT_ID,
+                    message_id=30,
+                    kind="poll",
+                    payload='{"question": "Demo?", "answers": [], "closed": true}',
+                    observed_at=datetime(2026, 1, 2, 12, 0, 0),
+                    source="listener",
+                )
+            )
+            await session.commit()
 
         statements = []
 
@@ -138,14 +153,15 @@ class TestMessagesPageBatchingShape:
             event.remove(sync_engine, "before_cursor_execute", _capture)
 
         assert len(rows) == 50
+        assert {r["id"]: r for r in rows}[30]["snapshots"]["poll"]["payload"]["closed"] is True
         select_count = sum(1 for s in statements if s.strip().upper().startswith("SELECT"))
-        # Main page query + version-count query + batched reply-text query +
-        # batched reactions query + batched reaction history query == 5, plus
-        # the grouped read of the page's poll and preview snapshots (038), one
-        # statement whatever the page holds.
-        # Anything approaching 50+ would mean the N+1 per-row pattern
-        # (get_reactions/reply SELECT per row) came back.
-        assert select_count <= 8, f"expected a small constant query count, got {select_count}: {statements}"
+        # The page (1), its media (2), the version counts (3), the snapshot
+        # groups (4) and the newest snapshot rows (5), the reply targets (6),
+        # the reactions (7), the reaction history (8), and the account owners
+        # (9), read once and then cached for a short TTL. Nine whatever the
+        # page holds; anything growing with the page would mean the N+1 per-row
+        # pattern (get_reactions/reply SELECT per row) came back.
+        assert select_count == 9, f"expected exactly 9 statements, got {select_count}: {statements}"
 
 
 class TestPendingMediaDownloadsLimit:

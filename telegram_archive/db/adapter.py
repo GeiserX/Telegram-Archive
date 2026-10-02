@@ -7265,7 +7265,7 @@ class DatabaseAdapter:
     # the database (PG_TSQUERY_FROM_SEARCH) and prefix terms get a flat row
     # estimate either way, so it always walks idx_messages_date backwards and
     # filters. That is 1 ms for a dense term and a full-table walk for a rare
-    # or absent one — 2 to 9 s on a 2.9M-row archive. The GIN index is the
+    # or absent one — 2 to 9 s on a large archive. The GIN index is the
     # opposite: its cost is the number of hits, so a rare term is milliseconds
     # and a single letter is over a second. So the search first asks the index
     # how many hits there are, capped, and takes the path that is bounded for
@@ -7275,7 +7275,7 @@ class DatabaseAdapter:
     # bounds — a dense term whose newest hit is millions of rows back — and
     # the sorted hit set answers when it fires. SQLite's FTS5 always drives
     # from the hit set, and sorting the keys before the joins is what keeps a
-    # common word cheap there (measured on a 155k-row archive: 87 ms against
+    # common word cheap there (measured on a mid-sized archive: 87 ms against
     # 667 ms for the joined walk), so SQLite takes that one path
     # unconditionally.
     GLOBAL_SEARCH_DENSE_HITS = 10_000
@@ -8070,83 +8070,96 @@ class DatabaseAdapter:
 
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
-            # Batch reactions: one query for the whole page instead of one
-            # get_reactions() call per message. Ties within the same emoji are
-            # broken by Reaction.id to match get_reactions' de-facto row order.
-            # The same read returns the reactions taken back (removed_at set,
-            # #219): they stay out of the live count and come back beside it as
-            # removed_reactions, so the viewer can show what the archive kept.
-            reactions_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
-            removed_by_message: dict[int, dict[str, dict[str, Any]]] = {mid: {} for mid in page_message_ids}
-            if page_message_ids:
-                reactions_stmt = (
-                    select(Reaction)
-                    .where(
-                        and_(
-                            Reaction.chat_id == chat_id,
-                            Reaction.message_id.in_(page_message_ids),
-                        )
-                    )
-                    .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
-                )
-                if account_id is not None:
-                    reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
-                reactions_result = await session.execute(reactions_stmt)
-                for r in reactions_result.scalars():
-                    if r.removed_at is not None:
-                        # One entry per emoji: the count it had when it went, and
-                        # the latest time the archive noticed it gone.
-                        removed = removed_by_message[r.message_id].get(r.emoji)
-                        if removed is None:
-                            removed_by_message[r.message_id][r.emoji] = {
-                                "emoji": r.emoji,
-                                "count": r.count or 1,
-                                "removed_at": r.removed_at,
-                            }
-                        else:
-                            removed["count"] += r.count or 1
-                            removed["removed_at"] = max(removed["removed_at"], r.removed_at)
-                        continue
-                    reactions_by_message[r.message_id].append(
-                        {"emoji": r.emoji, "user_id": r.user_id, "count": r.count}
-                    )
-
-            # Every kept state of the page's reactions (reaction_history), oldest
-            # first, from the same chat, messages and account as the rows above.
-            # Capped in the query (PAGE_REACTION_HISTORY_LIMIT); ``total`` is
-            # how many states each message has, so the page can say what it cut.
-            history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
-            history_totals: dict[tuple[int, int], int] = {}
-            if page_message_ids:
-                history_stmt = self._page_reaction_history_query(chat_id, page_message_ids, account_id)
-                for h in await session.execute(history_stmt):
-                    history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
-                    history_totals[(h.account_id, h.message_id)] = h.total
-            history_omitted: dict[int, int] = {}
-            for (_account, message_id), total in history_totals.items():
-                history_omitted[message_id] = history_omitted.get(message_id, 0) + total
-
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
 
-                reactions_by_emoji = {}
-                for reaction in reactions_by_message.get(msg["id"], []):
-                    emoji = reaction["emoji"]
-                    if emoji not in reactions_by_emoji:
-                        reactions_by_emoji[emoji] = {"emoji": emoji, "count": 0, "user_ids": []}
-                    reactions_by_emoji[emoji]["count"] += reaction.get("count", 1)
-                    if reaction.get("user_id"):
-                        reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
-                msg["reactions"] = list(reactions_by_emoji.values())
-                history = history_by_message.get(msg["id"], [])
-                msg["reaction_history"] = history
-                msg["reaction_history_omitted"] = history_omitted.get(msg["id"], 0) - len(history)
-                msg["removed_reactions"] = self._removed_reactions(
-                    history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
-                )
+            await self._attach_page_reactions(session, chat_id, messages, account_id)
 
             await self.attach_sender_accounts(messages)
             return messages
+
+    async def _attach_page_reactions(
+        self, session, chat_id: int, messages: list[dict[str, Any]], account_id: int | None
+    ) -> None:
+        """Give every row its ``reactions``, ``reaction_history`` (capped, with
+        ``reaction_history_omitted``) and ``removed_reactions``, in place.
+
+        Two statements whatever the number of rows: the reactions (live and
+        taken back) and the capped reaction history of the rows' ids
+        (``_page_reaction_history_query``), in the same chat and account. The messages page and the pinned list both call it, so the
+        same message shows the same chips in either.
+        """
+        page_message_ids = [msg["id"] for msg in messages]
+        # Batch reactions: one query for the whole page instead of one
+        # get_reactions() call per message. Ties within the same emoji are
+        # broken by Reaction.id to match get_reactions' de-facto row order.
+        # The same read returns the reactions taken back (removed_at set,
+        # #219): they stay out of the live count and come back beside it as
+        # removed_reactions, so the viewer can show what the archive kept.
+        reactions_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+        removed_by_message: dict[int, dict[str, dict[str, Any]]] = {mid: {} for mid in page_message_ids}
+        if page_message_ids:
+            reactions_stmt = (
+                select(Reaction)
+                .where(
+                    and_(
+                        Reaction.chat_id == chat_id,
+                        Reaction.message_id.in_(page_message_ids),
+                    )
+                )
+                .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
+            )
+            if account_id is not None:
+                reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
+            reactions_result = await session.execute(reactions_stmt)
+            for r in reactions_result.scalars():
+                if r.removed_at is not None:
+                    # One entry per emoji: the count it had when it went, and
+                    # the latest time the archive noticed it gone.
+                    removed = removed_by_message[r.message_id].get(r.emoji)
+                    if removed is None:
+                        removed_by_message[r.message_id][r.emoji] = {
+                            "emoji": r.emoji,
+                            "count": r.count or 1,
+                            "removed_at": r.removed_at,
+                        }
+                    else:
+                        removed["count"] += r.count or 1
+                        removed["removed_at"] = max(removed["removed_at"], r.removed_at)
+                    continue
+                reactions_by_message[r.message_id].append({"emoji": r.emoji, "user_id": r.user_id, "count": r.count})
+
+        # Every kept state of the page's reactions (reaction_history), oldest
+        # first, from the same chat, messages and account as the rows above.
+        # Capped in the query (PAGE_REACTION_HISTORY_LIMIT); ``total`` is
+        # how many states each message has, so the page can say what it cut.
+        history_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+        history_totals: dict[tuple[int, int], int] = {}
+        if page_message_ids:
+            history_stmt = self._page_reaction_history_query(chat_id, page_message_ids, account_id)
+            for h in await session.execute(history_stmt):
+                history_by_message[h.message_id].append(self._reaction_history_to_dict(h))
+                history_totals[(h.account_id, h.message_id)] = h.total
+        history_omitted: dict[int, int] = {}
+        for (_account, message_id), total in history_totals.items():
+            history_omitted[message_id] = history_omitted.get(message_id, 0) + total
+
+        for msg in messages:
+            reactions_by_emoji = {}
+            for reaction in reactions_by_message.get(msg["id"], []):
+                emoji = reaction["emoji"]
+                if emoji not in reactions_by_emoji:
+                    reactions_by_emoji[emoji] = {"emoji": emoji, "count": 0, "user_ids": []}
+                reactions_by_emoji[emoji]["count"] += reaction.get("count", 1)
+                if reaction.get("user_id"):
+                    reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
+            msg["reactions"] = list(reactions_by_emoji.values())
+            history = history_by_message.get(msg["id"], [])
+            msg["reaction_history"] = history
+            msg["reaction_history_omitted"] = history_omitted.get(msg["id"], 0) - len(history)
+            msg["removed_reactions"] = self._removed_reactions(
+                history, removed_by_message.get(msg["id"], {}), set(reactions_by_emoji)
+            )
 
     @staticmethod
     def _page_reaction_history_query(chat_id: int, message_ids: list[int], account_id: int | None):
@@ -8535,11 +8548,13 @@ class DatabaseAdapter:
             rows = result.all()
 
             messages = []
+            row_accounts: list[int] = []
             for row in rows:
                 msg = self._message_to_dict(row.Message)
                 msg["first_name"] = row.first_name
                 msg["last_name"] = row.last_name
                 msg["username"] = row.username
+                row_accounts.append(row.Message.account_id)
 
                 # v6.0.0: Media as nested object
                 if row.media_type:
@@ -8570,6 +8585,16 @@ class DatabaseAdapter:
 
             # One query for the whole pinned list, not one per pinned reply.
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
+
+            # The pinned-only view draws these rows with the chat's renderer, so
+            # they carry what the messages page gives a row: the newest kept poll
+            # and link preview, and the reactions with the ones taken back. Each
+            # is batched over the list, never read per row.
+            pinned_ids = [msg["id"] for msg in messages]
+            newest_snapshots = await self._newest_snapshots_of_page(session, chat_id, pinned_ids, account_id)
+            for account, msg in zip(row_accounts, messages, strict=True):
+                msg["snapshots"] = self._snapshots_for_row(msg, newest_snapshots.get((account, msg["id"]), {}))
+            await self._attach_page_reactions(session, chat_id, messages, account_id)
 
             await self.attach_sender_accounts(messages)
             return messages
@@ -8663,7 +8688,7 @@ class DatabaseAdapter:
 
         Yields message dictionaries with sender info, deleted messages
         included and marked by ``is_deleted``/``deleted_at``. Each carries
-        ``edit_date``, ``media`` (its current media, ``_export_media_dict``,
+        ``edit_date`` and its ``edit_hide`` flag, ``media`` (its current media, ``_export_media_dict``,
         never a file path) and ``versions``, every earlier text and media the
         archive kept of it (``_export_versions``, any date, oldest first). A
         message whose media has transcripts carries them all under
@@ -8697,6 +8722,7 @@ class DatabaseAdapter:
                 Message.reply_to_msg_id,
                 Message.sender_name,
                 Message.edit_date,
+                Message.edit_hide,
                 Message.is_deleted,
                 Message.deleted_at,
                 Message.raw_data,
@@ -8738,6 +8764,9 @@ class DatabaseAdapter:
                     "is_deleted": bool(row.is_deleted),
                     "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
                     "edit_date": row.edit_date.isoformat() if row.edit_date else None,
+                    # Telegram's flag for that edit_date, as the command's
+                    # export carries it: 1 when only the reactions moved it.
+                    "edit_hide": row.edit_hide if isinstance(row.edit_hide, int) else None,
                     "media": [self._export_media_dict(media_row) for media_row in media],
                 }
                 if include_media:

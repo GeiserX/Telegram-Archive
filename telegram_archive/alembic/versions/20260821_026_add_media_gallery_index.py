@@ -2,7 +2,7 @@
 
 GET /api/chats/{chat_id}/media orders by the media keyset pair and filters on
 (chat_id, downloaded), but no index carried both the filter and an ordering
-column: measured on a chat holding 120,000 downloaded media rows, every page
+column: measured on a chat with a large media gallery, every page
 fetched, joined and sorted all of them to return 51 (43 ms first page, 494 ms
 near the oldest row, linear in chat media count). This composite covers the
 filter, the cursor predicate and the ORDER BY in one seek, so a page costs

@@ -364,8 +364,11 @@ class TestPinnedListParity:
         assert sum(1 for m in pinned if m.get("reply_to_sender_name")) == 25
         reply_statements = [s for s in counter.matching("messages.id IN") if "media" in s]
         assert len(reply_statements) == 1, counter.statements
-        # A small fixed set of statements for 25 replies — nothing per row.
-        assert counter.count <= 4, counter.statements
+        # A small fixed set of statements for 25 replies, nothing per row: the
+        # pinned rows, the reply targets, the snapshot groups (no later poll or
+        # preview here, so no snapshot rows), the reactions, the reaction
+        # history and the account owners.
+        assert counter.count == 6, counter.statements
 
     async def test_pinned_query_count_is_flat_as_pinned_replies_grow(self, env):
         small_adapter, small_engine = await _seed_replies(1, pinned=True)
