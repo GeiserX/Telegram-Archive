@@ -399,21 +399,23 @@ def main_mod(monkeypatch, tmp_path):
 
 
 async def _viewer_seed(adapter, media_root) -> None:
-    await adapter.note_custom_emoji([SUN, MOON, STAR, 4242])
+    await adapter.note_custom_emoji([SUN, MOON, STAR, 4242, 4343])
     folder = media_root / "_emoji"
     folder.mkdir()
     (folder / f"{SUN}.webp").write_bytes(WEBP)
     (folder / f"{MOON}.tgs").write_bytes(TGS)
     (folder / f"{STAR}.webm").write_bytes(b"fake webm bytes")
     (folder / "4242.webp").write_bytes(WEBP)
+    (folder / "4343.html").write_bytes(b"<script>fake</script>")
     for document_id, name, alt in (
         (SUN, f"{SUN}.webp", "☀️"),
         (MOON, f"{MOON}.tgs", "🌙"),
         (STAR, f"{STAR}.webm", "⭐"),
     ):
         await adapter.update_custom_emoji(document_id, {"file_name": name, "downloaded": 1, "alt": alt})
-    # A row whose stored name is not its own file: never served.
+    # Rows whose stored name is not an emoji file of their own: never served.
     await adapter.update_custom_emoji(4242, {"file_name": "../4242.webp", "downloaded": 1})
+    await adapter.update_custom_emoji(4343, {"file_name": "4343.html", "downloaded": 1})
 
 
 def _users(main_mod) -> dict:
@@ -431,7 +433,7 @@ class TestViewerRoutes:
         await _viewer_seed(real_adapter, tmp_path)
         await real_adapter.note_custom_emoji([7777])
         main_mod.db = real_adapter
-        ids = f"{SUN},{MOON},{STAR},7777,4242,123"
+        ids = f"{SUN},{MOON},{STAR},7777,4242,4343,123"
         for user in _users(main_mod).values():
             answer = await main_mod.get_custom_emoji_info(ids=ids, user=user)
             assert answer == {
@@ -440,6 +442,7 @@ class TestViewerRoutes:
                 str(STAR): {"kind": "webm", "alt": "⭐", "text_color": False, "ready": True},
                 "7777": {"kind": None, "alt": None, "text_color": False, "ready": False},
                 "4242": {"kind": None, "alt": None, "text_color": False, "ready": False},
+                "4343": {"kind": None, "alt": None, "text_color": False, "ready": False},
             }
 
     async def test_the_info_route_refuses_bad_ids_and_an_empty_grant(self, main_mod, real_adapter):
@@ -474,7 +477,7 @@ class TestViewerRoutes:
         main_mod.db = real_adapter
         master = _users(main_mod)["master"]
         # Not downloaded, unknown, a bad stored name, not an id.
-        for document_id in ("7777", "123", "4242", "abc", "../x"):
+        for document_id in ("7777", "123", "4242", "4343", "abc", "../x"):
             with pytest.raises(main_mod.HTTPException) as exc:
                 await main_mod.serve_custom_emoji(document_id, user=master)
             assert exc.value.status_code == 404, document_id
