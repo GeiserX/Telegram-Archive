@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+- **Photos, videos and GIFs take the size Telegram Desktop gives them.** A single photo had no width of its own, so its bubble took the width of the sender's name or the time: a tall photo was drawn about 140 px wide, a landscape photo under a short channel signature about 64 px, and a 50 px picture was stretched and blurred. Videos and GIFs started at 300 by 150 and jumped when they loaded. Each picture now has a box set from its stored size before the file loads: scaled down to fit 430 px each way and never up, 320 px for a GIF, three quarters of the screen width on a phone, at least 100 px each way and at least 200 px wide in a bubble with a name, a caption or reactions. A picture that filling its box would cut by more than a quarter of its height, or at its sides, is drawn whole on a tint. The caption wraps under the picture instead of widening the bubble. An image sent as a file uses the same box and opens from the keyboard, and so does a GIF. The placeholder of a picture the archive does not show takes the box the picture would take. An album is 400 px wide instead of as wide as its caption. A photo stored with no size shows a 4:3 box until it loads. See [Media](viewer/using-the-viewer.md#media).
+
 ## [9.2.1] - 2026-10-03
 
 One fix for the map pictures: a short FloodWait no longer ends the run. No migration, nothing else changes. Docker deployments only need the new pins.
