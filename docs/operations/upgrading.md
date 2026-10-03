@@ -93,6 +93,10 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
 
+## Upgrading to 9.2.0 { #upgrading-to-920 }
+
+New backups make one request to Telegram per location, venue and live location, once, and keep the map picture Telegram renders for it, a few tens of kilobytes, in the chat's media folder. `DOWNLOAD_MEDIA=false` and `SKIP_MEDIA_CHAT_IDS` turn it off as they do for every file. For locations archived before, run `telegram-archive backfill-details --apply` with the backup stopped. It fetches up to 500 pictures per run, one request each with a second between them, and says how many it deferred; run it again until none are deferred. See [Fill old locations, contacts, polls and edit flags](maintenance.md#fill-old-locations-contacts-polls-and-edit-flags).
+
 ## Upgrading to 9.0 { #upgrading-to-90 }
 
 ### Migrations { #migrations-90 }
