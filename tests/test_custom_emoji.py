@@ -36,6 +36,7 @@ SENT = datetime(2026, 9, 1, 12, 0, 0)
 SUN = 5000000000000000001
 MOON = 5000000000000000002
 STAR = 5000000000000000003
+COMET = 5000000000000000004
 WEBP = b"RIFF\x1c\x00\x00\x00WEBPVP8 fake custom emoji bytes"
 TGS = b"\x1f\x8b fake animated emoji bytes"
 
@@ -726,3 +727,23 @@ class TestMerge(MergeCase):
         shutil.rmtree(self.source_media / "_emoji")
         self.run_merge()
         self.assertEqual([0, 0, 0], [row[3] for row in self.emoji_rows()])
+
+    def test_a_link_and_an_empty_file_in_the_source_are_never_copied(self):
+        """A link in an untrusted source could point at any readable file; an empty file is not an emoji."""
+        outside = self.source_media.parent / "outside-secret.webp"
+        outside.write_bytes(b"bytes from outside the archive")
+        source_folder = self.source_media / "_emoji"
+        (source_folder / f"{SUN}.webp").unlink()
+        (source_folder / f"{SUN}.webp").symlink_to(outside)
+        with sqlite(self.source_db) as conn:
+            conn.execute(_INSERT_EMOJI, (COMET, f"{COMET}.webp", "image/webp", "☄️", 1))
+        (source_folder / f"{COMET}.webp").write_bytes(b"")
+
+        report = self.run_merge()
+
+        folder = self.target_media / "_emoji"
+        self.assertFalse((folder / f"{SUN}.webp").exists())
+        self.assertFalse((folder / f"{COMET}.webp").exists())
+        self.assertEqual(0, report.media.emoji)
+        downloaded = {row[0]: row[3] for row in self.emoji_rows()}
+        self.assertEqual((0, 0), (downloaded[SUN], downloaded[COMET]))

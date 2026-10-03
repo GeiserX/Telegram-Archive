@@ -612,15 +612,31 @@ def missing_custom_emoji(source: Connection, target: Connection) -> Iterator[lis
             yield fresh
 
 
+def custom_emoji_source_file(source_media: str, name: str) -> str | None:
+    """The path of a custom emoji file the merge may copy from the source, or None.
+
+    A real, non-empty file under the source's own ``_emoji`` folder with a name
+    the fetcher writes. A symlink is refused, and so is a path that resolves
+    outside the source media folder: the copy would otherwise publish whatever
+    a link in an untrusted source points at, through the emoji route.
+    """
+    if CUSTOM_EMOJI_FILE_RE.match(name) is None:
+        return None
+    path = os.path.join(source_media, CUSTOM_EMOJI_DIR, name)
+    if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return None
+    root = os.path.realpath(source_media)
+    if os.path.commonpath([root, os.path.realpath(path)]) != root:
+        return None
+    return path
+
+
 def custom_emoji_file_comes(row: dict[str, Any], source_media: str | None) -> bool:
     """Whether a downloaded row's file is in the source media folder, so the media copy brings it."""
     name = row.get("file_name")
     if not row.get("downloaded") or source_media is None or not isinstance(name, str):
         return False
-    if CUSTOM_EMOJI_FILE_RE.match(name) is None:
-        return False
-    path = os.path.join(source_media, CUSTOM_EMOJI_DIR, name)
-    return os.path.isfile(path) and os.path.getsize(path) > 0
+    return custom_emoji_source_file(source_media, name) is not None
 
 
 def copy_custom_emoji(source: Connection, target: Connection, source_media: str | None) -> int:
@@ -877,8 +893,8 @@ def place_custom_emoji(copier: MediaCopier) -> None:
     if not os.path.isdir(source_dir):
         return
     for name in sorted(os.listdir(source_dir)):
-        source_file = os.path.join(source_dir, name)
-        if CUSTOM_EMOJI_FILE_RE.match(name) is None or not os.path.isfile(source_file):
+        source_file = custom_emoji_source_file(copier.source_root, name)
+        if source_file is None:
             continue
         destination = os.path.join(copier.target_root, CUSTOM_EMOJI_DIR, name)
         if destination in copier.planned or os.path.lexists(destination):
