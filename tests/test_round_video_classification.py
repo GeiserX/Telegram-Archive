@@ -221,7 +221,11 @@ class TestViewerRendersRoundVideos:
         body = body[: body.index("\n                }\n")]
         assert "const missing = !!media.file_path && !!msg.mediaLoadFailed" in body
         which = html[html.index("const mediaMissingReason = (msg) => {") :]
-        assert "if (media.file_path && msg.mediaLoadFailed) return 'missing'" in which
+        # A row marked for a new download reads "not downloaded yet" instead (test_truncated_media).
+        assert (
+            "if (media.file_path && msg.mediaLoadFailed) return media.downloaded === false ? 'pending' : 'missing'"
+            in which
+        )
         assert "missing: 'missing from the archive disk'" in html
         assert "if (media.type === 'video_note') {" in body
         assert "shape: 'round'" in body
