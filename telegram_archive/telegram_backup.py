@@ -1090,6 +1090,7 @@ class TelegramBackup:
         This is the main entry point for scheduled backups.
         """
         self._description_fetch_paused = False  # a FloodWait pauses the fetch until the next run
+        self._map_previews_paused = False  # same rule for the map pictures
         self._broken_links_met = set()
         try:
             logger.info("Starting backup process...")
@@ -1932,6 +1933,7 @@ class TelegramBackup:
         """
         groups = await self.db.get_payload_backfill_rows(account_id=self.account_id, chat_id=chat_id)
         self._map_backfill_attempts = 0
+        self._map_previews_paused = False  # a FloodWait pauses the pictures until the next run
         # Rows read this run that may fetch a picture. A row listed only for
         # its picture is read only while this is under the cap, so a run past
         # the cap reads no message it would fetch nothing for.

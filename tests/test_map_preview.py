@@ -752,6 +752,20 @@ class TestBackfill:
         assert len(client.calls) == 1
         assert summary["maps"]["saved"] == 0
 
+    async def test_a_pause_from_an_earlier_run_does_not_carry_over(self, real_adapter, tmp_path):
+        """A reused backup object fetches again: the pause is per run, not per object."""
+        root = _media_root(tmp_path)
+        await _seed_location(real_adapter, 1, "geo")
+        client = BackfillTelegram({1: _media("geo")})
+        backup = _backup(real_adapter, client, root)
+        backup._map_previews_paused = True
+
+        summary = await backup.backfill_details(apply=True)
+
+        assert len(client.calls) == 1
+        assert summary["maps"]["saved"] == 1
+        assert summary["maps"]["errors"] == 0
+
     async def test_a_skipped_chat_and_a_missing_media_folder_fetch_nothing(self, real_adapter, tmp_path):
         root = _media_root(tmp_path)
         await _seed_location(real_adapter, 1, "geo")
