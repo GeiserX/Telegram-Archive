@@ -639,6 +639,11 @@ def run_backfill_details(args) -> int:
     print(f"  Map pictures deferred:           {maps.get('deferred', 0)}")
     if maps.get("errors"):
         print(f"  Map picture errors (run again):  {maps['errors']}")
+    emoji = summary.get("emoji", {})
+    print(f"  Custom emoji collected:          {emoji.get('collected', 0)}")
+    print(f"  Custom emoji saved:              {emoji.get('saved', 0)}")
+    print(f"  Custom emoji unavailable:        {emoji.get('unavailable', 0)}")
+    print(f"  Custom emoji deferred:           {emoji.get('deferred', 0)}")
     if summary["errors"]:
         print(f"  Errors (run again to retry):     {summary['errors']}")
     if summary.get("flood_wait_seconds"):

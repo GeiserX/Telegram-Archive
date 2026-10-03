@@ -295,7 +295,7 @@ Each earlier version of an edited message has these fields:
 | `date` | When that text became current, by Telegram's clock: the send time for the original, the edit time for each later one. An edit time Telegram hides (a reaction) is not an edit, so a text that carried one is dated at the send time. |
 | `captured_at` | When the archive saw it, by the archive's own clock. |
 | `source` | The path that saw it: `listener`, `sync`, `backup` or `import`. Null for a version archived before the archive kept it: unknown. |
-| `entities` | The formatting of that version, in the shape of the message's `raw_data.entities`: `[{type, offset, length, ...}]`. Null when it had none, or for a version archived before the archive kept it. |
+| `entities` | The formatting of that version, in the shape of the message's `raw_data.entities`: `[{type, offset, length, ...}]`, a custom emoji's `document_id` as a string (see [Custom emoji](#custom-emoji)). Null when it had none, or for a version archived before the archive kept it. |
 | `rich_message` | The block tree of a Rich Text Editor message, in the shape of the message's `raw_data.rich_message`. Null when that version had none. |
 | `media` | Present only when an edit replaced the message's photo or file: the media this version was shown with, as `[{type, file_name, file_size, mime_type, width, height, duration, downloaded, skip_reason, first_seen, date, captured_at, source, url}]`. `skip_reason` says why a file was not downloaded (`oversize` or `filtered`, or null), and `first_seen` is when the archive first recorded that media (null when unknown). `url` is `/media/{chat_ref}/{message_id}_v{n}`, where `n` counts the message's earlier media in the order they were kept, from 1. It is null when the file was not downloaded; a login without downloads gets `url` null and `no_download` true. |
 | `media_only` | True on an entry that holds only earlier media, when the text version of that moment could not be written. Its `text` is null. |
@@ -349,6 +349,8 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 | `GET /media/thumb/{size}/{chat_ref}/{media_key}` | Chat entitlement | A generated WebP thumbnail. `size` is 200 or 400. |
 | `GET /media/avatar/{chat_ref}` | Chat entitlement | The chat's avatar. `photo_id` picks an older one. |
 | `GET /media/avatar/{chat_ref}/{message_id}` | Chat entitlement | The avatar of that message's sender |
+| `GET /api/custom-emoji` | Any chat | What the archive knows of custom emoji. See [Custom emoji](#custom-emoji). |
+| `GET /media/emoji/{document_id}` | Any chat | The file of one custom emoji |
 | `GET /api/chats/{chat_ref}/media` | Chat entitlement | The chat's media gallery |
 | `GET /api/chats/{chat_ref}/media/counts` | Chat entitlement | `{type: count}` for the chat |
 | `POST /media/open/{chat_ref}/{media_key}` | Master | Run `MEDIA_OPEN_CMD` on the file, on the viewer's host |
@@ -357,6 +359,14 @@ A media key has the form `{message_id}_{type}`, for example `42_photo` or `7_vid
 The viewer serves files a browser can show inline. It sends other files, and any request with `download=1`, as an attachment.
 
 Media, thumbnails and avatars are sent with `Cache-Control: private, no-cache`, an `ETag` and a `Last-Modified`. The browser may keep a copy, but it asks the server before each reuse, and the viewer runs the same login and chat checks on that request. A session that still has access gets `304 Not Modified` and no body, so the file is not sent again. A logged-out browser gets 401, never the kept copy. Copies cached by an older release, which did not ask, can still be reused until their old lifetime runs out, up to a day for thumbnails and avatars; logging out once over HTTPS clears them. Editing a viewer, or changing a token's chats or downloads, ends its sessions, so that browser gets 401 too. A session that no longer sees the chat gets 404. Originals and thumbnails answer 403 to a login whose downloads are off; avatars stay available to it. When its session ends, the viewer page reloads itself at the same address, so the next login on the same tab does not see the chat that was open until the server allows it again. The files under `/static` are not behind a login and keep their own caching.
+
+### Custom emoji { #custom-emoji }
+
+A reaction made with a custom emoji has `emoji` set to `custom_<document_id>`. A custom emoji in text is an entity `{type: "custom_emoji", offset, length, document_id}`, where `document_id` is a string of decimal digits in every viewer answer and live frame: the messages, pinned and by-date routes, message versions, and the `new_message` and `edit` frames. Before 9.3.0 it was a JSON number, which a browser rounds. The chat exports keep it a number. `GET /api/custom-emoji?ids=<id>,<id>,...` takes 1 to 100 decimal document ids and answers 400 for anything else. It answers an object keyed by the id as a string: a document id is larger than a JSON number holds without rounding in a browser. Each value is `{kind, alt, text_color, ready}`. `kind` is `image`, `tgs` or `webm` when the file is on disk, else null; `alt` is the ordinary emoji Telegram gives as its meaning; `text_color` is true when Telegram draws the emoji in the colour of the text; `ready` is true when the file can be fetched. An id the archive does not know is left out.
+
+`GET /media/emoji/{document_id}` serves the file as `image/webp`, `application/x-tgsticker` or `video/webm`, and answers 404 for an id with no file. A file is named after its id and never rewritten, so it is sent with `Cache-Control: private, max-age=31536000, immutable`.
+
+Both routes need a login that can read at least one chat, and answer 403 to a grant with no chat. They are not tied to a chat: the file is the same public emoji pack file for every chat. A share link and a login whose downloads are off can call them, as for avatars.
 
 After an edit replaced a message's media, the `url` of its current media carries `?v={n}`, so a browser never shows cached bytes of the old media under it. The routes ignore the parameter; add `download=1` with `&`.
 

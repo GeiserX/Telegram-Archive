@@ -44,7 +44,7 @@ A row skipped with a reason never counts as a failed attempt. It stays in the ar
 
 ### Turn media off
 
-`DOWNLOAD_MEDIA=false` stops message media downloads. Messages are still archived, with no media row. The backup keeps downloading profile photos to `media/avatars/`, so the media directory exists anyway.
+`DOWNLOAD_MEDIA=false` stops message media downloads. Messages are still archived, with no media row. The backup keeps downloading profile photos to `media/avatars/` and [custom emoji](#custom-emoji) to `media/_emoji/`, so the media directory exists anyway.
 
 ### Choose media types
 
@@ -96,6 +96,8 @@ media/
 │       └── 5012345678901234567_report.pdf
 ├── -1001234567890/
 │   └── 5012345678901234567_report.pdf -> ../_shared/3f/5012345678901234567_report.pdf
+├── _emoji/
+│   └── 5000000000000000001.webp
 └── avatars/
     ├── users/
     └── chats/
@@ -141,6 +143,12 @@ A file without an original name is saved as `<file id>.<ext>`, or `<message id>_
 ### Avatars
 
 Profile photos go to `media/avatars/users` and `media/avatars/chats`, one file per photo id, in the small size. The backup checks each avatar on every run and downloads only when no file exists for the current photo. An empty file is downloaded again.
+
+### Custom emoji { #custom-emoji }
+
+A custom emoji is the premium kind from an emoji pack. When the archive first sees one in a reaction or in a message's text, it notes the emoji's id and then fetches the file into `media/_emoji`, named after that id: `<id>.webp` for a picture, `<id>.tgs` for an animated one and `<id>.webm` for a video one, each about 100 by 100 pixels and a few tens of kilobytes. One file serves every chat and every account. The backup run fetches the emoji noted since the last run. With the [listener](listener.md) on, a custom emoji first seen live is fetched within about five minutes instead, so it does not wait for the next scheduled run; the listener skips that step while a backup run is in progress, and leaves the retries to the backup runs. The backup asks Telegram for 100 ids per request and fetches at most 500 files per run and account; the rest wait for the next run. It is always on, like profile photos: `DOWNLOAD_MEDIA` and `DOWNLOAD_MEDIA_TYPES` do not apply, since the file is the same public file for everyone. It is skipped when the media folder is missing or empty where the backup runs.
+
+A file already on disk is never written again. An id Telegram leaves out of its answer is asked for at most three times, and a failed download is tried three times too. A download that ends before the size Telegram declares counts as failed and is not kept, so a cut file never stands in for the emoji. A file of another kind or larger than 512 KB is not fetched. [`backfill-details --apply`](../operations/maintenance.md#fill-old-locations-contacts-polls-and-edit-flags) asks again for the ids that gave up.
 
 ### Old flat layout
 

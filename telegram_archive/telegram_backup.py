@@ -44,6 +44,7 @@ from telethon.utils import get_peer_id
 
 from .avatar_utils import avatar_photo_id, get_avatar_paths
 from .config import AccountConfig, Config
+from .custom_emoji import CUSTOM_EMOJI_MAX_ATTEMPTS, CUSTOM_EMOJI_MAX_PER_RUN, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .folder_utils import (
@@ -1651,6 +1652,10 @@ class TelegramBackup:
             # Retry previously failed media downloads
             await self._retry_pending_media_downloads()
 
+            # The files of custom emoji seen in reactions: always fetched, like
+            # profile photos, so DOWNLOAD_MEDIA does not gate them.
+            await self._fetch_custom_emoji()
+
             # Run media verification if enabled
             if self.config.verify_media:
                 await self._verify_and_redownload_media()
@@ -1671,6 +1676,31 @@ class TelegramBackup:
                 await self.db.set_metadata("backup_in_progress", "0")
             except Exception as e:
                 logger.warning(f"Failed to clear backup_in_progress flag: {e}")
+
+    async def _fetch_custom_emoji(self) -> dict | None:
+        """Fetch the files of pending custom emoji (custom_emoji.py); never fails the run.
+
+        Skipped when the media folder is not visibly there, so a file never
+        lands beside a missing volume. The table is shared by every account:
+        the second account of a run finds nothing pending.
+        """
+        media_root = self._visible_media_root()
+        if media_root is None:
+            return None
+        try:
+            counts = await fetch_custom_emoji(self.client, self.db, media_root, call=call_with_flood_retry)
+        except Exception as e:
+            logger.warning(f"Custom emoji fetch failed: {type(e).__name__}")
+            return None
+        if counts["asked"]:
+            logger.info(
+                f"Custom emoji: {counts['saved']} saved, {counts['present']} already there, "
+                f"{counts['unavailable']} unavailable, {counts['unsupported'] + counts['oversize']} skipped, "
+                f"{counts['failed']} failed, {counts['deferred']} deferred"
+            )
+        if counts["flood_wait_seconds"]:
+            logger.warning(f"Custom emoji paused for {counts['flood_wait_seconds']}s after a FloodWait; next run")
+        return counts
 
     async def _drain_transcriptions(self) -> None:
         """Send new media of TRANSCRIPTION_TYPES, and every pressed file, to the transcription server.
@@ -2085,6 +2115,12 @@ class TelegramBackup:
             if summary["flood_wait_seconds"]:
                 break
 
+        try:
+            await self._backfill_custom_emoji(chat_id, apply, media_root, summary)
+        except Exception as e:
+            summary["errors"] += 1
+            logger.warning(f"{prefix}Custom emoji backfill failed ({type(e).__name__}); run again later")
+
         if summary["flood_wait_seconds"]:
             logger.warning(
                 f"{prefix}Details backfill stopped after a FloodWait of {summary['flood_wait_seconds']}s; "
@@ -2098,9 +2134,56 @@ class TelegramBackup:
             f"edit time, {edits['not_served']} not served; {summary['chats_unavailable']} chat(s) unavailable, "
             f"{summary['paths_cleared']} leftover path(s) cleared, {summary['paths_kept']} kept, "
             f"{summary['errors']} error(s); map pictures: {maps['saved']} saved, {maps['not_served']} not served, "
-            f"{maps['no_point']} with no point, {maps['deferred']} deferred, {maps['errors']} error(s)"
+            f"{maps['no_point']} with no point, {maps['deferred']} deferred, {maps['errors']} error(s); "
+            f"custom emoji: {summary['emoji']['collected']} collected, {summary['emoji']['saved']} saved, "
+            f"{summary['emoji']['unavailable']} unavailable, {summary['emoji']['deferred']} deferred"
         )
         return summary
+
+    async def _backfill_custom_emoji(
+        self, chat_id: int | None, apply: bool, media_root: str | None, summary: dict
+    ) -> None:
+        """Collect the custom emoji this account's archive holds and fetch their files.
+
+        The ids come from its reactions and their history, and from the
+        entities of its messages and their earlier versions.
+
+        Every id found gets a ``custom_emoji`` row if it has none, and a row
+        not downloaded whose skip reason may change (none, 'unavailable',
+        'failed') is marked for a new download: attempts back to 0. Nothing is
+        deleted. With ``apply`` the same bounded fetch the backup runs follows;
+        the dry run only counts (``saved`` is what a run would fetch).
+        """
+        emoji = summary["emoji"]
+        ids = await self.db.get_reaction_custom_emoji_ids(account_id=self.account_id, chat_id=chat_id)
+        ids |= await self.db.get_text_custom_emoji_ids(account_id=self.account_id, chat_id=chat_id)
+        emoji["collected"] = len(ids)
+        if not apply:
+            rows = await self.db.get_custom_emoji(ids)
+            wanted = sum(
+                1
+                for document_id in ids
+                if document_id not in rows
+                or (
+                    not rows[document_id]["downloaded"]
+                    and rows[document_id]["skip_reason"] in (None, "unavailable", "failed")
+                )
+            )
+            emoji["saved"] = min(wanted, CUSTOM_EMOJI_MAX_PER_RUN)
+            emoji["deferred"] = wanted - emoji["saved"]
+            return
+        await self.db.note_custom_emoji(ids)
+        await self.db.rearm_custom_emoji(ids)
+        if media_root is None or summary["flood_wait_seconds"]:
+            # Left for a run that can store them or that Telegram will answer.
+            emoji["deferred"] = await self.db.count_pending_custom_emoji(CUSTOM_EMOJI_MAX_ATTEMPTS)
+            return
+        counts = await fetch_custom_emoji(self.client, self.db, media_root, call=call_with_flood_retry)
+        emoji["saved"] = counts["saved"] + counts["present"]
+        emoji["unavailable"] = counts["unavailable"]
+        emoji["deferred"] = counts["deferred"]
+        if counts["flood_wait_seconds"]:
+            summary["flood_wait_seconds"] = counts["flood_wait_seconds"]
 
     def _map_backfill_allowed(self, chat: int, media_root: str | None) -> bool:
         """True when backfill-details may fetch map pictures for this chat.
@@ -5896,6 +5979,7 @@ def _empty_backfill_summary() -> dict:
         "kinds": {kind: {"filled": 0, "already_present": 0, "not_served": 0} for kind in PAYLOAD_BACKFILL_TYPES},
         "edits": {"hidden": 0, "shown": 0, "date_changed": 0, "already_filled": 0, "not_served": 0},
         "maps": {"saved": 0, "not_served": 0, "no_point": 0, "deferred": 0, "errors": 0},
+        "emoji": {"collected": 0, "saved": 0, "unavailable": 0, "deferred": 0},
         "chats_scanned": 0,
         "chats_unavailable": 0,
         "paths_cleared": 0,
@@ -5915,6 +5999,8 @@ def _add_backfill_summary(total: dict, summary: dict) -> None:
         total["edits"][key] = total["edits"].get(key, 0) + value
     for key, value in summary.get("maps", {}).items():
         total["maps"][key] = total["maps"].get(key, 0) + value
+    for key, value in summary.get("emoji", {}).items():
+        total["emoji"][key] = total["emoji"].get(key, 0) + value
     for key in ("chats_scanned", "chats_unavailable", "paths_cleared", "paths_kept", "vcards_recovered", "errors"):
         total[key] += summary.get(key, 0)
     total["flood_wait_seconds"] = max(total.get("flood_wait_seconds", 0), summary.get("flood_wait_seconds", 0))

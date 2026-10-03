@@ -145,7 +145,7 @@ Feature page: [Media downloads](../configuration/media.md).
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="download_media"></span>`DOWNLOAD_MEDIA` | `true` | backup | Download media files at all, the map pictures of locations included. When false, messages are stored with no media rows. |
+| <span id="download_media"></span>`DOWNLOAD_MEDIA` | `true` | backup | Download media files at all, the map pictures of locations included. When false, messages are stored with no media rows. Profile photos and [custom emoji](../configuration/media.md#custom-emoji) are still fetched. |
 | <span id="max_media_size_mb"></span>`MAX_MEDIA_SIZE_MB` | `100` | backup | Skip files larger than this. `0` or a negative value means no limit. Skipped files keep a row and are fetched on a later run if you raise the limit. |
 | <span id="download_media_types"></span>`DOWNLOAD_MEDIA_TYPES` | empty, every type | backup | Comma-separated allow-list: `photo`, `video`, `video_note`, `animation`, `voice`, `audio`, `sticker`, `document`, `webpage`. An unknown type stops startup. Applies to the scheduled backup and the listener. `sticker` covers picture, animated and video stickers. Before 9.2.0 a video sticker counted as `video`. |
 | <span id="download_document_mime_types"></span>`DOWNLOAD_DOCUMENT_MIME_TYPES` | empty, every document | backup | Narrows `document` to full `type/subtype` MIME types. A document passes on an exact MIME match or on a file extension that belongs to one of the listed types. Wildcards and bare extensions stop startup. |

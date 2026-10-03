@@ -49,6 +49,8 @@ from ..db.adapter import (
 )
 from ..db.models import PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_STATUSES
 from ..message_utils import (
+    CUSTOM_EMOJI_DIR,
+    CUSTOM_EMOJI_FILE_RE,
     METADATA_ONLY_MEDIA_TYPES,
     describe_exception,
     is_map_preview_name,
@@ -412,6 +414,8 @@ async def handle_realtime_notification(payload: dict):
 
     if notification_type == "new_message":
         message = data.get("message")
+        if isinstance(message, dict) and "raw_data" in message:
+            message = {**message, "raw_data": _with_string_document_ids(message["raw_data"])}
         frame = {"type": "new_message", "chat_ref": chat_ref, "message": message}
         no_download_frame = None
         if isinstance(message, dict):
@@ -471,7 +475,7 @@ async def handle_realtime_notification(payload: dict):
             "new_text": data.get("new_text"),
             "edit_date": data.get("edit_date"),
             "edit_hide": data.get("edit_hide"),
-            **({"entities": data["entities"]} if "entities" in data else {}),
+            **({"entities": _string_document_ids(data["entities"])} if "entities" in data else {}),
         }
         # The edit replaced the photo or file: its current media, shaped like
         # the messages API's. No key means the media did not change.
@@ -1565,6 +1569,36 @@ def _without_contact_vcard(raw_data: object) -> object:
     return {**raw_data, "contact": {key: value for key, value in contact.items() if key != "vcard"}}
 
 
+def _string_document_ids(entities: object) -> object:
+    """Entities with each ``document_id`` (a custom emoji's) as a decimal string.
+
+    A document id is above 2**53, so a JSON number loses its last digits in a
+    browser's JSON.parse and in any JavaScript client. Returns a copy when it
+    changes something, and ``entities`` itself otherwise. The exports keep the
+    integers.
+    """
+    if not isinstance(entities, list):
+        return entities
+
+    def numeric(entity: object) -> bool:
+        if not isinstance(entity, dict):
+            return False
+        value = entity.get("document_id")
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    if not any(numeric(entity) for entity in entities):
+        return entities
+    return [{**entity, "document_id": str(entity["document_id"])} if numeric(entity) else entity for entity in entities]
+
+
+def _with_string_document_ids(raw_data: object) -> object:
+    """``raw_data`` whose entities carry string document ids (``_string_document_ids``)."""
+    if not isinstance(raw_data, dict):
+        return raw_data
+    entities = _string_document_ids(raw_data.get("entities"))
+    return raw_data if entities is raw_data.get("entities") else {**raw_data, "entities": entities}
+
+
 def _strip_original_media_paths(messages: list[dict]) -> None:
     """Remove original media file paths, URLs and transcripts from API responses for no-download sessions.
 
@@ -1930,8 +1964,13 @@ class GatedFileResponse(FileResponse):
     containment checks in the routes already bound.
     """
 
-    def __init__(self, path: str | os.PathLike[str], media_type: str | None = None) -> None:
-        super().__init__(path, media_type=media_type, headers={"Cache-Control": GATED_MEDIA_CACHE_CONTROL})
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        media_type: str | None = None,
+        cache_control: str = GATED_MEDIA_CACHE_CONTROL,
+    ) -> None:
+        super().__init__(path, media_type=media_type, headers={"Cache-Control": cache_control})
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         conditional = scope.get("method", "") in ("GET", "HEAD")
@@ -2119,6 +2158,102 @@ async def serve_chat_avatar(chat: ChatContext = Depends(require_chat), photo_id:
     if not avatar_path:
         raise HTTPException(status_code=404, detail="File not found")
     return _avatar_file_response(avatar_path)
+
+
+# Custom (premium) emoji. A file is named after its document id and never
+# rewritten (custom_emoji.py), so a browser may keep it for a year.
+CUSTOM_EMOJI_CACHE_CONTROL = "private, max-age=31536000, immutable"
+CUSTOM_EMOJI_MAX_IDS = 100
+_CUSTOM_EMOJI_ID = re.compile(r"^\d{1,19}$")
+_MAX_DOCUMENT_ID = 2**63 - 1
+_CUSTOM_EMOJI_KINDS = {"webp": "image", "webm": "webm", "tgs": "tgs"}
+
+
+def _require_some_chat(user: UserContext) -> None:
+    """403 unless the login may read at least one chat.
+
+    A custom emoji is the same public sticker-set file for every chat and
+    account, so it is not tied to one chat: any grant that reads a chat may
+    see it. No-download logins pass, as for profile photos (UI chrome, not a
+    file someone sent).
+    """
+    if user.allowed_chat_refs == set() or user.allowed_accounts == set():
+        raise HTTPException(status_code=403, detail="No chat granted")
+
+
+def _custom_emoji_id(value: str) -> int | None:
+    if not _CUSTOM_EMOJI_ID.match(value):
+        return None
+    number = int(value)
+    return number if 0 < number <= _MAX_DOCUMENT_ID else None
+
+
+def _custom_emoji_file(row: dict | None, document_id: int) -> str | None:
+    """The stored file name of a downloaded row, when it is ``<this id>.<webp|tgs|webm>``."""
+    if not row or not row.get("downloaded"):
+        return None
+    name = row.get("file_name")
+    if not isinstance(name, str) or CUSTOM_EMOJI_FILE_RE.match(name) is None:
+        return None
+    return name if name.split(".", 1)[0] == str(document_id) else None
+
+
+@app.get("/api/custom-emoji")
+async def get_custom_emoji_info(ids: str = Query(...), user: UserContext = Depends(require_auth)):
+    """What the viewer needs to draw custom emoji: ``{"<id>": {kind, alt, text_color, ready}}``.
+
+    ``ids`` is 1 to 100 decimal document ids, comma separated. Keys are strings:
+    a document id is above 2**53, where a JSON number loses digits in a
+    browser. An id the archive does not know is left out. ``kind`` is
+    "image", "webm" or "tgs" for a file the viewer can fetch, else null.
+    """
+    _require_some_chat(user)
+    parts = ids.split(",")
+    numbers = [_custom_emoji_id(part) for part in parts]
+    if not 1 <= len(parts) <= CUSTOM_EMOJI_MAX_IDS or any(number is None for number in numbers):
+        raise HTTPException(status_code=400, detail="ids must be 1 to 100 document ids")
+    rows = await db.get_custom_emoji(numbers)
+    answer: dict[str, dict] = {}
+    for document_id, row in rows.items():
+        name = _custom_emoji_file(row, document_id)
+        kind = _CUSTOM_EMOJI_KINDS[name.rsplit(".", 1)[1]] if name else None
+        answer[str(document_id)] = {
+            "kind": kind,
+            "alt": row.get("alt"),
+            "text_color": bool(row.get("text_color")),
+            "ready": kind is not None,
+        }
+    return answer
+
+
+@app.get("/media/emoji/{document_id}")
+async def serve_custom_emoji(document_id: str, user: UserContext = Depends(require_auth)):
+    """Serve the file of one downloaded custom emoji from ``media/_emoji``."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+    _require_some_chat(user)
+    number = _custom_emoji_id(document_id)
+    if number is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    name = _custom_emoji_file((await db.get_custom_emoji([number])).get(number), number)
+    if name is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    # The avatar containment: the lexical check, then the resolved one that
+    # also bounds a symlink.
+    root = str(_media_root)
+    normalized = os.path.normpath(os.path.join(root, CUSTOM_EMOJI_DIR, name))
+    if not normalized.startswith(os.path.join(root, CUSTOM_EMOJI_DIR) + os.sep):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        resolved = Path(normalized).resolve(strict=True)
+    except OSError, ValueError:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not resolved.is_relative_to(_media_root) or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    media_type = _inline_media_type(resolved.name)
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return GatedFileResponse(resolved, media_type=media_type, cache_control=CUSTOM_EMOJI_CACHE_CONTROL)
 
 
 @app.get("/media/{chat_ref}/{media_key}")
@@ -3073,6 +3208,8 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
     for message in messages:
         if not isinstance(message, dict):
             continue
+        if "raw_data" in message:
+            message["raw_data"] = _with_string_document_ids(message["raw_data"])
         sender_id = message.get("sender_id")
         message["sender_avatar_url"] = (
             f"/media/avatar/{chat.ref}/{message.get('id')}"
@@ -3538,6 +3675,8 @@ async def get_message_versions(
             chat_id=chat.chat_id, message_id=message_id, limit=limit, account_id=chat.account_id
         )
         for version in versions:
+            if "entities" in version:
+                version["entities"] = _string_document_ids(version["entities"])
             for media in version.get("media") or ():
                 has_file = bool(media.pop("file_path", None)) and bool(media.get("downloaded"))
                 media.pop("id", None)
@@ -5497,6 +5636,8 @@ async def broadcast_new_message(chat_id: int, message: dict, account_id: int | N
     chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
+    if isinstance(message, dict) and "raw_data" in message:
+        message = {**message, "raw_data": _with_string_document_ids(message["raw_data"])}
     await ws_manager.broadcast_to_chat(chat, {"type": "new_message", "chat_ref": chat["ref"], "message": message})
 
 
@@ -5524,7 +5665,7 @@ async def broadcast_message_edit(
         "edit_date": edit_date,
     }
     if entities is not None:
-        frame["entities"] = entities
+        frame["entities"] = _string_document_ids(entities)
     await ws_manager.broadcast_to_chat(chat, frame)
 
 

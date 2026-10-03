@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 9.3.0 | Nothing required. With `TRANSCRIPTION_URL` set, `schedule` now sends waiting files to the transcription server every 15 minutes, not only after a full pass. See [Transcription drains every 15 minutes](#drain-timer-93). Photos, videos and GIFs in the viewer change size. To give older photos their real shape before they load, run `telegram-archive check-media` and then, if it reports `Photos without size`, `check-media --repair`; the repair also makes every other `check-media` repair. See [Picture sizes](#picture-sizes-93). |
+| 9.3.0 | Nothing required. With `TRANSCRIPTION_URL` set, `schedule` now sends waiting files to the transcription server every 15 minutes, not only after a full pass. See [Transcription drains every 15 minutes](#drain-timer-93). Photos, videos and GIFs in the viewer change size. To give older photos their real shape before they load, run `telegram-archive check-media` and then, if it reports `Photos without size`, `check-media --repair`; the repair also makes every other `check-media` repair. See [Picture sizes](#picture-sizes-93). Migration 040 runs on start and adds a table for custom emoji; their files arrive with the next backup run. A script that reads a custom emoji entity's `document_id` from the viewer's API now gets a string. See [Custom emoji](#custom-emoji-93) and [API clients](#api-clients-93). |
 | 9.2.1 | Nothing. |
 | 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See the [Files cut short](#cut-short-92) section. Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
@@ -121,6 +121,22 @@ A photo imported from a Telegram Desktop HTML export before 9.3.0 was stored wit
 ### Chats several accounts hold { #accounts-93 }
 
 Only an archive that holds more than one Telegram account looks different, and only for a login that can see more than one of them. A private chat between two of your archived accounts is drawn from each row's own account: its messages on the right, the other account's on the left, with no account name on the messages. Before, both rows showed every message on the right with an account name. In a group or channel several of your accounts hold, the account name beside the time is now in bold, in the colour of that account's tag. Nothing needs doing: no setting, no migration and no stored data changes.
+
+### Custom emoji { #custom-emoji-93 }
+
+The first start runs migration 040. It adds the `custom_emoji` table and, for every custom emoji already stored as a reaction, a record marked as not fetched yet, dated when the archive first saw that emoji. It reads the reactions and their history once and changes no other table.
+
+The next backup run then fetches the files of those emoji into `media/_emoji`, up to 500 per account, with one request per 100 emoji and a second between requests. A large archive with more custom emoji than that gets the rest over the next runs. Each `telegram-archive backfill-details --apply` run also fetches up to 500 more, so it can be repeated to get them sooner. The fetch does not follow `DOWNLOAD_MEDIA`: like profile photos, custom emoji are always fetched. See [Custom emoji](../configuration/media.md#custom-emoji).
+
+Custom emoji in message text are noted as messages are stored from this release on. For messages archived before, run `telegram-archive backfill-details --apply` once with the backup stopped: it finds the custom emoji in old texts and their earlier versions without asking Telegram for the messages, and fetches their files.
+
+With the listener on, a custom emoji first seen live is fetched within about five minutes, without waiting for the daily run.
+
+Logins whose downloads are off see custom emoji, as they see profile photos.
+
+### API clients { #api-clients-93 }
+
+In the viewer's API and live frames, a custom emoji entity's `document_id` is now a string of digits, because a JSON number rounds it in a browser. A script or a bridge that reads `raw_data.entities` or message versions and compares `document_id` as a number must read it as a string. The chat exports keep the number. See [Custom emoji](../reference/api.md#custom-emoji).
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 

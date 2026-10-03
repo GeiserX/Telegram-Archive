@@ -426,7 +426,8 @@ class TestStickerTemplate(unittest.TestCase):
         self.assertLess(body.index(guard), body.index("video.play()"))
 
     def test_the_player_is_wired_to_every_render_and_the_gallery(self) -> None:
-        self.assertIn("watch([sortedMessages, mediaRevision, showMediaGallery], () => {\n", HTML)
+        # The custom emoji add their own sources to the same watch (test_custom_emoji_frontend.py).
+        self.assertIn("watch([sortedMessages, mediaRevision, showMediaGallery, ", HTML)
         self.assertIn("nextTick(syncStickers)", HTML)
         self.assertRegex(HTML, re.compile(r"anim\.setSubframe\(false\)"))
         self.assertIn("anim?.destroy()", HTML)
