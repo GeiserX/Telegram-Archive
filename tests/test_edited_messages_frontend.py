@@ -71,6 +71,11 @@ _TIMELINE_DECLARATIONS = (
     "const isMessageVersionsLoading = (msg) =>",
 )
 
+# The slice of versionEntries ends at the next setup-scope const, so it carries
+# the bare watch that follows it (the history's custom emoji joining the sticker
+# sync). The timeline tests read the entries only, so that watch is a no-op here.
+_VERSION_ENTRIES_WATCH = "const watch = () => {}"
+
 # The demo's edited message: sent 08:52, edited 08:54 and 08:57, two versions kept.
 _SENT = "2026-09-30T08:52:00"
 _MSG = {
@@ -231,6 +236,7 @@ class TestTheTimeline(unittest.TestCase):
 
     def _entries(self, msg: dict, kept: list[dict]) -> list[dict]:
         prelude = f"""{_renderer_bundle(HTML)}
+{_VERSION_ENTRIES_WATCH}
 versionsMessage.value = {json.dumps(msg)}
 messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
 """
@@ -353,6 +359,7 @@ messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
     def test_the_subtitle_says_at_least_when_edits_may_be_missing(self) -> None:
         def subtitle(kept: list[dict]) -> str:
             prelude = f"""
+{_VERSION_ENTRIES_WATCH}
 const formatDatePill = () => 'September 30'
 const formatTime = () => '08:52'
 versionsMessage.value = {json.dumps(_MSG)}
@@ -381,6 +388,7 @@ class TestEarlierMedia(unittest.TestCase):
 
     def _entries(self, msg: dict, kept: list[dict]) -> list[dict]:
         prelude = f"""{_renderer_bundle(HTML)}
+{_VERSION_ENTRIES_WATCH}
 versionsMessage.value = {json.dumps(msg)}
 messageVersionsByMessage.value = {{ '7:{msg["id"]}': {json.dumps(kept)} }}
 """
