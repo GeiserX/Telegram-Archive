@@ -5566,12 +5566,14 @@ def test_a_media_only_picture_keeps_its_top_edge():
 @unittest.skipUnless(NODE, "node is required to run the frame helpers")
 def test_only_a_drawn_picture_stands_without_a_frame():
     """A round video with its transcript open or failed, a clip that failed to
-    load, and an animated sticker (a text label) all keep a bubble."""
+    load, and a sticker the browser cannot play (a text label) all keep a bubble.
+    An animated sticker the browser plays stands on the wallpaper."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     result = _run_setup_program(
         html,
-        ("const isStickerImage = (msg) =>", "const rendersAsPicture = (msg) =>"),
+        ("const stickerKind = (msg) =>", "const canPlaySticker = (msg) =>", "const rendersAsPicture = (msg) =>"),
         "const getDocumentDisplayName = (msg) => msg.name || '';\n"
+        "const stickerSupport = { tgs: true, webm: false };\n"
         "const hasTranscriptButton = (msg) => Boolean(msg.transcribable);\n"
         "const isTranscriptExpanded = (msg) => Boolean(msg.open);\n"
         "const transcriptStatus = (msg) => msg.status || 'idle';\n"
@@ -5579,6 +5581,7 @@ def test_only_a_drawn_picture_stands_without_a_frame():
         "const cases = {\n"
         "  sticker: { media: { type: 'sticker' }, name: 'a.webp' },\n"
         "  animatedSticker: { media: { type: 'sticker' }, name: 'a.tgs' },\n"
+        "  videoStickerUnplayable: { media: { type: 'sticker' }, name: 'a.webm' },\n"
         "  round: { media: { type: 'video_note' }, transcribable: true },\n"
         "  roundOpen: { media: { type: 'video_note' }, transcribable: true, open: true },\n"
         "  roundError: { media: { type: 'video_note' }, transcribable: true, status: 'error' },\n"
@@ -5591,7 +5594,8 @@ def test_only_a_drawn_picture_stands_without_a_frame():
     )
     assert result == {
         "sticker": True,
-        "animatedSticker": False,
+        "animatedSticker": True,
+        "videoStickerUnplayable": False,
         "round": True,
         "roundOpen": False,
         "roundError": False,

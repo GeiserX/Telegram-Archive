@@ -132,3 +132,21 @@ def test_vendor_manifest_records_every_file_with_matching_hash():
     )
     for rel, digest in recorded.items():
         assert on_disk[rel] == digest, f"{rel}: recorded sha256 does not match file bytes"
+
+
+def test_the_lottie_player_is_vendored_and_loaded_only_on_demand():
+    """The .tgs sticker player loads when the first one comes near the screen.
+
+    The URL it injects must name a vendored file the manifest records, and no
+    <script> tag may load it with the page.
+    """
+    html = (WEB / "templates" / "index.html").read_text()
+    match = re.search(r"const LOTTIE_SRC = '(/static/vendor/[^']+)'", html)
+    assert match, "LOTTIE_SRC not found in index.html"
+    url = match.group(1)
+    assert not EXTERNAL.search(url)
+    rel = url.removeprefix("/static/vendor/")
+    assert (VENDOR / rel).is_file(), f"{url} referenced but missing on disk"
+    manifest = (VENDOR / "VENDOR-MANIFEST.txt").read_text()
+    assert re.search(rf"^\S+ -> [0-9a-f]{{64}}\s+{re.escape(rel)}(?:\s|$)", manifest, re.M), f"{rel} not in manifest"
+    assert not [u for u in _index_asset_urls() if "lottie" in u.lower()], "lottie must not load with the page"

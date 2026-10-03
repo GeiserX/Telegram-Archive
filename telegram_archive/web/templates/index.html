@@ -5820,6 +5820,30 @@
             width: auto;
             max-width: 200px;
         }
+        /* Every sticker kind fills the same box (stickerBoxStyle sets its
+           size). The moving kinds are a button with no button look. */
+        .message-bubble .sticker-box {
+            display: block;
+            position: relative;
+            padding: 0;
+            border: 0;
+            background: none;
+            border-radius: 8px;
+        }
+        .message-bubble .sticker-box .sticker-media {
+            display: block;
+            width: 100%;
+            height: 100%;
+            max-width: none;
+            object-fit: contain;
+        }
+        .message-bubble .sticker-play {
+            cursor: pointer;
+        }
+        .message-bubble .sticker-play:focus-visible {
+            outline: 2px solid rgb(var(--tg-focus));
+            outline-offset: 2px;
+        }
 
         /* A bubble with an album is as wide as the album at most, as in
            Telegram: a long caption wraps under it instead of widening the
@@ -8283,14 +8307,38 @@
                                             </div>
                                         </div>
 
-                                        <!-- Stickers (static/animated) -->
+                                        <!-- Stickers, in one box sized like Telegram's (stickerBoxStyle).
+                                             A .webp is a picture. A video sticker (.webm) is a muted clip
+                                             the GIF observer loops while it is on screen. An animated
+                                             sticker (.tgs) is an empty element Vue never fills: the sticker
+                                             player (syncStickers) draws its Lottie animation on a canvas
+                                             inside it and reports a failed load with a stickerfail event.
+                                             The moving kinds are a button: a press plays a held sticker,
+                                             or plays it once under reduced motion. A browser that cannot
+                                             play the format, or a row whose file is no sticker (a video
+                                             an older release filed as one), keeps the label, which
+                                             downloads the file when the login may download. -->
                                         <div v-else-if="msg.media?.type === 'sticker'" class="max-w-[200px]">
-                                            <img v-if="isStickerImage(msg)"
-                                                :src="getMediaUrl(msg)" loading="lazy"
-                                                class="max-h-48 max-w-full object-contain"
-                                                @error="handleImageError($event, msg)">
+                                            <div v-if="stickerKind(msg) === 'image'" class="sticker-box" :style="stickerBoxStyle(msg)">
+                                                <img :src="getMediaUrl(msg)" alt="Sticker" loading="lazy"
+                                                    class="sticker-media"
+                                                    @error="handleImageError($event, msg)">
+                                            </div>
+                                            <button v-else-if="canPlaySticker(msg)" type="button" class="sticker-box sticker-play"
+                                                :style="stickerBoxStyle(msg)" aria-label="Play sticker"
+                                                @click.stop="pressSticker($event)" @pointerenter="hoverSticker($event)">
+                                                <video v-if="stickerKind(msg) === 'webm'" :key="getMediaUrl(msg)" :data-src="getMediaUrl(msg)"
+                                                    class="gif-video sticker-video sticker-media" muted loop playsinline disablepictureinpicture
+                                                    preload="metadata" aria-hidden="true"
+                                                    @error="handleMediaError($event, msg)"></video>
+                                                <div v-else :key="getMediaUrl(msg)" class="tgs-sticker sticker-media" :data-src="getMediaUrl(msg)"
+                                                    aria-hidden="true" @stickerfail="handleMediaError($event, msg)"></div>
+                                            </button>
+                                            <a v-else-if="!noDownload && getMediaUrl(msg)" :href="mediaDownloadUrl(getMediaUrl(msg))" download @click.stop
+                                                class="sticker-fallback block text-xs text-tg-meta p-2 bg-tg-quote-bg rounded hover:underline"
+                                                :aria-label="stickerLabel(msg) + ', download'">{{ stickerLabel(msg) }}</a>
                                             <div v-else class="text-xs text-tg-meta p-2 bg-tg-quote-bg rounded">
-                                                Animated sticker
+                                                {{ stickerLabel(msg) }}
                                             </div>
                                         </div>
 
@@ -13807,6 +13855,431 @@
                 })
                 // End of the voice transcript block.
 
+                // Stickers, played in the chat the way the official apps play them:
+                // a .webp is a picture, a video sticker (.webm) a muted clip and an
+                // animated sticker (.tgs) a Lottie animation drawn on a canvas. Both
+                // moving kinds loop while on screen and stop when they leave it.
+                // The mime type decides the kind, and the file name when a row from
+                // an older backup has none. 'other' is a sticker row whose file is
+                // none of these: older releases filed a video or GIF with stickers
+                // drawn on it as a sticker. It keeps the label, never an <img> that
+                // would fail and call a file on disk missing.
+                const stickerKind = (msg) => {
+                    const media = msg?.media
+                    if (media?.type !== 'sticker') return null
+                    const mime = (media.mime_type || '').toLowerCase()
+                    const name = getDocumentDisplayName(msg).toLowerCase()
+                    if (mime === 'application/x-tgsticker' || name.endsWith('.tgs')) return 'tgs'
+                    if (mime === 'video/webm' || name.endsWith('.webm')) return 'webm'
+                    if (mime.startsWith('image/') || (!mime && /\.(webp|png|jpe?g|gif)$/.test(name))) return 'image'
+                    return 'other'
+                }
+                // The words a sticker the browser cannot play shows in its place.
+                const stickerLabel = (msg) => {
+                    const kind = stickerKind(msg)
+                    if (kind === 'webm') return 'Video sticker'
+                    if (kind === 'tgs') return 'Animated sticker'
+                    return 'Sticker'
+                }
+
+                // Which moving kinds this browser can play. A .tgs needs
+                // DecompressionStream to unpack its gzip. A video sticker is VP9 with
+                // an alpha channel, which Safari and every iOS browser draw over a
+                // black box, so there it keeps the label, as Telegram's web app does.
+                const stickerPlayback = (env) => {
+                    const ua = env.userAgent || ''
+                    const appleMobile = /iPad|iPhone|iPod/.test(ua) || (env.platform === 'MacIntel' && env.maxTouchPoints > 1)
+                    const safari = /safari/i.test(ua) && !/chrome|chromium|crios|edg|android|fxios/i.test(ua)
+                    return { tgs: !!env.decompression, webm: !!env.webm && !safari && !appleMobile }
+                }
+                const stickerSupport = stickerPlayback({
+                    userAgent: navigator.userAgent,
+                    platform: navigator.platform,
+                    maxTouchPoints: navigator.maxTouchPoints,
+                    decompression: typeof DecompressionStream === 'function',
+                    webm: !!document.createElement('video').canPlayType?.('video/webm; codecs="vp9"'),
+                })
+                const canPlaySticker = (msg) => {
+                    const kind = stickerKind(msg)
+                    if (kind === 'tgs') return stickerSupport.tgs
+                    if (kind === 'webm') return stickerSupport.webm
+                    return kind === 'image'
+                }
+
+                // One box for every kind, at Telegram's size: the file's own
+                // proportions (512 square when the row does not say) fitted into 200
+                // wide by 192 tall, so nothing moves when the file arrives.
+                const STICKER_BOX_WIDTH = 200
+                const STICKER_BOX_HEIGHT = 192
+                const stickerBoxStyle = (msg) => {
+                    const w = Number(msg.media?.width) > 0 ? Number(msg.media.width) : 512
+                    const h = Number(msg.media?.height) > 0 ? Number(msg.media.height) : 512
+                    const scale = Math.min(STICKER_BOX_WIDTH / w, STICKER_BOX_HEIGHT / h)
+                    return { width: `${Math.round(w * scale)}px`, height: `${Math.round(h * scale)}px` }
+                }
+
+                const prefersReducedMotion = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+                // The play budget of the .tgs stickers, which draw on the main
+                // thread. At most `max` play at once. The newest to come into view
+                // takes a slot from the one playing longest; the others hold their
+                // frame and start again when a slot frees. A press on a held one, or
+                // a hover, takes a slot the same way. Under reduced motion nothing
+                // plays on its own and a press plays a sticker once. Pure: `play` and
+                // `hold` are what it does to a sticker.
+                const STICKER_MAX_PLAYING = 4
+                const createStickerBudget = ({ max, reducedMotion, play, hold }) => {
+                    const visible = []
+                    const playing = []
+                    const remove = (list, item) => {
+                        const at = list.indexOf(item)
+                        if (at >= 0) list.splice(at, 1)
+                        return at >= 0
+                    }
+                    const start = (item, once) => {
+                        if (playing.length >= max) hold(playing.shift())
+                        playing.push(item)
+                        play(item, once)
+                    }
+                    const fill = () => {
+                        if (reducedMotion()) return
+                        for (let i = visible.length - 1; i >= 0 && playing.length < max; i--) {
+                            if (!playing.includes(visible[i])) start(visible[i], false)
+                        }
+                    }
+                    return {
+                        enter(item) {
+                            if (visible.includes(item)) return
+                            visible.push(item)
+                            if (!reducedMotion()) start(item, false)
+                        },
+                        leave(item) {
+                            remove(visible, item)
+                            if (remove(playing, item)) {
+                                hold(item)
+                                fill()
+                            }
+                        },
+                        press(item) {
+                            if (!visible.includes(item)) visible.push(item)
+                            remove(playing, item)
+                            start(item, reducedMotion())
+                        },
+                        hover(item) {
+                            if (reducedMotion() || playing.includes(item) || !visible.includes(item)) return
+                            start(item, false)
+                        },
+                        // A sticker played once has ended: its slot goes to the next.
+                        done(item) {
+                            if (remove(playing, item)) fill()
+                        },
+                        playing: () => playing.slice(),
+                    }
+                }
+
+                // A .tgs file is gzip-compressed Lottie JSON. Both sizes are capped
+                // (256 KB packed, four times what Telegram accepts for a sticker, and
+                // 2 MB unpacked), so a hostile file cannot hang the tab. Returns the
+                // JSON text.
+                const TGS_MAX_PACKED = 256 * 1024
+                const TGS_MAX_UNPACKED = 2 * 1024 * 1024
+                const readTgsText = async (response) => {
+                    let packed = 0
+                    const counter = new TransformStream({
+                        transform(chunk, controller) {
+                            packed += chunk.byteLength
+                            if (packed > TGS_MAX_PACKED) controller.error(new Error('sticker file too large'))
+                            else controller.enqueue(chunk)
+                        },
+                    })
+                    const reader = response.body.pipeThrough(counter).pipeThrough(new DecompressionStream('gzip')).getReader()
+                    const chunks = []
+                    let size = 0
+                    for (;;) {
+                        const { done, value } = await reader.read()
+                        if (done) break
+                        size += value.byteLength
+                        if (size > TGS_MAX_UNPACKED) {
+                            reader.cancel().catch(() => { })
+                            throw new Error('sticker animation too large')
+                        }
+                        chunks.push(value)
+                    }
+                    const bytes = new Uint8Array(size)
+                    let offset = 0
+                    for (const chunk of chunks) {
+                        bytes.set(chunk, offset)
+                        offset += chunk.byteLength
+                    }
+                    return new TextDecoder().decode(bytes)
+                }
+
+                // The JSON text of the stickers seen last, by URL, so one sent many
+                // times is fetched once and a sticker scrolled back to starts at once.
+                // The cache holds at most 16 MB of text and drops the oldest first.
+                // Each player parses its own copy: lottie-web writes into its data.
+                const TGS_CACHE_BYTES = 16 * 1024 * 1024
+                const createTgsCache = (maxBytes) => {
+                    const entries = new Map()
+                    let total = 0
+                    const drop = (url) => {
+                        const entry = entries.get(url)
+                        if (!entry) return
+                        total -= entry.size
+                        entries.delete(url)
+                    }
+                    return {
+                        get(url) {
+                            const entry = entries.get(url)
+                            if (!entry) return null
+                            entries.delete(url)
+                            entries.set(url, entry)
+                            return entry.pending
+                        },
+                        // `load` returns a promise of the text. Its size counts once it
+                        // arrives; a failed load leaves the cache.
+                        add(url, load) {
+                            drop(url)
+                            const entry = { pending: load(), size: 0 }
+                            entries.set(url, entry)
+                            entry.pending.then(text => {
+                                if (entries.get(url) !== entry) return
+                                entry.size = text.length
+                                total += entry.size
+                                for (const key of entries.keys()) {
+                                    if (total <= maxBytes) break
+                                    if (key !== url) drop(key)
+                                }
+                            }, () => {
+                                if (entries.get(url) === entry) drop(url)
+                            })
+                            return entry.pending
+                        },
+                        bytes: () => total,
+                        urls: () => [...entries.keys()],
+                    }
+                }
+
+                // The Lottie player (lottie-web, the light canvas build, vendored) is
+                // loaded the first time a .tgs sticker comes near the screen, not
+                // with the page.
+                const LOTTIE_SRC = '/static/vendor/lottie_light_canvas-5.13.0.min.js'
+                const tgsState = { lottie: null, root: null, load: null, view: null, budget: null, players: new Map(), observed: new Set(), cache: createTgsCache(TGS_CACHE_BYTES) }
+                const loadLottie = () => {
+                    if (!tgsState.lottie) {
+                        tgsState.lottie = new Promise((resolve, reject) => {
+                            const script = document.createElement('script')
+                            script.src = LOTTIE_SRC
+                            script.async = true
+                            script.onload = () => (window.lottie ? resolve(window.lottie) : reject(new Error('lottie missing')))
+                            script.onerror = () => {
+                                tgsState.lottie = null
+                                reject(new Error('lottie failed to load'))
+                            }
+                            document.head.appendChild(script)
+                        })
+                    }
+                    return tgsState.lottie
+                }
+
+                // Telegram allows no images, fonts or text layers in an animated
+                // sticker. lottie-web would fetch any of them from a URL the sender
+                // chose (a font stylesheet, a script, a picture), so they never reach
+                // it: the font and glyph tables and every image asset are dropped,
+                // and an image or text layer refuses the sticker. Image assets carry
+                // `p` (and `u`); a precomposition asset carries `layers` instead.
+                const LOTTIE_REFUSED_LAYERS = [2, 5]
+                const sanitizeLottie = (data) => {
+                    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not a sticker animation')
+                    delete data.fonts
+                    delete data.chars
+                    if (Array.isArray(data.assets)) {
+                        data.assets = data.assets.filter(asset => asset && typeof asset === 'object' && !('p' in asset) && !('u' in asset))
+                    } else {
+                        delete data.assets
+                    }
+                    const layerLists = [data.layers, ...(data.assets || []).map(asset => asset.layers)]
+                    for (const layers of layerLists) {
+                        if (!Array.isArray(layers)) continue
+                        if (layers.some(layer => layer && LOTTIE_REFUSED_LAYERS.includes(layer.ty))) {
+                            throw new Error('unsupported sticker')
+                        }
+                    }
+                    return data
+                }
+
+                const fetchTgsText = (url) => {
+                    return tgsState.cache.get(url) || tgsState.cache.add(url, () =>
+                        fetch(url, { credentials: 'same-origin' }).then(response => {
+                            if (!response.ok) throw new Error(`sticker answered ${response.status}`)
+                            return readTgsText(response)
+                        }))
+                }
+
+                // One player per .tgs element. `want` is what the budget asked for
+                // (loop, once, or null for hold) and is applied once the animation
+                // exists, so the budget never waits on the network.
+                const tgsPlayer = (el) => {
+                    let player = tgsState.players.get(el)
+                    if (!player) {
+                        player = { anim: null, want: null, loading: false, gone: false, failed: false }
+                        tgsState.players.set(el, player)
+                    }
+                    return player
+                }
+                const applyTgsWant = (player) => {
+                    const anim = player.anim
+                    if (!anim) return
+                    if (!player.want) {
+                        anim.pause()
+                        return
+                    }
+                    anim.setLoop(player.want === 'loop')
+                    if (player.want === 'once') anim.goToAndPlay(0, true)
+                    else anim.play()
+                }
+                const playTgs = (el, once) => {
+                    const player = tgsPlayer(el)
+                    player.want = once ? 'once' : 'loop'
+                    applyTgsWant(player)
+                }
+                const holdTgs = (el) => {
+                    const player = tgsState.players.get(el)
+                    if (!player) return
+                    player.want = null
+                    applyTgsWant(player)
+                }
+                const mountTgs = (el) => {
+                    const player = tgsPlayer(el)
+                    player.gone = false
+                    if (player.anim || player.loading || player.failed) return
+                    player.loading = true
+                    // A failure far off screen is retried when the sticker comes back;
+                    // one reported to the row is not tried again.
+                    const fail = () => {
+                        if (player.gone) return
+                        player.failed = true
+                        el.dispatchEvent(new CustomEvent('stickerfail'))
+                    }
+                    Promise.all([loadLottie(), fetchTgsText(el.dataset.src)]).then(([lottie, text]) => {
+                        player.loading = false
+                        if (player.gone) return
+                        const anim = lottie.loadAnimation({
+                            container: el,
+                            renderer: 'canvas',
+                            loop: true,
+                            autoplay: false,
+                            animationData: sanitizeLottie(JSON.parse(text)),
+                            rendererSettings: { clearCanvas: true, preserveAspectRatio: 'xMidYMid meet' },
+                        })
+                        // Whole frames only: a 120 Hz screen does not draw a 60 fps
+                        // sticker twice as often.
+                        anim.setSubframe(false)
+                        anim.addEventListener('data_failed', fail)
+                        // With animationData given, a bad shape or a failed frame is an
+                        // 'error' event: the player is freed and the row gets the
+                        // shared placeholder like any failed load.
+                        anim.addEventListener('error', () => {
+                            if (player.anim === anim) player.anim = null
+                            // Freed after lottie-web's own handler returns.
+                            setTimeout(() => anim.destroy(), 0)
+                            fail()
+                        })
+                        anim.addEventListener('complete', () => {
+                            player.want = null
+                            tgsState.budget?.done(el)
+                        })
+                        player.anim = anim
+                        applyTgsWant(player)
+                    }).catch(() => {
+                        player.loading = false
+                        fail()
+                    })
+                }
+                // Far off screen a player frees its canvas; the text stays cached.
+                const unmountTgs = (el) => {
+                    const player = tgsState.players.get(el)
+                    if (!player) return
+                    player.gone = true
+                    player.anim?.destroy()
+                    player.anim = null
+                }
+
+                // Run after every render of the message list: observe the new .tgs
+                // stickers (loaded 200px before they show, played while at least a
+                // tenth is on screen) and forget the ones no longer in the page, so
+                // a chat change leaves no player behind. Video stickers join the GIF
+                // observer here too, which also covers a list rebuilt when the
+                // gallery closes.
+                const forgetTgs = (el) => {
+                    tgsState.load?.unobserve(el)
+                    tgsState.view?.unobserve(el)
+                    tgsState.budget?.leave(el)
+                    unmountTgs(el)
+                    tgsState.players.delete(el)
+                    tgsState.observed.delete(el)
+                }
+                const syncStickers = () => {
+                    // The observers' root is the message list itself: the list clips
+                    // what scrolls out of it, and a margin on the page viewport
+                    // would never reach past that clip. A rebuilt list starts over.
+                    const root = messagesContainer.value || null
+                    if (tgsState.load && tgsState.root !== root) {
+                        for (const el of [...tgsState.observed]) forgetTgs(el)
+                        tgsState.load.disconnect()
+                        tgsState.view.disconnect()
+                        tgsState.load = null
+                    }
+                    if (!tgsState.load) {
+                        tgsState.root = root
+                        tgsState.budget = createStickerBudget({
+                            max: STICKER_MAX_PLAYING,
+                            reducedMotion: prefersReducedMotion,
+                            play: playTgs,
+                            hold: holdTgs,
+                        })
+                        tgsState.load = new IntersectionObserver((entries) => {
+                            entries.forEach(entry => (entry.isIntersecting ? mountTgs(entry.target) : unmountTgs(entry.target)))
+                        }, { root, rootMargin: '200px' })
+                        tgsState.view = new IntersectionObserver((entries) => {
+                            entries.forEach(entry => (entry.isIntersecting ? tgsState.budget.enter(entry.target) : tgsState.budget.leave(entry.target)))
+                        }, { root, threshold: 0.1 })
+                    }
+                    for (const el of [...tgsState.observed]) {
+                        if (!el.isConnected) forgetTgs(el)
+                    }
+                    document.querySelectorAll('.tgs-sticker').forEach(el => {
+                        if (tgsState.observed.has(el)) return
+                        tgsState.observed.add(el)
+                        tgsState.load.observe(el)
+                        tgsState.view.observe(el)
+                    })
+                    if (!gifObserver) setupGifObserver()
+                    document.querySelectorAll('.sticker-video').forEach(video => gifObserver.observe(video))
+                }
+
+                // A press on a moving sticker: a held .tgs takes a slot, and under
+                // reduced motion either kind plays once. A hover plays a held .tgs.
+                const pressSticker = (event) => {
+                    const box = event.currentTarget
+                    const tgs = box.querySelector('.tgs-sticker')
+                    if (tgs) {
+                        tgsState.budget?.press(tgs)
+                        return
+                    }
+                    const video = box.querySelector('video')
+                    if (!video) return
+                    if (!video.src && video.dataset.src) video.src = video.dataset.src
+                    const once = prefersReducedMotion()
+                    video.loop = !once
+                    if (once) video.currentTime = 0
+                    video.play().catch(() => { })
+                }
+                const hoverSticker = (event) => {
+                    const tgs = event.currentTarget.querySelector('.tgs-sticker')
+                    if (tgs) tgsState.budget?.hover(tgs)
+                }
+
                 const setupGifObserver = () => {
                     if (gifObserver) {
                         gifObserver.disconnect()
@@ -13820,6 +14293,9 @@
                                 if (!video.src && video.dataset.src) {
                                     video.src = video.dataset.src
                                 }
+                                // A video sticker under reduced motion shows its
+                                // first frame; a press plays it once (pressSticker).
+                                if (video.classList.contains('sticker-video') && prefersReducedMotion()) return
                                 video.play().catch(() => { })
                             } else {
                                 // Pause when not visible
@@ -14530,19 +15006,14 @@
                 const VISUAL_MEDIA_TYPES = ['photo', 'video', 'animation', 'video_note', 'sticker']
                 const FRAMELESS_MEDIA_TYPES = ['sticker', 'video_note']
 
-                // A sticker the viewer draws as a picture: a .webp, the same test the
-                // template uses. An animated one (.tgs, .webm) shows a small label,
-                // which needs a bubble under it.
-                const isStickerImage = (msg) => {
-                    return msg.media?.type === 'sticker' && getDocumentDisplayName(msg).endsWith('.webp')
-                }
-
                 // What a sticker or a round video draws is the picture itself: not a
                 // failed load, not an open or failed transcript (the circle then gives
                 // way to text, which needs a bubble under it).
                 const rendersAsPicture = (msg) => {
                     if (mediaUnavailable(msg)) return false
-                    if (msg.media?.type === 'sticker') return isStickerImage(msg)
+                    // A sticker this browser cannot play shows a small label, which
+                    // needs a bubble under it.
+                    if (msg.media?.type === 'sticker') return canPlaySticker(msg)
                     if (!hasTranscriptButton(msg)) return true
                     return !isTranscriptExpanded(msg) && transcriptStatus(msg) !== 'error'
                 }
@@ -14672,6 +15143,10 @@
                             gifObserver.observe(video)
                         })
                     })
+                })
+                // Stickers watch the gallery as well: closing it rebuilds the list.
+                watch([sortedMessages, mediaRevision, showMediaGallery], () => {
+                    nextTick(syncStickers)
                 })
 
 
@@ -19979,7 +20454,12 @@
                     isEdgeMedia,
                     hasForwardHeader,
                     showNameAt,
-                    isStickerImage,
+                    stickerKind,
+                    stickerLabel,
+                    canPlaySticker,
+                    stickerBoxStyle,
+                    pressSticker,
+                    hoverSticker,
                     isMediaOnlyMessage,
                     getPollPercentage,
                     pollKindLabel,

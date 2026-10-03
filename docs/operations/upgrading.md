@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 9.2.0 | Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See [Upgrading to 9.2.0](#upgrading-to-920). |
+| 9.2.0 | Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See [Upgrading to 9.2.0](#upgrading-to-920). Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
 | 9.0.0 | Scripts that read a chat export must change, and so must readers of `raw_data.poll`, `raw_data.webpage` and `raw_data.entities`, `/ws/updates` clients, and scripts that press the transcript button many times as a viewer login. The first start runs migrations 034 to 038; on a large archive it takes longer. After it, run `telegram-archive check-media` once, and `telegram-archive backfill-details --apply` once with the backup stopped. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
@@ -99,6 +99,20 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 `check-media` now finds video and audio files that were cut short. A release from late 2025 stored some downloads that stopped early as complete files, and nothing in the archive knew. A dry run counts them as `Cut short` and exits 1, so a script or a health check that runs `check-media` reports them until they are repaired. Run `check-media --repair` once to mark them to download again. The next backup run downloads each one and replaces the short file only when its bytes are the start of the new download. Otherwise it keeps the short file and stores the new download beside it. See [A file cut short](../configuration/media.md#a-file-cut-short).
 
 The backup and the real-time listener now refuse a download shorter than the size Telegram declares for the file. The backup tries it again and then records it not downloaded, so the pending downloads retry it. Before, the short file was stored as complete.
+
+### Stickers { #stickers-92 }
+
+Before 9.2.0 the backup archived every video sticker as a `video`, and some older rows hold animated stickers as a `document`. The first start runs migration 039. It changes only the type of those rows to `sticker`: no file, no file name and no id changes, and nothing is deleted. A row is changed only when its file carries the name Telegram gives a sticker: a `video` ending in `_sticker.webm` within Telegram's limits for a video sticker (512 px on each side and 3 seconds at most), or a `document` ending in `_AnimatedSticker.tgs`. The earlier media of edited messages get the same fix, so the edit history calls them Sticker too. It reads the media table and the earlier-media table once each.
+
+What changes for those rows:
+
+- They play in the chat as stickers, and leave **Photos & Videos** and **Files** in the shared media gallery.
+- Replies, the pinned bar and the chat list call them Sticker, not Video or File.
+- Both chat exports give them the type `sticker`.
+- Transcription no longer picks them up. A video sticker has no sound.
+- `DOWNLOAD_MEDIA_TYPES` governs them as `sticker`. With a list that names `video` but not `sticker`, new video stickers are no longer downloaded. Files already on disk stay.
+
+A file that had stickers drawn on it was archived as a `sticker` before 9.2.0. New ones are archived as the video, GIF or file they are. The migration leaves the old rows as they are: the row does not say whether the file was a video or a GIF. The chat shows them as the text "Sticker", a link that downloads the file when your login may download. A backup that reads such a message again corrects its type.
 
 ## Upgrading to 9.0 { #upgrading-to-90 }
 
