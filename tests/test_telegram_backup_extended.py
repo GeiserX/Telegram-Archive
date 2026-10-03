@@ -2374,7 +2374,9 @@ class TestProcessMedia(unittest.TestCase):
         msg = self._make_photo_message(22)
         self._setup_photo_download()
         self.backup.config.deduplicate_media = True
-        with patch("telegram_archive.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None))):
+        with patch(
+            "telegram_archive.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None, None))
+        ):
             result = _run(self.backup._process_media(msg, 100))
 
         self.assertIsNotNone(result)
@@ -2408,8 +2410,9 @@ class TestProcessMedia(unittest.TestCase):
         self.backup._get_media_filename = MagicMock(return_value="test.mp4")
 
         async def fake_download(_message, path):
+            # All 5000 declared bytes: a shorter file is refused as cut short.
             with open(path, "wb") as f:
-                f.write(b"video")
+                f.write(b"video" * 1000)
             return path
 
         self.backup.client.download_media = AsyncMock(side_effect=fake_download)

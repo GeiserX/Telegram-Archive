@@ -26,8 +26,9 @@ A server that cannot be reached is transient: the row stays ``queued`` and
 the ten-minute branch of the drain query resubmits on it, so an outage
 writes no failed row. A failed row whose reason is about the disk or the
 server (``TRANSCRIPT_ENVIRONMENT_ERRORS`` in the adapter) never counts
-toward the cap of three; the drain query says when such a media is tried
-again. A refusal about the server or its configuration, not about the
+toward the cap of three, and neither does a failure about bytes the media
+no longer holds (a file cut short, downloaded again since); the drain
+query says when such a media is tried again. A refusal about the server or its configuration, not about the
 file (401, 403, 429, akou's
 ``preset_unavailable`` and ``callback_not_allowed``, and a 5xx on the job
 path), ends the run the same way and also leaves the row ``queued``. Any

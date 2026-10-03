@@ -141,7 +141,10 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
             "a file with no copy is marked not downloaded so the next backup fetches it "
             "from Telegram again, but only when its folder exists under the media folder. "
             "A row marked not downloaded earlier whose file is back at its path is marked "
-            "downloaded again. Without --repair nothing is changed. When the media folder "
+            "downloaded again. A video or audio file in place whose download stopped early "
+            "(an MP4-family file with no index, at a size a stopped download leaves) is "
+            "marked not downloaded so the next backup downloads it again and replaces it. "
+            "Without --repair nothing is changed. When the media folder "
             "is missing, unreadable or empty, nothing is checked or changed. Exit code 1 "
             "when the media folder is not visible, when the dry run finds something to "
             "fix, or when a repair fails."
@@ -408,7 +411,11 @@ async def run_check_media(args) -> int:
         return 1
     if args.repair:
         return 1 if report["restore_failed"] or report["refetch_failed"] or report.get("recover_failed") else 0
-    return 1 if report["broken_links"] or report["missing_files"] or report.get("recoverable") else 0
+    return (
+        1
+        if report["broken_links"] or report["missing_files"] or report.get("recoverable") or report.get("truncated")
+        else 0
+    )
 
 
 async def run_list_chats(args) -> int:

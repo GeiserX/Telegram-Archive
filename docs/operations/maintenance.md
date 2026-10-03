@@ -158,7 +158,7 @@ Media verification checks every downloaded file and downloads it again when it i
 
 See [Media downloads](../configuration/media.md) for what it checks.
 
-To check the files without downloading anything, run [`check-media`](../reference/cli.md#check-media). It counts broken links and missing files and, with `--repair`, puts back the ones with a copy on disk and marks the rest to download again at the next backup run. It also marks downloaded again a file that is back at its path, after an outage of the media volume left its row not downloaded. With the media folder not mounted it changes nothing and exits 1:
+To check the files without downloading anything, run [`check-media`](../reference/cli.md#check-media). It counts broken links and missing files and, with `--repair`, puts back the ones with a copy on disk and marks the rest to download again at the next backup run. It also marks downloaded again a file that is back at its path, after an outage of the media volume left its row not downloaded. It finds a video or audio file whose download stopped early and, with `--repair`, marks it to download again. With the media folder not mounted it changes nothing and exits 1:
 
 ```bash
 docker compose exec telegram-backup python -m telegram_archive check-media

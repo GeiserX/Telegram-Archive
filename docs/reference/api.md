@@ -253,7 +253,7 @@ curl -s -b jar.txt \
   'http://localhost:8000/api/chats/<ref>/messages?limit=50&offset=0&edited_only=true'
 ```
 
-Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. A kind with no file (`geo`, `contact`, `poll`, `venue`, `geo_live` and the others in [Media](../configuration/media.md)) has `media.url` null, even when an older release left a `file_path` on it. What it holds is in `raw_data` under a key named after the kind:
+Each message nests its media. `media.id` is the media key, `{message_id}_{type}`, and `media.url` is `/media/{chat_ref}/{key}`. `media.downloaded` is false for a row waiting for a download, such as a file `check-media --repair` marked to download again; such a row can keep its `file_path`. A kind with no file (`geo`, `contact`, `poll`, `venue`, `geo_live` and the others in [Media](../configuration/media.md)) has `media.url` null, even when an older release left a `file_path` on it. What it holds is in `raw_data` under a key named after the kind:
 
 | Key | Fields |
 |-----|--------|

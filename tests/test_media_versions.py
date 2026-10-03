@@ -40,9 +40,14 @@ THIRD_PHOTO = 7000000000000000333
 FOURTH_PHOTO = 7000000000000000444
 
 
+# The size Telegram declares for the photo: the bytes _fake_download writes
+# ("photo " and a 19-digit id). A shorter file is refused as cut short.
+PHOTO_BYTES = 25
+
+
 def _photo(photo_id: int):
     media = MagicMock(spec=MessageMediaPhoto)
-    media.photo = SimpleNamespace(id=photo_id, sizes=[PhotoSize(type="m", w=320, h=240, size=4000)])
+    media.photo = SimpleNamespace(id=photo_id, sizes=[PhotoSize(type="m", w=320, h=240, size=PHOTO_BYTES)])
     return media
 
 
@@ -78,7 +83,7 @@ def _named(class_name: str, **attrs):
 
 def _preview(photo_id: int):
     """A link preview whose card picture is photo ``photo_id``."""
-    photo = SimpleNamespace(id=photo_id, sizes=[PhotoSize(type="m", w=320, h=240, size=4000)])
+    photo = SimpleNamespace(id=photo_id, sizes=[PhotoSize(type="m", w=320, h=240, size=PHOTO_BYTES)])
     webpage = _named("WebPage", url="https://example.com/page", photo=photo, document=None)
     return _named("MessageMediaWebPage", webpage=webpage)
 

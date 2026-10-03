@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
+| 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See the [Files cut short](#cut-short-92) section. Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
 | 9.0.0 | Scripts that read a chat export must change, and so must readers of `raw_data.poll`, `raw_data.webpage` and `raw_data.entities`, `/ws/updates` clients, and scripts that press the transcript button many times as a viewer login. The first start runs migrations 034 to 038; on a large archive it takes longer. After it, run `telegram-archive check-media` once, and `telegram-archive backfill-details --apply` once with the backup stopped. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
@@ -121,6 +121,12 @@ On SQLite, the listener sends live updates to the viewer over HTTP. A backup tha
 A running listener now stamps a heartbeat in the database every 30 seconds, and the viewer counts a listener as running only while that stamp is fresh. Upgrade both images together: a 9.2.0 viewer beside an older backup reads every listener as not running, because the older backup writes no heartbeat.
 
 The listener settings lines (`ENABLE_LISTENER enabled`, the `LISTEN_*` values, the `EVENT_WEBHOOK` lines) now appear only in the log of the backup service that runs `schedule`. The viewer and the one-shot commands no longer print them.
+
+### Files cut short { #cut-short-92 }
+
+`check-media` now finds video and audio files that were cut short. A release from late 2025 stored some downloads that stopped early as complete files, and nothing in the archive knew. A dry run counts them as `Cut short` and exits 1, so a script or a health check that runs `check-media` reports them until they are repaired. Run `check-media --repair` once to mark them to download again. The next backup run downloads each one and replaces the short file only when its bytes are the start of the new download. Otherwise it keeps the short file and stores the new download beside it. See [A file cut short](../configuration/media.md#a-file-cut-short).
+
+The backup and the real-time listener now refuse a download shorter than the size Telegram declares for the file. The backup tries it again and then records it not downloaded, so the pending downloads retry it. Before, the short file was stored as complete.
 
 ### Stickers { #stickers-92 }
 
