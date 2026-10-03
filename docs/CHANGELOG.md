@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.2.1] - 2026-10-03
+
+One fix for the map pictures: a short FloodWait no longer ends the run. No migration, nothing else changes. Docker deployments only need the new pins.
+
 ### Fixed
 - **A short FloodWait no longer stops the map pictures and the details backfill.** Telethon sleeps a wait under the threshold only when it already knew about it; one the map request raises came straight back, and a 3 second wait ended the run. The map fetch now sleeps a wait up to `MEDIA_FLOOD_SLEEP_THRESHOLD` itself and asks again, and only a longer one pauses the pictures.
 
