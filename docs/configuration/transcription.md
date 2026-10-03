@@ -31,7 +31,7 @@ Every result is stored as a new transcript row. The media row is never changed.
 
 ## Choosing a server
 
-A drain is the step that sends queued files to the server. It runs after each backup run.
+A drain is the step that sends queued files to the server and collects results. It runs every [`TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`](../reference/environment-variables.md#transcription_drain_interval_minutes), 15 by default, and after each backup run.
 
 With `TRANSCRIPTION_PROVIDER=auto`, the default, each drain checks which kind of server `TRANSCRIPTION_URL` points at. An akou server with jobs gets the job API. Anything else gets the OpenAI endpoint.
 
@@ -145,10 +145,14 @@ Only downloaded files are transcribed. A chat or media type whose downloads are 
 
 ### When files are sent
 
-- The drain runs at the end of every backup run that finishes without an exception. A drain error is logged as a warning and never fails the backup.
+- The `schedule` command runs a drain every `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`, 15 by default. These drains need no Telegram connection. They also run while a backup run is going, but never at the same moment as another drain. A drain with nothing to do makes no request to the server and logs nothing at info level. `0` turns this timer off. The one-shot `backup` command and the standalone listener have no timer.
+- A drain also runs at the end of every backup run that finishes without an exception. A drain error is logged as a warning and never fails the backup.
 - When the [real-time listener](listener.md) downloads a file itself, it sends that file at once. This needs `LISTEN_NEW_MESSAGES_MEDIA`, on by default, and the file's type in `TRANSCRIPTION_TYPES`. Otherwise the file waits for the next drain.
 - Pressing the button only queues the file. The next drain sends it.
-- With the default daily `SCHEDULE`, the next drain can be up to a day away. That applies to a pressed file, and to akou results for files the listener sent when no `TRANSCRIPTION_CALLBACK_URL` is set. Set the callback to get results as soon as they are ready. See [Callbacks with akou](#callbacks-with-akou).
+- Without `TRANSCRIPTION_CALLBACK_URL`, akou results for files the listener sent arrive with the next drain. Set the callback to get results as soon as they are ready. See [Callbacks with akou](#callbacks-with-akou).
+- Only the drain after a backup run sends a missing file back to download. A timer drain can run while that backup run has the file moved aside to check it (`VERIFY_MEDIA`), so it stores `file_missing` instead, which does not count toward the three. The drain after the next backup run sends the file back to download, and the run after it downloads the file from Telegram.
+- After a timer drain that ended on the server's side, the timer waits longer before the next one. See [Retries](#retries).
+- Files that are still missing do not start a timer drain on their own. A drain with other work checks them again, and so does the drain after each backup run.
 
 ### Drain order and limits
 
@@ -172,9 +176,10 @@ One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. Th
 - Every other failure counts, including `decode_failed`, `too_long`, `cancelled`, a timeout and a server error on the OpenAI endpoint.
 - A failure about earlier bytes of the file does not count once the file has been downloaded again with other bytes. A video cut short fails with `decode_failed`, and after `check-media --repair` and a new download the drain sends the complete file, however many times the short one failed (see [A file cut short](media.md#a-file-cut-short)). The 10 failed attempts in all still count every failure.
 - A press always gets one more attempt, whatever happened before.
-- A queued file that never got a job is sent again after 10 minutes.
+- A timeout and a server error on the OpenAI endpoint count toward the three, and the drain retries the newest such file first. So under `schedule`, after a timer drain that ended on the server's side, the timer waits twice as long before the next one, up to a day. That covers a timeout, a server error, a refusal of the request, a server that went away mid-run, and files refused with a 4xx error while none was transcribed. A drain in which the server transcribed or took a file sets the wait back to `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`. During such an outage the newest waiting file can still use its three attempts in about two hours, but a whole day of it uses about six attempts in all, where a drain every 15 minutes would use close to a hundred. The drain after each backup run does not wait.
+- A queued file that never got a job is sent again after 10 minutes, unless the backup is still sending it.
 - An unreachable server spends no retry. The file stays queued.
-- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the media is marked not downloaded, the next backup downloads it again, and a later drain sends it. That happens only when the file is provably gone: with the media folder missing or empty, or the row's folder gone, the media row stays as it is and the file fails with `file_missing`, without counting toward the three.
+- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the drain after a backup run marks the media not downloaded, the next backup downloads it again, and a later drain sends it. That happens only when the file is provably gone: with the media folder missing or empty, or the row's folder gone, the media row stays as it is and the file fails with `file_missing`, without counting toward the three.
 - Changing the language, preset, speaker labels or server means files are sent again instead of reusing earlier results. On the OpenAI endpoint the model and the hotwords count too. On Deepgram, AssemblyAI and ElevenLabs the model counts and the hotwords do not.
 - The same audio already transcribed with the same settings, in this account or another, is copied instead of sent.
 
@@ -240,7 +245,7 @@ The button has five states:
 | None | A server is configured, but this file has no transcript yet. Pressing queues it. |
 | Unconfigured | No server is set. Pressing opens the banner instead. |
 
-Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets anyone press. In an open viewer a press on a file that was already transcribed or skipped shows that result and queues nothing, so a visitor cannot send a finished file to the server again. Logins can ask again. One client may press `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, 30 by default. A client is its login session, the proxy user name, or, in an open viewer, the client IP. Separately, once `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50 by default) wait for the backup, presses are refused until the next backup run picks some up. The master is exempt from both limits. Only asks from the last 24 hours on downloaded files count, so asks no backup run will pick up, such as those in an account no backup runs for, stop counting after a day. They stay in the archive and stay queued: a backup that takes them later still sends them. So while the backup is stopped, or has transcription off, the waiting asks can grow by up to one `TRANSCRIPTION_ASK_MAX_OPEN` a day. Pressing a file that is already queued returns that request and counts against neither limit. A refused press leaves the button as it was and a short message says why.
+Presses are limited, because an open viewer (`ALLOW_ANONYMOUS_VIEWER=true`) lets anyone press. In an open viewer a press on a file that was already transcribed or skipped shows that result and queues nothing, so a visitor cannot send a finished file to the server again. Logins can ask again. One client may press `TRANSCRIPTION_ASK_RATE_LIMIT` times in 10 minutes, 30 by default. A client is its login session, the proxy user name, or, in an open viewer, the client IP. Separately, once `TRANSCRIPTION_ASK_MAX_OPEN` pressed files (50 by default) wait for the backup, presses are refused until a drain sends some, within `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`. The master is exempt from both limits. Only asks from the last 24 hours on downloaded files count, so asks no backup run will pick up, such as those in an account no backup runs for, stop counting after a day. They stay in the archive and stay queued: a backup that takes them later still sends them. So while the backup is stopped, or has transcription off, the waiting asks can grow by up to one `TRANSCRIPTION_ASK_MAX_OPEN` a day. Pressing a file that is already queued returns that request and counts against neither limit. A refused press leaves the button as it was and a short message says why.
 
 ### Error texts
 
@@ -323,6 +328,7 @@ All settings except `TRANSCRIPTION_ENABLED`, `TRANSCRIPTION_URL`, `TRANSCRIPTION
 | `TRANSCRIPTION_CALLBACK_URL` | empty | backup | Warns and drops it. Results then arrive on the next drain |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | viewer | Warns and ignores a value without the `whsec_` prefix |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | backup | Stops startup. Values below 1 become 1 |
+| `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES` | `15` | backup | Stops startup. `0` or less turns the timer off |
 | `TRANSCRIPTION_PRIORITY_CHAT_IDS` | empty | backup | Stops startup on a non-integer id |
 | `TRANSCRIPTION_ASK_RATE_LIMIT` | `30` | viewer | Stops startup. `0` or less means no limit |
 | `TRANSCRIPTION_ASK_MAX_OPEN` | `50` | viewer | Stops startup. `0` or less means no limit |
@@ -335,12 +341,12 @@ Transcription logs never contain the key, media ids, file names or transcript te
 
 | What you see | What it means |
 |---|---|
-| `Transcription drain: N done, N copied, N failed, N skipped, N submitted, N refused, N unreachable, N sent back to download of N media; N filled from the event feed, N from the poll` | The INFO summary each drain logs. With no server set, the drain logs only at debug level. |
+| `Transcription drain: N done, N copied, N failed, N skipped, N submitted, N refused, N unreachable, N sent back to download of N media; N filled from the event feed, N from the poll` | The INFO summary of a drain that did something. A drain that found nothing to do, or only files still missing, logs it at debug level. With no server set, the drain logs only at debug level. |
 | `TRANSCRIPTION_PROVIDER=akou but the server did not answer as akou with jobs; nothing sent, the media stays queued` | The URL does not reach an akou server with the job API. Check the URL, or use `auto` or `openai`. |
 | Files stay queued and every drain ends early on an OpenAI-compatible server | The server answers `404`. Check that `TRANSCRIPTION_URL` has no `/v1` suffix and that the model exists. |
 | A warning to check `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_LANGUAGE` | Two files were refused with a 4xx error and none succeeded. The model or language is usually wrong for this provider. |
 | `callback_not_allowed` | The callback host is not on the akou key's callback allowlist. Add it on akou's side, or unset `TRANSCRIPTION_CALLBACK_URL`. |
 | A file failed with `engine_unavailable`, `not_found` or `expired` and is not sent again | The failure was the server's. The drain sends the file once the server has finished another transcript, or sooner as the drain's one test file once its wait is over. See [Retries](#retries). After 10 failed attempts only a press sends it. |
-| Archive status says "On, server not found yet" | No drain has reached the server yet. It fills after the next backup run. |
+| Archive status says "On, server not found yet" | No drain has reached the server yet. It fills after the next drain that has work to do, or after the next backup run. |
 
 For general log and health checks, see [Monitoring and troubleshooting](../operations/troubleshooting.md).

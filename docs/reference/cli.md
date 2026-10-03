@@ -85,7 +85,7 @@ telegram-archive [--data-dir PATH] schedule
 
 Takes no flags.
 
-Runs the scheduler until stopped. The stock compose file runs this command. It does the same one-time media move as `backup`, starts the real-time listeners (on by default, `ENABLE_LISTENER`), and runs one backup straight away. After that it runs a full pass on the `SCHEDULE` cron expression: `0 3 * * *` by default, or `0 */6 * * *` with `ENABLE_LISTENER=false`. It logs one `Capture mode:` line at startup that says which of the two it runs. With `FILL_GAPS=true` it runs gap-fill after each backup. It writes a heartbeat file every 30 seconds for the container health check. See [Schedule and backup tuning](../configuration/schedule.md).
+Runs the scheduler until stopped. The stock compose file runs this command. It does the same one-time media move as `backup`, starts the real-time listeners (on by default, `ENABLE_LISTENER`), and runs one backup straight away. After that it runs a full pass on the `SCHEDULE` cron expression: `0 3 * * *` by default, or `0 */6 * * *` with `ENABLE_LISTENER=false`. It logs one `Capture mode:` line at startup that says which of the two it runs. With `FILL_GAPS=true` it runs gap-fill after each backup. With `TRANSCRIPTION_URL` set it also runs a transcription drain every `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`, 15 by default. See [When files are sent](../configuration/transcription.md#when-files-are-sent). It writes a heartbeat file every 30 seconds for the container health check. See [Schedule and backup tuning](../configuration/schedule.md).
 
 It prints log lines only. It runs until stopped. A configuration error or a fatal error exits 1.
 

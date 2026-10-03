@@ -1111,6 +1111,10 @@ class Config:
         self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
         self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
         self.transcription_backfill_per_run = 50
+        # Minutes between the drains `schedule` runs on its own, besides the one
+        # at the end of each backup run. 0 or less leaves only that one. Read by
+        # the backup only.
+        self.transcription_drain_interval_minutes = 15
         # The viewer's transcript button, which ALLOW_ANONYMOUS_VIEWER opens to
         # anyone: presses per client per ten minutes, and how many pressed
         # rows may wait for the backup before a press from anyone but the
@@ -1128,6 +1132,9 @@ class Config:
             # Unset, TRANSCRIPTION_PROVIDER=openai caps uploads at 25 MB instead.
             self.transcription_max_upload_mb_set = bool(os.getenv("TRANSCRIPTION_MAX_UPLOAD_MB", "").strip())
             self.transcription_backfill_per_run = max(1, _parse_int_env("TRANSCRIPTION_BACKFILL_PER_RUN", 50))
+            self.transcription_drain_interval_minutes = max(
+                0, _parse_int_env("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES", 15)
+            )
             self.transcription_ask_rate_limit = max(0, _parse_int_env("TRANSCRIPTION_ASK_RATE_LIMIT", 30))
             self.transcription_ask_max_open = max(0, _parse_int_env("TRANSCRIPTION_ASK_MAX_OPEN", 50))
             self.transcription_priority_chat_ids = self._parse_ordered_id_list(
