@@ -22,6 +22,7 @@ compiled and executed by SQLite and PostgreSQL. The viewer half runs the real
 behaviour rather than source text.
 """
 
+import json
 import os
 import tempfile
 from datetime import datetime, timedelta
@@ -494,6 +495,80 @@ class TestSenderAccountIsAnEntitlementDecision:
         assert chat_ref  # the ref is the folded copy's; asserted in the 8.12 suite
 
 
+async def seed_private_pair(adapter) -> tuple[str, str]:
+    """One conversation between the two archived accounts, both copies.
+
+    Each account keeps its own row: account 1's chat is account 2's user id and
+    the other way round. ``is_outgoing`` is written per copy, as the backup
+    writes it from Telegram's ``out`` flag. Returns (ref of A's row, ref of B's).
+    """
+    await seed_accounts(adapter, [(1, "Account A", OWNER_A), (2, "Account B", OWNER_B)])
+    refs = {1: "followRefA1priv000001", 2: "followRefA2priv000001"}
+    for account_id, me, peer in ((1, OWNER_A, OWNER_B), (2, OWNER_B, OWNER_A)):
+        await adapter.upsert_chat({"id": peer, "type": "private", "first_name": "Peer"}, account_id=account_id)
+        for index, sender_id in enumerate((OWNER_A, OWNER_B)):
+            await adapter.insert_message(
+                {
+                    "id": 61 + index,
+                    "chat_id": peer,
+                    "sender_id": sender_id,
+                    "date": BASE + timedelta(minutes=index),
+                    "text": "between the two accounts",
+                    "is_outgoing": 1 if sender_id == me else 0,
+                    "raw_data": {},
+                },
+                account_id=account_id,
+            )
+        async with adapter.db_manager.async_session_factory() as session:
+            await session.execute(
+                text("UPDATE chats SET ref = :r WHERE account_id = :a AND id = :c"),
+                {"r": refs[account_id], "a": account_id, "c": peer},
+            )
+            await session.commit()
+    return refs[1], refs[2]
+
+
+class TestAPrivatePairIsTwoCopies:
+    """What the viewer's private-chat rule reads, pinned on both engines.
+
+    The viewer puts a private chat's bubbles on the side the row's own account
+    sees them. That needs the row to name its account, to stay one account's
+    copy, and each copy to carry its own is_outgoing beside sender_account_id.
+    """
+
+    async def test_each_row_names_its_own_account(self, app_on):
+        ref_a, ref_b = await seed_private_pair(app_on)
+        as_principal(role="master", allowed_accounts=None)
+
+        async with client() as http:
+            row_a = (await http.get(f"/api/chats/{ref_a}")).json()
+            row_b = (await http.get(f"/api/chats/{ref_b}")).json()
+
+        assert (row_a["type"], row_a["id"], row_a["account_id"], row_a["accounts"]) == ("private", OWNER_B, 1, [1])
+        assert (row_b["type"], row_b["id"], row_b["account_id"], row_b["accounts"]) == ("private", OWNER_A, 2, [2])
+
+    async def test_each_copy_carries_its_own_out_flag(self, app_on):
+        ref_a, ref_b = await seed_private_pair(app_on)
+        as_principal(role="master", allowed_accounts=None)
+
+        async with client() as http:
+            copy_a = (await http.get(f"/api/chats/{ref_a}/messages")).json()
+            copy_b = (await http.get(f"/api/chats/{ref_b}/messages")).json()
+
+        # 61 is A's message, 62 is B's. The master is told who spoke in both.
+        assert {m["id"]: (m["is_outgoing"], m["sender_account_id"]) for m in copy_a} == {61: (1, 1), 62: (0, 2)}
+        assert {m["id"]: (m["is_outgoing"], m["sender_account_id"]) for m in copy_b} == {61: (0, 1), 62: (1, 2)}
+
+    async def test_a_viewer_limited_to_one_account_sees_the_other_as_a_person(self, app_on):
+        ref_a, _ = await seed_private_pair(app_on)
+        as_principal(allowed_accounts={1})
+
+        async with client() as http:
+            copy_a = (await http.get(f"/api/chats/{ref_a}/messages")).json()
+
+        assert {m["id"]: (m["is_outgoing"], m["sender_account_id"]) for m in copy_a} == {61: (1, 1), 62: (0, None)}
+
+
 # ============================================================================
 # isOwnMessage, executed
 # ============================================================================
@@ -506,15 +581,14 @@ const selectedChat = ref({ ref: 'c1', type: 'channel', id: -1004200001 });
 """
 
 
-def _own_message_harness(*, multi_account: bool) -> str:
+def _own_message_harness(*, multi_account: bool, chat: dict | None = None) -> str:
+    """The real isOwnMessage, with the open chat set to ``chat`` when given."""
     html = INDEX_HTML.read_text(encoding="utf-8")
-    return "\n".join(
-        [
-            PRELUDE,
-            f"const multiAccount = {{ value: {str(multi_account).lower()} }};",
-            _extract_const_arrow_function(html, "isOwnMessage", asynchronous=False) + ";",
-        ]
-    )
+    lines = [PRELUDE, f"const multiAccount = {{ value: {str(multi_account).lower()} }};"]
+    if chat is not None:
+        lines.append(f"selectedChat.value = {json.dumps(chat)};")
+    lines.append(_extract_const_arrow_function(html, "isOwnMessage", asynchronous=False) + ";")
+    return "\n".join(lines)
 
 
 class TestIsOwnMessageFollowsTheSendingAccount:
@@ -575,6 +649,87 @@ class TestIsOwnMessageFollowsTheSendingAccount:
             + """;
             assert.equal(isOwnMessage({ sender_id: 555 }), false, 'the other party');
             assert.equal(isOwnMessage({ sender_id: 999 }), true, 'anyone else in a one-to-one chat is me');
+            """
+        )
+
+
+# A private conversation between the two archived accounts is two rows, one
+# per account, each the other account's user id. A's row and B's row.
+ROW_OF_A = {"ref": "rowA", "type": "private", "id": OWNER_B, "account_id": 1}
+ROW_OF_B = {"ref": "rowB", "type": "private", "id": OWNER_A, "account_id": 2}
+
+
+class TestAPrivateChatFollowsTheRowsAccount:
+    """In a private chat the side follows the account the row belongs to.
+
+    That is what every Telegram app does: it draws an account's copy from that
+    copy's own ``out`` flag, so two accounts' copies of one conversation are
+    mirror images. Before this, every bubble in both rows went right, because
+    both speakers are archived accounts.
+    """
+
+    def test_from_a_s_row_a_is_right_and_b_is_left(self):
+        _run_node(
+            _own_message_harness(multi_account=True, chat=ROW_OF_A)
+            + """
+            assert.equal(isOwnMessage({ is_outgoing: 1, sender_account_id: 1 }), true, 'A wrote it, in the row of A');
+            assert.equal(isOwnMessage({ is_outgoing: 0, sender_account_id: 2 }), false,
+                'B is the other person in the row of A, archived or not');
+            """
+        )
+
+    def test_from_b_s_row_the_picture_is_mirrored(self):
+        _run_node(
+            _own_message_harness(multi_account=True, chat=ROW_OF_B)
+            + """
+            assert.equal(isOwnMessage({ is_outgoing: 0, sender_account_id: 1 }), false, 'A is the other person here');
+            assert.equal(isOwnMessage({ is_outgoing: 1, sender_account_id: 2 }), true, 'B wrote it, in the row of B');
+            """
+        )
+
+    def test_the_row_s_own_message_stays_right_before_backfill_reaches_it(self):
+        """A row the is_outgoing backfill has not reached yet still reads 0."""
+        _run_node(
+            _own_message_harness(multi_account=True, chat=ROW_OF_A)
+            + """
+            assert.equal(isOwnMessage({ is_outgoing: 0, sender_account_id: 1 }), true);
+            """
+        )
+
+    def test_a_forward_in_saved_messages_stays_right(self):
+        """Saved Messages is the account's chat with itself.
+
+        A forward there has out=false, so a rule that read is_outgoing alone in
+        a private chat would move it left. Every sender there is the row's own
+        account, so it stays where it was.
+        """
+        saved = {"ref": "rowSaved", "type": "private", "id": OWNER_A, "account_id": 1}
+        _run_node(
+            _own_message_harness(multi_account=True, chat=saved)
+            + """
+            assert.equal(isOwnMessage({ is_outgoing: 0, sender_account_id: 1 }), true);
+            assert.equal(isOwnMessage({ is_outgoing: 1, sender_account_id: 1 }), true);
+            """
+        )
+
+    def test_a_legacy_private_row_falls_back_to_the_sender_id(self):
+        """No is_outgoing at all: the other account is the chat's peer, so left."""
+        _run_node(
+            _own_message_harness(multi_account=True, chat=ROW_OF_A)
+            + f"""
+            assert.equal(isOwnMessage({{ sender_account_id: 2, sender_id: {OWNER_B} }}), false);
+            assert.equal(isOwnMessage({{ sender_account_id: 1, sender_id: {OWNER_A} }}), true);
+            """
+        )
+
+    def test_a_shared_group_is_unchanged(self):
+        """The fold rule still holds outside private chats."""
+        group = {"ref": "rowG", "type": "supergroup", "id": -1004200002, "account_id": 1, "accounts": [1, 2]}
+        _run_node(
+            _own_message_harness(multi_account=True, chat=group)
+            + """
+            assert.equal(isOwnMessage({ is_outgoing: 0, sender_account_id: 2 }), true);
+            assert.equal(isOwnMessage({ is_outgoing: 0, sender_account_id: null }), false);
             """
         )
 
