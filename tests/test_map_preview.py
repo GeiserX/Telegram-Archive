@@ -245,6 +245,20 @@ class TestFetch:
             "seconds": 900,
         }
 
+    async def test_a_short_flood_wait_is_slept_and_the_picture_saved(self, tmp_path, monkeypatch):
+        """Telethon raises a wait under the threshold too (its own threshold is 0): it is slept here, once."""
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(map_preview.asyncio, "sleep", fake_sleep)
+        client = FakeTelegram([FloodWaitError(request=None, capture=3), PNG])
+        result = await map_preview.fetch_map_preview(client, _media("geo"), str(tmp_path), flood_sleep_threshold=60)
+        assert result["status"] == "saved"
+        assert slept == [3]
+        assert len(client.calls) == 2
+
 
 class TestPreviewName:
     @pytest.mark.parametrize("name", ["map_0123456789abcdef.png", "map_0123456789abcdef.jpg"])

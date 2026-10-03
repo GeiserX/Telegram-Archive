@@ -163,11 +163,18 @@ async def _download(client, point: tuple[float, float, int], flood_sleep_thresho
         parts: list[bytes] = []
         offset = 0
         while True:
-            answer = await client._call(
-                sender,
-                GetWebFileRequest(location=location, offset=offset, limit=MAP_PART_BYTES),
-                flood_sleep_threshold=flood_sleep_threshold,
-            )
+            request = GetWebFileRequest(location=location, offset=offset, limit=MAP_PART_BYTES)
+            try:
+                answer = await client._call(sender, request, flood_sleep_threshold=flood_sleep_threshold)
+            except (FloodWaitError, FloodPremiumWaitError) as e:
+                # Telethon sleeps a wait under the threshold only on its
+                # pre-check; one the request raises it compares with the
+                # client's own threshold, 0 here, so the wait is slept here.
+                seconds = int(getattr(e, "seconds", 0) or 0)
+                if seconds > flood_sleep_threshold:
+                    raise
+                await asyncio.sleep(max(seconds, 1))
+                answer = await client._call(sender, request, flood_sleep_threshold=flood_sleep_threshold)
             chunk = getattr(answer, "bytes", None) or b""
             parts.append(chunk)
             offset += len(chunk)

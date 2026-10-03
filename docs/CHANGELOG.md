@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+- **A short FloodWait no longer stops the map pictures and the details backfill.** Telethon sleeps a wait under the threshold only when it already knew about it; one the map request raises came straight back, and a 3 second wait ended the run. The map fetch now sleeps a wait up to `MEDIA_FLOOD_SLEEP_THRESHOLD` itself and asks again, and only a longer one pauses the pictures.
+
 ## [9.2.0] - 2026-10-03
 
 Real-time capture is the default, animated and video stickers play, locations show their map picture, and files whose download stopped short are found and fetched again. Migration 039 runs on start and re-types old stickers; it touches nothing else. An install that set neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the listener and one full pass a day. Update both images together: the viewer reads a listener heartbeat only the 9.2.0 backup writes. Run `telegram-archive check-media` once after upgrading. See [Upgrading to 9.2.0](operations/upgrading.md#upgrading-to-920).
