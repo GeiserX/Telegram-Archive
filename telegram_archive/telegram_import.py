@@ -25,6 +25,7 @@ import ijson
 
 from .db import DatabaseAdapter, close_database, get_adapter, init_database
 from .db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
+from .media_integrity import image_header_size
 from .message_utils import build_media_filename, utcnow_naive
 
 logger = logging.getLogger(__name__)
@@ -445,16 +446,10 @@ def _extract_html_media_info(body_el, export_path: Path) -> dict[str, Any] | Non
     if photo_link:
         href = photo_link.get("href", "")
         if href and not href.startswith(("#", "http")):
+            # The <img> inside is the export's thumbnail, and its style holds
+            # the thumbnail's display size, not the photo's: the import reads
+            # the size from the photo file instead.
             result["photo"] = href
-            img = photo_link.select_one("img")
-            if img:
-                style = img.get("style", "")
-                w = re.search(r"width:\s*(\d+)", style)
-                h = re.search(r"height:\s*(\d+)", style)
-                if w:
-                    result["width"] = int(w.group(1))
-                if h:
-                    result["height"] = int(h.group(1))
             return result
 
     # Check for media_wrap container (used for video, audio, voice, documents, etc.)
@@ -500,16 +495,8 @@ def _extract_html_media_info(body_el, export_path: Path) -> dict[str, Any] | Non
         return None
 
     if is_photo or media_type == "photo":
+        # Not the <img> style: that is the thumbnail's display size.
         result["photo"] = href
-        img = media_el.select_one("img")
-        if img:
-            style = img.get("style", "")
-            w = re.search(r"width:\s*(\d+)", style)
-            h = re.search(r"height:\s*(\d+)", style)
-            if w:
-                result["width"] = int(w.group(1))
-            if h:
-                result["height"] = int(h.group(1))
     else:
         result["file"] = href
         result["file_name"] = Path(href).name
@@ -1222,6 +1209,10 @@ class TelegramImporter:
                             else:
                                 file_size = source.stat().st_size
                                 stored_path = f"{chat_id}/{dest_name}"
+                                width, height = msg.get("width"), msg.get("height")
+                                if media_type == "photo" and width is None and height is None:
+                                    # An HTML export gives no photo size; the file's header does.
+                                    width, height = image_header_size(str(source)) or (None, None)
                                 media_data = {
                                     "id": media_id,
                                     "message_id": msg_id,
@@ -1231,8 +1222,8 @@ class TelegramImporter:
                                     "file_path": stored_path,
                                     "file_size": file_size,
                                     "mime_type": msg.get("mime_type"),
-                                    "width": msg.get("width"),
-                                    "height": msg.get("height"),
+                                    "width": width,
+                                    "height": height,
                                     "duration": msg.get("duration_seconds"),
                                     "downloaded": True,
                                     "download_date": utcnow_naive(),

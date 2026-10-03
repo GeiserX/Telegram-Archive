@@ -65,7 +65,7 @@ When it finishes, the command prints `Import complete:` with the number of chats
 - If a JSON import stops partway, run the same command on the same file again. The importer skips the chats it finished and replays the interrupted one. You do not need `--merge` for this. An HTML import does not resume.
 - It refuses to import into a chat that already has messages, unless you pass `--merge`.
 - From a JSON export it keeps locations, venues, live locations, shared contacts and polls in the message data, under the same keys the backup uses, so the viewer shows them as cards. The export has no poll option ids, so an imported poll numbers its answers. An HTML export has none of these details.
-- It copies media files into `media/<chat_id>/` in the archive. The export must stay readable for the whole run, and the copies need free disk space of their own. Media the archive already holds for a message is skipped.
+- It copies media files into `media/<chat_id>/` in the archive. The export must stay readable for the whole run, and the copies need free disk space of their own. Media the archive already holds for a message is skipped. A photo's width and height come from a JSON export as written. An HTML export gives only its thumbnail's size, so the importer reads the photo's size from the file's header instead.
 - Everything is written under account 1, even when the install has several accounts.
 - Only a full-account JSON export tells the importer which messages you sent. HTML and single-chat exports leave that flag unset.
 - When an HTML export date carries a `UTC+HH:MM` suffix, the time is converted to UTC. Without the suffix the time is stored as written, as the exporting computer's local time.
@@ -160,7 +160,7 @@ Media verification checks every downloaded file and downloads it again when it i
 
 See [Media downloads](../configuration/media.md) for what it checks.
 
-To check the files without downloading anything, run [`check-media`](../reference/cli.md#check-media). It counts broken links and missing files and, with `--repair`, puts back the ones with a copy on disk and marks the rest to download again at the next backup run. It also marks downloaded again a file that is back at its path, after an outage of the media volume left its row not downloaded. It finds a video or audio file whose download stopped early and, with `--repair`, marks it to download again. With the media folder not mounted it changes nothing and exits 1:
+To check the files without downloading anything, run [`check-media`](../reference/cli.md#check-media). It counts broken links and missing files and, with `--repair`, puts back the ones with a copy on disk and marks the rest to download again at the next backup run. It also marks downloaded again a file that is back at its path, after an outage of the media volume left its row not downloaded. It finds a video or audio file whose download stopped early and, with `--repair`, marks it to download again. It finds photos stored without their size and, with `--repair`, reads the size from each file's header so the viewer draws them at their real shape. With the media folder not mounted it changes nothing and exits 1:
 
 ```bash
 docker compose exec telegram-backup python -m telegram_archive check-media

@@ -5392,6 +5392,8 @@ class DatabaseAdapter:
                         Media.downloaded,
                         Media.content_hash,
                         Media.skip_reason,
+                        Media.width,
+                        Media.height,
                     )
                     .where(
                         and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None)))
@@ -5416,6 +5418,8 @@ class DatabaseAdapter:
                     "downloaded": r[7],
                     "content_hash": r[8],
                     "skip_reason": r[9],
+                    "width": r[10],
+                    "height": r[11],
                     "account_id": account_id,
                 }
                 for r in rows
@@ -6303,6 +6307,30 @@ class DatabaseAdapter:
                 update(Media)
                 .where(and_(Media.account_id == account_id, Media.id == media_id, Media.downloaded == 0))
                 .values(downloaded=1)
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
+    async def fill_media_dimensions(self, media_id: str, *, account_id: int, width: int, height: int) -> bool:
+        """Store a photo's size read from its file; True when a row changed.
+
+        For ``check-media --repair``: releases before 7.32.0 stored no size for
+        photos from the full pass. Only a photo row with neither width nor
+        height is written, so a size Telegram reported is never overwritten.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                update(Media)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.id == media_id,
+                        Media.type == "photo",
+                        Media.width.is_(None),
+                        Media.height.is_(None),
+                    )
+                )
+                .values(width=width, height=height)
             )
             await session.commit()
             return bool(result.rowcount)

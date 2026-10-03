@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 9.3.0 | Nothing required. With `TRANSCRIPTION_URL` set, `schedule` now sends waiting files to the transcription server every 15 minutes, not only after a full pass. See [Upgrading to 9.3.0](#upgrading-to-930). |
+| 9.3.0 | Nothing required. With `TRANSCRIPTION_URL` set, `schedule` now sends waiting files to the transcription server every 15 minutes, not only after a full pass. See [Transcription drains every 15 minutes](#drain-timer-93). Photos, videos and GIFs in the viewer change size. To give older photos their real shape before they load, run `telegram-archive check-media` and then, if it reports `Photos without size`, `check-media --repair`; the repair also makes every other `check-media` repair. See [Picture sizes](#picture-sizes-93). |
 | 9.2.1 | Nothing. |
 | 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See the [Files cut short](#cut-short-92) section. Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
@@ -111,6 +111,12 @@ With `TRANSCRIPTION_URL` set, the `schedule` command now runs a transcription dr
 - Set [`TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`](../reference/environment-variables.md#transcription_drain_interval_minutes) to `0` to keep only the drain after each full pass. See [When files are sent](../configuration/transcription.md#when-files-are-sent).
 
 The one-shot `backup` command and the standalone listener do not change.
+
+### Picture sizes { #picture-sizes-93 }
+
+Photos, videos and GIFs in the viewer take the size Telegram Desktop gives them, so most of them get larger and some bubbles get wider. No setting controls it and nothing in the archive changes. The size comes from the width and height the backup stored with each file. Releases before 7.32.0 stored no size for photos from the full pass. Those photos show a 4:3 box until the file loads, and then take their real shape, which moves the chat once. To store their size from each file's header, run `telegram-archive check-media` first. The dry run changes nothing and prints `Photos without size` with their count, next to the other problems it found. Then run `telegram-archive check-media --repair`. Its photo size step changes only photo rows with no size and never writes a file. The same run also makes every other repair `check-media` does: it puts files back from copies on disk, marks missing files and files cut short to download again, and marks files that are back at their path downloaded. Read the dry run's counts before you repair. It needs no Telegram session, so the backup can keep running. See [check-media](../reference/cli.md#check-media).
+
+A photo imported from a Telegram Desktop HTML export before 9.3.0 was stored with the size of the export's thumbnail, not the photo's. The shape is right, but the viewer now draws the photo at that smaller size. `check-media` does not change it, because a repair never replaces a stored size. Photos imported from a JSON export, and photos the backup downloaded, are not affected.
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 

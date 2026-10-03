@@ -5639,14 +5639,21 @@ def test_closing_the_chat_search_returns_focus_to_its_button():
 
 
 def test_pictures_open_from_the_keyboard():
-    """Photos, album tiles and gallery tiles are buttons that open the lightbox."""
+    """Photos, GIFs, images sent as files, album tiles and gallery tiles are buttons that open the lightbox."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert '<button type="button" class="album-item media-open' in html
-    assert 'class="media-open cursor-pointer hover:opacity-90 transition"' in html
+    # The single photo and the GIF.
+    assert html.count('class="media-open media-frame cursor-pointer hover:opacity-90 transition"') == 2
     assert (
         ":aria-label=\"isBubbleDeleted(msg) ? 'Open photo, deleted in Telegram' : 'Open photo'\" @click=\"openMedia(msg)\""
         in html
     )
+    assert (
+        ":aria-label=\"isBubbleDeleted(msg) ? 'Open GIF, deleted in Telegram' : 'Open GIF'\" @click=\"openMedia(msg)\""
+        in html
+    )
+    assert 'class="media-open media-frame rounded-lg cursor-pointer hover:opacity-90 transition"' in html
+    assert 'aria-label="Open image" @click="openMedia(msg)"' in html
     assert 'class="media-open aspect-square relative cursor-pointer group overflow-hidden"' in html
     ring = html[html.index(".media-open:focus-visible::after {") :]
     assert "inset 0 0 0 3px rgb(var(--tg-focus))" in ring[: ring.index("}")]
