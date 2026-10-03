@@ -262,8 +262,8 @@ class TestExtractHtmlMediaInfoEdgeCases(unittest.TestCase):
         result = _extract_html_media_info(body, Path("/tmp"))
         self.assertIsNone(result)
 
-    def test_media_photo_with_img_dimensions(self):
-        """media_photo CSS class with img dimensions extracts width/height (lines 330-339)."""
+    def test_media_photo_ignores_the_thumbnail_dimensions(self):
+        """The img style is the thumbnail's display size, so no width or height is taken from it."""
         html = """
         <div class="body">
          <div class="media_wrap">
@@ -279,8 +279,8 @@ class TestExtractHtmlMediaInfoEdgeCases(unittest.TestCase):
         result = _extract_html_media_info(body, Path("/tmp"))
         self.assertIsNotNone(result)
         self.assertEqual(result["photo"], "photos/pic.jpg")
-        self.assertEqual(result["width"], 640)
-        self.assertEqual(result["height"], 480)
+        self.assertNotIn("width", result)
+        self.assertNotIn("height", result)
 
     def test_media_photo_without_img_element(self):
         """media_photo without img element still returns photo path."""

@@ -226,6 +226,22 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertIn("TRANSCRIPTION_WEBHOOK_SECRET", joined)
         self.assertNotIn(KEY, joined)
 
+    def test_drain_interval_defaults_to_15_and_zero_or_less_is_off(self):
+        self.assertEqual(self._config().transcription_drain_interval_minutes, 15)
+        self.assertEqual(self._config(TRANSCRIPTION_DRAIN_INTERVAL_MINUTES="5").transcription_drain_interval_minutes, 5)
+        self.assertEqual(self._config(TRANSCRIPTION_DRAIN_INTERVAL_MINUTES="0").transcription_drain_interval_minutes, 0)
+        self.assertEqual(
+            self._config(TRANSCRIPTION_DRAIN_INTERVAL_MINUTES="-3").transcription_drain_interval_minutes, 0
+        )
+        self.assertEqual(
+            self._config(TRANSCRIPTION_DRAIN_INTERVAL_MINUTES=" ").transcription_drain_interval_minutes, 15
+        )
+        with self.assertRaisesRegex(ValueError, "TRANSCRIPTION_DRAIN_INTERVAL_MINUTES"):
+            self._config(TRANSCRIPTION_DRAIN_INTERVAL_MINUTES="15m")
+        # Off, a typo in it never stops the archiver.
+        config = self._config(TRANSCRIPTION_ENABLED="false", TRANSCRIPTION_DRAIN_INTERVAL_MINUTES="15m")
+        self.assertFalse(config.transcription_enabled)
+
     def test_backfill_per_run_is_at_least_one(self):
         config = self._config(TRANSCRIPTION_BACKFILL_PER_RUN="0")
         self.assertEqual(config.transcription_backfill_per_run, 1)
