@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.1.0
+        image: drumsergio/telegram-archive:9.2.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.1.0
+        image: drumsergio/telegram-archive-viewer:9.2.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.1.0`, `v9.1.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.2.0`, `v9.2.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
