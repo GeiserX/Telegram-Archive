@@ -118,6 +118,10 @@ Photos, videos and GIFs in the viewer take the size Telegram Desktop gives them,
 
 A photo imported from a Telegram Desktop HTML export before 9.3.0 was stored with the size of the export's thumbnail, not the photo's. The shape is right, but the viewer now draws the photo at that smaller size. `check-media` does not change it, because a repair never replaces a stored size. Photos imported from a JSON export, and photos the backup downloaded, are not affected.
 
+### Chats several accounts hold { #accounts-93 }
+
+Only an archive that holds more than one Telegram account looks different, and only for a login that can see more than one of them. A private chat between two of your archived accounts is drawn from each row's own account: its messages on the right, the other account's on the left, with no account name on the messages. Before, both rows showed every message on the right with an account name. In a group or channel several of your accounts hold, the account name beside the time is now in bold, in the colour of that account's tag. Nothing needs doing: no setting, no migration and no stored data changes.
+
 ### Custom emoji { #custom-emoji-93 }
 
 The first start runs migration 040. It adds the `custom_emoji` table and, for every custom emoji already stored as a reaction, a record marked as not fetched yet, dated when the archive first saw that emoji. It reads the reactions and their history once and changes no other table.

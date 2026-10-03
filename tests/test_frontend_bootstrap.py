@@ -198,7 +198,7 @@ class TestSenderPresentation(unittest.TestCase):
 
     def test_the_name_template_reads_the_name_rows(self) -> None:
         self.assertIn("const showNameAt = (index) => nameRows.value[index] ?? true", self.html)
-        self.assertIn('<span v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)" dir="auto"', self.html)
+        self.assertIn('<div v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)"', self.html)
         self.assertNotIn('isFramelessMedia(msg, index)"', self.html)
 
     def test_sender_snapshot_precedes_current_profile_name(self) -> None:
@@ -5186,28 +5186,34 @@ def test_selected_chat_row_is_a_class_hover_cannot_override():
     assert "color: rgb(var(--tg-active-muted));" in html
 
 
-def test_bubble_account_chip_shows_when_several_archived_accounts_speak():
-    """The chip shows when the open chat's holders and speakers name more than one account.
+def test_bubble_account_label_shows_when_several_archived_accounts_speak():
+    """The label shows when the open group's holders and speakers name more than one account.
 
     A chat that belongs to one account and hears only that account shows none;
-    the header names it. A private chat between two archived accounts belongs to
-    one of them, yet both write in it; hiding the chip there would draw both
-    sides as the same identity.
+    the header names it. A private chat never shows one: each account keeps its
+    own row, the side says who speaks, and the header names the row's account.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "const ids = new Set(selectedChat.value?.accounts || [])" in html
     assert "chatAccountLabels(selectedChat.value).length > 1" not in html
     assert "if (row.sender_account_id != null) ids.add(row.sender_account_id)" in html
-    assert "bubbleAccountIds.value.size > 1 ? senderAccountLabel(msg) : ''" in html
-    # Incoming: at the name row's far end; outgoing: in the meta row, like a
-    # channel signature.
-    assert '<span v-if="bubbleAccountLabel(msg)" class="sender-account">' in html
-    assert '<span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2">' in html
+    assert "selectedChat.value?.type !== 'private' && bubbleAccountIds.value.size > 1" in html
+    # Every message an archived account sent is the reader's own, so the label
+    # sits in the meta row, like a channel signature, in the account's tag colour.
+    assert (
+        '<span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2"'
+        ' :style="accountTagStyle(msg.sender_account_id)">'
+    ) in html
+    # The incoming placement could never render: a labelled message is always own.
+    assert 'class="sender-account"' not in html
+    assert ".sender-account" not in html
     assert '<span v-if="senderAccountLabel(msg)" class="account-chip">' not in html
 
 
-def _bubble_chip_labels(html: str, accounts: list[int], holders: list[int], senders: list[int]) -> list[str]:
-    """Run the real chip helpers for one chat and return the chip of each row."""
+def _bubble_chip_labels(
+    html: str, accounts: list[int], holders: list[int], senders: list[int], chat_type: str = "supergroup"
+) -> list[str]:
+    """Run the real label helpers for one chat and return the label of each row."""
     return _run_setup_program(
         html,
         (
@@ -5221,7 +5227,7 @@ def _bubble_chip_labels(html: str, accounts: list[int], holders: list[int], send
         "const ref = (value) => ({ value });\n"
         "const computed = (fn) => ({ get value() { return fn() } });\n"
         f"const accountList = ref({json.dumps([{'id': a, 'label': f'Account {a}'} for a in accounts])});\n"
-        f"const selectedChat = ref({{ accounts: {json.dumps(holders)} }});\n"
+        f"const selectedChat = ref({{ type: {json.dumps(chat_type)}, accounts: {json.dumps(holders)} }});\n"
         f"const sortedMessages = ref({json.dumps([{'sender_account_id': s} for s in senders])});",
         "console.log(JSON.stringify(sortedMessages.value.map(bubbleAccountLabel)))",
     )
@@ -5229,16 +5235,90 @@ def _bubble_chip_labels(html: str, accounts: list[int], holders: list[int], send
 
 @unittest.skipUnless(NODE, "node is required to run the chip helpers")
 def test_bubble_account_chip_runs_for_holders_and_speakers():
-    """Executes the chip rule for the four shapes a chat can take."""
+    """Executes the label rule for the shapes a chat can take."""
     html = INDEX_HTML.read_text(encoding="utf-8")
-    # A single-account install never draws a chip.
+    # A single-account install never draws a label.
     assert _bubble_chip_labels(html, [1], [1], [1, 1]) == ["", ""]
     # One holder, and only that account writes: the header already names it.
     assert _bubble_chip_labels(html, [1, 2], [1], [1, 1]) == ["", ""]
-    # Two holders, one of them writes: the chip says which one.
+    # Two holders, one of them writes: the label says which one.
     assert _bubble_chip_labels(html, [1, 2], [1, 2], [1, 1]) == ["Account 1", "Account 1"]
-    # One holder, two archived accounts write, as in a private chat between them.
+    # A group one account holds, where a second archived account writes too.
     assert _bubble_chip_labels(html, [1, 2], [1], [1, 2]) == ["Account 1", "Account 2"]
+
+
+@unittest.skipUnless(NODE, "node is required to run the chip helpers")
+def test_a_private_chat_between_two_archived_accounts_has_no_label():
+    """Each row of the pair is one account's copy; the side says who speaks.
+
+    The same speakers in a group are labelled (the shape above), so the chat's
+    type is what decides it.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    # Account 1's row, then account 2's: both accounts write in each.
+    assert _bubble_chip_labels(html, [1, 2], [1], [1, 2], chat_type="private") == ["", ""]
+    assert _bubble_chip_labels(html, [1, 2], [2], [1, 2], chat_type="private") == ["", ""]
+
+
+def _private_speakers(html: str, accounts: list[int], chat: dict, messages: list[dict]) -> list[str]:
+    """Run the real speaker helper, with the real isOwnMessage, for one open chat."""
+    return _run_setup_program(
+        html,
+        (
+            "const accountLabels = computed(() =>",
+            "const multiAccount = computed(() =>",
+            "const accountLabel = (id) =>",
+            "const privateSpeakerLabel = (msg) =>",
+            "const isOwnMessage = (msg) =>",
+            "const getChatName = (chat) =>",
+        ),
+        "const ref = (value) => ({ value });\n"
+        "const computed = (fn) => ({ get value() { return fn() } });\n"
+        f"const accountList = ref({json.dumps([{'id': a, 'label': f'Account {a}'} for a in accounts])});\n"
+        f"const selectedChat = ref({json.dumps(chat)});",
+        f"console.log(JSON.stringify({json.dumps(messages)}.map(privateSpeakerLabel)))",
+    )
+
+
+@unittest.skipUnless(NODE, "node is required to run the speaker helper")
+def test_a_private_chat_tells_a_screen_reader_who_spoke():
+    """On screen only the side says who spoke in a private chat; a screen reader hears it.
+
+    An own message is "You", or the row's account when the archive holds
+    several. The other person is the chat's name, even when that person is an
+    archived account too. Groups and channels name their senders themselves.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    pair = [{"sender_account_id": 1, "is_outgoing": 1}, {"sender_account_id": 2, "is_outgoing": 0}]
+    # Account 1's row of a chat with account 2, whose name is Robin.
+    row = {"type": "private", "id": 2002, "account_id": 1, "accounts": [1], "first_name": "Robin"}
+    assert _private_speakers(html, [1, 2], row, pair) == ["Account 1", "Robin"]
+    # Account 2's row of the same conversation: the mirror.
+    mirror = {"type": "private", "id": 1001, "account_id": 2, "accounts": [2], "first_name": "Sam"}
+    mirrored = [{"sender_account_id": 1, "is_outgoing": 0}, {"sender_account_id": 2, "is_outgoing": 1}]
+    assert _private_speakers(html, [1, 2], mirror, mirrored) == ["Sam", "Account 2"]
+    # A single-account install: the reader is "You".
+    single = {"type": "private", "id": 3003, "account_id": 1, "accounts": [1], "first_name": "Juniper"}
+    assert _private_speakers(html, [1], single, [{"is_outgoing": 1}, {"is_outgoing": 0}]) == ["You", "Juniper"]
+    # A group names its senders on screen, so the helper stays out of it.
+    group = {"type": "supergroup", "id": -1001, "account_id": 1, "accounts": [1, 2], "title": "Garden"}
+    assert _private_speakers(html, [1, 2], group, pair) == ["", ""]
+
+
+def test_the_private_speaker_is_read_at_each_run():
+    """The speaker is a visually hidden prefix on the first bubble of each run a
+    screen reader reaches: the run's newest, since the page lists newest first."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert (
+        '<span v-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">'
+        "{{ privateSpeakerLabel(msg) }}:</span>"
+    ) in html
+    # The folded deleted pill says it too, the way it names a group's sender.
+    assert (
+        '<span v-else-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">'
+        "{{ privateSpeakerLabel(msg) }},</span>"
+    ) in html
+    assert "\n                    privateSpeakerLabel,\n" in html
 
 
 def test_reply_quote_is_reachable_from_the_keyboard():

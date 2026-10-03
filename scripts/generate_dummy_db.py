@@ -2,8 +2,9 @@
 """Build a synthetic demo archive for the web viewer.
 
 Every person, chat and message in it is invented. The archive holds two
-accounts, private chats, groups, a forum with topics and channels, with
-photos, an album, stickers (a picture, an animated one and a video one),
+accounts, private chats, groups, a forum with topics and channels, a
+supergroup both accounts belong to and a private chat between the two
+accounts (one copy each), with photos, an album, stickers (a picture, an animated one and a video one),
 voice notes with transcripts, a round video, a document, a location, a venue, a live location and a shared contact, replies,
 forwards, reactions, edits with their earlier versions,
 messages deleted in Telegram that the archive kept, and pinned messages.
@@ -84,6 +85,8 @@ HARBOR = -1001900000003
 BOOKS = -4012345678
 PLATFORM = -1001900000010
 RELEASES = -1001900000011
+# A supergroup both accounts belong to: listed once, through account 1's copy.
+GARDEN = -1001900000004
 
 # Chats with earlier profile photos in the archive, and how many.
 EARLIER_AVATARS = {HIKERS: 2, KOFI: 1}
@@ -1426,6 +1429,78 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     for text, when in zip(notes, spread(rng, now - 28 * day, now - 2 * day, len(notes)), strict=True):
         s.add(when, None, text, react={"🎉": rng.randint(4, 20)})
     scripts.append(s)
+
+    # The two chats below draw nothing from rng, so every chat above keeps the
+    # messages it had. They sit 20 days back, below every chat the docs
+    # screenshots show (Release Notes' last post can fall 18 days back).
+
+    # --- Both accounts in one private chat ------------------------------------------
+    # The owner's personal account writing to the work account. Telegram gives
+    # each account its own copy: account 1's chat is the work account's user id,
+    # account 2's the personal one's, and each numbers its messages itself. The
+    # viewer shows each row from its own account's side, so the two mirror.
+    pair = [
+        (0, OWNER_PERSONAL, "Does this reach the work phone?"),
+        (1, OWNER_PERSONAL, "The train tickets for Friday are in my email."),
+        (6, OWNER_WORK, "Got it here."),
+        (7, OWNER_WORK, "Send me the venue address and I'll put it in the work calendar."),
+        (12, OWNER_PERSONAL, "Riverside Hall, 12 Platform Street."),
+        (13, OWNER_PERSONAL, "Doors open at seven."),
+        (20, OWNER_WORK, "Added. I'll leave the office at six."),
+        (22, OWNER_PERSONAL, "👍"),
+    ]
+    start = today - 20 * day + timedelta(hours=9, minutes=40)
+    for account, owner, peer, first_id in ((1, OWNER_PERSONAL, OWNER_WORK, 520), (2, OWNER_WORK, OWNER_PERSONAL, 860)):
+        first, last, username = USERS[peer]
+        chats.append(
+            {
+                "account": account,
+                "id": peer,
+                "type": "private",
+                "first_name": first,
+                "last_name": last,
+                "username": username,
+            }
+        )
+        s = ChatScript(account, owner, peer, first_id=first_id)
+        for minutes, sender, text in pair:
+            s.add(start + timedelta(minutes=minutes), sender, text)
+        scripts.append(s)
+
+    # --- Community Garden: a supergroup both accounts belong to --------------------
+    # One chat per account, the same message ids in both (a supergroup numbers
+    # its own messages). The viewer lists it once, through account 1's copy, with
+    # both account tags, and draws both accounts' messages on the right.
+    garden = [
+        (0, JUNIPER, "The new raised beds arrive on Saturday. Who can help carry them in?"),
+        (4, OWNER_PERSONAL, "I can, from ten."),
+        (5, OWNER_PERSONAL, "I'll bring gloves for everyone."),
+        (9, OWNER_WORK, "I'm free after lunch."),
+        (10, OWNER_WORK, "I can borrow the van from work if we need it."),
+        (12, OWNER_PERSONAL, "The van would help, the beds are heavy."),
+        (18, HUGO, "Tomatoes are ready in bed four, take some home."),
+        (25, OWNER_WORK, "Booked the van for Saturday."),
+        (26, OWNER_WORK, "It holds six beds at once."),
+        (27, OWNER_WORK, "Parking is behind the shed."),
+        (31, OWNER_PERSONAL, "See you all at ten 🌱"),
+    ]
+    start = today - 20 * day + timedelta(hours=8, minutes=15)
+    for account, owner in ((1, OWNER_PERSONAL), (2, OWNER_WORK)):
+        chats.append(
+            {
+                "account": account,
+                "id": GARDEN,
+                "type": "supergroup",
+                "title": "Community Garden",
+                "participants_count": 38,
+                "description": "Plots, tools and work days.",
+                "avatar": "landscape",
+            }
+        )
+        s = ChatScript(account, owner, GARDEN, first_id=400)
+        for minutes, sender, text in garden:
+            s.add(start + timedelta(minutes=minutes), sender, text)
+        scripts.append(s)
 
     return chats, scripts, topics
 

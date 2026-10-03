@@ -152,8 +152,13 @@ A small label with the account name, called an account tag, appears on chat rows
 
 - A group or channel that several archived Telegram accounts belong to is listed once. The viewer shows the copy from the lowest account id the user may see.
 - Private chats are never merged.
-- A message sent by any archived Telegram account shows as your own message. When more than one archived account holds or writes in the chat, the message names its account before its time, like a channel signature, and an incoming message from another archived account names it at the right end of the sender's name.
+- In a group or channel, a message sent by any archived Telegram account shows as your own message, on the right. When more than one archived account holds or writes in the chat, the message names its account before its time, like a channel signature, in bold and in the colour of that account's tag.
+- A private chat between two archived accounts is one row per account. In each row that account's messages are on the right and the other account's are on the left, as in the Telegram apps, so the two rows mirror each other. The header names the row's account, and the messages carry no account name. A screen reader hears who spoke at the first message of each run.
 - An admin can limit a viewer account to some Telegram accounts. See [Logins, viewer accounts and share links](../viewer/access.md).
+
+![A group both accounts hold: each account's messages on the right, named before the time in the account's tag colour](../images/screenshots/accounts-shared-group.png)
+
+![A private chat between the two accounts, opened from the Personal account's row in the Night theme](../images/screenshots/accounts-private-chat-mobile.png){ width="320" }
 
 ## Caveats
 
