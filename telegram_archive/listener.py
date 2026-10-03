@@ -36,6 +36,7 @@ from telethon.utils import get_peer_id
 
 from .avatar_utils import avatar_photo_id, get_avatar_paths
 from .config import AccountConfig, Config
+from .custom_emoji import CUSTOM_EMOJI_BATCH, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .event_webhook import EventWebhookSender
@@ -127,6 +128,11 @@ LISTENER_HEARTBEAT_SECONDS = 30
 # and hold the rate-limit pause for all of them. The message row is written
 # before the wait, so only the file waits.
 LISTENER_MEDIA_CONCURRENCY = 3
+
+# How often a running listener fetches the files of custom emoji it noted
+# (a reaction or text with one Telegram had not shown the archive before).
+# One indexed read when nothing is new; otherwise one request for up to 100.
+LISTENER_CUSTOM_EMOJI_SECONDS = 5 * 60
 
 
 class MassOperationProtector:
@@ -380,6 +386,9 @@ class TelegramListener:
 
         # Stamps listener_heartbeat while run() runs (see _heartbeat_loop).
         self._heartbeat_task: asyncio.Task | None = None
+
+        # Fetches the files of new custom emoji while run() runs (_custom_emoji_loop).
+        self._custom_emoji_task: asyncio.Task | None = None
 
         # Caps concurrent live media downloads (LISTENER_MEDIA_CONCURRENCY).
         self._media_download_slots = asyncio.Semaphore(LISTENER_MEDIA_CONCURRENCY)
@@ -2273,6 +2282,45 @@ class TelegramListener:
                 logger.debug(f"Could not stamp the listener heartbeat: {type(e).__name__}")
             await asyncio.sleep(LISTENER_HEARTBEAT_SECONDS)
 
+    async def _fetch_new_custom_emoji(self) -> dict | None:
+        """Fetch the files of custom emoji noted since the last run and never tried.
+
+        Without this a custom emoji first seen live stays a placeholder until
+        the next scheduled run, a day later on the default schedule. Skipped
+        while a backup run is in progress (that run fetches them) and when the
+        media folder is not visibly there. Only ids never tried: retries stay
+        with the backup runs. Counts only in the log, never raises.
+        """
+        try:
+            media_root = visible_media_root(self.config.media_path)
+            if media_root is None or self.client is None:
+                return None
+            if await self.db.get_metadata("backup_in_progress") == "1":
+                return None
+            counts = await fetch_custom_emoji(
+                self.client,
+                self.db,
+                media_root,
+                call=call_with_flood_retry,
+                limit=CUSTOM_EMOJI_BATCH,
+                fresh_only=True,
+            )
+        except Exception as e:
+            logger.debug(f"Custom emoji fetch skipped: {type(e).__name__}")
+            return None
+        if counts["saved"] or counts["failed"] or counts["flood_wait_seconds"]:
+            logger.info(
+                f"Custom emoji: {counts['saved']} saved, {counts['unavailable']} unavailable, "
+                f"{counts['failed']} failed, {counts['deferred']} deferred"
+            )
+        return counts
+
+    async def _custom_emoji_loop(self) -> None:
+        """Run ``_fetch_new_custom_emoji`` every LISTENER_CUSTOM_EMOJI_SECONDS while the listener runs."""
+        while True:
+            await asyncio.sleep(LISTENER_CUSTOM_EMOJI_SECONDS)
+            await self._fetch_new_custom_emoji()
+
     async def run(self) -> None:
         """
         Run the listener until stopped.
@@ -2299,6 +2347,7 @@ class TelegramListener:
         except Exception as e:
             logger.warning(f"Could not write listener status to DB: {e}")
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        self._custom_emoji_task = asyncio.create_task(self._custom_emoji_loop())
 
         logger.info("=" * 70)
         logger.info("🎧 Real-time listener started with RATE LIMITING")
@@ -2320,6 +2369,13 @@ class TelegramListener:
                 except asyncio.CancelledError:
                     pass
                 self._heartbeat_task = None
+            if self._custom_emoji_task:
+                self._custom_emoji_task.cancel()
+                try:
+                    await self._custom_emoji_task
+                except asyncio.CancelledError:
+                    pass
+                self._custom_emoji_task = None
             # Clear listener status when stopped
             try:
                 await self.db.set_metadata(account_metadata_key("listener_active_since", self.account_id), "")

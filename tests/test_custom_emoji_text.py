@@ -70,6 +70,31 @@ class TestRecording:
         await real_adapter.insert_messages_batch([_message(2, entities=_entities(MOON)), _message(3)], account_id=1)
         assert await _ids(real_adapter) == [SUN, MOON]
 
+    async def test_a_batch_notes_its_ids_once_sorted_after_its_messages(self, real_adapter, monkeypatch):
+        # PostgreSQL: ON CONFLICT DO NOTHING waits on another transaction's
+        # uncommitted row with the same id. A batch that took MOON then SUN while
+        # the listener took {SUN, MOON} in one statement deadlocked. One sorted
+        # statement per transaction, after its message rows, cannot.
+        await _seed_chat(real_adapter)
+        log: list = []
+        upsert = real_adapter._insert_or_update_message
+        note = real_adapter._note_custom_emoji
+
+        async def spy_upsert(session, message_data, *, account_id):
+            log.append(("message", message_data["id"]))
+            return await upsert(session, message_data, account_id=account_id)
+
+        async def spy_note(session, document_ids):
+            log.append(("note", sorted(set(document_ids))))
+            return await note(session, document_ids)
+
+        monkeypatch.setattr(real_adapter, "_insert_or_update_message", spy_upsert)
+        monkeypatch.setattr(real_adapter, "_note_custom_emoji", spy_note)
+        batch = [_message(1, entities=_entities(MOON)), _message(2), _message(3, entities=_entities(SUN))]
+        await real_adapter.insert_messages_batch(batch, account_id=1)
+        assert log == [("message", 1), ("message", 2), ("message", 3), ("note", [SUN, MOON])]
+        assert await _ids(real_adapter) == [SUN, MOON]
+
     async def test_plain_text_and_other_entities_add_no_row(self, real_adapter):
         await _seed_chat(real_adapter)
         await real_adapter.insert_message(

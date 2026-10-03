@@ -101,9 +101,11 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 The first start runs migration 040. It adds the `custom_emoji` table and, for every custom emoji already stored as a reaction, a record marked as not fetched yet, dated when the archive first saw that emoji. It reads the reactions and their history once and changes no other table.
 
-The next backup run then fetches the files of those emoji into `media/_emoji`, up to 500 per account, with one request per 100 emoji and a second between requests. A large archive with more custom emoji than that gets the rest over the next runs, or at once with `telegram-archive backfill-details --apply`. The fetch does not follow `DOWNLOAD_MEDIA`: like profile photos, custom emoji are always fetched. See [Custom emoji](../configuration/media.md#custom-emoji).
+The next backup run then fetches the files of those emoji into `media/_emoji`, up to 500 per account, with one request per 100 emoji and a second between requests. A large archive with more custom emoji than that gets the rest over the next runs. Each `telegram-archive backfill-details --apply` run also fetches up to 500 more, so it can be repeated to get them sooner. The fetch does not follow `DOWNLOAD_MEDIA`: like profile photos, custom emoji are always fetched. See [Custom emoji](../configuration/media.md#custom-emoji).
 
 Custom emoji in message text are noted as messages are stored from this release on. For messages archived before, run `telegram-archive backfill-details --apply` once with the backup stopped: it finds the custom emoji in old texts and their earlier versions without asking Telegram for the messages, and fetches their files.
+
+With the listener on, a custom emoji first seen live is fetched within about five minutes, without waiting for the daily run.
 
 Logins whose downloads are off see custom emoji, as they see profile photos.
 

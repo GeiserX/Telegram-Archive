@@ -2,7 +2,7 @@
 
 ## What it is
 
-A scheduled backup only sees Telegram when it runs. The listener keeps each account connected between runs and writes changes into the archive as they happen: new messages and their media, edits, chat actions and reactions.
+A scheduled backup only sees Telegram when it runs. The listener keeps each account connected between runs and writes changes into the archive as they happen: new messages and their media, edits, chat actions and reactions. Every five minutes it also fetches the files of [custom emoji](media.md#custom-emoji) it saw for the first time, unless a backup run is in progress.
 
 The listener is on by default since 9.2.0. `ENABLE_LISTENER` turns it off:
 

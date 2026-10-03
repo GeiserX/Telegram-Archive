@@ -14102,16 +14102,21 @@
                         },
                     }
                 }
+                // Ids of a request that failed (a network error, an expired
+                // session, a viewer still starting): asked again on the next chat
+                // change, like the ids not drawn yet.
+                const failedCustomEmoji = new Set()
                 const requestCustomEmoji = async (ids) => {
                     try {
                         const res = await fetch(`/api/custom-emoji?ids=${ids.join(',')}`, { credentials: 'same-origin' })
-                        if (!res.ok) return
+                        if (!res.ok) throw new Error(`custom emoji answered ${res.status}`)
                         const answer = await res.json()
                         const next = { ...customEmojiInfo.value }
                         for (const id of ids) next[id] = answer[id] || { kind: null, alt: null, text_color: false, ready: false }
                         customEmojiInfo.value = next
                     } catch (e) {
-                        // Kept as asked: the characters stay, and the next chat asks again.
+                        // The characters stay.
+                        for (const id of ids) failedCustomEmoji.add(id)
                     }
                 }
                 const customEmojiBatcher = createCustomEmojiBatcher({ request: requestCustomEmoji, schedule: (fn) => setTimeout(fn, 0) })
@@ -14119,6 +14124,8 @@
                 // On a chat change, ids not drawn yet are asked again: the backup
                 // may have fetched them meanwhile.
                 const forgetUnreadyCustomEmoji = () => {
+                    for (const id of failedCustomEmoji) customEmojiBatcher.forget(id)
+                    failedCustomEmoji.clear()
                     const next = {}
                     for (const [id, info] of Object.entries(customEmojiInfo.value)) {
                         if (info && info.ready) next[id] = info
@@ -14168,9 +14175,17 @@
                         box.classList.add('is-failed')
                     }
                 }
+                // Freed far off screen: the character shows again until the
+                // picture is drawn again.
+                const unmarkCustomEmoji = (el) => {
+                    const box = el?.closest ? el.closest('.custom-emoji') : null
+                    if (box) box.classList.remove('is-ready')
+                }
                 const onCustomEmojiEvent = (event) => {
                     const el = event.target
                     if (!el?.classList?.contains('custom-emoji-picture')) return
+                    // A video emoji freed on purpose (unmountMoving) has no source: not a failure.
+                    if (event.type === 'error' && el.tagName === 'VIDEO' && !el.getAttribute('src')) return
                     markCustomEmoji(el, event.type === 'load' || event.type === 'loadeddata')
                 }
                 // Capture phase: load, error and stickerfail do not bubble.
@@ -14483,6 +14498,7 @@
                     player.gone = true
                     player.anim?.destroy()
                     player.anim = null
+                    if (el.classList.contains('tgs-emoji')) unmarkCustomEmoji(el)
                 }
 
                 // A moving custom emoji (a .tgs player or a muted .webm) plays on
@@ -14509,7 +14525,17 @@
                         el.src = el.dataset.src
                     }
                 }
-                const unmountMoving = (el) => (el.tagName === 'VIDEO' ? el.pause() : unmountTgs(el))
+                // Far off screen a video emoji gives its file back: a phone allows
+                // only so many media players per page, and the chat's own videos and
+                // voice messages need them. Its character shows until it comes back.
+                const unmountMoving = (el) => {
+                    if (el.tagName !== 'VIDEO') return unmountTgs(el)
+                    el.pause()
+                    if (!el.getAttribute('src')) return
+                    el.removeAttribute('src')
+                    el.load()
+                    unmarkCustomEmoji(el)
+                }
 
                 // Run after every render of the message list: observe the new .tgs
                 // stickers and moving custom emoji (loaded 200px before they show,
@@ -14521,9 +14547,9 @@
                 const forgetTgs = (el) => {
                     tgsState.load?.unobserve(el)
                     tgsState.view?.unobserve(el)
+                    tgsState.loadOutside?.unobserve(el)
                     budgetFor(el)?.leave(el)
-                    if (el.tagName === 'VIDEO') el.pause()
-                    else unmountTgs(el)
+                    unmountMoving(el)
                     tgsState.players.delete(el)
                     tgsState.observed.delete(el)
                 }
@@ -14536,6 +14562,7 @@
                         for (const el of [...tgsState.observed]) forgetTgs(el)
                         tgsState.load.disconnect()
                         tgsState.view.disconnect()
+                        tgsState.loadOutside.disconnect()
                         tgsState.load = null
                     }
                     if (!tgsState.load) {
@@ -14552,9 +14579,13 @@
                             play: playEmoji,
                             hold: holdEmoji,
                         })
-                        tgsState.load = new IntersectionObserver((entries) => {
+                        const loadMoving = (entries) => {
                             entries.forEach(entry => (entry.isIntersecting ? mountMoving(entry.target) : unmountMoving(entry.target)))
-                        }, { root, rootMargin: '200px' })
+                        }
+                        tgsState.load = new IntersectionObserver(loadMoving, { root, rootMargin: '200px' })
+                        // The edit history panel sits beside the list, never inside
+                        // it: its first frames load when they show on the page.
+                        tgsState.loadOutside = new IntersectionObserver(loadMoving, { root: null, rootMargin: '200px' })
                         tgsState.view = new IntersectionObserver((entries) => {
                             entries.forEach(entry => (entry.isIntersecting ? budgetFor(entry.target).enter(entry.target) : budgetFor(entry.target).leave(entry.target)))
                         }, { root, threshold: 0.1 })
@@ -14565,6 +14596,10 @@
                     document.querySelectorAll('.tgs-sticker, .emoji-video').forEach(el => {
                         if (tgsState.observed.has(el)) return
                         tgsState.observed.add(el)
+                        if (root && !root.contains(el)) {
+                            tgsState.loadOutside.observe(el)
+                            return
+                        }
                         tgsState.load.observe(el)
                         if (!el.dataset.still) tgsState.view.observe(el)
                     })
@@ -17354,7 +17389,8 @@
 
                 // One piece of a version's text, start to end, with the formatting
                 // of that version, drawn by the bubble's own renderer. An entity
-                // that runs past the piece is cut to it.
+                // that runs past the piece is cut to it. A moving custom emoji shows
+                // its first frame: the history is a record, as What changed is.
                 const formattedSlice = (text, entityList, start, end) => {
                     const slice = text.slice(start, end)
                     if (!Array.isArray(entityList) || !entityList.length) return linkifyText(slice)
@@ -17367,7 +17403,7 @@
                     }
                     if (!local.length) return linkifyText(slice)
                     try {
-                        return renderEntityHtml(slice, local)
+                        return renderEntityHtml(slice, local, { still: true })
                     } catch (e) {
                         return linkifyText(slice)
                     }
@@ -17487,6 +17523,9 @@
                     }
                     return entries
                 })
+                // The history panel's moving custom emoji, on their first frame,
+                // join the sticker sync when it opens or its emoji arrive.
+                watch(versionEntries, () => nextTick(syncStickers))
 
                 // The photo or file of a version for the history: a thumbnail for a
                 // photo, and a line naming the kind (and the file's name) that opens
@@ -18412,7 +18451,7 @@
                     return /^(https?|tg):\/\//i.test(url) ? url : null
                 }
 
-                const wrapEntity = (node, inner, text) => {
+                const wrapEntity = (node, inner, text, options = {}) => {
                     switch (node.type) {
                         case null: return inner
                         case 'bold': return `<strong>${inner}</strong>`
@@ -18442,7 +18481,7 @@
                         // sends as a string. Anything else keeps the character.
                         case 'custom_emoji': {
                             noteCustomEmoji(node.document_id)
-                            return customEmojiHtml(node.document_id, text.slice(node.offset, node.end))
+                            return customEmojiHtml(node.document_id, text.slice(node.offset, node.end), options)
                         }
                         default: return inner
                     }
@@ -18452,7 +18491,8 @@
                 // characters literal, and link entities must not linkify again.
                 const ESCAPE_ONLY_ENTITY_TYPES = new Set(['code', 'pre', 'url', 'text_url', 'email'])
 
-                const renderEntityHtml = (text, entityList) => {
+                // `options.still` draws custom emoji on their first frame (customEmojiHtml).
+                const renderEntityHtml = (text, entityList, options = {}) => {
                     const len = text.length
                     const valid = entityList
                         .filter(e => e && Number.isInteger(e.offset) && Number.isInteger(e.length)
@@ -18482,7 +18522,7 @@
                             cursor = child.end
                         }
                         if (cursor < node.end) inner += renderLeaf(text.slice(cursor, node.end), escapeHere)
-                        return wrapEntity(node, inner, text)
+                        return wrapEntity(node, inner, text, options)
                     }
                     return renderNode(root, false)
                 }

@@ -285,4 +285,290 @@ class TestCustomEmojiInText(unittest.TestCase):
         self.assertEqual(result["unknown"], "Look ⭐ up")
         self.assertEqual(result["rounded"], "Look 🌞 up")
         self.assertEqual(result["text"], "Look 🌞 up")
+        self.assertNotIn("data-still", result["drawn"])
         self.assertEqual(result["noted"][:3], ["5000000000000000002", "5000000000000000003", "5000000000000000009"])
+
+    def test_still_reaches_the_custom_emoji_of_a_text(self) -> None:
+        result = self._render(
+            "const ents = [{ type: 'custom_emoji', offset: 5, length: 2, document_id: '5000000000000000002' }]\n"
+            "console.log(JSON.stringify(renderEntityHtml('Look 🌞 up', ents, { still: true })))"
+        )
+        self.assertIn(
+            'class="custom-emoji-picture tgs-sticker tgs-emoji" data-src="/media/emoji/5000000000000000002" data-still="1"',
+            result,
+        )
+
+
+_FAKE_DOM = """
+const makeBox = () => {
+  const set = new Set()
+  return { set, classList: { add: (c) => set.add(c), remove: (c) => set.delete(c), contains: (c) => set.has(c) } }
+}
+const makeEl = (box, classes, tagName = 'SPAN', attrs = {}) => {
+  const own = new Set(classes)
+  const el = {
+    tagName, attrs, dataset: {}, loads: 0, paused: 0, preload: 'none',
+    classList: { contains: (c) => own.has(c) },
+    closest: (selector) => (selector === '.custom-emoji' ? box : null),
+    getAttribute: (name) => (name in attrs ? attrs[name] : null),
+    removeAttribute: (name) => { delete attrs[name] },
+    load: () => { el.loads += 1 },
+    pause: () => { el.paused += 1 },
+    play: () => Promise.resolve(),
+  }
+  Object.defineProperty(el, 'src', { get: () => (attrs.src ? 'http://viewer' + attrs.src : ''), set: (v) => { attrs.src = v } })
+  return el
+}
+const state = (box) => [...box.set].sort().join(' ')
+const listeners = []
+const document = { addEventListener: (type, fn, capture) => listeners.push([type, capture]) }
+"""
+_MARKING = (
+    "const markCustomEmoji = (el, ready) =>",
+    "const unmarkCustomEmoji = (el) =>",
+    "const onCustomEmojiEvent = (event) =>",
+)
+
+
+@unittest.skipUnless(NODE, "node is required to run the custom emoji helpers")
+class TestTheCharacterGivesWayToThePicture(unittest.TestCase):
+    """The picture starts invisible; only its own load shows it, and a failure brings the character back."""
+
+    def test_load_shows_the_picture_and_a_failure_keeps_the_character_for_good(self) -> None:
+        program = (
+            "const fire = (el, type) => onCustomEmojiEvent({ target: el, type })\n"
+            "const out = {}\n"
+            "let box = makeBox(); let img = makeEl(box, ['custom-emoji-picture'], 'IMG', { src: '/media/emoji/1' })\n"
+            "fire(img, 'load'); out.load = state(box)\n"
+            "fire(img, 'error'); out.error = state(box)\n"
+            "fire(img, 'load'); out.loadAfterError = state(box)\n"
+            "box = makeBox(); let video = makeEl(box, ['custom-emoji-picture', 'emoji-video'], 'VIDEO', { src: '/media/emoji/2' })\n"
+            "fire(video, 'loadeddata'); out.loadeddata = state(box)\n"
+            "unmarkCustomEmoji(video); out.unmarked = state(box)\n"
+            "box = makeBox(); let tgs = makeEl(box, ['custom-emoji-picture', 'tgs-emoji'])\n"
+            "fire(tgs, 'load'); fire(tgs, 'stickerfail'); out.stickerfail = state(box)\n"
+            # A video freed on purpose has no src: its error is not a failure.
+            "box = makeBox(); video = makeEl(box, ['custom-emoji-picture', 'emoji-video'], 'VIDEO')\n"
+            "fire(video, 'error'); out.freed = state(box)\n"
+            "box = makeBox(); const other = makeEl(box, ['message-photo'], 'IMG', { src: '/x' })\n"
+            "fire(other, 'load'); fire(other, 'error'); out.other = state(box)\n"
+            "fire(makeEl(null, ['custom-emoji-picture'], 'IMG'), 'load')\n"
+            "console.log(JSON.stringify({ out, listeners }))"
+        )
+        result = _run_setup_program(HTML, _MARKING, _FAKE_DOM, program)
+        self.assertEqual(
+            result["out"],
+            {
+                "load": "is-ready",
+                "error": "is-failed",
+                "loadAfterError": "is-failed",
+                "loadeddata": "is-ready",
+                "unmarked": "",
+                "stickerfail": "is-failed",
+                "freed": "",
+                "other": "",
+            },
+        )
+        # load, error and stickerfail do not bubble: the document listens in the capture phase.
+        self.assertEqual(
+            result["listeners"], [["load", True], ["loadeddata", True], ["error", True], ["stickerfail", True]]
+        )
+
+    def test_the_css_hides_the_picture_until_ready_and_drops_it_on_failure(self) -> None:
+        css = HTML[HTML.index(".message-bubble .custom-emoji > .custom-emoji-picture {") :]
+        self.assertIn("opacity: 0;", css[: css.index("}")])
+        self.assertIn(".custom-emoji.is-ready > .custom-emoji-text {\n            opacity: 0;", HTML)
+        self.assertIn(".custom-emoji.is-ready > .custom-emoji-picture {\n            opacity: 1;", HTML)
+        self.assertIn(".custom-emoji.is-failed > .custom-emoji-picture {\n            display: none;", HTML)
+
+
+_TGS_PRELUDE = (
+    _FAKE_DOM
+    + """
+const tgsState = { players: new Map() }
+const anims = []
+let loadedAtOnce = true
+const loadLottie = async () => ({
+  loadAnimation: () => {
+    const handlers = {}
+    const anim = {
+      isLoaded: loadedAtOnce, destroyed: false, handlers,
+      addEventListener: (type, fn) => { (handlers[type] ||= []).push(fn) },
+      setSubframe() {}, pause() {}, play() {}, setLoop() {}, goToAndPlay() {},
+      destroy() { anim.destroyed = true },
+    }
+    anims.push(anim)
+    return anim
+  },
+})
+const fetchTgsText = async () => '{}'
+const sanitizeLottie = (data) => data
+const budgetFor = () => null
+class CustomEvent { constructor(type) { this.type = type } }
+const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
+"""
+)
+
+
+@unittest.skipUnless(NODE, "node is required to run the custom emoji helpers")
+class TestMovingEmojiPlayers(unittest.TestCase):
+    def test_a_tgs_emoji_shows_on_its_first_frame_and_its_character_comes_back_when_freed(self) -> None:
+        program = (
+            "(async () => {\n"
+            "  const out = {}\n"
+            "  const box = makeBox(); const emoji = makeEl(box, ['tgs-sticker', 'tgs-emoji', 'custom-emoji-picture'])\n"
+            "  mountTgs(emoji); await settle(); out.atOnce = state(box)\n"
+            "  unmountTgs(emoji); out.freed = state(box); out.destroyed = anims[0].destroyed\n"
+            "  loadedAtOnce = false\n"
+            "  mountTgs(emoji); await settle(); out.beforeFrame = state(box)\n"
+            "  anims[1].handlers.DOMLoaded.forEach((fn) => fn()); out.afterFrame = state(box)\n"
+            # A sticker is no custom emoji: nothing marks a box around it.
+            "  const stickerBox = makeBox(); const sticker = makeEl(stickerBox, ['tgs-sticker'])\n"
+            "  loadedAtOnce = true; mountTgs(sticker); await settle()\n"
+            "  out.sticker = state(stickerBox); out.stickerHooks = Object.keys(anims[2].handlers).sort()\n"
+            "  unmountTgs(sticker); out.stickerFreed = state(stickerBox)\n"
+            "  console.log(JSON.stringify(out))\n"
+            "})()"
+        )
+        result = _run_setup_program(
+            HTML,
+            (
+                *_MARKING,
+                "const tgsPlayer = (el) =>",
+                "const applyTgsWant = (player) =>",
+                "const mountTgs = (el) =>",
+                "const unmountTgs = (el) =>",
+            ),
+            _TGS_PRELUDE,
+            program,
+        )
+        self.assertEqual(result["atOnce"], "is-ready")
+        self.assertEqual((result["freed"], result["destroyed"]), ("", True))
+        self.assertEqual((result["beforeFrame"], result["afterFrame"]), ("", "is-ready"))
+        self.assertEqual(result["sticker"], "")
+        self.assertNotIn("DOMLoaded", result["stickerHooks"])
+        self.assertEqual(result["stickerFreed"], "")
+
+    def test_a_video_emoji_gives_its_file_back_off_screen_and_loads_it_again(self) -> None:
+        program = (
+            "const fire = (el, type) => onCustomEmojiEvent({ target: el, type })\n"
+            "const out = {}\n"
+            "const box = makeBox(); const video = makeEl(box, ['custom-emoji-picture', 'emoji-video'], 'VIDEO')\n"
+            "video.dataset.src = '/media/emoji/3'\n"
+            "mountMoving(video); out.mounted = [video.getAttribute('src'), video.preload]\n"
+            "fire(video, 'loadeddata'); out.drawn = state(box)\n"
+            "unmountMoving(video); out.freed = [video.getAttribute('src'), video.loads, video.paused, state(box)]\n"
+            # What the browser may fire after the source goes: no failure.
+            "fire(video, 'error'); out.afterError = state(box)\n"
+            "unmountMoving(video); out.loadsAgain = video.loads\n"
+            "mountMoving(video); fire(video, 'loadeddata'); out.back = [video.getAttribute('src'), state(box)]\n"
+            "console.log(JSON.stringify(out))"
+        )
+        prelude = _FAKE_DOM + "const mountTgs = () => {}\nconst unmountTgs = () => {}\n"
+        result = _run_setup_program(
+            HTML, (*_MARKING, "const mountMoving = (el) =>", "const unmountMoving = (el) =>"), prelude, program
+        )
+        self.assertEqual(result["mounted"], ["/media/emoji/3", "auto"])
+        self.assertEqual(result["drawn"], "is-ready")
+        self.assertEqual(result["freed"], [None, 1, 1, ""])
+        self.assertEqual(result["afterError"], "")
+        # Already freed: nothing to load again.
+        self.assertEqual(result["loadsAgain"], 1)
+        self.assertEqual(result["back"], ["/media/emoji/3", "is-ready"])
+
+
+@unittest.skipUnless(NODE, "node is required to run the custom emoji helpers")
+class TestTheFailedRequest(unittest.TestCase):
+    def test_ids_of_a_failed_request_are_asked_again_on_the_next_chat(self) -> None:
+        prelude = (
+            "const ref = (value) => ({ value })\n"
+            "const sent = []\n"
+            f"const answers = [{{ ok: false, status: 503 }}, 'throw', {{ ok: true, json: async () => ({{ '{SUN}': {{ kind: 'image', alt: 'x', text_color: false, ready: true }} }}) }}]\n"
+            "const fetch = async (url) => {\n"
+            "  sent.push(url.split('ids=')[1])\n"
+            "  const answer = answers.shift()\n"
+            "  if (answer === 'throw') throw new TypeError('network')\n"
+            "  return answer\n"
+            "}\n"
+        )
+        program = (
+            "const settle = () => new Promise((resolve) => setTimeout(resolve, 5))\n"
+            ";(async () => {\n"
+            f"  const id = '{SUN}'\n"
+            "  noteCustomEmoji(id); await settle()\n"
+            "  noteCustomEmoji(id); await settle()\n"
+            "  const sameChat = sent.length\n"
+            "  forgetUnreadyCustomEmoji(); noteCustomEmoji(id); await settle()\n"
+            "  forgetUnreadyCustomEmoji(); noteCustomEmoji(id); await settle()\n"
+            "  forgetUnreadyCustomEmoji(); noteCustomEmoji(id); await settle()\n"
+            "  console.log(JSON.stringify({ sent, sameChat, info: customEmojiInfo.value }))\n"
+            "})()"
+        )
+        result = _run_setup_program(
+            HTML,
+            (
+                "const customEmojiInfo = ref({})",
+                "const CUSTOM_EMOJI_BATCH = 100",
+                "const CUSTOM_EMOJI_ID_RE = /^",
+                "const createCustomEmojiBatcher = (",
+                "const failedCustomEmoji = new Set()",
+                "const requestCustomEmoji = async (ids) =>",
+                "const customEmojiBatcher = createCustomEmojiBatcher(",
+                "const noteCustomEmoji = (id) =>",
+                "const forgetUnreadyCustomEmoji = () =>",
+            ),
+            prelude,
+            program,
+        )
+        # A 503 and a network error: asked again on each chat change, never in a loop
+        # within one chat. Once drawn, it is kept and not asked again.
+        self.assertEqual(result["sameChat"], 1)
+        self.assertEqual(result["sent"], [SUN, SUN, SUN])
+        self.assertTrue(result["info"][SUN]["ready"])
+
+
+@unittest.skipUnless(NODE, "node is required to run the custom emoji helpers")
+class TestTheHistoryPanel(unittest.TestCase):
+    def test_emoji_outside_the_list_load_on_their_own_observer(self) -> None:
+        prelude = """
+const ref = (value) => ({ value })
+const observers = []
+class IntersectionObserver {
+  constructor(callback, options) { this.options = options; this.seen = []; observers.push(this) }
+  observe(el) { this.seen.push(el.n) }
+  unobserve() {}
+  disconnect() {}
+}
+const list = { contains: (el) => el.inList }
+const messagesContainer = ref(list)
+const tgsState = { players: new Map(), observed: new Set(), load: null, view: null }
+const createStickerBudget = () => ({ leave() {} })
+const STICKER_MAX_PLAYING = 4, EMOJI_MAX_PLAYING = 3
+const prefersReducedMotion = () => false
+const playTgs = () => {}, holdTgs = () => {}, playEmoji = () => {}, holdEmoji = () => {}
+const mountMoving = () => {}, unmountMoving = () => {}, budgetFor = () => null
+let gifObserver = { observe() {} }
+const setupGifObserver = () => {}
+const el = (n, inList, still) => ({ n, inList, isConnected: true, dataset: still ? { still: '1' } : {}, tagName: 'SPAN' })
+const els = [el('playing', true, false), el('faded', true, true), el('history', false, true)]
+const document = { querySelectorAll: (selector) => (selector === '.tgs-sticker, .emoji-video' ? els : []) }
+"""
+        program = (
+            "syncStickers(); syncStickers()\n"
+            "console.log(JSON.stringify(observers.map((o) => ({ root: o.options.root === list ? 'list' : o.options.root, threshold: o.options.threshold || null, seen: o.seen }))))"
+        )
+        result = _run_setup_program(HTML, ("const forgetTgs = (el) =>", "const syncStickers = () =>"), prelude, program)
+        self.assertEqual(
+            result,
+            [
+                {"root": "list", "threshold": None, "seen": ["playing", "faded"]},
+                # The edit history panel is beside the list: the page is its root.
+                {"root": None, "threshold": None, "seen": ["history"]},
+                {"root": "list", "threshold": 0.1, "seen": ["playing"]},
+            ],
+        )
+
+    def test_the_history_draws_moving_emoji_on_their_first_frame_and_syncs(self) -> None:
+        self.assertIn("return renderEntityHtml(slice, local, { still: true })", HTML)
+        self.assertIn("watch(versionEntries, () => nextTick(syncStickers))", HTML)
+        self.assertLess(HTML.index("const versionEntries = computed("), HTML.index("watch(versionEntries,"))

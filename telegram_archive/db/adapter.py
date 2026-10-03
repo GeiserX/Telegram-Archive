@@ -595,6 +595,14 @@ def _is_preview_refresh(row_type: str | None, new_type: str | None) -> bool:
     return row_type == "webpage" and new_type == "webpage"
 
 
+def _text_custom_emoji_ids(raw_data: object) -> set[int]:
+    """The custom emoji ids of a message's stored entities. A substring check first: most text has none."""
+    if not isinstance(raw_data, str) or '"custom_emoji"' not in raw_data:
+        return set()
+    raw = _raw_data_dict(raw_data) or {}
+    return set(custom_emoji_ids_from_entities(raw.get("entities")))
+
+
 def _raw_data_dict(raw_data: Any) -> dict | None:
     """``raw_data`` as a dict, from its JSON string or a dict; None when it is not one."""
     if isinstance(raw_data, dict):
@@ -1776,14 +1784,18 @@ class DatabaseAdapter:
             .values(**update_values)
         )
 
-    async def _insert_or_update_message(self, session, message_data: dict[str, Any], *, account_id: int) -> None:
+    async def _insert_or_update_message(self, session, message_data: dict[str, Any], *, account_id: int) -> set[int]:
+        """Insert or update one message; returns the custom emoji ids of its entities.
+
+        The caller notes those ids once, last, just before its commit
+        (``_note_custom_emoji``), so every transaction takes its pending
+        ``custom_emoji`` rows in one sorted statement after its other rows.
+        """
         values = self._message_values(message_data, account_id)
         result = await session.execute(self._insert_message_stmt(values))
-        await self._note_text_custom_emoji(session, values.get("raw_data"))
-        if result.rowcount:
-            return
-
-        await self._apply_existing_message_update(session, message_data, values)
+        if not result.rowcount:
+            await self._apply_existing_message_update(session, message_data, values)
+        return _text_custom_emoji_ids(values.get("raw_data"))
 
     # ========== Metadata Operations ==========
 
@@ -2601,7 +2613,8 @@ class DatabaseAdapter:
         v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
         """
         async with self.db_manager.async_session_factory() as session:
-            await self._insert_or_update_message(session, message_data, account_id=account_id)
+            emoji_ids = await self._insert_or_update_message(session, message_data, account_id=account_id)
+            await self._note_custom_emoji(session, emoji_ids)
             await session.commit()
 
     @retry_on_locked()
@@ -2614,9 +2627,12 @@ class DatabaseAdapter:
             return
 
         async with self.db_manager.async_session_factory() as session:
+            emoji_ids: set[int] = set()
             for m in messages_data:
-                await self._insert_or_update_message(session, m, account_id=account_id)
-
+                emoji_ids |= await self._insert_or_update_message(session, m, account_id=account_id)
+            # Once for the whole batch, sorted: two writers that meet the same
+            # new ids then take them in the same order and never deadlock.
+            await self._note_custom_emoji(session, emoji_ids)
             await session.commit()
 
     async def get_messages_by_date_range(
@@ -3241,7 +3257,6 @@ class DatabaseAdapter:
                     and message.text == new_text
                     and self._fill_missing_formatting(message, entities, rich_message)
                 ):
-                    await self._note_custom_emoji(session, custom_emoji_ids_from_entities(entities))
                     await session.execute(
                         update(Message)
                         .where(
@@ -3253,6 +3268,7 @@ class DatabaseAdapter:
                         )
                         .values(raw_data=message.raw_data)
                     )
+                    await self._note_custom_emoji(session, custom_emoji_ids_from_entities(entities))
                     await session.commit()
                     logger.debug("Edit no-op text, missing formatting filled")
                 else:
@@ -6698,22 +6714,23 @@ class DatabaseAdapter:
     async def _note_custom_emoji(self, session, document_ids: Iterable[int]) -> None:
         """Add a pending ``custom_emoji`` row for each id not known yet, in the caller's transaction.
 
-        ON CONFLICT DO NOTHING: a known id keeps its row as it is.
+        ON CONFLICT DO NOTHING: a known id keeps its row as it is. On
+        PostgreSQL that statement waits on another transaction's uncommitted
+        row with the same id, so a transaction calls this once, last, with all
+        its ids: sorted in one statement, two writers never wait on each other
+        in a circle.
         """
         ids = sorted(set(document_ids))
         if not ids:
             return
         insert_fn = sqlite_insert if self._is_sqlite else pg_insert
         now = utcnow_naive()
-        stmt = insert_fn(CustomEmoji).values([{"document_id": document_id, "first_seen": now} for document_id in ids])
-        await session.execute(stmt.on_conflict_do_nothing(index_elements=["document_id"]))
-
-    async def _note_text_custom_emoji(self, session, raw_data: object) -> None:
-        """Note the custom emoji of a message's stored entities. A substring check first: most text has none."""
-        if not isinstance(raw_data, str) or '"custom_emoji"' not in raw_data:
-            return
-        raw = _raw_data_dict(raw_data) or {}
-        await self._note_custom_emoji(session, custom_emoji_ids_from_entities(raw.get("entities")))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            stmt = insert_fn(CustomEmoji).values(
+                [{"document_id": document_id, "first_seen": now} for document_id in chunk]
+            )
+            await session.execute(stmt.on_conflict_do_nothing(index_elements=["document_id"]))
 
     @retry_on_locked()
     async def note_custom_emoji(self, document_ids: Iterable[int]) -> int:
@@ -6729,8 +6746,7 @@ class DatabaseAdapter:
                 )
                 known.update(result.scalars().all())
             fresh = [document_id for document_id in ids if document_id not in known]
-            for start in range(0, len(fresh), 500):
-                await self._note_custom_emoji(session, fresh[start : start + 500])
+            await self._note_custom_emoji(session, fresh)
             await session.commit()
             return len(fresh)
 

@@ -763,21 +763,18 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         view, "😮", [(1, t + timedelta(minutes=84)), (0, t + timedelta(minutes=88)), (1, t + timedelta(minutes=89))]
     )
     # A custom emoji in text, at its fallback character's place (UTF-16 units).
+    # Edited from the still sun: the history shows both, the animated one on
+    # its first frame.
     summit = "Same sun from the summit "
+    at = len(summit.encode("utf-16-le")) // 2
     s.add(
         t + timedelta(minutes=85),
         HUGO,
         summit + "🌞",
-        raw={
-            "entities": [
-                {
-                    "type": "custom_emoji",
-                    "offset": len(summit.encode("utf-16-le")) // 2,
-                    "length": 2,
-                    "document_id": EMOJI_SUN_ANIMATED,
-                }
-            ]
-        },
+        raw={"entities": [{"type": "custom_emoji", "offset": at, "length": 2, "document_id": EMOJI_SUN_ANIMATED}]},
+        edited_from=[
+            (summit + "☀️", [{"type": "custom_emoji", "offset": at, "length": 2, "document_id": EMOJI_SUN}]),
+        ],
     )
     s.add(
         t + timedelta(minutes=95),

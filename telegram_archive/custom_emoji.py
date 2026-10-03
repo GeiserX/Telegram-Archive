@@ -91,8 +91,24 @@ class _Flood(Exception):
         self.seconds = seconds
 
 
-async def _download(client, call, doc: object, path: str) -> str | None:
-    """Download one document to ``path`` without ever replacing a file; the landed path or None."""
+def _complete_file(path: str, declared: int | None) -> bool:
+    """True when ``path`` is a file with bytes in it, and at least ``declared`` of them when known."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    return size > 0 and (not declared or size >= declared)
+
+
+async def _download(client, call, doc: object, path: str, declared: int | None = None) -> str | None:
+    """Download one document to ``path`` without ever replacing a file; the landed path or None.
+
+    An empty download, or one shorter than ``declared`` (the Document's size),
+    is unfinished: Telethon ends a download at the first short answer without
+    checking the total (``message_utils.check_complete_download``). Its
+    temporary file goes and the attempt counts as failed, so the next run asks
+    again instead of keeping a cut file for good.
+    """
     task = asyncio.current_task()
     temporary = f"{path}.{os.getpid()}.{id(task) if task else 0}.part"
     try:
@@ -108,33 +124,42 @@ async def _download(client, call, doc: object, path: str) -> str | None:
             os.remove(temporary)
         raise
     actual = result if isinstance(result, str) else None
+    produced = actual if (actual and os.path.exists(actual)) else temporary
     if os.path.exists(path):
-        # Written meanwhile by another writer: the same file. Ours goes.
+        # Written meanwhile by another writer: the same file. Ours goes, and
+        # theirs counts only when it is complete.
         for leftover in {temporary, actual}:
             if leftover and leftover != path and os.path.exists(leftover):
                 os.remove(leftover)
-        return path
-    landed = finalize_atomic_download(actual, temporary, path)
-    if landed is None or os.path.getsize(landed) <= 0:
+        return path if _complete_file(path, declared) else None
+    if not _complete_file(produced, declared):
+        for leftover in {temporary, actual}:
+            if leftover and leftover != path and os.path.exists(leftover):
+                os.remove(leftover)
         return None
-    return landed
+    return finalize_atomic_download(actual, temporary, path)
 
 
-async def fetch_custom_emoji(client, db, media_root: str, *, call, limit: int = CUSTOM_EMOJI_MAX_PER_RUN) -> dict:
+async def fetch_custom_emoji(
+    client, db, media_root: str, *, call, limit: int = CUSTOM_EMOJI_MAX_PER_RUN, fresh_only: bool = False
+) -> dict:
     """Fetch the files of up to ``limit`` pending custom emoji; counts, never raises.
 
     ``call`` is the flood-retry wrapper (``telegram_backup.call_with_flood_retry``):
     the client sleeps no FloodWait itself. A FloodWait longer than it sleeps out
     stops the step for this run (``flood_wait_seconds``) and counts no attempt.
+    ``fresh_only`` asks only for ids never tried: the listener's quick fetch
+    leaves the retries of the others to the backup runs, a day apart.
     """
     from telethon.tl.functions.messages import GetCustomEmojiDocumentsRequest
 
     counts = _empty_counts()
+    below = 1 if fresh_only else CUSTOM_EMOJI_MAX_ATTEMPTS
     try:
-        pending = await db.get_pending_custom_emoji(limit, CUSTOM_EMOJI_MAX_ATTEMPTS)
+        pending = await db.get_pending_custom_emoji(limit, below)
         if not pending:
             return counts
-        counts["deferred"] = max(0, await db.count_pending_custom_emoji(CUSTOM_EMOJI_MAX_ATTEMPTS) - len(pending))
+        counts["deferred"] = max(0, await db.count_pending_custom_emoji(below) - len(pending))
         folder = os.path.join(media_root, CUSTOM_EMOJI_DIR)
         os.makedirs(folder, exist_ok=True)
         for start in range(0, len(pending), CUSTOM_EMOJI_BATCH):
@@ -195,7 +220,7 @@ async def _store_one(client, call, db, folder: str, document_id: int, doc: objec
         counts["oversize"] += 1
         return
     path = os.path.join(folder, file_name)
-    if os.path.isfile(path) and os.path.getsize(path) > 0:
+    if os.path.isfile(path) and _complete_file(path, meta["size"]):
         # Kept by an earlier run or a merge: marked, never written again.
         await db.update_custom_emoji(
             document_id, {**known, "file_name": file_name, "downloaded": 1, "download_date": utcnow_naive()}
@@ -203,7 +228,7 @@ async def _store_one(client, call, db, folder: str, document_id: int, doc: objec
         counts["present"] += 1
         return
     try:
-        landed = await _download(client, call, doc, path)
+        landed = await _download(client, call, doc, path, meta["size"])
     except _Flood:
         raise
     except Exception as e:  # a timeout, a network error, a full disk

@@ -197,7 +197,7 @@ class TestFetch:
         client = FakeTelegram(
             {
                 SUN: _document(SUN),
-                MOON: _document(MOON, mime_type="application/x-tgsticker", alt="🌙"),
+                MOON: _document(MOON, mime_type="application/x-tgsticker", size=len(TGS), alt="🌙"),
                 STAR: _document(STAR, mime_type="video/webm", alt="⭐", video=True),
             },
             {MOON: TGS},
@@ -289,12 +289,66 @@ class TestFetch:
         kept = folder / f"{SUN}.webp"
         kept.write_bytes(b"the bytes a merge brought")
         os.utime(kept, (1_000_000_000, 1_000_000_000))
-        client = FakeTelegram({SUN: _document(SUN)})
+        client = FakeTelegram({SUN: _document(SUN, size=len(b"the bytes a merge brought"))})
         counts = await _fetch(real_adapter, client, tmp_path)
         assert counts["present"] == 1 and client.downloaded == []
         assert kept.read_bytes() == b"the bytes a merge brought"
         assert kept.stat().st_mtime == 1_000_000_000
         assert (await _rows(real_adapter))[SUN]["downloaded"] == 1
+
+    async def test_a_download_shorter_than_the_document_is_never_kept(self, real_adapter, tmp_path, quick_sleep):
+        # Telethon ends a download at the first short answer without checking
+        # the total: the cut file is not the emoji, and the next run asks again.
+        await real_adapter.note_custom_emoji([SUN, MOON])
+        client = FakeTelegram({SUN: _document(SUN), MOON: _document(MOON)}, {SUN: WEBP[:10], MOON: b""})
+        counts = await _fetch(real_adapter, client, tmp_path)
+        assert (counts["saved"], counts["failed"]) == (0, 0)
+        rows = await _rows(real_adapter)
+        assert [(r["downloaded"], r["attempts"], r["file_name"]) for r in rows.values()] == [(0, 1, None)] * 2
+        assert os.listdir(tmp_path / "_emoji") == []
+        client.data = {}
+        counts = await _fetch(real_adapter, client, tmp_path)
+        assert counts["saved"] == 2
+        assert (tmp_path / "_emoji" / f"{SUN}.webp").read_bytes() == WEBP
+
+    async def test_a_short_file_already_there_is_neither_marked_nor_touched(self, real_adapter, tmp_path, quick_sleep):
+        await real_adapter.note_custom_emoji([SUN])
+        folder = tmp_path / "_emoji"
+        folder.mkdir()
+        kept = folder / f"{SUN}.webp"
+        kept.write_bytes(WEBP[:10])
+        client = FakeTelegram({SUN: _document(SUN)})
+        counts = await _fetch(real_adapter, client, tmp_path)
+        assert counts["present"] == 0
+        # The archive never overwrites a file: the row stays pending and the cut file stays as it was.
+        assert kept.read_bytes() == WEBP[:10]
+        assert sorted(os.listdir(folder)) == [f"{SUN}.webp"]
+        row = (await _rows(real_adapter))[SUN]
+        assert (row["downloaded"], row["attempts"]) == (0, 1)
+
+    async def test_a_file_written_meanwhile_counts_only_when_complete(self, real_adapter, tmp_path):
+        folder = tmp_path / "_emoji"
+        folder.mkdir()
+        path = str(folder / f"{SUN}.webp")
+
+        class Racer(FakeTelegram):
+            def __init__(self, other: bytes):
+                super().__init__({})
+                self.other = other
+
+            async def download_media(self, doc, file):
+                with open(path, "wb") as handle:
+                    handle.write(self.other)
+                return await super().download_media(doc, file)
+
+        async def call(fn, *args, **kwargs):
+            return await fn(*args, **kwargs)
+
+        doc = _document(SUN)
+        assert await custom_emoji._download(Racer(b""), call, doc, path, len(WEBP)) is None
+        os.remove(path)
+        assert await custom_emoji._download(Racer(WEBP), call, doc, path, len(WEBP)) == path
+        assert sorted(os.listdir(folder)) == [f"{SUN}.webp"]
 
     async def test_a_failed_download_is_counted_and_capped(self, real_adapter, tmp_path, quick_sleep):
         await real_adapter.note_custom_emoji([SUN])
@@ -347,6 +401,71 @@ class TestBackupRun:
         counts = await backup._fetch_custom_emoji()
         assert counts["saved"] == 1
         assert (tmp_path / "media" / "_emoji" / f"{SUN}.webp").read_bytes() == WEBP
+
+
+class TestListener:
+    """The listener fetches custom emoji it noted, so a live one is drawn within minutes, not after the daily run."""
+
+    @staticmethod
+    def _listener(adapter, client, media_path):
+        from types import SimpleNamespace
+
+        from telegram_archive.listener import TelegramListener
+
+        holder = SimpleNamespace(config=SimpleNamespace(media_path=media_path), client=client, db=adapter)
+        return lambda: TelegramListener._fetch_new_custom_emoji(holder)
+
+    async def test_only_never_tried_ids_are_fetched_and_never_during_a_backup_run(
+        self, real_adapter, tmp_path, quick_sleep
+    ):
+        await real_adapter.note_custom_emoji([SUN, MOON])
+        async with real_adapter.db_manager.async_session_factory() as session:
+            # MOON was tried once by a backup run: its retries stay with the backup runs.
+            await session.execute(update(CustomEmoji).where(CustomEmoji.document_id == MOON).values(attempts=1))
+            await session.commit()
+        client = FakeTelegram({SUN: _document(SUN), MOON: _document(MOON)})
+        media = tmp_path / "media"
+        fetch = self._listener(real_adapter, client, str(tmp_path / "missing"))
+        assert await fetch() is None
+        media.mkdir()
+        (media / "keep").write_bytes(b"x")
+        fetch = self._listener(real_adapter, client, str(media))
+        await real_adapter.set_metadata("backup_in_progress", "1")
+        assert await fetch() is None
+        assert client.asked == []
+        await real_adapter.set_metadata("backup_in_progress", "0")
+        counts = await fetch()
+        assert client.asked == [[SUN]]
+        assert (counts["saved"], counts["deferred"]) == (1, 0)
+        assert (media / "_emoji" / f"{SUN}.webp").read_bytes() == WEBP
+        rows = await _rows(real_adapter)
+        assert (rows[SUN]["downloaded"], rows[MOON]["downloaded"], rows[MOON]["attempts"]) == (1, 0, 1)
+
+    async def test_a_running_listener_fetches_on_its_timer_and_stops_with_it(self, monkeypatch):
+        from test_listener_extended import _make_config, _make_db
+
+        from telegram_archive import listener as listener_mod
+
+        monkeypatch.setattr(listener_mod, "LISTENER_CUSTOM_EMOJI_SECONDS", 0)
+        listener = listener_mod.TelegramListener(_make_config(listen_reactions=False), _make_db(), account_id=1)
+        fetched = asyncio.Event()
+
+        async def fake_fetch():
+            fetched.set()
+
+        listener._fetch_new_custom_emoji = fake_fetch
+        disconnected = asyncio.Event()
+
+        async def run_until_disconnected():
+            await disconnected.wait()
+
+        listener.client = type("Client", (), {"run_until_disconnected": staticmethod(run_until_disconnected)})()
+        task = asyncio.create_task(listener.run())
+        await asyncio.wait_for(fetched.wait(), timeout=5)
+        loop_task = listener._custom_emoji_task
+        disconnected.set()
+        await task
+        assert loop_task.done() and listener._custom_emoji_task is None
 
 
 class TestBackfill:
