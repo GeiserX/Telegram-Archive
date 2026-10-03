@@ -311,6 +311,66 @@ class TestPeerColourContrast(unittest.TestCase):
                 # The "deleted" marker in the meta row.
                 self._check(name, f"danger-fg-{side} on bubble", _triplet(tokens["--tg-danger-fg"]), bubble)
 
+    def _label_colour(self, tokens: dict[str, str], index: int, share: float) -> tuple[int, int, int]:
+        """--tg-tag-<index> mixed toward the outgoing text colour, as
+        ``color-mix(in srgb, tag share, text-out)`` paints .meta-signature."""
+        tag = _triplet(tokens[f"--tg-tag-{index}"])
+        text = _triplet(tokens["--tg-text-out"])
+        return tuple(round(t * share + x * (1 - share)) for t, x in zip(tag, text, strict=True))
+
+    def _label_share(self, tokens: dict[str, str]) -> float:
+        value = tokens["--tg-tag-out-mix"].strip()
+        self.assertRegex(value, r"^\d{1,3}%$")
+        return int(value[:-1]) / 100
+
+    def test_the_account_label_reads_on_the_outgoing_bubble(self):
+        """A message an archived account sent, in a group several accounts hold,
+        names its account beside the time in the account's tag colour. Each
+        palette keeps as much of that colour as still reads at 4.5:1 on every
+        outgoing fill, gradient stops included, and on the deleted wash."""
+        for name, tokens in self.palettes.items():
+            share = self._label_share(tokens)
+            wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
+            for fill in self._fills(tokens, "out"):
+                for index in range(7):
+                    label = self._label_colour(tokens, index, share)
+                    self._check(name, f"account label {index} on the outgoing bubble", label, fill)
+                    self._check(
+                        name,
+                        f"account label {index} on the deleted outgoing bubble",
+                        label,
+                        _over(wash, wash_alpha, fill),
+                    )
+
+    def test_the_light_palettes_keep_the_chip_colour(self):
+        """Where the chip colour reads on the bubble, the label is that colour."""
+        for name in ("telegram", "paper", "minimal", "graphite"):
+            with self.subTest(theme=name):
+                self.assertEqual(self.palettes[name]["--tg-tag-out-mix"].strip(), "100%")
+
+    def test_the_raw_chip_colour_would_fail_on_ios_night(self):
+        """Positive control: the exact chip colour cannot hold 4.5:1 on iOS Night's
+        blue bubble, which is why the dark palettes mix it toward the text."""
+        tokens = self.palettes["iosnight"]
+        worst = min(
+            _contrast(self._label_colour(tokens, index, 1.0), fill)
+            for index in range(7)
+            for fill in self._fills(tokens, "out")
+        )
+        self.assertLess(worst, 4.5)
+
+    def test_the_label_rule_mixes_the_tag_toward_the_outgoing_text(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        rule = html[html.index("        .meta-signature {") :]
+        rule = rule[: rule.index("}")]
+        self.assertIn(
+            "color: color-mix(in srgb, rgb(var(--tag, var(--tg-tag-5))) var(--tg-tag-out-mix), rgb(var(--tg-text-out)));",
+            rule,
+        )
+        # Over a picture the label is part of the time pill and takes its colour.
+        media = html[html.index(".message-bubble.bubble-media-only .meta-signature {") :]
+        self.assertIn("color: inherit;", media[: media.index("}")])
+
     def test_a_deleted_bubble_stays_readable(self):
         """The deleted wash keeps every text pair drawn straight on the bubble at
         4.5:1: the text, the time, links and the poll's figures, and the

@@ -5199,8 +5199,11 @@ def test_bubble_account_label_shows_when_several_archived_accounts_speak():
     assert "if (row.sender_account_id != null) ids.add(row.sender_account_id)" in html
     assert "selectedChat.value?.type !== 'private' && bubbleAccountIds.value.size > 1" in html
     # Every message an archived account sent is the reader's own, so the label
-    # sits in the meta row, like a channel signature.
-    assert '<span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2">' in html
+    # sits in the meta row, like a channel signature, in the account's tag colour.
+    assert (
+        '<span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2"'
+        ' :style="accountTagStyle(msg.sender_account_id)">'
+    ) in html
     # The incoming placement could never render: a labelled message is always own.
     assert 'class="sender-account"' not in html
     assert ".sender-account" not in html
