@@ -1500,13 +1500,13 @@ class TestInternalPushEdgeCases(_WebTestBase):
         self.assertEqual(resp.status_code, 403)
 
     async def test_internal_push_handles_error(self):
-        """internal_push returns error status when processing fails."""
+        """internal_push answers 500 when processing fails, so the backup counts it as a failed push."""
         mock_listener = MagicMock()
         mock_listener.handle_http_push = AsyncMock(side_effect=Exception("fail"))
         web_main.realtime_listener = mock_listener
         async with self._client() as client:
             resp = await client.post("/internal/push", json={"type": "test"})
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 500)
         self.assertEqual(resp.json()["status"], "error")
 
     async def test_internal_push_requires_secret_for_private_network(self):
