@@ -222,6 +222,10 @@ class RealtimeNotifier:
         self._push_secret: str | None = None
         self._pg_connection = None
         self._initialized = False
+        # A viewer that is not running (a backup-only or pip install) fails
+        # every push, and the listener pushes on every live event: warn once,
+        # then log at DEBUG until a push gets through again.
+        self._http_failure_warned = False
 
     async def init(self):
         """Initialize the notifier based on database type."""
@@ -325,18 +329,38 @@ class RealtimeNotifier:
                 ) as response,
             ):
                 if response.status != 200:
-                    logger.warning(f"HTTP notification returned {response.status}")
+                    self._http_push_failed(f"HTTP notification returned {response.status}")
+                    return
         except ImportError:
             # aiohttp not available, try httpx
             try:
                 import httpx
 
                 async with httpx.AsyncClient() as client:
-                    await client.post(self._http_endpoint, json=payload, headers=headers, timeout=5)
+                    response = await client.post(self._http_endpoint, json=payload, headers=headers, timeout=5)
+                if response.status_code != 200:
+                    self._http_push_failed(f"HTTP notification returned {response.status_code}")
+                    return
             except ImportError:
-                logger.warning("Neither aiohttp nor httpx available for HTTP notifications")
+                self._http_push_failed("Neither aiohttp nor httpx available for HTTP notifications")
+                return
+            except Exception as e:
+                self._http_push_failed(f"HTTP notification failed: {e}")
+                return
         except Exception as e:
-            logger.warning(f"HTTP notification failed: {e}")
+            self._http_push_failed(f"HTTP notification failed: {e}")
+            return
+        if self._http_failure_warned:
+            logger.info("HTTP notification delivered again")
+            self._http_failure_warned = False
+
+    def _http_push_failed(self, message: str) -> None:
+        """The first failure since the last success is a WARNING; the ones after it are DEBUG."""
+        if self._http_failure_warned:
+            logger.debug(message)
+            return
+        self._http_failure_warned = True
+        logger.warning(f"{message} (later failures are logged at DEBUG until a push succeeds)")
 
 
 class RealtimeListener:

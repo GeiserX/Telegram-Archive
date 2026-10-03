@@ -18,7 +18,7 @@ Telegram Desktop's own export is a one-off file with no earlier versions and no 
 
 ## Features
 
-- Runs on a schedule and fetches only what is new, so every run after the first is short; an optional listener saves new messages, edits and deletions the moment they happen.
+- Saves new messages, their media, edits and reactions the moment they happen, and runs a daily full pass that fetches only what is new to fill in anything the live connection missed.
 - Keeps every edit with its earlier text, and keeps every deleted message, marked as deleted, with its text and media.
 - Saves photos, videos, voice notes, stickers, documents and link previews once each, however many chats share them, and skips files over a size you set.
 - Reads like Telegram: chats, forum topics, folders, archived chats, reactions, pinned messages, polls and shared media, with search across every chat.

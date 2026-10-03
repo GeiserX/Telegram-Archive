@@ -1289,3 +1289,68 @@ class TestResolveInternalPushSecret:
         await notifier.init()
         assert notifier._push_secret is not None
         assert (tmp_path / ".push-secret").read_text().strip() == notifier._push_secret
+
+
+def _aiohttp_answering(outcomes: list):
+    """A stand-in aiohttp module: each POST takes the next outcome, a status code or an exception."""
+
+    def session_cm(*_args, **_kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        response = MagicMock()
+        response.status = outcome
+        post_cm = AsyncMock()
+        post_cm.__aenter__ = AsyncMock(return_value=response)
+        post_cm.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.post = MagicMock(return_value=post_cm)
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    module = MagicMock()
+    module.ClientSession = MagicMock(side_effect=session_cm)
+    module.ClientTimeout = MagicMock()
+    return module
+
+
+class TestNotifyHttpWarnsOnce:
+    """With the listener on by default, a backup without a viewer fails every push.
+
+    One WARNING per live event would bury the log; the first failure warns, the
+    rest go to DEBUG, and a push that gets through re-arms the warning.
+    """
+
+    async def _push(self, notifier, outcomes, caplog):
+        module = _aiohttp_answering(outcomes)
+        with (
+            caplog.at_level("DEBUG", logger="telegram_archive.realtime"),
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict("sys.modules", {"aiohttp": module}),
+        ):
+            while outcomes:
+                await notifier._notify_http({"type": "test"})
+
+    def _warnings(self, caplog):
+        return [r for r in caplog.records if r.levelname == "WARNING" and "HTTP notification" in r.getMessage()]
+
+    async def test_two_failed_pushes_give_one_warning(self, caplog):
+        notifier = RealtimeNotifier()
+        notifier._http_endpoint = "http://localhost:8080/internal/push"
+
+        await self._push(notifier, [ConnectionRefusedError("refused"), ConnectionRefusedError("refused")], caplog)
+
+        assert len(self._warnings(caplog)) == 1
+        assert any(r.levelname == "DEBUG" and "HTTP notification failed" in r.getMessage() for r in caplog.records)
+
+    async def test_a_success_re_arms_the_warning(self, caplog):
+        notifier = RealtimeNotifier()
+        notifier._http_endpoint = "http://localhost:8080/internal/push"
+
+        await self._push(notifier, [ConnectionRefusedError("refused"), 200, 500, 503], caplog)
+
+        warnings = self._warnings(caplog)
+        assert len(warnings) == 2
+        assert "returned 500" in warnings[1].getMessage()

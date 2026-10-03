@@ -12,6 +12,7 @@ import re
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
@@ -1499,13 +1500,13 @@ class TestInternalPushEdgeCases(_WebTestBase):
         self.assertEqual(resp.status_code, 403)
 
     async def test_internal_push_handles_error(self):
-        """internal_push returns error status when processing fails."""
+        """internal_push answers 500 when processing fails, so the backup counts it as a failed push."""
         mock_listener = MagicMock()
         mock_listener.handle_http_push = AsyncMock(side_effect=Exception("fail"))
         web_main.realtime_listener = mock_listener
         async with self._client() as client:
             resp = await client.post("/internal/push", json={"type": "test"})
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 500)
         self.assertEqual(resp.json()["status"], "error")
 
     async def test_internal_push_requires_secret_for_private_network(self):
@@ -2333,6 +2334,7 @@ class TestOperatorStatus(_MasterTestBase):
                 "backup_in_progress": "0",
                 "stats_calculated_at": "2026-08-22T03:00:00",
                 "listener_active_since_account_2": "2026-08-22T05:00:00",
+                "listener_heartbeat_account_2": datetime.now(UTC).isoformat(),
             }.get(key)
 
         self.mock_db.get_metadata = AsyncMock(side_effect=fake_metadata)
@@ -2365,12 +2367,15 @@ class TestOperatorStatus(_MasterTestBase):
         """
         from telegram_archive.status import collect_status
 
+        heartbeat = datetime.now(UTC).isoformat()
+
         async def fake_metadata(key):
             return {
                 "last_backup_time": "2026-08-22T06:00:00Z",
                 "backup_in_progress": "1",
                 "stats_calculated_at": "2026-08-22T03:00:00",
                 "listener_active_since": "2026-08-22T05:00:00",
+                "listener_heartbeat": heartbeat,
             }.get(key)
 
         self.mock_db.get_metadata = AsyncMock(side_effect=fake_metadata)

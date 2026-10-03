@@ -24,12 +24,18 @@ from telegram_archive.status import (
     collect_status,
     format_status,
     health_problems,
+    listener_is_running,
     parse_utc,
     previous_fire_times,
 )
 
 NOW = datetime(2026, 1, 15, 7, 30, tzinfo=UTC)
 EVERY_SIX_HOURS = "0 */6 * * *"
+
+
+def _beat(age: timedelta = timedelta(0)) -> str:
+    """A listener heartbeat stamped ``age`` ago, by the real clock collect_status reads."""
+    return (datetime.now(UTC) - age).isoformat()
 
 
 def _mock_db(metadata: dict, *, account_ids=None, is_sqlite: bool = True) -> MagicMock:
@@ -53,6 +59,8 @@ def _mock_config() -> MagicMock:
     config.download_youtube_videos = False
     config.max_media_download_attempts = 5
     config.schedule = EVERY_SIX_HOURS
+    config.enable_listener = True
+    config.accounts = [MagicMock()]
     return config
 
 
@@ -74,6 +82,7 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
                 "backup_in_progress": "0",
                 "stats_calculated_at": "2026-01-15T06:20:00",
                 "listener_active_since_account_2": "2026-01-15T05:00:00",
+                "listener_heartbeat_account_2": _beat(),
             },
             account_ids=[1, 2],
         )
@@ -105,7 +114,10 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["database"]["backend"], "postgresql")
 
     async def test_account_list_failure_falls_back_to_the_default_account(self):
-        db = _mock_db({"listener_active_since": "2026-01-15T05:00:00"}, account_ids=RuntimeError("no table"))
+        db = _mock_db(
+            {"listener_active_since": "2026-01-15T05:00:00", "listener_heartbeat": _beat()},
+            account_ids=RuntimeError("no table"),
+        )
 
         payload = await collect_status(db, _mock_config())
 
@@ -113,12 +125,60 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
             payload["listeners"], [{"account_id": 1, "active": True, "active_since": "2026-01-15T05:00:00"}]
         )
 
+    async def _listener_problems(self, heartbeat_age: timedelta) -> tuple[list, list[str]]:
+        db = _mock_db(
+            {"listener_active_since": "2026-01-15T05:00:00", "listener_heartbeat": _beat(heartbeat_age)},
+            account_ids=[1],
+        )
+        listeners = (await collect_status(db, _mock_config()))["listeners"]
+        status = _status("2026-01-15T06:00:05Z", stats_at="2026-01-15T06:40:00") | {"listeners": listeners}
+        problems = health_problems(status, EVERY_SIX_HOURS, now=NOW, timezone=UTC, listener_accounts=1)
+        return listeners, problems
+
+    async def test_a_stale_heartbeat_reads_as_not_running(self):
+        """A killed container never clears its start flag; only a fresh heartbeat counts."""
+        listeners, problems = await self._listener_problems(timedelta(minutes=10))
+
+        self.assertEqual(listeners, [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"}])
+        self.assertEqual(problems, ["the listener of account 1 is not running"])
+
+    async def test_a_fresh_heartbeat_reads_as_running(self):
+        listeners, problems = await self._listener_problems(timedelta(minutes=1))
+
+        self.assertTrue(listeners[0]["active"])
+        self.assertEqual(problems, [])
+
+    async def test_a_cleared_start_flag_reads_as_not_running_even_with_a_fresh_heartbeat(self):
+        db = _mock_db({"listener_active_since": "", "listener_heartbeat": _beat()}, account_ids=[1])
+
+        payload = await collect_status(db, _mock_config())
+
+        self.assertEqual(payload["listeners"], [{"account_id": 1, "active": False, "active_since": None}])
+
     async def test_metadata_failure_propagates(self):
         db = _mock_db({})
         db.get_metadata = AsyncMock(side_effect=RuntimeError("database down"))
 
         with self.assertRaises(RuntimeError):
             await collect_status(db, _mock_config())
+
+
+class TestListenerIsRunning(unittest.TestCase):
+    SINCE = "2026-01-15T05:00:00"
+
+    def test_needs_both_a_start_and_a_heartbeat(self):
+        self.assertFalse(listener_is_running(None, NOW.isoformat(), NOW))
+        self.assertFalse(listener_is_running("", NOW.isoformat(), NOW))
+        self.assertFalse(listener_is_running(self.SINCE, None, NOW))
+        self.assertFalse(listener_is_running(self.SINCE, "", NOW))
+
+    def test_the_heartbeat_must_be_under_three_minutes_old(self):
+        self.assertTrue(listener_is_running(self.SINCE, (NOW - timedelta(minutes=2, seconds=59)).isoformat(), NOW))
+        self.assertTrue(listener_is_running(self.SINCE, (NOW - timedelta(minutes=3)).isoformat(), NOW))
+        self.assertFalse(listener_is_running(self.SINCE, (NOW - timedelta(minutes=3, seconds=1)).isoformat(), NOW))
+
+    def test_a_garbled_heartbeat_reads_as_not_running(self):
+        self.assertFalse(listener_is_running(self.SINCE, "not a time", NOW))
 
 
 class TestParseUtc(unittest.TestCase):
@@ -245,6 +305,54 @@ class TestHealthProblems(unittest.TestCase):
         self.assertEqual(health_problems(status, EVERY_SIX_HOURS), [])
 
 
+def _with_listeners(status: dict, *states: bool) -> dict:
+    status["listeners"] = [
+        {"account_id": index, "active": active, "active_since": "2026-01-15T05:00:00" if active else None}
+        for index, active in enumerate(states, start=1)
+    ]
+    return status
+
+
+class TestListenerProblems(unittest.TestCase):
+    """With the listener on, the full pass runs once a day: a stopped listener is the early signal."""
+
+    def _problems(self, status: dict, listener_accounts: int) -> list[str]:
+        return health_problems(status, EVERY_SIX_HOURS, now=NOW, timezone=UTC, listener_accounts=listener_accounts)
+
+    def _healthy(self, *states: bool) -> dict:
+        return _with_listeners(_status("2026-01-15T06:00:05Z", stats_at="2026-01-15T06:40:00"), *states)
+
+    def test_a_stopped_listener_is_a_problem_when_enabled(self):
+        self.assertEqual(self._problems(self._healthy(False), 1), ["the listener of account 1 is not running"])
+
+    def test_a_stopped_listener_is_fine_when_disabled(self):
+        self.assertEqual(self._problems(self._healthy(False), 0), [])
+
+    def test_running_listeners_are_healthy(self):
+        self.assertEqual(self._problems(self._healthy(True, True), 2), [])
+
+    def test_the_stopped_account_is_named(self):
+        self.assertEqual(self._problems(self._healthy(True, False), 2), ["the listener of account 2 is not running"])
+
+    def test_a_row_of_an_account_no_longer_configured_is_not_blamed(self):
+        # Three account rows, two configured, both listening: healthy.
+        self.assertEqual(self._problems(self._healthy(True, True, False), 2), [])
+
+    def test_ids_are_not_guessed_when_rows_outnumber_accounts(self):
+        self.assertEqual(
+            self._problems(self._healthy(True, False, False), 2),
+            ["1 of 2 configured account(s) have no running listener"],
+        )
+
+    def test_reported_beside_the_backup_problems(self):
+        status = _with_listeners(_status("2026-01-14T18:00:05Z", stats_at="2026-01-14T18:30:00"), False)
+
+        problems = self._problems(status, 1)
+
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(problems[1], "the listener of account 1 is not running")
+
+
 class TestFormatStatus(unittest.TestCase):
     def test_healthy_summary(self):
         status = _status("2026-01-15T06:00:05Z", stats_at="2026-01-15T06:40:00")
@@ -360,7 +468,22 @@ class TestRunStatus(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(out.startswith("Archive status: healthy"))
         self.assertEqual(err, "")
         close.assert_awaited_once()
-        health.assert_called_once_with(self.healthy, EVERY_SIX_HOURS)
+        health.assert_called_once_with(self.healthy, EVERY_SIX_HOURS, listener_accounts=1)
+
+    async def test_listener_off_expects_no_listener(self):
+        self.config.enable_listener = False
+        self.config.accounts = [MagicMock(), MagicMock()]
+
+        *_, health = await self._run()
+
+        health.assert_called_once_with(self.healthy, EVERY_SIX_HOURS, listener_accounts=0)
+
+    async def test_every_configured_account_expects_a_listener(self):
+        self.config.accounts = [MagicMock(), MagicMock()]
+
+        *_, health = await self._run()
+
+        health.assert_called_once_with(self.healthy, EVERY_SIX_HOURS, listener_accounts=2)
 
     async def test_unhealthy_exits_1(self):
         code, out, _, _, _ = await self._run(problems=["no backup has run yet"])
@@ -422,12 +545,15 @@ def _iso_z(moment: datetime) -> str:
     return moment.replace(tzinfo=None).isoformat() + "Z"
 
 
-async def _seed(adapter, last_run: datetime, stats_at: datetime) -> None:
+async def _seed(adapter, last_run: datetime, stats_at: datetime, *, listening: bool = True) -> None:
     await adapter.ensure_account(telegram_user_id=1000001, env_index=1, label="Account A")
     await adapter.set_metadata("last_backup_time", _iso_z(last_run))
     await adapter.set_metadata("backup_in_progress", "0")
     await adapter.set_metadata("stats_calculated_at", stats_at.replace(tzinfo=None).isoformat())
-    await adapter.set_metadata("listener_active_since", "2026-01-15T05:00:00")
+    # The listener clears its key to "" when it stops, and stamps its heartbeat while it runs.
+    await adapter.set_metadata("listener_active_since", "2026-01-15T05:00:00" if listening else "")
+    if listening:
+        await adapter.set_metadata("listener_heartbeat", datetime.now(UTC).isoformat())
 
 
 async def test_collect_status_on_a_real_engine(real_adapter):
@@ -467,3 +593,51 @@ async def test_status_command_on_a_real_engine(real_adapter, age, expected_code,
     assert code == expected_code
     assert payload["healthy"] is (expected_code == 0)
     assert payload["backup"]["last_run"] == _iso_z(now - age)
+
+
+@pytest.mark.parametrize(
+    ("enable_listener", "expected_code"),
+    [("true", 1), ("false", 0)],
+    ids=["listener-on", "listener-off"],
+)
+async def test_status_command_flags_a_stopped_listener_on_a_real_engine(
+    real_adapter, enable_listener, expected_code, tmp_path
+):
+    now = datetime.now(UTC)
+    await _seed(real_adapter, now - timedelta(minutes=5), now, listening=False)
+    args = create_parser().parse_args(["status", "--json"])
+    env = {
+        "DATABASE_URL": real_adapter.db_manager.database_url,
+        "BACKUP_PATH": str(tmp_path),
+        "SCHEDULE": EVERY_SIX_HOURS,
+        "ENABLE_LISTENER": enable_listener,
+    }
+    out = io.StringIO()
+    with patch.dict(os.environ, env), redirect_stdout(out):
+        code = await run_status(args)
+
+    payload = json.loads(out.getvalue())
+    assert code == expected_code
+    assert payload["problems"] == (["the listener of account 1 is not running"] if expected_code else [])
+
+
+async def test_status_command_flags_a_killed_listener_on_a_real_engine(real_adapter, tmp_path):
+    """A killed container leaves its start flag set; the stale heartbeat still reports it."""
+    now = datetime.now(UTC)
+    await _seed(real_adapter, now - timedelta(minutes=5), now)
+    await real_adapter.set_metadata("listener_heartbeat", (now - timedelta(minutes=10)).isoformat())
+    args = create_parser().parse_args(["status", "--json"])
+    env = {
+        "DATABASE_URL": real_adapter.db_manager.database_url,
+        "BACKUP_PATH": str(tmp_path),
+        "SCHEDULE": EVERY_SIX_HOURS,
+        "ENABLE_LISTENER": "true",
+    }
+    out = io.StringIO()
+    with patch.dict(os.environ, env), redirect_stdout(out):
+        code = await run_status(args)
+
+    payload = json.loads(out.getvalue())
+    assert code == 1
+    assert payload["listeners"] == [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"}]
+    assert payload["problems"] == ["the listener of account 1 is not running"]

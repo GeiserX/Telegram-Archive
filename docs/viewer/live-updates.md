@@ -4,15 +4,15 @@ New messages, edits and deletions can reach a viewer tab that is already open. T
 
 ## Where updates come from
 
-Live updates come from the real-time listener, which runs inside the backup container and is off by default. [Real-time listener](../configuration/listener.md) lists its switches. Voice transcript events are the exception. The backup's transcription run and the viewer's own transcription callback route also send them, so they arrive without the listener.
+Live updates come from the real-time listener, which runs inside the backup container and is on by default. [Real-time listener](../configuration/listener.md) lists its switches. Voice transcript events are the exception. The backup's transcription run and the viewer's own transcription callback route also send them, so they arrive without the listener.
 
-Without the listener, the viewer still shows new messages, but only after a scheduled backup has written them. The open chat polls its newest 50 messages every 3 seconds and picks them up that way.
+With the listener turned off (`ENABLE_LISTENER=false`), the viewer still shows new messages, but only after a scheduled backup has written them. The open chat polls its newest 50 messages every 3 seconds and picks them up that way.
 
-Instant new messages, and the notifications for them, need both of these on the backup side:
+Instant new messages, and the notifications for them, need both of these on the backup side. Both are the default:
 
 ```bash
 ENABLE_LISTENER=true
-LISTEN_NEW_MESSAGES=true   # the default
+LISTEN_NEW_MESSAGES=true
 ```
 
 Edits, deletions, pins, reactions and transcripts still arrive live when `LISTEN_NEW_MESSAGES` is off. The table below shows which of them need a switch of their own.
@@ -25,7 +25,7 @@ The viewer forwards these event types to open tabs:
 | `edit` | The listener applies an edit of the text, the formatting or the media. Needs `LISTEN_EDITS=true`, the default. |
 | `delete` | The listener applies a deletion. Needs `LISTEN_DELETIONS=true`, off by default. |
 | `pin` | The listener sees a message pinned or unpinned. |
-| `reaction` | Reaction counts on a message change. Needs `LISTEN_REACTIONS=true`, off by default. |
+| `reaction` | Reaction counts on a message change. Needs `LISTEN_REACTIONS=true`, the default. |
 | `transcript` | A voice transcript changes status, from the listener, a backup run, or the viewer's own transcription callback route. |
 
 The text of a new message or an edit is cut to 500 characters in the event. The full text is always in the database.

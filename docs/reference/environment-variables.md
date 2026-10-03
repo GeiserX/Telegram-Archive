@@ -107,7 +107,7 @@ Feature page: [Schedule and backup tuning](../configuration/schedule.md).
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="schedule"></span>`SCHEDULE` | `0 */6 * * *` | backup | Five cron fields: minute, hour, day, month, day of week. Any other field count stops the scheduler. Evaluated in the process's local time zone, which is UTC in the images unless you set `TZ`. `VIEWER_TIMEZONE` does not apply. The `schedule` command also runs one backup as soon as it starts. |
+| <span id="schedule"></span>`SCHEDULE` | `0 3 * * *`<br>`0 */6 * * *` with `ENABLE_LISTENER=false` | backup | When the full pass runs. Five cron fields: minute, hour, day, month, day of week. Any other field count stops the scheduler. An empty value uses the default. Evaluated in the process's local time zone, which is UTC in the images unless you set `TZ`. `VIEWER_TIMEZONE` does not apply. The `schedule` command also runs one backup as soon as it starts. With the listener on, the pass reconciles what the listener missed, so once a day is enough. Hourly or other frequent passes with the listener on are deprecated: they still work, and startup logs a note. |
 | <span id="backup_path"></span>`BACKUP_PATH` | `/data/backups`<br>compose: fixed at `/data/backups` | both | Archive root. Media goes to `BACKUP_PATH/media` and the default SQLite file is `BACKUP_PATH/telegram_backup.db`. The stock compose sets it in both services' `environment:` block, so a value in `.env` is ignored there. `--data-dir PATH` sets it to `PATH/backups`. |
 
 ## Chat filters {#chat-filters}
@@ -194,14 +194,14 @@ Feature page: [Real-time listener](../configuration/listener.md).
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="enable_listener"></span>`ENABLE_LISTENER` | `false` | backup | Start one real-time listener per account inside the `schedule` command. The `LISTEN_*` settings do nothing without it. |
+| <span id="enable_listener"></span>`ENABLE_LISTENER` | `true` | backup | Start one real-time listener per account inside the `schedule` command. The `LISTEN_*` settings do nothing without it. On by default since 9.2.0. With it off, the scheduled pass is the only capture and `SCHEDULE` defaults to every 6 hours. |
 | <span id="listen_new_messages"></span>`LISTEN_NEW_MESSAGES` | `true` | backup | Save new messages as they arrive. Viewer notifications depend on it. |
-| <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `false` | backup | Also download the media of new messages at once, and the map picture of a new location. Otherwise media waits for the next scheduled backup. |
+| <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `true` | backup | Also download the media of new messages at once, within the usual media filters, and the map picture of a new location. When false, media waits for the next scheduled pass. |
 | <span id="listen_edits"></span>`LISTEN_EDITS` | `true` | backup | Apply text edits as they happen. The previous text is kept as a version. |
 | <span id="listen_deletions"></span>`LISTEN_DELETIONS` | `false` | backup | Apply deletions as `DELETION_MODE` says. When false, the listener only counts them. |
 | <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, earlier media, transcripts, reactions and reaction history. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |
 | <span id="listen_chat_actions"></span>`LISTEN_CHAT_ACTIONS` | `true` | backup | Save service messages such as joins and leaves, and refresh chat titles and photos. |
-| <span id="listen_reactions"></span>`LISTEN_REACTIONS` | `false` | backup | Capture per-emoji reaction counts as they change. |
+| <span id="listen_reactions"></span>`LISTEN_REACTIONS` | `true` | backup | Capture per-emoji reaction counts as they change. Best effort: reactions made from another device are not always pushed, and the scheduled pass reconciles them either way. |
 | <span id="reaction_debounce_seconds"></span>`REACTION_DEBOUNCE_SECONDS` | `1.5` | backup | How often buffered reaction changes are written. Floored at 0.1. |
 | <span id="mass_operation_threshold"></span>`MASS_OPERATION_THRESHOLD` | `10` | backup | The most deletions the listener applies to one chat in one window. The listener drops any beyond that, and the chat's deletions stay blocked for one window length. Edits are never limited. Below 1 stops startup, even with the listener off. |
 | <span id="mass_operation_window_seconds"></span>`MASS_OPERATION_WINDOW_SECONDS` | `30` | backup | Length of that sliding window, and how long a chat stays blocked after it trips. Below 1 stops startup. |

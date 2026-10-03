@@ -1,6 +1,6 @@
 # Schedule and backup tuning
 
-The backup service runs on a cron schedule and backs up every account in turn.
+The backup service saves new messages as they arrive through the [real-time listener](listener.md), and runs a full pass over every account on a cron schedule. Since 9.2.0 the listener is on by default and the full pass runs once a day.
 
 ## Two ways to run the backup
 
@@ -11,7 +11,7 @@ The backup service runs on a cron schedule and backs up every account in turn.
 
 ### The schedule command
 
-The `schedule` command opens one shared Telegram connection per account and keeps it open. It starts the [real-time listener](listener.md) when `ENABLE_LISTENER=true`. It runs one backup straight away, then waits for the next [`SCHEDULE`](#when-backups-run) tick. Every 30 seconds it writes the heartbeat file the Docker health check reads. If a listener dies, the scheduler restarts it after 5 seconds. SIGTERM and SIGINT cancel the running backup, stop the listeners and close the Telegram connections.
+The `schedule` command opens one shared Telegram connection per account and keeps it open. It starts the [real-time listener](listener.md), which is on by default (`ENABLE_LISTENER`). It runs one backup straight away, then waits for the next [`SCHEDULE`](#when-backups-run) tick. Every 30 seconds it writes the heartbeat file the Docker health check reads. If a listener dies, the scheduler restarts it after 5 seconds. SIGTERM and SIGINT cancel the running backup, stop the listeners and close the Telegram connections.
 
 ### The backup command
 
@@ -38,14 +38,35 @@ A container that runs `backup` instead of `schedule` writes no heartbeat. Docker
 
 ## When backups run
 
-[`SCHEDULE`](../reference/environment-variables.md#schedule) is a cron expression with five fields: minute, hour, day, month and day of week. The default is `0 */6 * * *`, which runs at minute 0 of every sixth hour. Any other number of fields stops the scheduler at startup.
+[`SCHEDULE`](../reference/environment-variables.md#schedule) is a cron expression with five fields: minute, hour, day, month and day of week. Any other number of fields stops the scheduler at startup. An empty value uses the default.
+
+The default depends on the listener:
+
+- With the listener on (the default), `0 3 * * *`: one full pass a day, at 03:00.
+- With `ENABLE_LISTENER=false`, `0 */6 * * *`: every 6 hours, because the pass is then the only capture.
+
+At startup the scheduler logs one line that says which mode it runs, for example `Capture mode: real time; full pass on SCHEDULE (0 3 * * *)`.
 
 | `SCHEDULE` | Runs |
 |------------|------|
-| `0 */6 * * *` | Every 6 hours, on the hour |
-| `0 * * * *` | Every hour |
+| `0 3 * * *` | Every day at 03:00 (default with the listener on) |
+| `0 */6 * * *` | Every 6 hours, on the hour (default with the listener off) |
 | `30 3 * * *` | Every day at 03:30 |
 | `0 2 * * sun` | Every Sunday at 02:00 |
+| `0 * * * *` | Every hour (deprecated with the listener on) |
+
+!!! warning "Deprecated: frequent full passes with the listener on"
+    An hourly or other frequent `SCHEDULE` made sense when the scheduled pass was the only capture. With the listener on, each pass walks every chat, finds almost nothing new and spends Telegram's rate limits, so FloodWaits slow the listener's own requests too. Such schedules still work. When the listener is on and `SCHEDULE` runs more than 4 passes a day, startup logs a note. With the listener off, a frequent schedule is still a normal choice.
+
+### Why the daily pass stays
+
+The listener does not see everything, so the full pass is still needed:
+
+- Telegram replays only a limited window of missed updates after a disconnect. After a long outage, or a process restart, the pass fetches what the listener could not.
+- Reactions you add from another device are not always pushed to the listener.
+- A chat you join while the backup is down is picked up by the next pass.
+- Gap-fill (`FILL_GAPS`) and the [reaction re-sweep](#reaction-re-sweep) run as part of the pass.
+- Media retries, avatar checks, folder refreshes and the transcription queue run as part of each pass.
 
 !!! tip "Use day names"
     In the day-of-week field, `0` means Monday, not Sunday as in crontab. Names such as `mon`, `sun` or `mon-fri` avoid the confusion.
@@ -56,7 +77,7 @@ The schedule uses the local time of the backup process. The images run in UTC un
 TZ=Europe/Berlin
 ```
 
-A run that starts late, for example after the machine was asleep, still runs if it is less than 3600 seconds late. Several missed runs collapse into one. When a tick arrives while a backup is still running, the scheduler skips that tick and logs a warning.
+A run that starts late, for example after the machine was asleep, still runs if it is less than 3600 seconds late. Several missed runs collapse into one. With the daily default, a pass missed by more than an hour waits for the next day. When a tick arrives while a backup is still running, the scheduler skips that tick and logs a warning.
 
 Accounts are backed up one after another, in configuration order. With several accounts, one run takes as long as all the accounts' runs added together. See [Multiple accounts](multiple-accounts.md).
 

@@ -4,6 +4,7 @@ Tests for the scheduler module (telegram_archive/scheduler.py).
 
 import asyncio
 import signal
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -462,7 +463,7 @@ class TestBackupSchedulerListener:
             await scheduler._start_listener()
 
     async def test_start_listener_when_connection_not_connected_logs_error(self):
-        """_start_listener fails gracefully when a connection is down."""
+        """_start_listener fails gracefully when a connection never came up."""
         with patch("telegram_archive.scheduler.signal.signal"):
             from telegram_archive.scheduler import BackupScheduler
 
@@ -471,6 +472,7 @@ class TestBackupSchedulerListener:
             scheduler = BackupScheduler(config)
             connection = AsyncMock()
             connection.is_connected = False
+            connection.client = None
             entry = _make_entry(connection=connection)
             scheduler._accounts = [entry]
 
@@ -1118,7 +1120,7 @@ class TestRunForeverListenerRestart:
 
             attempt = [0]
 
-            async def flaky_start_listener():
+            async def flaky_start_listener(**_kwargs):
                 attempt[0] += 1
                 if attempt[0] < 3:
                     # Mirrors the real _start_account_listener failure path:
@@ -1222,3 +1224,250 @@ class TestSchedulerMainLogging:
 
             MockBS.assert_called_once_with(mock_config)
             mock_scheduler_instance.run_forever.assert_called_once()
+
+
+# ===========================================================================
+# Catch-up on reconnect: handlers attached before the client is healed
+# ===========================================================================
+
+
+class _HealingConnection:
+    """A shared connection whose client died; ensure_connected() heals it in place."""
+
+    def __init__(self, calls: list, *, heal_ok: bool = True, authorized: bool = True):
+        from test_listener import _RecordingClient
+
+        self.calls = calls
+        self.client = _RecordingClient(calls)
+        self.client.is_connected = lambda: self._socket_up
+        authorized_result = authorized
+
+        async def is_user_authorized():
+            return authorized_result
+
+        self.client.is_user_authorized = is_user_authorized
+        self._socket_up = False
+        self._heal_ok = heal_ok
+        # The app-level flag stays True after Telethon's sender gives up (#265).
+        self.is_connected = True
+        self.me = MagicMock(id=1000001)
+
+    async def ensure_connected(self):
+        self.calls.append("client.connect")
+        if self._heal_ok:
+            self._socket_up = True
+            self.is_connected = True
+        else:
+            self.is_connected = False
+            raise ConnectionError("network down")
+        return self.client
+
+
+def _catch_up_scheduler(connection):
+    from test_listener import _catch_up_config
+
+    from telegram_archive.scheduler import BackupScheduler
+
+    config = MagicMock()
+    config.enable_listener = True
+    config.for_account = MagicMock(return_value=_catch_up_config())
+    scheduler = BackupScheduler(config)
+    entry = _make_entry(connection=connection, row_id=7)
+    scheduler._accounts = [entry]
+    return scheduler, entry
+
+
+class TestListenerRestartCatchUp:
+    async def test_watchdog_restart_attaches_before_connecting_then_catches_up(self):
+        """Telethon replays an outage the moment it reconnects; the handlers must already be there."""
+        from test_listener import _catch_up_db
+
+        from telegram_archive.listener import TelegramListener
+
+        calls: list = []
+        connection = _HealingConnection(calls)
+
+        async def fake_sleep(seconds):
+            calls.append(f"sleep {seconds}")
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with (
+                patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()),
+                patch.object(TelegramListener, "run", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler._start_listener(delay=5)
+                await entry.listener_task
+
+        assert calls == ["add_event_handler"] * 7 + ["sleep 5", "client.connect", "catch_up"]
+        assert isinstance(entry.listener, TelegramListener)
+
+    async def test_a_restart_after_a_failed_heal_still_attaches_first(self):
+        """A failed heal clears is_connected but keeps the client and its update state.
+
+        Reviving that client replays the outage at once, so the handlers must
+        already be attached: the start reads the client object, not the flag.
+        """
+        from test_listener import _catch_up_db
+
+        from telegram_archive.listener import TelegramListener
+
+        calls: list = []
+        connection = _HealingConnection(calls)
+        connection.is_connected = False
+
+        async def fake_sleep(seconds):
+            calls.append(f"sleep {seconds}")
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with (
+                patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()),
+                patch.object(TelegramListener, "run", new_callable=AsyncMock),
+                patch("telegram_archive.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler._start_listener(delay=5)
+                await entry.listener_task
+
+        assert calls == ["add_event_handler"] * 7 + ["sleep 5", "client.connect", "catch_up"]
+
+    async def test_a_failed_reconnect_detaches_the_new_handlers(self):
+        from test_listener import _catch_up_db
+
+        calls: list = []
+        connection = _HealingConnection(calls, heal_ok=False)
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()):
+                await scheduler._start_listener()
+
+        assert connection.client.handlers == []
+        assert calls.count("remove_event_handler") == 7
+        assert "catch_up" not in calls
+        assert entry.listener is None
+        assert entry.listener_task is None
+
+    async def test_a_failed_listener_connect_detaches_the_new_handlers(self):
+        """A revoked session fails connect(); the attached handlers must not stay on the shared client."""
+        from test_listener import _catch_up_db
+
+        calls: list = []
+        connection = _HealingConnection(calls, authorized=False)
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()):
+                await scheduler._start_listener()
+
+        assert connection.client.handlers == []
+        assert "catch_up" not in calls
+        assert entry.listener is None
+        assert entry.listener_task is None
+
+
+class TestCaptureModeLogging:
+    def _config(self, schedule, enable_listener=True):
+        config = MagicMock()
+        config.schedule = schedule
+        config.enable_listener = enable_listener
+        return config
+
+    def test_listener_on(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        assert capture_mode_lines(self._config("0 3 * * *")) == [
+            "Capture mode: real time; full pass on SCHEDULE (0 3 * * *)"
+        ]
+
+    def test_listener_off(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        assert capture_mode_lines(self._config("0 * * * *", enable_listener=False)) == [
+            "Capture mode: scheduled only (ENABLE_LISTENER=false); full pass on SCHEDULE (0 * * * *)"
+        ]
+
+    # A fixed instant and zone: on a DST change day in a DST zone the real
+    # clock gives 23 or 25 hourly passes.
+    _NOW = datetime(2026, 1, 15, 7, 30, tzinfo=UTC)
+
+    def test_an_hourly_pass_with_the_listener_on_gets_the_deprecation_note(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        lines = capture_mode_lines(self._config("0 * * * *"), now=self._NOW, timezone=UTC)
+
+        assert len(lines) == 2
+        assert "24 times a day" in lines[1]
+        assert "deprecated" in lines[1]
+
+    def test_the_old_six_hour_default_gets_no_note(self):
+        from telegram_archive.scheduler import capture_mode_lines
+
+        assert len(capture_mode_lines(self._config("0 */6 * * *"), now=self._NOW, timezone=UTC)) == 1
+
+    def test_fires_in_next_day(self):
+        from telegram_archive.scheduler import fires_in_next_day
+
+        assert fires_in_next_day("0 * * * *", self._NOW, UTC) == 24
+        assert fires_in_next_day("0 3 * * *", self._NOW, UTC) == 1
+        assert fires_in_next_day("0 */6 * * *", self._NOW, UTC) == 4
+        assert fires_in_next_day("not a cron", self._NOW, UTC) is None
+
+    @pytest.mark.parametrize(
+        ("schedule", "fall_back", "spring_forward"),
+        [("0 * * * *", 24, 24), ("0 2 * * *", 2, 1), ("30 2 * * *", 2, 1), ("0 3 * * *", 1, 1)],
+    )
+    def test_fires_in_next_day_returns_across_a_dst_change(self, schedule, fall_back, spring_forward):
+        """The day before a fall-back change used to loop forever and hang the backup's startup.
+
+        Python compares two datetimes of one zone by their wall clock, so the
+        repeated 02:00 never read as later than the first one. SIGALRM turns a
+        regression into a failure instead of a hung suite.
+        """
+        from zoneinfo import ZoneInfo
+
+        from telegram_archive.scheduler import fires_in_next_day
+
+        madrid = ZoneInfo("Europe/Madrid")
+
+        def hung(signum, frame):
+            raise TimeoutError(f"fires_in_next_day({schedule!r}) did not return")
+
+        previous = signal.signal(signal.SIGALRM, hung)
+        signal.alarm(10)
+        try:
+            # 25 October 2026 and 29 March 2026 are the European change days.
+            assert fires_in_next_day(schedule, datetime(2026, 10, 24, 12, 0, tzinfo=madrid), madrid) == fall_back
+            assert fires_in_next_day(schedule, datetime(2026, 3, 28, 12, 0, tzinfo=madrid), madrid) == spring_forward
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    async def test_main_logs_exactly_one_capture_mode_line(self, caplog):
+        mock_config = MagicMock()
+        mock_config.schedule = "0 3 * * *"
+        mock_config.backup_path = "/data/backups"
+        mock_config.download_media = True
+        mock_config.chat_types = ["private"]
+        mock_config.enable_listener = True
+        mock_config.sync_deletions_edits = False
+        mock_config.accounts = []
+
+        with (
+            caplog.at_level("INFO", logger="telegram_archive.scheduler"),
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.BackupScheduler", return_value=AsyncMock()),
+        ):
+            from telegram_archive.scheduler import main
+
+            await main()
+
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Capture mode:")]
+        assert lines == ["Capture mode: real time; full pass on SCHEDULE (0 3 * * *)"]
+        assert not any("Real-time listener:" in r.getMessage() for r in caplog.records)
+        # The listener settings are logged here, by the process that runs a listener.
+        mock_config.log_summary.assert_called_once_with()
+        mock_config.log_listener_summary.assert_called_once_with()
