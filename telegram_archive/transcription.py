@@ -1,8 +1,10 @@
 """Automatic voice transcription: the backup side of docs/TRANSCRIPTION.md.
 
 Only the backup process talks to the transcription server. The drain runs
-at the end of every backup and the listener calls the same per-media
-function the moment it downloads a voice message. Every result is a new row
+at the end of every backup and, in ``schedule``, on a timer of its own
+(``drain_if_waiting``, every TRANSCRIPTION_DRAIN_INTERVAL_MINUTES), one drain
+at a time. The listener calls the same per-media function the moment it
+downloads a voice message. Every result is a new row
 in ``media_transcripts``; nothing here changes or removes a media row.
 
 ``TRANSCRIPTION_PROVIDER`` picks the path. With ``auto``, the default, the
@@ -56,12 +58,14 @@ import subprocess
 import tempfile
 import urllib.parse
 import weakref
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, BinaryIO
 
 import httpx
 
+from .db.adapter import TRANSCRIPT_FILE_ERRORS
 from .media_integrity import REFETCH, repair_media_row
 from .message_utils import describe_exception, utcnow_naive
 from .realtime import NotificationType, RealtimeNotifier
@@ -161,6 +165,28 @@ def _media_tool_slot() -> asyncio.Semaphore:
     if slot is None:
         slot = _tool_slots[loop] = asyncio.Semaphore(MEDIA_TOOL_SLOTS)
     return slot
+
+
+# One drain at a time per process: the timer drain in ``schedule`` and the
+# drain at the end of a backup run take turns. One lock per event loop, as the
+# tool slots above.
+_drain_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+def _drain_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _drain_locks.get(loop)
+    if lock is None:
+        lock = _drain_locks[loop] = asyncio.Lock()
+    return lock
+
+
+# The media inside ``transcribe_media`` right now in this process, as
+# (account_id, media_id). The drain lock does not cover the listener's own
+# sends, and a synchronous request can run longer than the ten minutes after
+# which the drain query takes a queued row back: a second call for a media in
+# here answers ``noop`` instead of uploading the file again.
+_in_flight: set[tuple[int, Any]] = set()
 
 
 def _warn_once(tool: str, message: str) -> None:
@@ -1234,6 +1260,7 @@ async def transcribe_media(
     client: TranscriptionClient | None = None,
     server: ServerInfo | None = None,
     notifier: RealtimeNotifier | None = None,
+    refetch: bool = True,
 ) -> str:
     """One media to the server; the drain and the listener both call this.
 
@@ -1267,11 +1294,49 @@ async def transcribe_media(
     entry that exists but cannot be read from here. When the newest row already says
     ``file_missing``, or ``file_unreadable``, and the file is still missing
     or unreadable, nothing is written and the answer is ``noop``: the drain
-    tries again next time, and the file goes out once it is back.
+    tries again next time, and the file goes out once it is back. With
+    ``refetch`` off (the timer's drain, which can run during a backup run
+    that has a file moved aside for VERIFY_MEDIA) a file with no copy is
+    never marked: it gets ``file_missing``, and the drain after a backup run
+    hands it to the download.
+
+    A media this process is already sending (the listener's call and a
+    drain's) answers ``noop``: the first call fills the row.
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
         return "noop"
+    key = (account_id, media["id"])
+    if key in _in_flight:
+        return "noop"
+    _in_flight.add(key)
+    try:
+        return await _transcribe_one(
+            config,
+            db,
+            media,
+            account_id=account_id,
+            client=client,
+            server=server,
+            notifier=notifier,
+            refetch=refetch,
+        )
+    finally:
+        _in_flight.discard(key)
+
+
+async def _transcribe_one(
+    config,
+    db,
+    media: dict[str, Any],
+    *,
+    account_id: int,
+    client: TranscriptionClient,
+    server: ServerInfo | None,
+    notifier: RealtimeNotifier | None,
+    refetch: bool,
+) -> str:
+    """The body of ``transcribe_media``, for a media no other call is sending."""
     media_id = media["id"]
     content_hash = media.get("content_hash")
     if not isinstance(content_hash, str) or not content_hash:
@@ -1282,7 +1347,7 @@ async def transcribe_media(
     media_root = getattr(config, "media_path", "")
     path = resolve_stored_media_path(media.get("file_path"), media_root)
     if not path or not os.path.isfile(path):
-        repaired = await repair_media_row(db, media, media_root, account_id=account_id)
+        repaired = await repair_media_row(db, media, media_root, account_id=account_id, refetch=refetch)
         if repaired == REFETCH:
             return "refetch"
     if content_hash is not None:
@@ -1581,6 +1646,92 @@ async def _store_failed(db, notifier, failed: dict[str, Any]) -> None:
     logger.warning(f"Transcription failed ({failed['error']})")
 
 
+def _drain_settings(config) -> tuple[Collection[str], int, Sequence[int]]:
+    """The types, the per-run budget and the priority chats a drain reads, normalised once for both callers."""
+    types = getattr(config, "transcription_types", None)
+    if not isinstance(types, (set, frozenset, list, tuple)):
+        types = ("voice",)
+    per_run = getattr(config, "transcription_backfill_per_run", 50)
+    if not isinstance(per_run, int) or isinstance(per_run, bool) or per_run < 1:
+        per_run = 50
+    priority = getattr(config, "transcription_priority_chat_ids", None)
+    if not isinstance(priority, (list, tuple)):
+        priority = ()
+    return types, per_run, priority
+
+
+def _file_check(media: dict[str, Any]) -> bool:
+    """A media the drain query returns only to look again for a file that was missing or unreadable."""
+    newest = media.get("transcript") or {}
+    return newest.get("status") == "failed" and newest.get("error") in TRANSCRIPT_FILE_ERRORS
+
+
+async def transcription_waiting(config, db, *, account_id: int) -> bool:
+    """Whether a drain of this account has work, read from the database alone.
+
+    True while the account has akou jobs still open (results to collect),
+    or when the drain query finds a media to send: a pressed file, a file
+    of TRANSCRIPTION_TYPES, a retry or a probe. A file that was missing or
+    unreadable does not count by itself: one such file would otherwise make
+    every timer tick ask the server. Any drain with other work, and the
+    drain of each backup run, look at it again. The query is the drain's
+    own, with a budget of one, so what qualifies is decided in one place.
+    """
+    if await db.get_open_job_transcripts(account_id=account_id):
+        return True
+    types, _, priority = _drain_settings(config)
+    # A media this process is sending now is not work for a drain; one more
+    # row per such media keeps one behind it from being missed.
+    sending = {media_id for owner, media_id in _in_flight if owner == account_id}
+    rows = await db.get_media_awaiting_transcription(
+        account_id=account_id,
+        types=types,
+        per_run=1 + len(sending),
+        stale_before=utcnow_naive() - STALE_QUEUED,
+        priority_chat_ids=priority,
+    )
+    return any(not _file_check(media) and media.get("id") not in sending for media in rows)
+
+
+async def drain_if_waiting(
+    config,
+    db,
+    *,
+    account_id: int,
+    notifier: RealtimeNotifier | None = None,
+    client: TranscriptionClient | None = None,
+) -> dict[str, int] | None:
+    """The timer's drain: one drain when this account has work, else nothing.
+
+    None when transcription is off, no server is configured, another drain
+    is running (the timer skips this tick, at debug level) or nothing waits.
+    The check reads the database only, so an idle tick sends no request and
+    logs nothing at info level. Otherwise the counts of the drain, plus
+    ``file_refusals``, the files the server refused with a 4xx.
+
+    It never marks a media for a new download: it can run during a backup
+    run, while VERIFY_MEDIA has a suspect file moved aside, so a file with
+    no copy waits for the drain at the end of a backup run.
+    """
+    if getattr(config, "transcription_enabled", False) is not True:
+        return None
+    client = client or TranscriptionClient(config)
+    if not client.configured:
+        return None
+    lock = _drain_lock()
+    if lock.locked():
+        logger.debug("Transcription: a drain is already running; the timer skips this tick")
+        return None
+    async with lock:
+        if not await transcription_waiting(config, db, account_id=account_id):
+            return None
+        stats = await _drain(config, db, account_id=account_id, notifier=notifier, client=client, refetch=False)
+        # For the timer's back-off: files the server refused (a 4xx), told
+        # apart from files that failed because they are missing here.
+        stats["file_refusals"] = client.file_refusals
+        return stats
+
+
 async def drain_transcriptions(
     config,
     db,
@@ -1588,6 +1739,23 @@ async def drain_transcriptions(
     account_id: int,
     notifier: RealtimeNotifier | None = None,
     client: TranscriptionClient | None = None,
+) -> dict[str, int]:
+    """One drain, after any drain already running in this process (the timer's) ends.
+
+    See ``_drain`` for what it does and returns.
+    """
+    async with _drain_lock():
+        return await _drain(config, db, account_id=account_id, notifier=notifier, client=client)
+
+
+async def _drain(
+    config,
+    db,
+    *,
+    account_id: int,
+    notifier: RealtimeNotifier | None = None,
+    client: TranscriptionClient | None = None,
+    refetch: bool = True,
 ) -> dict[str, int]:
     """One drain: detect the server, reconcile, poll stragglers, submit.
 
@@ -1601,7 +1769,9 @@ async def drain_transcriptions(
     callback host off the allowlist, a 5xx on the job path) ends the run the
     same way, with one warning and no failed row. On the job path at most
     ``per_run`` jobs are in flight per account: a drain submits only as many
-    new media as the open job rows leave room for.
+    new media as the open job rows leave room for. ``refetch`` off (the
+    timer's drain) never hands a file back to the download; see
+    ``transcribe_media``.
     """
     stats = {
         "done": 0,
@@ -1659,19 +1829,11 @@ async def drain_transcriptions(
             logger.warning(f"Transcription reconcile stopped ({e.reason})")
 
     # 4. Submit.
-    types = getattr(config, "transcription_types", None)
-    if not isinstance(types, (set, frozenset, list, tuple)):
-        types = ("voice",)
-    per_run = getattr(config, "transcription_backfill_per_run", 50)
-    if not isinstance(per_run, int) or isinstance(per_run, bool) or per_run < 1:
-        per_run = 50
+    types, per_run, priority = _drain_settings(config)
     if server.job_path:
         # Jobs still open count against the run: a server slower than per_run
         # per backup would otherwise grow the open rows, and the poll, without end.
         per_run -= len(await db.get_open_job_transcripts(account_id=account_id))
-    priority = getattr(config, "transcription_priority_chat_ids", None)
-    if not isinstance(priority, (list, tuple)):
-        priority = ()
     media_rows = await db.get_media_awaiting_transcription(
         account_id=account_id,
         types=types,
@@ -1680,7 +1842,8 @@ async def drain_transcriptions(
         priority_chat_ids=priority,
     )
     if not media_rows:
-        logger.debug("Transcription: nothing to send")
+        # Results the feed or the poll filled still get their line.
+        _log_drain_summary(stats, 0)
         return stats
     handled = 0
     for media in media_rows:
@@ -1690,7 +1853,7 @@ async def drain_transcriptions(
             # on disk is sent and counts.
             break
         outcome = await transcribe_media(
-            config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
+            config, db, media, account_id=account_id, client=client, server=server, notifier=notifier, refetch=refetch
         )
         stats[outcome] = stats.get(outcome, 0) + 1
         if outcome != "noop":
@@ -1708,7 +1871,20 @@ async def drain_transcriptions(
             # transcribe_media warned once; every media after this one would
             # wait out the same timeouts, or get the same refusal.
             break
-    logger.info(
+    _log_drain_summary(stats, len(media_rows))
+    return stats
+
+
+def _log_drain_summary(stats: dict[str, int], media_count: int) -> None:
+    """One info line for a drain that did something, a debug line for one that only looked.
+
+    A drain whose every media was a check of a file still missing changed
+    nothing, and the timer runs one every few minutes; results filled from
+    the event feed or the poll count as something done.
+    """
+    level = logging.INFO if any(count > 0 for name, count in stats.items() if name != "noop") else logging.DEBUG
+    logger.log(
+        level,
         "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable, "
         "%d sent back to download "
         "of %d media; %d filled from the event feed, %d from the poll",
@@ -1720,8 +1896,7 @@ async def drain_transcriptions(
         stats["refused"],
         stats["unreachable"],
         stats["refetch"],
-        len(media_rows),
+        media_count,
         stats["reconciled"],
         stats["polled"],
     )
-    return stats

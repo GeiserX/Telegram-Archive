@@ -473,6 +473,8 @@ class TestTelegramImporterRun(unittest.TestCase):
         media_call = db.insert_media.call_args[0][0]
         self.assertEqual(media_call["type"], "photo")
         self.assertEqual(media_call["message_id"], 1)
+        # A JSON export names the photo's size: it is kept as given.
+        self.assertEqual((media_call["width"], media_call["height"]), (800, 600))
         self.assertTrue(Path(media_dir, "42").exists())
 
     def test_import_rejects_media_outside_export_root(self):
@@ -1186,8 +1188,9 @@ class TestParseHtmlExport(unittest.TestCase):
 
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["photo"], "photos/photo_1@15-01-2024_10-00-00.jpg")
-        self.assertEqual(messages[0]["width"], 320)
-        self.assertEqual(messages[0]["height"], 240)
+        # The <img> style is the thumbnail's display size, not the photo's.
+        self.assertNotIn("width", messages[0])
+        self.assertNotIn("height", messages[0])
         self.assertEqual(messages[0]["text"], "Check this photo!")
 
     def test_video_media(self):
@@ -1390,7 +1393,33 @@ class TestHtmlImportIntegration(unittest.TestCase):
         db.insert_media.assert_called_once()
         media_call = db.insert_media.call_args[0][0]
         self.assertEqual(media_call["type"], "photo")
+        # The file has no readable header, and the thumbnail's 320x240 is not
+        # the photo's size: no size is stored.
+        self.assertIsNone(media_call["width"])
+        self.assertIsNone(media_call["height"])
         self.assertTrue(Path(media_dir, "42").exists())
+
+    def test_html_import_stores_the_photo_size_from_its_file(self):
+        from PIL import Image
+
+        # The export draws a 320x240 thumbnail of a 1280x960 photo.
+        self._write_html(SAMPLE_HTML_PHOTO)
+        photos_dir = os.path.join(self.export_dir, "photos")
+        os.makedirs(photos_dir)
+        Image.new("RGB", (1280, 960), (90, 160, 230)).save(
+            os.path.join(photos_dir, "photo_1@15-01-2024_10-00-00.jpg"), "JPEG", quality=70
+        )
+
+        db = AsyncMock()
+        db.has_media_for_message = AsyncMock(return_value=False)
+        db.get_last_message_id.return_value = 0
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
+
+        self._run(importer.run(self.export_dir, chat_id_override=42))
+
+        media_call = db.insert_media.call_args[0][0]
+        self.assertEqual((media_call["width"], media_call["height"]), (1280, 960))
 
     def test_html_import_skip_media(self):
         self._write_html(SAMPLE_HTML_PHOTO)

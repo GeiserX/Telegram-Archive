@@ -107,7 +107,7 @@ def _lerp(a, b, t):
     return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def draw_landscape(path: Path, seed: int, size=(1280, 853), lake=None):
+def draw_landscape(path: Path, seed: int, size=(1280, 853), lake=None, fmt="JPEG"):
     """A flat illustrated landscape: gradient sky, sun, three ridges, maybe a lake."""
     from PIL import Image, ImageDraw, ImageFilter
 
@@ -146,7 +146,7 @@ def draw_landscape(path: Path, seed: int, size=(1280, 853), lake=None):
             d.line([(x, y), (x + rng.randint(60, 220), y)], fill=_lerp(water, (255, 255, 255), 0.35), width=2)
     img = img.filter(ImageFilter.SMOOTH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(path, "JPEG", quality=86)
+    img.save(path, fmt, **({"quality": 86} if fmt == "JPEG" else {}))
     return size
 
 
@@ -348,6 +348,20 @@ def ffmpeg_round_video(path: Path, seconds: int) -> bool:
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"gradients=s=384x384:d={seconds}:speed=0.03:seed=7"]
     cmd += ["-f", "lavfi", "-i", f"sine=frequency=220:duration={seconds}"]
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(path)]
+    return subprocess.run(cmd, check=False).returncode == 0
+
+
+def ffmpeg_clip(path: Path, size: tuple[int, int], seconds: int, *, sound: bool) -> bool:
+    """A moving test pattern in H.264: a video clip, or, with no sound, a GIF the
+    way Telegram stores one (an MP4)."""
+    if not shutil.which("ffmpeg"):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    w, h = size
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s={w}x{h}:d={seconds}:r=25"]
+    if sound:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=330:duration={seconds}", "-c:a", "aac", "-shortest"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)]
     return subprocess.run(cmd, check=False).returncode == 0
 
 
@@ -1089,6 +1103,38 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
             "avatar": "landscape",
         }
     )
+    # Pictures of every shape at the top of the chat, for the viewer's media
+    # boxes (Telegram Desktop's sizes): a tall photo with no caption under a
+    # name, a panorama, a tiny picture, a video, a GIF, an image sent as a
+    # file, and a photo an older release stored with no size. They come
+    # before the rest of the chat, so its message ids stay in date order.
+    shapes = ChatScript(1, OWNER_PERSONAL, BOOKS, first_id=200)
+    t = now - 46 * day + timedelta(hours=2)
+    shapes.add(t, WREN, "", media={"type": "photo", "seed": 41, "size": (720, 1280)})
+    shapes.add(
+        t + timedelta(minutes=4),
+        LIOR,
+        "The whole reading room from the gallery",
+        media={"type": "photo", "seed": 42, "size": (4000, 200)},
+    )
+    shapes.add(t + timedelta(minutes=6), NOOR, "", media={"type": "photo", "seed": 43, "size": (50, 50), "lake": False})
+    shapes.add(
+        t + timedelta(minutes=9),
+        MIRELA,
+        "The author reading at the launch",
+        media={"type": "video", "size": (640, 360), "duration": 4},
+    )
+    shapes.add(t + timedelta(minutes=11), WREN, "", media={"type": "animation", "size": (480, 270), "duration": 2})
+    shapes.add(
+        t + timedelta(minutes=14),
+        NOOR,
+        "Seating plan for the meeting",
+        media={"type": "document", "file": "seating-plan.png", "image": (800, 600)},
+    )
+    shapes.add(
+        t + timedelta(minutes=17), LIOR, "", media={"type": "photo", "seed": 44, "size": (900, 1200), "no_size": True}
+    )
+    scripts.append(shapes)
     s = ChatScript(1, OWNER_PERSONAL, BOOKS, first_id=300)
     filler(s, "books", [NOOR, WREN, MIRELA, LIOR, OWNER_PERSONAL], now - 42 * day, now - 1 * day, 34)
     s.add(
@@ -1459,7 +1505,11 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
                 continue
             if kind == "photo":
                 name = f"{file_id}_photo.jpg"
-                w, h = draw_landscape(folder / name, m.pop("seed"))
+                size = m.pop("size", (1280, 853))
+                w, h = draw_landscape(folder / name, m.pop("seed"), size=size, lake=m.pop("lake", None))
+                if m.pop("no_size", False):
+                    # A release before 7.32.0 read no size from a photo and stored none.
+                    w = h = None
                 m.update(file_name=name, mime_type="image/jpeg", width=w, height=h)
                 replaced_seed = m.pop("replaced_seed", None)
                 if replaced_seed is not None:
@@ -1507,6 +1557,17 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
                 if not ffmpeg_round_video(folder / name, m["duration"]):
                     continue
                 m.update(file_name=name, mime_type="video/mp4", width=384, height=384)
+            elif kind in ("video", "animation"):
+                name = f"{file_id}_{kind}.mp4"
+                w, h = m.pop("size")
+                if not ffmpeg_clip(folder / name, (w, h), m["duration"], sound=kind == "video"):
+                    continue
+                m.update(file_name=name, mime_type="video/mp4", width=w, height=h)
+            elif kind == "document" and m.get("image"):
+                # An image sent as a file: Telegram keeps its size on the document.
+                name = f"{file_id}_{m.pop('file')}"
+                w, h = draw_landscape(folder / name, 45, size=m.pop("image"), lake=True, fmt="PNG")
+                m.update(file_name=name, mime_type="image/png", width=w, height=h)
             elif kind == "document":
                 name = f"{file_id}_{m.pop('file')}"
                 draw_document(

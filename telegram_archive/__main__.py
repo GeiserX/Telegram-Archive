@@ -144,6 +144,7 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
             "downloaded again. A video or audio file in place whose download stopped early "
             "(an MP4-family file with no index, at a size a stopped download leaves) is "
             "marked not downloaded so the next backup downloads it again and replaces it. "
+            "A photo stored with no width and height gets the size its file header gives. "
             "Without --repair nothing is changed. When the media folder "
             "is missing, unreadable or empty, nothing is checked or changed. Exit code 1 "
             "when the media folder is not visible, when the dry run finds something to "
