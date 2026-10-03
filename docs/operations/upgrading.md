@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 9.3.0 | Nothing. Photos, videos and GIFs in the viewer change size. See [Upgrading to 9.3.0](#upgrading-to-930). |
+| 9.3.0 | Nothing. Photos, videos and GIFs in the viewer change size. To give older photos their real shape before they load, run `telegram-archive check-media --repair` once. See [Upgrading to 9.3.0](#upgrading-to-930). |
 | 9.2.1 | Nothing. |
 | 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See the [Files cut short](#cut-short-92) section. Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
@@ -98,7 +98,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 ## Upgrading to 9.3.0 { #upgrading-to-930 }
 
-Photos, videos and GIFs in the viewer take the size Telegram Desktop gives them, so most of them get larger and some bubbles get wider. No setting controls it and nothing in the archive changes. The size comes from the width and height the backup stored with each file. Releases before 7.32.0 stored no size for photos from the full pass. Those photos show a 4:3 box until the file loads, and then take their real shape, which moves the chat once.
+Photos, videos and GIFs in the viewer take the size Telegram Desktop gives them, so most of them get larger and some bubbles get wider. No setting controls it and nothing in the archive changes. The size comes from the width and height the backup stored with each file. Releases before 7.32.0 stored no size for photos from the full pass. Those photos show a 4:3 box until the file loads, and then take their real shape, which moves the chat once. Run `telegram-archive check-media --repair` once to store their size from each file's header; it changes only photo rows with no size and never writes a file. It needs no Telegram session, so the backup can keep running. See [check-media](../reference/cli.md#check-media).
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 

@@ -33,9 +33,14 @@ it: its size is a multiple of Telethon's smallest request size and its
 top-level boxes run past the end of the file or hold no index (``moov``).
 ``check-media --repair`` marks it not downloaded, and the download replaces it.
 
+A photo in place can also lack its size: releases before 7.32.0 stored no
+width or height for photos from the full pass, and the viewer sizes a picture
+from them. ``image_header_size`` reads the size from the file's header without
+decoding it, and ``check-media --repair`` stores it on a row that has none.
+
 Everything here is a few ``lstat`` calls per row and a hash of each candidate,
-plus one open and a few small reads per MP4-family file. Nothing walks the
-media tree.
+plus one open and a few small reads per MP4-family file or photo with no size.
+Nothing walks the media tree.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ import logging
 import os
 import re
 import struct
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -215,6 +221,41 @@ def iso_bmff_incomplete(path: str) -> bool | None:
             return not seen_moov
     except OSError:
         return None
+
+
+# EXIF orientations 5 to 8 turn the picture a quarter: the stored width is the
+# height it is drawn at.
+_EXIF_ORIENTATION = 0x0112
+_QUARTER_TURNS = frozenset({5, 6, 7, 8})
+
+
+def image_header_size(path: str | None) -> tuple[int, int] | None:
+    """The width and height the picture at ``path`` is drawn at, from its header.
+
+    Nothing is decoded: Pillow reads the header when it opens the file, which
+    it opens read-only. An EXIF orientation of 5 to 8 swaps the two, as a
+    browser draws the picture turned. None for a file Pillow cannot identify,
+    one over Pillow's pixel limit, and any read error.
+    """
+    if not path:
+        return None
+    try:
+        from PIL import Image
+
+        with warnings.catch_warnings():
+            # Pillow only warns between its pixel limit and twice it; over the
+            # limit is unreadable here, as it is to the thumbnailer.
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(path) as image:
+                width, height = image.size
+                orientation = image.getexif().get(_EXIF_ORIENTATION)
+    except Exception:
+        return None
+    if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+        return None
+    if orientation in _QUARTER_TURNS:
+        width, height = height, width
+    return width, height
 
 
 def cut_short_state(path: str | None) -> str | None:
@@ -486,6 +527,10 @@ def _empty_report() -> dict[str, int]:
         "media_root_not_visible": 0,
         "truncated": 0,
         "suspicious": 0,
+        "dimensions_missing": 0,
+        "dimensions_unreadable": 0,
+        "dimensions_filled": 0,
+        "dimensions_fill_failed": 0,
     }
 
 
@@ -509,6 +554,12 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
     again and replaces it. Its bytes stay on disk until then. A file with no
     index at a size a stopped download does not leave is counted in
     ``suspicious`` and never marked.
+
+    A photo in place with neither width nor height is counted in
+    ``dimensions_missing`` when its header gives a size, and ``repair`` stores
+    it (``dimensions_filled``). One whose header cannot be read is counted in
+    ``dimensions_unreadable`` and left as it is. A stored size is never
+    overwritten.
     """
     from .db.models import DEFAULT_ACCOUNT_ID
 
@@ -544,6 +595,7 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
                             await _mark_for_refetch(db, row, account_id, report)
                     else:
                         report["present"] += 1
+                    await _check_photo_size(db, row, inspection.path, account_id, report, repair=repair)
                     continue
                 if inspection.state == KEPT:
                     report["kept"] += 1
@@ -570,6 +622,29 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
                     continue
                 await _mark_for_refetch(db, row, account_id, report)
     return report
+
+
+async def _check_photo_size(
+    db, row: dict[str, Any], path: str | None, account_id: int, report: dict[str, int], *, repair: bool
+) -> None:
+    """Count a photo with no stored size, and with ``repair`` store the size its header gives."""
+    if row.get("type") != "photo" or row.get("width") is not None or row.get("height") is not None:
+        return
+    size = image_header_size(path)
+    if size is None:
+        report["dimensions_unreadable"] += 1
+        return
+    report["dimensions_missing"] += 1
+    if not repair:
+        return
+    try:
+        changed = await db.fill_media_dimensions(row["id"], account_id=account_id, width=size[0], height=size[1])
+    except Exception as e:
+        logger.warning(f"Could not store a photo size: {type(e).__name__}")
+        report["dimensions_fill_failed"] += 1
+        return
+    if changed:
+        report["dimensions_filled"] += 1
 
 
 async def _mark_for_refetch(db, row: dict[str, Any], account_id: int, report: dict[str, int]) -> None:
@@ -655,6 +730,19 @@ def format_media_check(report: dict[str, int], *, repair: bool) -> list[str]:
                 f"  File back at its path:     {report['recoverable']}  "
                 "(marked not downloaded earlier; --repair marks them downloaded again)"
             )
+    if report.get("dimensions_missing"):
+        if repair:
+            lines.append(
+                f"  Photo sizes filled:        {report.get('dimensions_filled', 0)}  (read from the file header)"
+            )
+            if report.get("dimensions_fill_failed"):
+                lines.append(f"  Could not store a size:    {report['dimensions_fill_failed']}  (see the log)")
+        else:
+            lines.append(
+                f"  Photos without size:       {report['dimensions_missing']}  (--repair reads it from the file header)"
+            )
+    if report.get("dimensions_unreadable"):
+        lines.append(f"  Size not readable:         {report['dimensions_unreadable']}  (left as it is)")
     if report["kept"]:
         lines.append(f"  Left alone:                {report['kept']}  (an entry this process cannot read)")
     if report["placeholders"]:
@@ -682,6 +770,7 @@ __all__ = [
     "cut_short_state",
     "file_in_place",
     "format_media_check",
+    "image_header_size",
     "inspect_media_row",
     "inspect_media_row_with_db",
     "iso_bmff_incomplete",
