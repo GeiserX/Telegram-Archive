@@ -144,12 +144,20 @@ const requestAnimationFrame = (fn) => fn()
 let mediaOnly = false
 const isMediaOnlyMessage = () => mediaOnly
 const isImageDocument = (msg) => (msg.media?.mime_type || '').startsWith('image/')
+const getMediaUrl = (msg) => msg.media?.url || ''
 """
+
+_CAP = (
+    "const viewportWidth = ref(",
+    "const bubbleRoom = ref(",
+    "const BUBBLE_PADDING_X = ",
+    "const mediaCap = computed(",
+    "const mediaNaturalSizes = ref(",
+)
 
 _FRAME = (
     *_BOX,
-    "const viewportWidth = ref(",
-    "const mediaCap = computed(",
+    *_CAP,
     "const mediaFrame = (msg, index) =>",
     "const mediaFrameStyle = (msg, index) =>",
     "const MEDIA_COMPACT_HEIGHT = ",
@@ -216,19 +224,6 @@ console.log(JSON.stringify([box.width, box.height]))
         )
         self.assertEqual(out, [164, 292])
 
-    def test_a_hidden_photo_gives_its_stand_in_the_shown_photos_box(self) -> None:
-        out = _frame(
-            """
-const shown = mediaFrameStyle({ media: { type: 'photo', width: 1600, height: 1200, file_path: 'a.jpg' } }, 0)
-const hidden = mediaFrameStyle({ media: { type: 'photo', width: 1600, height: 1200, no_download: true } }, 0)
-const missing = mediaFrameStyle({ media: { type: 'photo', width: 1600, height: 1200, file_path: 'a.jpg', downloaded: false } }, 0)
-console.log(JSON.stringify({ shown, hidden, missing }))
-"""
-        )
-        self.assertEqual(out["shown"], {"width": "430px", "aspectRatio": "430 / 323", "--media-fit": "cover"})
-        self.assertEqual(out["hidden"], out["shown"])
-        self.assertEqual(out["missing"], out["shown"])
-
     def test_a_stand_in_too_short_for_the_ring_above_its_words_is_compact(self) -> None:
         out = _frame(
             """
@@ -242,18 +237,19 @@ console.log(JSON.stringify({ short, tall }))
     def test_a_row_with_no_size_learns_it_from_the_file_once(self) -> None:
         out = _frame(
             """
-const msg = { media: { type: 'photo', width: null, height: null, file_path: 'a.jpg' } }
+const msg = { id: 7, media: { type: 'photo', width: null, height: null, file_path: 'a.jpg', url: '/media/c1/7_photo' } }
 const before = mediaFrame(msg, 0)
 noteNaturalSize(msg, 900, 1200)
 const after = mediaFrame(msg, 0)
-const stored = { media: { type: 'photo', width: 1280, height: 853, file_path: 'b.jpg' } }
+const stored = { id: 8, media: { type: 'photo', width: 1280, height: 853, file_path: 'b.jpg', url: '/media/c1/8_photo' } }
 noteNaturalSize(stored, 10, 10)
 noteNaturalSize(msg, 0, 0)
 console.log(JSON.stringify({
     before: [before.width, before.height, before.known],
     after: [after.width, after.height, after.known],
-    storedKept: stored.mediaNaturalSize === undefined && mediaFrame(stored, 0).width === 430,
-    natural: msg.mediaNaturalSize,
+    storedKept: !mediaNaturalSizes.value.has('/media/c1/8_photo') && mediaFrame(stored, 0).width === 430,
+    natural: mediaNaturalSizes.value.get('/media/c1/7_photo'),
+    onRow: 'mediaNaturalSize' in msg,
 }))
 """
         )
@@ -261,6 +257,68 @@ console.log(JSON.stringify({
         self.assertEqual(out["after"], [323, 430, True])
         self.assertTrue(out["storedKept"])
         self.assertEqual(out["natural"], {"w": 900, "h": 1200})
+        self.assertFalse(out["onRow"])
+
+    def test_a_jump_that_replaces_the_row_keeps_the_learned_size(self) -> None:
+        # A jump replaces messages.value with fresh objects from the API. Vue
+        # keeps the <img> of a row in both windows (same key, same src), so it
+        # loads nothing and reports nothing again: the new object must still
+        # find the size the old one learned.
+        out = _frame(
+            """
+const media = () => ({ type: 'photo', width: null, height: null, file_path: 'a.jpg', url: '/media/c1/7_photo' })
+const old = { id: 7, media: media() }
+noteNaturalSize(old, 720, 1280)
+const fresh = { id: 7, media: media() }
+const other = { id: 9, media: { ...media(), url: '/media/c1/9_photo' } }
+const a = mediaFrame(old, 0)
+const b = mediaFrame(fresh, 0)
+const c = mediaFrame(other, 0)
+console.log(JSON.stringify({ old: [a.width, a.height], fresh: [b.width, b.height], other: [c.width, c.height] }))
+"""
+        )
+        self.assertEqual(out["old"], [242, 430])
+        self.assertEqual(out["fresh"], out["old"])
+        # Another file is not given that size.
+        self.assertEqual(out["other"], [430, 323])
+
+    def test_a_narrow_column_lowers_the_cap_to_the_bubble_room(self) -> None:
+        # At an 800px window the message column lets a bubble be 298px wide.
+        # The box is computed at that width, so its 100px minimum holds and
+        # the compact stand-in is decided on the height it is drawn at. Set
+        # from the viewport alone, the 430x100 panorama box was shrunk by
+        # max-width to 298x69.
+        out = _frame(
+            """
+mediaOnly = true
+bubbleRoom.value = 298
+const panorama = mediaFrame({ media: { type: 'photo', width: 4000, height: 200 } }, 0)
+const portrait = mediaFrame({ media: { type: 'photo', width: 720, height: 1280 } }, 0)
+const doc = mediaFrame({ media: { type: 'document', mime_type: 'image/png', width: 800, height: 600 } }, 0)
+const compact = mediaFrameCompact({ media: { type: 'photo', width: 1280, height: 853 } }, 0)
+bubbleRoom.value = 600
+const wide = mediaFrame({ media: { type: 'photo', width: 720, height: 1280 } }, 0)
+bubbleRoom.value = 0
+const unmeasured = mediaFrame({ media: { type: 'photo', width: 4000, height: 200 } }, 0)
+console.log(JSON.stringify({
+    panorama: [panorama.width, panorama.height, panorama.fit],
+    portrait: [portrait.width, portrait.height],
+    doc: [doc.width, doc.height],
+    compact,
+    wide: [wide.width, wide.height],
+    unmeasured: [unmeasured.width, unmeasured.height],
+}))
+"""
+        )
+        self.assertEqual(out["panorama"], [298, 100, "contain"])
+        self.assertEqual(out["portrait"], [168, 298])
+        # An image sent as a file keeps the bubble's padding: 298 - 2 * 11.
+        self.assertEqual(out["doc"], [276, 207])
+        # 1280x853 at 298 wide is 199 tall: tall enough for the ring above.
+        self.assertFalse(out["compact"])
+        # More room than the cap: the cap still holds.
+        self.assertEqual(out["wide"], [242, 430])
+        self.assertEqual(out["unmeasured"], [430, 100])
 
     def test_the_bubble_carries_the_picture_width_and_an_album_does_not(self) -> None:
         out = _frame(
@@ -281,6 +339,113 @@ console.log(JSON.stringify({
         self.assertIsNone(out["album"])
         self.assertIsNone(out["file"])
         self.assertIsNone(out["text"])
+
+
+_PLACEHOLDER_PRELUDE = """
+const computed = (fn) => ({ get value() { return fn() } })
+const ref = (value) => ({ value })
+const window = { innerWidth: 1280, addEventListener() {} }
+const requestAnimationFrame = (fn) => fn()
+const isImageDocument = (msg) => (msg.media?.mime_type || '').startsWith('image/')
+const getMediaUrl = (msg) => msg.media?.url || ''
+const isAlbumPicture = (m) => m.media?.type === 'photo' || m.media?.type === 'video'
+const canPlaySticker = () => true
+const hasTranscriptButton = () => false
+const isTranscriptExpanded = () => false
+const transcriptStatus = () => null
+const currentPreview = () => null
+const hasReactionRow = () => false
+const isEditedMessage = () => false
+const hasForwardHeader = () => false
+const isGroup = ref(false)
+const isOwnMessage = () => false
+const showNameAt = () => false
+const showSenderName = () => false
+const bubbleAccountLabel = () => ''
+const getAlbumCaptionMessage = () => null
+const getExtendedMediaChip = () => null
+const isLockedAudio = () => false
+const formatBytes = (n) => `${n} B`
+const getMediaDisplayName = (m) => m.file_name
+const sessionWord = { value: 'login' }
+"""
+
+_PLACEHOLDER = (
+    "const METADATA_ONLY_TYPES = new Set([",
+    "const MEDIA_TYPE_WORDS = {",
+    "const VISUAL_MEDIA_TYPES = ",
+    "const FRAMELESS_MEDIA_TYPES = ",
+    "const rendersAsPicture = (msg) =>",
+    "const isMediaOnlyMessage = (msg, index) =>",
+    "const mediaUnavailable = (msg) =>",
+    "const STICKER_REASONS = {",
+    "const MISSING_REASONS = {",
+    "const mediaMissingReason = (msg) =>",
+    *_BOX,
+    *_CAP,
+    "const mediaFrame = (msg, index) =>",
+    "const mediaFrameStyle = (msg, index) =>",
+    "const MEDIA_COMPACT_HEIGHT = ",
+    "const mediaFrameCompact = (msg, index) =>",
+    "const mediaPlaceholder = (msg) =>",
+)
+
+
+@unittest.skipUnless(NODE, "node is required to run the media size helpers")
+class TestStandInFrame(unittest.TestCase):
+    """The real isMediaOnlyMessage and mediaPlaceholder decide the stand-in's box."""
+
+    def _run(self, epilogue: str):
+        return _run_setup_program(HTML, _PLACEHOLDER, _PLACEHOLDER_PRELUDE, epilogue)
+
+    def test_a_hidden_photo_gives_its_stand_in_the_shown_photos_box(self) -> None:
+        out = self._run(
+            """
+const photo = (extra) => ({ id: 1, media: { type: 'photo', file_size: 2048, ...extra } })
+const big = { width: 1600, height: 1200 }
+const small = { width: 120, height: 90 }
+const shownBig = photo({ ...big, file_path: '1/a.jpg', url: '/media/c1/1_photo' })
+const hiddenBig = photo({ ...big, no_download: true })
+const missingBig = photo({ ...big, file_path: '1/a.jpg', url: '/media/c1/1_photo', downloaded: false })
+const shownSmall = photo({ ...small, file_path: '1/a.jpg', url: '/media/c1/1_photo' })
+const hiddenSmall = photo({ ...small, no_download: true })
+const captioned = { ...photo({ ...small, no_download: true }), text: 'A caption' }
+console.log(JSON.stringify({
+    placeholders: [shownBig, hiddenBig, missingBig].map((m) => mediaPlaceholder(m)?.shape || null),
+    shownBig: mediaFrameStyle(shownBig, 0),
+    hiddenBig: mediaFrameStyle(hiddenBig, 0),
+    missingBig: mediaFrameStyle(missingBig, 0),
+    shownSmall: mediaFrameStyle(shownSmall, 0),
+    hiddenSmall: mediaFrameStyle(hiddenSmall, 0),
+    hiddenAlone: isMediaOnlyMessage(hiddenSmall, 0),
+    captioned: mediaFrameStyle(captioned, 0),
+}))
+"""
+        )
+        self.assertEqual(out["placeholders"], [None, "picture", "picture"])
+        self.assertEqual(out["shownBig"], {"width": "430px", "aspectRatio": "430 / 323", "--media-fit": "cover"})
+        self.assertEqual(out["hiddenBig"], out["shownBig"])
+        self.assertEqual(out["missingBig"], out["shownBig"])
+        # A small picture shows that the real isMediaOnlyMessage runs: alone,
+        # the hidden photo's stand-in is the shown photo's 120px box ...
+        self.assertTrue(out["hiddenAlone"])
+        self.assertEqual(out["hiddenSmall"], out["shownSmall"])
+        self.assertEqual(out["shownSmall"]["width"], "120px")
+        # ... and with a caption it sits in a bubble, at least 200px wide.
+        self.assertEqual(out["captioned"]["width"], "200px")
+
+    def test_the_compact_stand_in_says_the_reason_without_the_size(self) -> None:
+        out = self._run(
+            """
+const ph = mediaPlaceholder({ id: 1, media: { type: 'photo', width: 4000, height: 200, file_size: 1024, file_path: '1/a.jpg', downloaded: false } })
+const plain = mediaPlaceholder({ id: 2, media: { type: 'photo', width: 4000, height: 200, no_download: true } })
+console.log(JSON.stringify({ line: ph.line, why: ph.why, plainLine: plain.line, plainWhy: plain.why }))
+"""
+        )
+        self.assertEqual(out["line"], "1024 B · not downloaded yet")
+        self.assertEqual(out["why"], "Not downloaded yet")
+        self.assertEqual(out["plainLine"], "Hidden for this login")
+        self.assertEqual(out["plainWhy"], "Hidden for this login")
 
 
 class TestMediaFrameTemplate(unittest.TestCase):
@@ -370,6 +535,32 @@ class TestMediaFrameTemplate(unittest.TestCase):
         # The words go beside the ring, never away: a phone shows no tooltip.
         self.assertIn("flex-direction: row;", compact.group(1))
         self.assertNotRegex(HTML, r"\.is-compact[^{]*\{[^}]*display: none")
+
+    def test_a_gif_that_fails_to_load_shows_the_stand_in(self) -> None:
+        tag = self._tag('class="gif-video" loop muted playsinline')
+        self.assertIn('@error="handleMediaError($event, msg)"', tag)
+
+    def test_the_bubble_room_probe_sits_in_the_message_list(self) -> None:
+        list_start = HTML.index('<div ref="messagesContainer"')
+        probe = HTML.index('<div ref="bubbleRoomProbe" class="bubble-room-probe" aria-hidden="true"></div>')
+        first_row = HTML.index('<template v-for="(msg, index) in sortedMessages" :key="msg.id">')
+        self.assertLess(list_start, probe)
+        self.assertLess(probe, first_row)
+        rule = re.search(r"\n        \.bubble-room-probe \{([^}]*)\}", HTML)
+        self.assertIsNotNone(rule)
+        for declaration in ("width: 100%;", "max-width: var(--tg-bubble-max);", "height: 0;"):
+            self.assertIn(declaration, rule.group(1))
+        self.assertIn("bubbleRoomProbe,", HTML[HTML.index("mediaFrameCompact,\n") :][:400])
+
+    def test_the_compact_stand_in_wraps_the_reason_instead_of_cutting_it(self) -> None:
+        self.assertIn(
+            "{{ ph.shape === 'picture' && mediaFrameCompact(msg, index) ? ph.why : ph.line }}",
+            HTML,
+        )
+        rule = re.search(r"\n        \.media-placeholder\.is-compact \.media-placeholder-text > span \{([^}]*)\}", HTML)
+        self.assertIsNotNone(rule)
+        self.assertNotIn("nowrap", rule.group(1))
+        self.assertIn("-webkit-line-clamp: 2;", rule.group(1))
 
     def test_the_frame_is_never_computed_inside_the_placeholder(self) -> None:
         # isMediaOnlyMessage calls mediaPlaceholder; mediaFrame calls

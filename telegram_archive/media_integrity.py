@@ -234,8 +234,11 @@ def image_header_size(path: str | None) -> tuple[int, int] | None:
 
     Nothing is decoded: Pillow reads the header when it opens the file, which
     it opens read-only. An EXIF orientation of 5 to 8 swaps the two, as a
-    browser draws the picture turned. None for a file Pillow cannot identify,
-    one over Pillow's pixel limit, and any read error.
+    browser draws the picture turned. The orientation is read only where it
+    sits in the header (a JPEG, or any file whose header carried EXIF): for a
+    PNG without it, Pillow's ``getexif`` decodes the whole picture to look
+    for EXIF after the pixels. None for a file Pillow cannot identify, one
+    over Pillow's pixel limit, and any read error.
     """
     if not path:
         return None
@@ -248,7 +251,8 @@ def image_header_size(path: str | None) -> tuple[int, int] | None:
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(path) as image:
                 width, height = image.size
-                orientation = image.getexif().get(_EXIF_ORIENTATION)
+                in_header = image.format in ("JPEG", "MPO") or "exif" in image.info
+                orientation = image.getexif().get(_EXIF_ORIENTATION) if in_header else None
     except Exception:
         return None
     if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):

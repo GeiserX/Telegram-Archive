@@ -4810,6 +4810,22 @@
             overscroll-behavior-y: contain;
             overflow-x: hidden;
         }
+        /* The width a bubble may take in this column (bubbleRoom): the
+           desktop cap, and on a phone the narrowest of its caps, an incoming
+           bubble beside the avatar gutter of a group. */
+        .bubble-room-probe {
+            flex-shrink: 0;
+            width: 100%;
+            max-width: var(--tg-bubble-max);
+            height: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+        @media (max-width: 767px) {
+            .bubble-room-probe {
+                max-width: calc(100% - 72px);
+            }
+        }
         /* The reading column: at most --tg-column-max wide, centred, so an
            incoming and an outgoing bubble stay close on a wide screen. The
            side padding grows instead of a wrapper, so every row stays a
@@ -5700,20 +5716,35 @@
             background: var(--tg-quote-bg);
         }
         /* Too short for the ring above two lines (a panorama, a phone): the
-           words go beside the ring, each line cut to the box, so a phone,
-           which shows no tooltip, still says what it is and why. */
+           words go beside a smaller ring, and the second line is the reason
+           alone, without the size, on up to two lines. A phone shows no
+           tooltip, so the reason must be read whole in the smallest box,
+           200 by 100 px. */
         .media-placeholder.is-compact {
             flex-direction: row;
-            gap: 12px;
+            gap: 10px;
             text-align: left;
+        }
+        .media-placeholder.is-compact .media-placeholder-disc {
+            width: 32px;
+            height: 32px;
+        }
+        .media-placeholder.is-compact .media-placeholder-disc svg {
+            width: 18px;
+            height: 18px;
         }
         .media-placeholder.is-compact .media-placeholder-text {
             min-width: 0;
         }
         .media-placeholder.is-compact .media-placeholder-text > span {
             overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow-wrap: break-word;
+        }
+        .media-placeholder.is-compact .media-placeholder-text > :first-child {
+            -webkit-line-clamp: 1;
         }
         .media-placeholder.is-round {
             width: 200px;
@@ -7804,6 +7835,9 @@
                         </div>
                         <div v-if="hasMoreNewer && !loadingNewer && !newerLoadError && messages.length > 0"
                             ref="loadNewerSentinel" class="h-1"></div>
+                        <!-- As wide as a bubble may be here, and 0px tall: the media
+                             boxes take their cap from it (bubbleRoom). -->
+                        <div ref="bubbleRoomProbe" class="bubble-room-probe" aria-hidden="true"></div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
@@ -8119,7 +8153,7 @@
                                             </span>
                                             <span class="media-placeholder-text" aria-hidden="true">
                                                 <span class="block">{{ ph.type }}</span>
-                                                <span class="block">{{ ph.line }}</span>
+                                                <span class="block">{{ ph.shape === 'picture' && mediaFrameCompact(msg, index) ? ph.why : ph.line }}</span>
                                             </span>
                                         </div>
                                         <div v-else class="media-placeholder-file" :class="{ 'is-attention': ph.kind === 'missing' }">
@@ -8305,14 +8339,17 @@
 
                                         <!-- GIFs / Animations - autoplay when visible. The box is
                                              set before the clip loads (mediaFrame, 320px at most), and
-                                             it is a button, so the keyboard opens it too. -->
+                                             it is a button, so the keyboard opens it too. A clip that
+                                             fails to load flags its row (handleMediaError) and the
+                                             shared placeholder above takes its place. -->
                                         <button v-else-if="msg.media?.type === 'animation'" type="button"
                                             class="media-open media-frame cursor-pointer hover:opacity-90 transition"
                                             :style="mediaFrameStyle(msg, index)"
                                             :aria-label="isBubbleDeleted(msg) ? 'Open GIF, deleted in Telegram' : 'Open GIF'" @click="openMedia(msg)">
                                             <video :key="getMediaUrl(msg)" :data-src="getMediaUrl(msg)"
                                                 class="gif-video" loop muted playsinline
-                                                @loadedmetadata="noteNaturalSize(msg, $event.target.videoWidth, $event.target.videoHeight)">
+                                                @loadedmetadata="noteNaturalSize(msg, $event.target.videoWidth, $event.target.videoHeight)"
+                                                @error="handleMediaError($event, msg)">
                                             </video>
                                         </button>
 
@@ -17985,10 +18022,11 @@
                     missing: ['M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z', 'M12 9v4', 'M12 17h.01'],
                 }
                 // A picture, a clip or a GIF takes Telegram Desktop's box
-                // (chat.style, history_view_photo.cpp): its size scaled down, never
-                // up, to fit 430px each way (320px for a GIF), at least 100px each
-                // way, and at least 200px wide in a bubble with a name, a caption
-                // or anything else beside it. The box comes from the size the row
+                // (chat.style, history_view_photo.cpp): its size scaled down to fit
+                // 430px each way (320px for a GIF), at least 100px each way, and at
+                // least 200px wide in a bubble with a name, a caption or anything
+                // else beside it. Only those minimums make a box larger than the
+                // picture: a 50px picture is drawn at 100px, as Desktop does. The box comes from the size the row
                 // stored, before the file loads, so the chat does not jump when it
                 // does. The file fills the box, cut at the top and bottom when that
                 // loses at most a quarter of it (Desktop's 3/4 rule); otherwise it
@@ -18021,8 +18059,8 @@
                 }
                 // The cap: 430px on a wide screen, three quarters of the screen on
                 // a phone (the CSS phone breakpoint, 768px), between Telegram
-                // Android (70% for a portrait photo) and iOS (300 of 390). A narrow
-                // desktop column shrinks the box through max-width instead.
+                // Android (70% for a portrait photo) and iOS (300 of 390). A column
+                // whose bubbles may be narrower lowers it further (bubbleRoom).
                 const mediaCapFor = (viewport) => viewport < 768 ? Math.min(MEDIA_MAX_SIZE, Math.floor(viewport * 0.75)) : MEDIA_MAX_SIZE
                 const viewportWidth = ref(window.innerWidth)
                 let viewportFrame = 0
@@ -18033,7 +18071,37 @@
                         viewportWidth.value = window.innerWidth
                     })
                 })
-                const mediaCap = computed(() => mediaCapFor(viewportWidth.value))
+                // The widest a bubble may be in the open chat's column, in px: the
+                // width of a zero-height probe that takes --tg-bubble-max in the
+                // message list (bubble-room-probe), so a small window, a tablet or
+                // an open side panel gives the box the room the bubble really has.
+                // A box set from the viewport alone was shrunk by max-width there,
+                // under its 100px minimum. 0 until measured, or while the list is
+                // hidden.
+                const bubbleRoom = ref(0)
+                const bubbleRoomProbe = ref(null)
+                const bubbleRoomObserver = typeof ResizeObserver === 'function'
+                    ? new ResizeObserver((entries) => {
+                        const width = Math.floor(entries[entries.length - 1].contentRect.width)
+                        if (width !== bubbleRoom.value) bubbleRoom.value = width
+                    })
+                    : null
+                watch(bubbleRoomProbe, (el, old) => {
+                    if (!bubbleRoomObserver) return
+                    if (old) bubbleRoomObserver.unobserve(old)
+                    if (el) bubbleRoomObserver.observe(el)
+                })
+                // An image sent as a file keeps the bubble's 11px padding each side.
+                const BUBBLE_PADDING_X = 11
+                const mediaCap = computed(() => {
+                    const cap = mediaCapFor(viewportWidth.value)
+                    return bubbleRoom.value > 0 ? Math.min(cap, bubbleRoom.value) : cap
+                })
+                // The size the browser read from a file with no stored size, by the
+                // file's URL. Not on the row: a jump replaces the rows with new
+                // objects while Vue keeps the loaded <img> or <video> of a row in
+                // both windows, which then loads nothing and reports nothing again.
+                const mediaNaturalSizes = ref(new Map())
                 // One message's box: the stored size, else the size the browser read
                 // from the file (noteNaturalSize), else the 4:3 default. A picture
                 // beside a name, a caption, a reply, a forward, reactions or an edit
@@ -18042,8 +18110,9 @@
                 const mediaFrame = (msg, index) => {
                     const media = msg.media || {}
                     const stored = Number(media.width) > 0 && Number(media.height) > 0
-                    const size = stored ? { w: media.width, h: media.height } : (msg.mediaNaturalSize || {})
-                    const cap = media.type === 'animation' ? Math.min(GIF_MAX_SIZE, mediaCap.value) : mediaCap.value
+                    const size = stored ? { w: media.width, h: media.height } : (mediaNaturalSizes.value.get(getMediaUrl(msg)) || {})
+                    let cap = media.type === 'animation' ? Math.min(GIF_MAX_SIZE, mediaCap.value) : mediaCap.value
+                    if (media.type === 'document' && bubbleRoom.value > 0) cap = Math.min(cap, bubbleRoom.value - 2 * BUBBLE_PADDING_X)
                     const framed = media.type === 'document' || !isMediaOnlyMessage(msg, index)
                     return mediaBox(size.w, size.h, { cap, framed })
                 }
@@ -18072,8 +18141,11 @@
                     const media = msg.media
                     if (!media || (Number(media.width) > 0 && Number(media.height) > 0)) return
                     if (!(width > 0 && height > 0)) return
-                    if (msg.mediaNaturalSize?.w === width && msg.mediaNaturalSize?.h === height) return
-                    msg.mediaNaturalSize = { w: width, h: height }
+                    const url = getMediaUrl(msg)
+                    if (!url) return
+                    const known = mediaNaturalSizes.value.get(url)
+                    if (known?.w === width && known?.h === height) return
+                    mediaNaturalSizes.value.set(url, { w: width, h: height })
                 }
                 const mediaPlaceholder = (msg) => {
                     const media = msg.media
@@ -18091,7 +18163,8 @@
                     const kind = mediaMissingReason(msg)
                     const reason = MISSING_REASONS[kind]
                     const size = Number(media.file_size) > 0 ? formatBytes(media.file_size) : ''
-                    const line = size ? `${size} · ${reason}` : reason.charAt(0).toUpperCase() + reason.slice(1)
+                    const why = reason.charAt(0).toUpperCase() + reason.slice(1)
+                    const line = size ? `${size} · ${reason}` : why
                     const audio = media.type === 'voice' || media.type === 'audio' || (media.mime_type || '').startsWith('audio/')
                     const type = audio && media.type === 'document' ? 'Audio' : (MEDIA_TYPE_WORDS[media.type] || 'File')
                     if (media.type === 'video_note') {
@@ -18106,8 +18179,10 @@
                     // (mediaFrame, bound in the template). It is not computed here:
                     // isMediaOnlyMessage calls this function, and mediaFrame calls
                     // isMediaOnlyMessage.
+                    // The compact one says the reason alone (why), so it fits beside
+                    // the ring in the smallest box.
                     if (['photo', 'video', 'animation'].includes(media.type)) {
-                        return { shape: 'picture', kind, type, line, style: null }
+                        return { shape: 'picture', kind, type, line, why, style: null }
                     }
                     const title = media.type === 'document' && media.file_name ? getMediaDisplayName(media) : type
                     return { shape: 'file', kind, type, title, line, style: null }
@@ -20410,6 +20485,7 @@
                     mediaFrameCompact,
                     bubbleMediaStyle,
                     noteNaturalSize,
+                    bubbleRoomProbe,
                     mediaMissingReason,
                     mediaMissingWords,
                     MISSING_GLYPHS,

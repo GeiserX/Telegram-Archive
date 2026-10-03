@@ -81,9 +81,35 @@ def _media_root(tmp_path):
 
 class TestImageHeaderSize:
     def test_reads_the_size_without_decoding(self, tmp_path):
-        path = str(tmp_path / "a.jpg")
-        _jpeg(path, (720, 1280))
-        assert image_header_size(path) == (720, 1280)
+        jpeg = str(tmp_path / "a.jpg")
+        _jpeg(jpeg, (720, 1280), orientation=6)
+        png = str(tmp_path / "b.png")
+        Image.new("RGB", (640, 480), (90, 160, 230)).save(png, "PNG")
+
+        def no_decoding(self):
+            raise AssertionError("decoded the picture")
+
+        # Pillow's PNG getexif decodes the picture to find EXIF after the
+        # pixels. With decoding forbidden the size still comes back.
+        with patch("PIL.ImageFile.ImageFile.load", no_decoding):
+            assert image_header_size(jpeg) == (1280, 720)
+            assert image_header_size(png) == (640, 480)
+
+    def test_the_decoding_guard_can_fail(self, tmp_path):
+        # Positive control for the test above: a PNG's getexif does decode, so
+        # the patched load is reached and the guard would catch it.
+        png = str(tmp_path / "b.png")
+        Image.new("RGB", (64, 48), (90, 160, 230)).save(png, "PNG")
+
+        def no_decoding(self):
+            raise AssertionError("decoded the picture")
+
+        with (
+            patch("PIL.ImageFile.ImageFile.load", no_decoding),
+            Image.open(png) as image,
+            pytest.raises(AssertionError, match="decoded"),
+        ):
+            image.getexif()
 
     def test_a_quarter_turn_swaps_width_and_height(self, tmp_path):
         for orientation, expected in ((6, (1280, 720)), (8, (1280, 720)), (3, (720, 1280)), (1, (720, 1280))):
