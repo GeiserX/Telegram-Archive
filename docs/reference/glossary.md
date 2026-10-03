@@ -96,7 +96,7 @@ A login method where a trusted reverse proxy puts the user name in the header na
 
 ## Real-time listener
 
-A connection per Telegram account that stays open between backup runs and writes new messages, edits, deletions and other changes as they happen. It runs only inside the `schedule` command with `ENABLE_LISTENER=true`. After first mention, the site calls it the listener. See [Real-time listener](../configuration/listener.md).
+A connection per Telegram account that stays open between backup runs and writes new messages, edits, deletions and other changes as they happen. It runs only inside the `schedule` command, and is on by default (`ENABLE_LISTENER`). After first mention, the site calls it the listener. See [Real-time listener](../configuration/listener.md).
 
 ## Role
 

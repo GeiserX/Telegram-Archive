@@ -52,8 +52,11 @@ services:
       # TG_ACCOUNT_2_LABEL: ${TG_ACCOUNT_2_LABEL:-}
       # TG_ACCOUNT_2_SESSION_NAME: ${TG_ACCOUNT_2_SESSION_NAME:-telegram_backup_account2}
 
-      # Schedule (cron format)
-      SCHEDULE: ${SCHEDULE:-0 */6 * * *}
+      # Full pass schedule (cron format). Empty uses the default: 0 3 * * *
+      # (daily) with the listener on, 0 */6 * * * with ENABLE_LISTENER=false.
+      # Hourly passes with the listener on are deprecated: the listener already
+      # saves messages as they arrive.
+      SCHEDULE: ${SCHEDULE:-}
 
       # Backup Configuration
       BACKUP_PATH: /data/backups
@@ -122,17 +125,17 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
 
-      # Real-time Listener
+      # Real-time Listener (on by default since 9.2.0)
       # ENABLE_LISTENER is the master switch — when false, all LISTEN_* vars are ignored
-      ENABLE_LISTENER: ${ENABLE_LISTENER:-false}
+      ENABLE_LISTENER: ${ENABLE_LISTENER:-true}
       # Granular listener controls (only apply when ENABLE_LISTENER=true):
       # LISTEN_EDITS: ${LISTEN_EDITS:-true}
       # LISTEN_DELETIONS: ${LISTEN_DELETIONS:-false}
       DELETION_MODE: ${DELETION_MODE:-soft}
       # LISTEN_NEW_MESSAGES: ${LISTEN_NEW_MESSAGES:-true}
-      # LISTEN_NEW_MESSAGES_MEDIA: ${LISTEN_NEW_MESSAGES_MEDIA:-false}
+      # LISTEN_NEW_MESSAGES_MEDIA: ${LISTEN_NEW_MESSAGES_MEDIA:-true}
       # LISTEN_CHAT_ACTIONS: ${LISTEN_CHAT_ACTIONS:-true}
-      # LISTEN_REACTIONS: ${LISTEN_REACTIONS:-false}
+      # LISTEN_REACTIONS: ${LISTEN_REACTIONS:-true}
       # REACTION_DEBOUNCE_SECONDS: ${REACTION_DEBOUNCE_SECONDS:-1.5}
       # REACTION_RESWEEP_DAYS: ${REACTION_RESWEEP_DAYS:-0}
       # REACTION_RESWEEP_MAX_PER_CHAT: ${REACTION_RESWEEP_MAX_PER_CHAT:-500}

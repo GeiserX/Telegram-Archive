@@ -199,6 +199,10 @@ class TestWatchdogHealsWhileABackupIsSuspended:
             listener.client = client
             return listener
 
+        async def attach(self):
+            # The real attach() registers handlers and makes no request.
+            return None
+
         async def connect(self):
             # Mirrors the real guard in telegram_archive/listener.py.
             if not self.client.is_connected():
@@ -206,6 +210,9 @@ class TestWatchdogHealsWhileABackupIsSuspended:
 
         async def run(self):
             await asyncio.sleep(3600)
+
+        async def close(self):
+            return None
 
         async def _load_tracked_chats(self):
             return None
@@ -429,6 +436,10 @@ class TestTheOriginalFailureStillHeals:
                 listener.client = client
                 return listener
 
+            async def attach(self):
+                # Handlers go on before the heal, while the sender is still dead.
+                seen["connected_at_attach"] = self.client.is_connected()
+
             async def connect(self):
                 seen["connected_at_connect"] = self.client.is_connected()
                 if not self.client.is_connected():
@@ -437,10 +448,14 @@ class TestTheOriginalFailureStillHeals:
             async def run(self):
                 await asyncio.sleep(3600)
 
+            async def close(self):
+                return None
+
         with patch("telegram_archive.listener.TelegramListener", StubListener), _never_built():
             await scheduler._start_listener()
 
         assert revived["n"] == 1
+        assert seen["connected_at_attach"] is False
         assert seen["connected_at_connect"] is True
         entry = scheduler._accounts[0]
         assert entry.listener.client is client, "the listener must share the connection's own client"

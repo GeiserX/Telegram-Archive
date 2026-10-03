@@ -884,6 +884,25 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertIn("backup_in_progress", data)
         self.assertTrue(data["backup_in_progress"])
 
+    async def test_listener_active_needs_a_fresh_heartbeat(self):
+        """The sidebar's Live follows status.py's rule: a killed backup stops reading as Live."""
+        from datetime import UTC, timedelta
+
+        self.mock_db.get_cached_statistics = AsyncMock(return_value={})
+        self.mock_db.get_account_ids = AsyncMock(return_value=[1])
+        for age, expected in ((timedelta(minutes=1), True), (timedelta(minutes=10), False)):
+            metadata = {
+                "listener_active_since": "2026-08-22T05:00:00",
+                "listener_heartbeat": (datetime.now(UTC) - age).isoformat(),
+            }
+            self.mock_db.get_metadata = AsyncMock(side_effect=metadata.get)
+            async with self._client() as client:
+                resp = await client.get("/api/stats")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertIs(data["listener_active"], expected, age)
+            self.assertEqual(data["listener_active_since"], "2026-08-22T05:00:00" if expected else None)
+
     async def test_backup_in_progress_false_when_metadata_is_zero(self):
         """get_stats sets backup_in_progress=False when metadata key is '0'."""
         self.mock_db.get_cached_statistics = AsyncMock(return_value={})
@@ -1953,6 +1972,20 @@ class TestInternalPushEndpoint(_WebTestBase):
                 resp = await client.post("/internal/push", json={"type": "new_message", "chat_id": 1})
             self.assertEqual(resp.status_code, 200)
             mock_listener.handle_http_push.assert_awaited_once()
+        finally:
+            web_main.realtime_listener = saved_listener
+
+    async def test_a_push_the_viewer_cannot_process_is_not_answered_as_delivered(self):
+        """A processing error answers 500, so the backup's notifier counts it as a failure, not a delivery."""
+        mock_listener = MagicMock()
+        mock_listener.handle_http_push = AsyncMock(side_effect=RuntimeError("boom"))
+        saved_listener = web_main.realtime_listener
+        web_main.realtime_listener = mock_listener
+        try:
+            async with self._client() as client:
+                resp = await client.post("/internal/push", json={"type": "new_message", "chat_id": 1})
+            self.assertEqual(resp.status_code, 500)
+            self.assertEqual(resp.json()["status"], "error")
         finally:
             web_main.realtime_listener = saved_listener
 

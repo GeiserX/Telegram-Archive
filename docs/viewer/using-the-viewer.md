@@ -54,8 +54,8 @@ Under the archive's name the sidebar says how fresh the archive is:
 | Line | Means |
 |------|-------|
 | Backed up today at 17:42 | the time of the last backup |
-| Live · backed up today at 17:42 | the [listener](../configuration/listener.md) is running, so new messages arrive as they are sent |
-| Backing up… | a backup is running now |
+| Live · full pass today at 03:00 | the [listener](../configuration/listener.md) is running, so new messages arrive as they are sent. The time is when the last full pass started. It stays Live while a full pass runs; point at it to read whether one is running. A listener counts as running while the backup stamps its heartbeat, every 30 seconds, so a stopped or killed backup leaves Live within about three minutes. |
+| Backing up… | a backup is running now and no listener is |
 | Last backup did not finish | the master login only: the last run stopped before its statistics step. Click the line to open [Archive status](#archive-status). |
 | No backup yet | no backup has run |
 
@@ -444,7 +444,7 @@ Logins restricted to some chats see counts for their own chats only. The message
 
 ### Archive status
 
-The master login has **Archive status** in the main menu. It opens with one line: "Nothing needs attention", or the problem, for example "The last backup did not finish". A second line says what runs now, for example "Backup idle · transcripts off". Something switched off is a choice, not a fault, so it never turns the first line amber. Then:
+The master login has **Archive status** in the main menu. It opens with one line: "Nothing needs attention", or the problem, for example "The last backup did not finish". "A listener is not running" means a listener started and then stopped without shutting down, as when the backup container is killed or crashes. A listener stopped on purpose reads Off and is not a problem here. A second line says what runs now, for example "Backup idle · transcripts off". Something switched off is a choice, not a fault, so it never turns the first line amber. Then:
 
 | Section | Shows |
 |---------|-------|

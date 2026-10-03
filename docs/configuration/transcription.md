@@ -146,8 +146,9 @@ Only downloaded files are transcribed. A chat or media type whose downloads are 
 ### When files are sent
 
 - The drain runs at the end of every backup run that finishes without an exception. A drain error is logged as a warning and never fails the backup.
-- When the [real-time listener](listener.md) downloads a file itself, it sends that file at once. This needs `LISTEN_NEW_MESSAGES_MEDIA=true` and the file's type in `TRANSCRIPTION_TYPES`. Otherwise the file waits for the next drain.
+- When the [real-time listener](listener.md) downloads a file itself, it sends that file at once. This needs `LISTEN_NEW_MESSAGES_MEDIA`, on by default, and the file's type in `TRANSCRIPTION_TYPES`. Otherwise the file waits for the next drain.
 - Pressing the button only queues the file. The next drain sends it.
+- With the default daily `SCHEDULE`, the next drain can be up to a day away. That applies to a pressed file, and to akou results for files the listener sent when no `TRANSCRIPTION_CALLBACK_URL` is set. Set the callback to get results as soon as they are ready. See [Callbacks with akou](#callbacks-with-akou).
 
 ### Drain order and limits
 

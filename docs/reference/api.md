@@ -170,7 +170,7 @@ curl -s -b jar.txt http://localhost:8000/api/status
 }
 ```
 
-`backend` is `sqlite` or `postgresql`. A monitoring script can alert when `backup.last_run` is too old, when a listener is not `active`, or when `media.exhausted` grows.
+`backend` is `sqlite` or `postgresql`. A monitoring script can alert when `backup.last_run` is too old, when a listener is not `active`, or when `media.exhausted` grows. A listener is `active` while the backup stamps its heartbeat, every 30 seconds, and for three minutes after the last stamp. `active_since` stays on a listener that is not active when it stopped without shutting down, as after a killed container; a clean stop clears it. `listener_active` in `/api/stats` follows the same rule.
 
 ## Accounts, chats and folders
 

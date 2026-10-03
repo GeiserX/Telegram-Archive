@@ -66,9 +66,9 @@ Later runs do not read older messages again. To catch edits and deletions, see [
 
 | Setting | What it does | Read more |
 |---|---|---|
-| `ENABLE_LISTENER=true` | Saves new messages, edits and other changes as they happen, and sends live updates to the viewer. | [Real-time listener](../configuration/listener.md) |
+| `ENABLE_LISTENER` | On by default: saves new messages, edits and other changes as they happen, and sends live updates to the viewer. Set it to `false` to rely on the scheduled pass alone. | [Real-time listener](../configuration/listener.md) |
 | `CHAT_TYPES` | Chooses which kinds of chat are saved. Bot chats are left out by default. Add `bots` to include them. | [Choosing chats](../configuration/choosing-chats.md) |
-| `SCHEDULE` | Sets when backups run, as a cron expression. It uses UTC unless you set `TZ` on the backup service, for example `TZ=Europe/Madrid`. | [Schedule and backup tuning](../configuration/schedule.md) |
+| `SCHEDULE` | Sets when the full pass runs, as a cron expression: daily at 03:00 by default, every 6 hours with the listener off. It uses UTC unless you set `TZ` on the backup service, for example `TZ=Europe/Madrid`. | [Schedule and backup tuning](../configuration/schedule.md) |
 | `MAX_MEDIA_SIZE_MB` | The backup skips files larger than this. The default is 100. `0` removes the limit. | [Media downloads](../configuration/media.md) |
 | `TRANSCRIPTION_URL` | Points at a transcription server to get text for voice messages. | [Voice transcription](../configuration/transcription.md) |
 

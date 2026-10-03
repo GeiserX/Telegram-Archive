@@ -88,7 +88,7 @@ The login code arrives in your Telegram app. If the account has two-step verific
 docker compose up -d
 ```
 
-`telegram-backup` migrates the database, runs a full backup straight away and then follows `SCHEDULE`. The default is `0 */6 * * *`, every six hours. The scheduler reads the cron expression in the container's local time. That is UTC, because the image sets no `TZ`. `telegram-viewer` serves the web viewer. Watch the first backup with `docker compose logs -f telegram-backup`.
+`telegram-backup` migrates the database, runs a full backup straight away and starts the [real-time listener](../configuration/listener.md), which saves new messages as they arrive. After that it runs a full pass on `SCHEDULE`, once a day at 03:00 by default. The scheduler reads the cron expression in the container's local time. That is UTC, because the image sets no `TZ`. `telegram-viewer` serves the web viewer. Watch the first backup with `docker compose logs -f telegram-backup`.
 
 ### 6. Open the viewer
 

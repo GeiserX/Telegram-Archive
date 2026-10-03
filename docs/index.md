@@ -89,7 +89,7 @@ flowchart TB
     subgraph backup [Backup container]
         SCH[Scheduler]
         CL[One client per account]
-        LI[Real-time listener, optional]
+        LI[Real-time listener]
         MIG[Migrations on start]
     end
     DB[(Database<br/>SQLite by default<br/>PostgreSQL optional)]
@@ -113,7 +113,7 @@ flowchart TB
 ```
 
 - Two images, `drumsergio/telegram-archive` for the backup and `drumsergio/telegram-archive-viewer`, share one version number, run on amd64 and arm64, and run as user id 1000.
-- A backup runs when the container starts, then on a cron [schedule](configuration/schedule.md), every six hours by default. The optional [listener](configuration/listener.md) catches changes in between.
+- The [listener](configuration/listener.md) saves new messages, edits and reactions as they happen. A full backup runs when the container starts, then on a cron [schedule](configuration/schedule.md), once a day by default, to fetch what the listener could not see.
 - The archive is [SQLite by default, or PostgreSQL](configuration/database.md). An [upgrade](operations/upgrading.md) is usually a pin change and a restart; [Backing up the archive](operations/backup-and-restore.md) says how to keep a copy.
 
 ## What it does not do
