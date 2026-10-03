@@ -24,12 +24,18 @@ from telegram_archive.status import (
     collect_status,
     format_status,
     health_problems,
+    listener_is_running,
     parse_utc,
     previous_fire_times,
 )
 
 NOW = datetime(2026, 1, 15, 7, 30, tzinfo=UTC)
 EVERY_SIX_HOURS = "0 */6 * * *"
+
+
+def _beat(age: timedelta = timedelta(0)) -> str:
+    """A listener heartbeat stamped ``age`` ago, by the real clock collect_status reads."""
+    return (datetime.now(UTC) - age).isoformat()
 
 
 def _mock_db(metadata: dict, *, account_ids=None, is_sqlite: bool = True) -> MagicMock:
@@ -76,6 +82,7 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
                 "backup_in_progress": "0",
                 "stats_calculated_at": "2026-01-15T06:20:00",
                 "listener_active_since_account_2": "2026-01-15T05:00:00",
+                "listener_heartbeat_account_2": _beat(),
             },
             account_ids=[1, 2],
         )
@@ -107,7 +114,10 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["database"]["backend"], "postgresql")
 
     async def test_account_list_failure_falls_back_to_the_default_account(self):
-        db = _mock_db({"listener_active_since": "2026-01-15T05:00:00"}, account_ids=RuntimeError("no table"))
+        db = _mock_db(
+            {"listener_active_since": "2026-01-15T05:00:00", "listener_heartbeat": _beat()},
+            account_ids=RuntimeError("no table"),
+        )
 
         payload = await collect_status(db, _mock_config())
 
@@ -115,12 +125,60 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
             payload["listeners"], [{"account_id": 1, "active": True, "active_since": "2026-01-15T05:00:00"}]
         )
 
+    async def _listener_problems(self, heartbeat_age: timedelta) -> tuple[list, list[str]]:
+        db = _mock_db(
+            {"listener_active_since": "2026-01-15T05:00:00", "listener_heartbeat": _beat(heartbeat_age)},
+            account_ids=[1],
+        )
+        listeners = (await collect_status(db, _mock_config()))["listeners"]
+        status = _status("2026-01-15T06:00:05Z", stats_at="2026-01-15T06:40:00") | {"listeners": listeners}
+        problems = health_problems(status, EVERY_SIX_HOURS, now=NOW, timezone=UTC, listener_accounts=1)
+        return listeners, problems
+
+    async def test_a_stale_heartbeat_reads_as_not_running(self):
+        """A killed container never clears its start flag; only a fresh heartbeat counts."""
+        listeners, problems = await self._listener_problems(timedelta(minutes=10))
+
+        self.assertEqual(listeners, [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"}])
+        self.assertEqual(problems, ["the listener of account 1 is not running"])
+
+    async def test_a_fresh_heartbeat_reads_as_running(self):
+        listeners, problems = await self._listener_problems(timedelta(minutes=1))
+
+        self.assertTrue(listeners[0]["active"])
+        self.assertEqual(problems, [])
+
+    async def test_a_cleared_start_flag_reads_as_not_running_even_with_a_fresh_heartbeat(self):
+        db = _mock_db({"listener_active_since": "", "listener_heartbeat": _beat()}, account_ids=[1])
+
+        payload = await collect_status(db, _mock_config())
+
+        self.assertEqual(payload["listeners"], [{"account_id": 1, "active": False, "active_since": None}])
+
     async def test_metadata_failure_propagates(self):
         db = _mock_db({})
         db.get_metadata = AsyncMock(side_effect=RuntimeError("database down"))
 
         with self.assertRaises(RuntimeError):
             await collect_status(db, _mock_config())
+
+
+class TestListenerIsRunning(unittest.TestCase):
+    SINCE = "2026-01-15T05:00:00"
+
+    def test_needs_both_a_start_and_a_heartbeat(self):
+        self.assertFalse(listener_is_running(None, NOW.isoformat(), NOW))
+        self.assertFalse(listener_is_running("", NOW.isoformat(), NOW))
+        self.assertFalse(listener_is_running(self.SINCE, None, NOW))
+        self.assertFalse(listener_is_running(self.SINCE, "", NOW))
+
+    def test_the_heartbeat_must_be_under_three_minutes_old(self):
+        self.assertTrue(listener_is_running(self.SINCE, (NOW - timedelta(minutes=2, seconds=59)).isoformat(), NOW))
+        self.assertTrue(listener_is_running(self.SINCE, (NOW - timedelta(minutes=3)).isoformat(), NOW))
+        self.assertFalse(listener_is_running(self.SINCE, (NOW - timedelta(minutes=3, seconds=1)).isoformat(), NOW))
+
+    def test_a_garbled_heartbeat_reads_as_not_running(self):
+        self.assertFalse(listener_is_running(self.SINCE, "not a time", NOW))
 
 
 class TestParseUtc(unittest.TestCase):
@@ -492,8 +550,10 @@ async def _seed(adapter, last_run: datetime, stats_at: datetime, *, listening: b
     await adapter.set_metadata("last_backup_time", _iso_z(last_run))
     await adapter.set_metadata("backup_in_progress", "0")
     await adapter.set_metadata("stats_calculated_at", stats_at.replace(tzinfo=None).isoformat())
-    # The listener clears its key to "" when it stops.
+    # The listener clears its key to "" when it stops, and stamps its heartbeat while it runs.
     await adapter.set_metadata("listener_active_since", "2026-01-15T05:00:00" if listening else "")
+    if listening:
+        await adapter.set_metadata("listener_heartbeat", datetime.now(UTC).isoformat())
 
 
 async def test_collect_status_on_a_real_engine(real_adapter):
@@ -559,3 +619,25 @@ async def test_status_command_flags_a_stopped_listener_on_a_real_engine(
     payload = json.loads(out.getvalue())
     assert code == expected_code
     assert payload["problems"] == (["the listener of account 1 is not running"] if expected_code else [])
+
+
+async def test_status_command_flags_a_killed_listener_on_a_real_engine(real_adapter, tmp_path):
+    """A killed container leaves its start flag set; the stale heartbeat still reports it."""
+    now = datetime.now(UTC)
+    await _seed(real_adapter, now - timedelta(minutes=5), now)
+    await real_adapter.set_metadata("listener_heartbeat", (now - timedelta(minutes=10)).isoformat())
+    args = create_parser().parse_args(["status", "--json"])
+    env = {
+        "DATABASE_URL": real_adapter.db_manager.database_url,
+        "BACKUP_PATH": str(tmp_path),
+        "SCHEDULE": EVERY_SIX_HOURS,
+        "ENABLE_LISTENER": "true",
+    }
+    out = io.StringIO()
+    with patch.dict(os.environ, env), redirect_stdout(out):
+        code = await run_status(args)
+
+    payload = json.loads(out.getvalue())
+    assert code == 1
+    assert payload["listeners"] == [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"}]
+    assert payload["problems"] == ["the listener of account 1 is not running"]

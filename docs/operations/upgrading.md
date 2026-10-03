@@ -118,6 +118,10 @@ On SQLite, the listener sends live updates to the viewer over HTTP. A backup tha
 
 `telegram-archive status` now exits 1 when `ENABLE_LISTENER` is on and an account has no running listener. A setup that runs the one-shot `backup` command from a host cron runs no listener, so set `ENABLE_LISTENER=false` there.
 
+A running listener now stamps a heartbeat in the database every 30 seconds, and the viewer counts a listener as running only while that stamp is fresh. Upgrade both images together: a 9.2.0 viewer beside an older backup reads every listener as not running, because the older backup writes no heartbeat.
+
+The listener settings lines (`ENABLE_LISTENER enabled`, the `LISTEN_*` values, the `EVENT_WEBHOOK` lines) now appear only in the log of the backup service that runs `schedule`. The viewer and the one-shot commands no longer print them.
+
 ## Upgrading to 9.0 { #upgrading-to-90 }
 
 ### Migrations { #migrations-90 }

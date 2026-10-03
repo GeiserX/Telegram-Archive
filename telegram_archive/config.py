@@ -1292,46 +1292,6 @@ class Config:
                 self.parallel_download_part_size_kb,
                 self.parallel_download_connections * self.parallel_download_part_size_kb,
             )
-        if self.enable_listener:
-            logger.info("ENABLE_LISTENER enabled - new messages, edits and chat changes are saved as they happen")
-            logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
-            if self.listen_deletions:
-                if self.deletion_mode == "soft":
-                    logger.warning(
-                        "  LISTEN_DELETIONS: true, DELETION_MODE=soft (default) - Messages will be marked deleted"
-                    )
-                else:
-                    logger.warning(
-                        "  ⚠️ LISTEN_DELETIONS: true, DELETION_MODE=hard - Messages will be DELETED from backup!"
-                    )
-            else:
-                logger.info("  LISTEN_DELETIONS: false (backup protected)")
-            if self.listen_new_messages:
-                logger.info("  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
-            else:
-                logger.info("  LISTEN_NEW_MESSAGES: false (messages saved on scheduled backup)")
-            if self.listen_chat_actions:
-                logger.info("  LISTEN_CHAT_ACTIONS: true - Chat metadata changes tracked!")
-            logger.info(
-                f"  Mass deletion protection: block if >{self.mass_operation_threshold} deletions in {self.mass_operation_window_seconds}s"
-            )
-        if self.event_webhook_enabled:
-            # Never log the URL, at any level: Slack/Discord/ntfy URLs are
-            # bearer capabilities (deliberate deviation from the proxy
-            # DEBUG-endpoint precedent above).
-            restriction = (
-                f", restricted to {len(self.event_webhook_chat_ids)} chat(s)" if self.event_webhook_chat_ids else ""
-            )
-            logger.info(
-                f"EVENT_WEBHOOK enabled - {self.event_webhook_method} on {', '.join(sorted(self.event_webhook_events))}{restriction}"
-            )
-            if not self.enable_listener:
-                logger.warning("  EVENT_WEBHOOK_ENABLED has no effect: ENABLE_LISTENER=false")
-            else:
-                if "message_deleted" in self.event_webhook_events and not self.listen_deletions:
-                    logger.warning("  message_deleted webhooks will never fire: LISTEN_DELETIONS=false")
-                if "message_edited" in self.event_webhook_events and not self.listen_edits:
-                    logger.warning("  message_edited webhooks will never fire: LISTEN_EDITS=false")
         if self.transcription_enabled:
             # Scheme and host only: the URL may carry a path or query the
             # operator considers private. The key and the secret never appear.
@@ -1391,6 +1351,57 @@ class Config:
                 self.telegram_proxy["addr"],
                 self.telegram_proxy["port"],
             )
+
+    def log_listener_summary(self) -> None:
+        """The listener and event webhook settings, logged by the processes that run a listener.
+
+        Only ``schedule`` and the standalone listener call this. Every other
+        entry point (the viewer, the one-shot ``backup``, ``status``,
+        ``export``...) starts no listener, so with ``ENABLE_LISTENER`` on by
+        default these lines would claim live capture where nothing listens.
+        Event webhooks are sent by the listener only, so their lines live here
+        too.
+        """
+        if self.enable_listener:
+            logger.info("ENABLE_LISTENER enabled - new messages, edits and chat changes are saved as they happen")
+            logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
+            if self.listen_deletions:
+                if self.deletion_mode == "soft":
+                    logger.warning(
+                        "  LISTEN_DELETIONS: true, DELETION_MODE=soft (default) - Messages will be marked deleted"
+                    )
+                else:
+                    logger.warning(
+                        "  ⚠️ LISTEN_DELETIONS: true, DELETION_MODE=hard - Messages will be DELETED from backup!"
+                    )
+            else:
+                logger.info("  LISTEN_DELETIONS: false (backup protected)")
+            if self.listen_new_messages:
+                logger.info("  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
+            else:
+                logger.info("  LISTEN_NEW_MESSAGES: false (messages saved on scheduled backup)")
+            if self.listen_chat_actions:
+                logger.info("  LISTEN_CHAT_ACTIONS: true - Chat metadata changes tracked!")
+            logger.info(
+                f"  Mass deletion protection: block if >{self.mass_operation_threshold} deletions in {self.mass_operation_window_seconds}s"
+            )
+        if self.event_webhook_enabled:
+            # Never log the URL, at any level: Slack/Discord/ntfy URLs are
+            # bearer capabilities (deliberate deviation from the proxy
+            # DEBUG-endpoint precedent above).
+            restriction = (
+                f", restricted to {len(self.event_webhook_chat_ids)} chat(s)" if self.event_webhook_chat_ids else ""
+            )
+            logger.info(
+                f"EVENT_WEBHOOK enabled - {self.event_webhook_method} on {', '.join(sorted(self.event_webhook_events))}{restriction}"
+            )
+            if not self.enable_listener:
+                logger.warning("  EVENT_WEBHOOK_ENABLED has no effect: ENABLE_LISTENER=false")
+            else:
+                if "message_deleted" in self.event_webhook_events and not self.listen_deletions:
+                    logger.warning("  message_deleted webhooks will never fire: LISTEN_DELETIONS=false")
+                if "message_edited" in self.event_webhook_events and not self.listen_edits:
+                    logger.warning("  message_edited webhooks will never fire: LISTEN_EDITS=false")
 
     def _parse_part_size_kb(self, value: str | None) -> int:
         """Parse PARALLEL_DOWNLOAD_PART_SIZE_KB, clamping to a valid getFile size.

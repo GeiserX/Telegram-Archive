@@ -1298,6 +1298,21 @@ class TestListenerLogging(unittest.TestCase):
             self.assertTrue(config.listen_deletions)
             self.assertEqual(config.deletion_mode, "soft")
 
+    def test_listener_lines_are_left_to_the_processes_that_run_a_listener(self):
+        """The viewer, a one-shot backup or status start no listener: their summary must not claim one."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.enable_listener)
+            with self.assertLogs("telegram_archive.config", level="DEBUG") as summary:
+                config.log_summary()
+            with self.assertLogs("telegram_archive.config", level="INFO") as listener:
+                config.log_listener_summary()
+        self.assertFalse([line for line in summary.output if "LISTEN" in line])
+        joined = "\n".join(listener.output)
+        self.assertIn("ENABLE_LISTENER enabled", joined)
+        self.assertIn("LISTEN_NEW_MESSAGES: true", joined)
+
     def test_deletion_mode_defaults_soft(self):
         """Unset DELETION_MODE keeps deleted messages (soft): removal is opt-in."""
         env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
@@ -1317,7 +1332,7 @@ class TestListenerLogging(unittest.TestCase):
             config = Config()
             self.assertEqual(config.deletion_mode, "hard")
             with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
-                config.log_summary()
+                config.log_listener_summary()
         self.assertTrue(any("DELETION_MODE=hard - Messages will be DELETED" in line for line in logs.output))
 
     def test_deletion_mode_default_summary_reads_as_default(self):
@@ -1331,7 +1346,7 @@ class TestListenerLogging(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
-                config.log_summary()
+                config.log_listener_summary()
         joined = "\n".join(logs.output)
         self.assertIn("DELETION_MODE=soft (default)", joined)
         self.assertNotIn("DELETED from backup", joined)
@@ -2541,22 +2556,24 @@ class TestEventWebhookConfig(unittest.TestCase):
     def test_combination_warnings(self):
         """Startup names the exact reason a selected event can never fire."""
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
-            self._config(ENABLE_LISTENER="false").log_summary()
+            self._config(ENABLE_LISTENER="false").log_listener_summary()
         self.assertTrue(any("ENABLE_LISTENER=false" in line for line in logs.output))
 
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
-            self._config(ENABLE_LISTENER="true").log_summary()  # LISTEN_DELETIONS defaults false
+            self._config(ENABLE_LISTENER="true").log_listener_summary()  # LISTEN_DELETIONS defaults false
         joined = "\n".join(logs.output)
         self.assertIn("message_deleted webhooks will never fire", joined)
 
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
-            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true", LISTEN_EDITS="false").log_summary()
+            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true", LISTEN_EDITS="false").log_listener_summary()
         joined = "\n".join(logs.output)
         self.assertIn("message_edited webhooks will never fire", joined)
 
     def test_startup_log_never_contains_url(self):
         with self.assertLogs("telegram_archive.config", level="INFO") as logs:
-            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true").log_summary()
+            config = self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true")
+            config.log_summary()
+            config.log_listener_summary()
         joined = "\n".join(logs.output)
         self.assertNotIn(self.URL, joined)
         self.assertNotIn("secret-token-path", joined)

@@ -21,7 +21,7 @@ import os
 import time
 import weakref
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from telethon import TelegramClient, events
@@ -96,6 +96,18 @@ _FRAME_MEDIA_KEYS = ("id", "type", "file_path", "file_name", "file_size", "mime_
 # read, and a poll's closing arrives as an edit, which needs no lookup.
 POLL_LOOKUP_CACHE_SIZE = 4096
 POLL_LOOKUP_MISS_SECONDS = 6 * 60 * 60
+
+# How often a running listener stamps listener_heartbeat. status.py counts a
+# listener as running while the stamp is under three minutes old.
+LISTENER_HEARTBEAT_SECONDS = 30
+
+# How many media files the listener downloads at once. Telethon runs every
+# update in its own task, and a catch-up after an outage replays the whole
+# missed window at once: without a cap, every replayed photo or file would
+# start its own transfer on the one shared client, run into FloodWaits together
+# and hold the rate-limit pause for all of them. The message row is written
+# before the wait, so only the file waits.
+LISTENER_MEDIA_CONCURRENCY = 3
 
 
 class MassOperationProtector:
@@ -346,6 +358,12 @@ class TelegramListener:
         # rate-limit deletions in the same chat.
         self._reaction_pending: dict[tuple[int, int], list[dict]] = {}
         self._reaction_flush_task: asyncio.Task | None = None
+
+        # Stamps listener_heartbeat while run() runs (see _heartbeat_loop).
+        self._heartbeat_task: asyncio.Task | None = None
+
+        # Caps concurrent live media downloads (LISTENER_MEDIA_CONCURRENCY).
+        self._media_download_slots = asyncio.Semaphore(LISTENER_MEDIA_CONCURRENCY)
 
         # Real-time notifier for viewer WebSocket updates
         self._notifier: RealtimeNotifier | None = None
@@ -1051,7 +1069,8 @@ class TelegramListener:
                 # The media folder is not visibly there: the file is not known
                 # to be gone, and a download would land beside the volume.
                 return existing
-            download_result = await self._download_media(message, chat_id)
+            async with self._media_download_slots:
+                download_result = await self._download_media(message, chat_id)
             if not download_result:
                 return None
             media_path, media_file_name, content_hash = download_result
@@ -2103,6 +2122,26 @@ class TelegramListener:
                 logger.debug(f"Could not remove event handler: {type(e).__name__}")
         self._registered_handlers = []
 
+    async def _heartbeat_loop(self) -> None:
+        """Stamp ``listener_heartbeat`` every 30 seconds while the listener runs.
+
+        The viewer and ``telegram-archive status`` count a listener as running
+        only while this stamp is fresh (status.py ``listener_is_running``).
+        ``listener_active_since`` is cleared on a clean stop only, so without
+        the stamp a killed container or a power cut read as a running listener.
+        Owned by the listener, so the scheduler and the standalone mode both
+        keep it. One small write every 30 seconds, no content.
+        """
+        key = account_metadata_key("listener_heartbeat", self.account_id)
+        while True:
+            try:
+                await asyncio.wait_for(self.db.set_metadata(key, datetime.now(UTC).isoformat()), timeout=10)
+            except Exception as e:
+                # Debug only: a database outage already logs elsewhere, and this
+                # runs every 30 seconds.
+                logger.debug(f"Could not stamp the listener heartbeat: {type(e).__name__}")
+            await asyncio.sleep(LISTENER_HEARTBEAT_SECONDS)
+
     async def run(self) -> None:
         """
         Run the listener until stopped.
@@ -2128,6 +2167,7 @@ class TelegramListener:
             )
         except Exception as e:
             logger.warning(f"Could not write listener status to DB: {e}")
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         logger.info("=" * 70)
         logger.info("🎧 Real-time listener started with RATE LIMITING")
@@ -2142,6 +2182,13 @@ class TelegramListener:
             logger.info("Listener cancelled")
         finally:
             self._running = False
+            if self._heartbeat_task:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                self._heartbeat_task = None
             # Clear listener status when stopped
             try:
                 await self.db.set_metadata(account_metadata_key("listener_active_since", self.account_id), "")
@@ -2352,6 +2399,7 @@ async def main() -> None:
         config = Config()
         setup_logging(config)
         config.log_summary()
+        config.log_listener_summary()
 
         logger.info("=" * 60)
         logger.info("Telegram Archive - Real-time Listener")

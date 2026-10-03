@@ -12,6 +12,7 @@ import re
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
@@ -2333,6 +2334,7 @@ class TestOperatorStatus(_MasterTestBase):
                 "backup_in_progress": "0",
                 "stats_calculated_at": "2026-08-22T03:00:00",
                 "listener_active_since_account_2": "2026-08-22T05:00:00",
+                "listener_heartbeat_account_2": datetime.now(UTC).isoformat(),
             }.get(key)
 
         self.mock_db.get_metadata = AsyncMock(side_effect=fake_metadata)
@@ -2365,12 +2367,15 @@ class TestOperatorStatus(_MasterTestBase):
         """
         from telegram_archive.status import collect_status
 
+        heartbeat = datetime.now(UTC).isoformat()
+
         async def fake_metadata(key):
             return {
                 "last_backup_time": "2026-08-22T06:00:00Z",
                 "backup_in_progress": "1",
                 "stats_calculated_at": "2026-08-22T03:00:00",
                 "listener_active_since": "2026-08-22T05:00:00",
+                "listener_heartbeat": heartbeat,
             }.get(key)
 
         self.mock_db.get_metadata = AsyncMock(side_effect=fake_metadata)

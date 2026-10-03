@@ -884,6 +884,25 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertIn("backup_in_progress", data)
         self.assertTrue(data["backup_in_progress"])
 
+    async def test_listener_active_needs_a_fresh_heartbeat(self):
+        """The sidebar's Live follows status.py's rule: a killed backup stops reading as Live."""
+        from datetime import UTC, timedelta
+
+        self.mock_db.get_cached_statistics = AsyncMock(return_value={})
+        self.mock_db.get_account_ids = AsyncMock(return_value=[1])
+        for age, expected in ((timedelta(minutes=1), True), (timedelta(minutes=10), False)):
+            metadata = {
+                "listener_active_since": "2026-08-22T05:00:00",
+                "listener_heartbeat": (datetime.now(UTC) - age).isoformat(),
+            }
+            self.mock_db.get_metadata = AsyncMock(side_effect=metadata.get)
+            async with self._client() as client:
+                resp = await client.get("/api/stats")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertIs(data["listener_active"], expected, age)
+            self.assertEqual(data["listener_active_since"], "2026-08-22T05:00:00" if expected else None)
+
     async def test_backup_in_progress_false_when_metadata_is_zero(self):
         """get_stats sets backup_in_progress=False when metadata key is '0'."""
         self.mock_db.get_cached_statistics = AsyncMock(return_value={})

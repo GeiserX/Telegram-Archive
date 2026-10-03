@@ -22,7 +22,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -33,6 +33,8 @@ from .connection import TelegramConnection
 from .telegram_backup import run_backup
 
 if TYPE_CHECKING:
+    from datetime import tzinfo
+
     from .listener import TelegramListener
 
 logger = logging.getLogger(__name__)
@@ -419,11 +421,14 @@ class BackupScheduler:
         """
         listener = None
         try:
-            if not entry.connection.is_connected or entry.row_id is None:
-                # The connection never came up (one account of several failed at
-                # startup) or its row is unresolved, which needs the login. A
+            if entry.connection.client is None or entry.row_id is None:
+                # No client exists yet (one account of several failed at
+                # startup) or the row is unresolved, which needs the login. A
                 # client built now starts from a fresh update state, so there
-                # is nothing to replay yet: heal first, as before.
+                # is nothing to replay yet: heal first, as before. The branch
+                # reads the client object, not is_connected: a failed heal
+                # clears that flag but keeps the client and its update state,
+                # and reviving that client replays the outage at once.
                 if delay:
                     await asyncio.sleep(delay)
                 await self._heal_connection(entry)
@@ -701,19 +706,35 @@ class BackupScheduler:
                     loop.remove_signal_handler(signum)
 
 
-def fires_in_next_day(schedule: str, now: datetime | None = None) -> int | None:
-    """How often SCHEDULE fires in the 24 hours after ``now``; None when it does not parse."""
+# More fires than a minute-resolution cron can make in a day, the extra hour
+# of a DST fall-back included: a bound the loop below can never reach honestly.
+_MAX_FIRES_COUNTED = 1600
+
+
+def fires_in_next_day(schedule: str, now: datetime | None = None, timezone: tzinfo | None = None) -> int | None:
+    """How often SCHEDULE fires in the 24 hours after ``now``; None when it does not parse.
+
+    ``timezone`` defaults to the local zone, the one the scheduler uses.
+
+    Fire times are compared in UTC. Python compares two datetimes that share a
+    zone by their wall clock, so on a DST fall-back day the second 02:00 reads
+    as no later than the first, and APScheduler, asked for the next fire after
+    the second one in local time, hands it back again: the loop never ended.
+    """
     try:
-        trigger = CronTrigger.from_crontab(schedule)
+        trigger = CronTrigger.from_crontab(schedule, timezone=timezone)
     except ValueError:
         return None
-    start = now or datetime.now(trigger.timezone)
+    start = (now or datetime.now(trigger.timezone)).astimezone(UTC)
     end = start + timedelta(days=1)
     count = 0
     fire = trigger.get_next_fire_time(None, start)
-    while fire is not None and fire < end:
+    while fire is not None and fire.astimezone(UTC) < end and count < _MAX_FIRES_COUNTED:
         count += 1
-        fire = trigger.get_next_fire_time(fire, fire + timedelta(microseconds=1))
+        following = trigger.get_next_fire_time(fire, fire.astimezone(UTC) + timedelta(microseconds=1))
+        if following is None or following.astimezone(UTC) <= fire.astimezone(UTC):
+            break
+        fire = following
     return count
 
 
@@ -721,12 +742,12 @@ def fires_in_next_day(schedule: str, now: datetime | None = None) -> int | None:
 _FREQUENT_PASSES_PER_DAY = 4
 
 
-def capture_mode_lines(config, now: datetime | None = None) -> list[str]:
+def capture_mode_lines(config, now: datetime | None = None, timezone: tzinfo | None = None) -> list[str]:
     """The startup lines that say how messages are captured: live, or only by the scheduled pass."""
     if not config.enable_listener:
         return [f"Capture mode: scheduled only (ENABLE_LISTENER=false); full pass on SCHEDULE ({config.schedule})"]
     lines = [f"Capture mode: real time; full pass on SCHEDULE ({config.schedule})"]
-    fires = fires_in_next_day(config.schedule, now)
+    fires = fires_in_next_day(config.schedule, now, timezone)
     if fires is not None and fires > _FREQUENT_PASSES_PER_DAY:
         lines.append(
             f"SCHEDULE runs a full pass {fires} times a day. With the listener on, frequent full passes "
@@ -778,6 +799,7 @@ async def main():
             logger.info(f"Capture scope [account {account.index}]: {scope}")
         for line in capture_mode_lines(config):
             logger.info(line)
+        config.log_listener_summary()
         if config.sync_deletions_edits:
             logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
             logger.warning("   → Will re-check ALL messages for edits/deletions each run")

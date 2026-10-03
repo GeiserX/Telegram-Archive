@@ -16,6 +16,8 @@ The supported way to run the listener is the `schedule` command. The shipped com
 
 A watchdog checks the listeners once a second and restarts a dead one after a 5-second pause. Healthy accounts are left alone.
 
+While a listener runs, it stamps a heartbeat in the database every 30 seconds. The viewer's **Live** line, Archive status and `telegram-archive status` count a listener as running only while that stamp is under three minutes old, so a killed container or a power cut does not read as a running listener.
+
 ## Catching up after a disconnect
 
 Telegram keeps the updates a client missed for a while and hands them over when the client asks for them. The official apps ask on every new connection, and the listener does the same. Each time a listener starts or restarts, it first attaches its handlers and only then reconnects and asks Telegram for what it missed. New messages and edits from the outage, and whatever else Telegram replays, are then saved as if they had just happened.
@@ -68,7 +70,7 @@ The listener skips forum topics listed in `SKIP_TOPIC_IDS`. That covers their ne
 
 With `LISTEN_NEW_MESSAGES=true`, the listener saves each new message as it arrives. It stores the text, the sender, the chat, the album id, the link preview, a poll with its question, answers and results, the forward origin and the formatting.
 
-The listener downloads the media at once by default. With `LISTEN_NEW_MESSAGES_MEDIA=false` it waits for the next scheduled backup. It applies the same rules as the backup: the `DOWNLOAD_MEDIA` switch, the size cap, media types, document MIME types, YouTube previews, `SKIP_MEDIA_CHAT_IDS` and deduplication. See [Media downloads](media.md).
+The listener downloads the media at once by default. With `LISTEN_NEW_MESSAGES_MEDIA=false` it waits for the next scheduled backup. Each account's listener downloads at most 3 files at the same time. The message itself is saved at once and only its file waits, so a catch-up that replays many messages with media does not start every download together and run into Telegram's rate limits. It applies the same rules as the backup: the `DOWNLOAD_MEDIA` switch, the size cap, media types, document MIME types, YouTube previews, `SKIP_MEDIA_CHAT_IDS` and deduplication. See [Media downloads](media.md).
 
 ## Edits
 

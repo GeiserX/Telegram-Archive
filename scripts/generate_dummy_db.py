@@ -1540,10 +1540,16 @@ async def seed(data_dir: Path) -> None:
 
         await db.set_metadata("last_backup_time", (now - timedelta(minutes=25)).isoformat() + "Z")
         # A default install runs the real-time listener for every account, so
-        # the demo reads as one: the sidebar says Live.
+        # the demo reads as one: the sidebar says Live. A running backup stamps
+        # the heartbeat every 30 seconds and the viewer counts a listener only
+        # while that stamp is fresh; the demo has no backup to stamp it, so the
+        # stamp is set a year ahead and the demo stays Live.
         for account in accounts.values():
             await db.set_metadata(
                 account_metadata_key("listener_active_since", account), (now - timedelta(minutes=25)).isoformat()
+            )
+            await db.set_metadata(
+                account_metadata_key("listener_heartbeat", account), (now + timedelta(days=365)).isoformat() + "Z"
             )
         await db.calculate_and_store_statistics(storage_path=str(backup))
         total = sum(len(s.messages) for s in scripts)

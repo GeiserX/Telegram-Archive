@@ -20,6 +20,14 @@ if TYPE_CHECKING:
     from .config import Config
     from .db.adapter import DatabaseAdapter
 
+# A running backup stamps ``listener_heartbeat`` every 30 seconds for each
+# account whose listener runs (scheduler.py ``_heartbeat_loop``). A listener
+# counts as running only while that stamp is this fresh: the start flag
+# ``listener_active_since`` is cleared on a clean stop only, so a killed
+# container, an out-of-memory kill or a power cut leaves it set. Three missed
+# beats and some slack, like the Docker healthcheck of the backup.
+LISTENER_HEARTBEAT_MAX_AGE = timedelta(minutes=3)
+
 # How far back to look for the schedule's last two runs. The first window
 # that holds two is used, so a frequent schedule never walks a long one.
 _LOOKBACK_WINDOWS = (timedelta(hours=1), timedelta(days=1), timedelta(days=32), timedelta(days=3700))
@@ -34,21 +42,54 @@ async def collect_status(db: DatabaseAdapter, config: Config) -> dict[str, Any]:
         },
         "stats_calculated_at": await db.get_metadata("stats_calculated_at"),
     }
-    try:
-        account_ids = list(await db.get_account_ids())
-    except Exception:
-        account_ids = [DEFAULT_ACCOUNT_ID]
-    listeners = []
-    for account_id in account_ids:
-        since = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
-        listeners.append({"account_id": account_id, "active": bool(since), "active_since": since})
-    payload["listeners"] = listeners
+    payload["listeners"] = await listener_states(db)
     payload["media"] = await db.get_operator_status_counts(max_attempts=config.max_media_download_attempts)
     payload["database"] = {
         "backend": "sqlite" if db.db_manager._is_sqlite else "postgresql",
         "size_bytes": await db.get_database_size_bytes(),
     }
     return payload
+
+
+async def listener_states(db: DatabaseAdapter, account_ids: list[int] | None = None) -> list[dict[str, Any]]:
+    """Each account's listener: running or not, and since when it last started.
+
+    The one rule for the viewer's sidebar (``/api/stats``) and for Archive
+    status and ``telegram-archive status`` (``collect_status``), so the two
+    cannot disagree. ``active_since`` is kept on a row that is not active: a
+    start time with no fresh heartbeat is a listener that stopped without
+    shutting down.
+    """
+    if account_ids is None:
+        try:
+            account_ids = list(await db.get_account_ids())
+        except Exception:
+            # Advisory status only: degrade to the single-account keys.
+            account_ids = [DEFAULT_ACCOUNT_ID]
+    now = datetime.now(UTC)
+    states = []
+    for account_id in account_ids:
+        since = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
+        heartbeat = await db.get_metadata(account_metadata_key("listener_heartbeat", account_id))
+        states.append(
+            {
+                "account_id": account_id,
+                "active": listener_is_running(since, heartbeat, now),
+                "active_since": since or None,
+            }
+        )
+    return states
+
+
+def listener_is_running(since: str | None, heartbeat: str | None, now: datetime | None = None) -> bool:
+    """A listener started (``since`` set) and stamped its heartbeat within the last three minutes."""
+    if not since or not heartbeat:
+        return False
+    try:
+        beat = parse_utc(heartbeat)
+    except ValueError:
+        return False
+    return beat is not None and beat >= (now or datetime.now(UTC)) - LISTENER_HEARTBEAT_MAX_AGE
 
 
 def parse_utc(value: str | None) -> datetime | None:
@@ -96,9 +137,12 @@ def health_problems(
       the next tick fires skips that tick;
     - a listener is not running: ``listener_accounts`` is how many accounts
       should have one (the configured accounts when ENABLE_LISTENER is on, 0
-      when it is off), and fewer are active. With the listener on, the
-      scheduled pass runs once a day, so this is what shows a stopped backup
-      within minutes. The account ids are named when the database holds no
+      when it is off), and fewer are active. A listener is active while the
+      backup stamps its heartbeat (``listener_is_running``), so a stopped
+      listener, a stopped backup process and a killed container all read as
+      not running within about three minutes. With the listener on, the
+      scheduled pass runs once a day, so the schedule check alone would take
+      about two days to notice. The account ids are named when the database holds no
       rows beyond the configured accounts; otherwise only the count is, since
       a row left by an account no longer configured never has a listener.
 

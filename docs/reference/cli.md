@@ -177,7 +177,7 @@ The archive is unhealthy when one of these holds:
 - No backup run has ever started.
 - The last run did not finish. It is not running, and the statistics a run writes after its message sweep are older than its start.
 - `SCHEDULE` has fired twice since the last run started. One missed tick is allowed, because a tick that arrives while a run is still going is skipped. A run still going after two ticks counts as missed, so the first backup of a large archive reads `UNHEALTHY` until it completes.
-- `ENABLE_LISTENER` is on and fewer listeners are running than accounts are configured. With the daily default schedule, this is what reports a stopped backup within minutes. The account is named when the database holds no account beyond the configured ones; otherwise the count is given.
+- `ENABLE_LISTENER` is on and fewer listeners are running than accounts are configured. A listener counts as running while the backup stamps its heartbeat, every 30 seconds, so a stopped listener, a stopped backup and a killed container all show here within about three minutes. With the daily default schedule, the schedule check alone would take about two days. The account is named when the database holds no account beyond the configured ones; otherwise the count is given.
 
 The schedule check uses the local time of the command, as the scheduler does. Run it with the same `TZ` as the backup service. Inside the backup container this is already the case.
 

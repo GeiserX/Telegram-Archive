@@ -1,5 +1,8 @@
 """The sidebar's status line, executed: Live stays Live while the daily full pass runs.
 
+The start of the last full pass stays visible text, not only a title: a title
+never shows on a phone, and Archive status is master-only.
+
 Since 9.2.0 the listener is on by default and the full pass runs once a day.
 The real ``sidebarStatusNow`` and ``backupHealthOf`` are lifted out of the
 template and run under node with stubbed refs, so these pin what the line says
@@ -60,8 +63,8 @@ def test_live_when_the_listener_is_up():
 
     assert line == {
         "kind": "live",
-        "text": "Live",
-        "title": "New messages arrive as they are sent. Last full pass: STAMP.",
+        "text": "Live · full pass AGO",
+        "title": "New messages arrive as they are sent. Last full pass started on STAMP.",
     }
 
 
@@ -70,9 +73,8 @@ def test_live_outranks_a_running_full_pass():
     line = _status_line(listener=True, in_progress=True, stats_at=UNFINISHED)
 
     assert line["kind"] == "live"
-    assert line["text"] == "Live"
-    assert "A full pass is running." in line["title"]
-    assert "The one before ran on STAMP." in line["title"]
+    assert line["text"] == "Live · full pass AGO"
+    assert "A full pass is running, started on STAMP." in line["title"]
 
 
 def test_an_unfinished_backup_still_wins_for_the_owner():
@@ -99,3 +101,37 @@ def test_without_the_listener_an_idle_archive_reads_when_it_backed_up():
     line = _status_line(listener=False, in_progress=False, stats_at=FINISHED)
 
     assert line == {"kind": "idle", "text": "Backed up AGO", "title": "Last backup: STAMP"}
+
+
+def _status_problem(listeners: list[dict], *, stats_at: str = FINISHED) -> str:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    helper = _extract_const_arrow_function(html, "backupHealthOf", asynchronous=False)
+    start = html.index("const statusProblem = computed(() => {")
+    end = html.index("\n                })", start) + len("\n                })")
+    data = {"backup": {"last_run": LAST, "in_progress": False}, "stats_calculated_at": stats_at, "listeners": listeners}
+    script = f"""
+"use strict";
+const moment = {{ utc: iso => ({{ isBefore: other => Date.parse(iso) < other.t, t: Date.parse(iso) }}) }};
+const ref = value => ({{ value }});
+const computed = getter => ({{ get value() {{ return getter(); }} }});
+const statusData = ref({json.dumps(data)});
+{helper}
+{html[start:end]}
+console.log(JSON.stringify(statusProblem.value));
+"""
+    return json.loads(_run_node_output(script))
+
+
+def test_archive_status_flags_a_listener_that_stopped_without_shutting_down():
+    """A killed backup leaves the start time with a stale heartbeat: the payload says active false."""
+    assert _status_problem([{"account_id": 1, "active": False, "active_since": LAST}]) == "A listener is not running"
+
+
+def test_archive_status_is_calm_for_a_running_or_cleanly_stopped_listener():
+    assert _status_problem([{"account_id": 1, "active": True, "active_since": LAST}]) == ""
+    assert _status_problem([{"account_id": 1, "active": False, "active_since": None}]) == ""
+
+
+def test_an_unfinished_backup_is_named_before_the_listener():
+    listeners = [{"account_id": 1, "active": False, "active_since": LAST}]
+    assert _status_problem(listeners, stats_at="2026-01-14T03:40:00Z") == "The last backup did not finish"
