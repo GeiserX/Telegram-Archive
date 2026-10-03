@@ -256,7 +256,7 @@ A message whose file the viewer cannot show keeps its place: a placeholder in th
 
 ## Media from the real-time listener
 
-The listener saves new messages as they arrive, but it leaves their media for the next scheduled backup unless `LISTEN_NEW_MESSAGES_MEDIA=true`. See [Real-time listener](listener.md).
+The listener saves new messages as they arrive and downloads their media at once, by the same rules as the backup. With `LISTEN_NEW_MESSAGES_MEDIA=false` it leaves the media for the next scheduled backup. See [Real-time listener](listener.md).
 
 ## Round videos in older archives
 

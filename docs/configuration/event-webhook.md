@@ -22,7 +22,7 @@ The webhook never fires for:
 
 The webhook runs inside the [real-time listener](listener.md), so it needs:
 
-- `ENABLE_LISTENER=true`
+- `ENABLE_LISTENER=true`, the default.
 - `LISTEN_EDITS=true` for `message_edited`. This is the default.
 - `LISTEN_DELETIONS=true` for `message_deleted`. This is off by default.
 

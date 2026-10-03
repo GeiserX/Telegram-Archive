@@ -47,7 +47,7 @@ from ..db.adapter import (
     parse_account_chat_stats_key,
     parse_entitlement_column,
 )
-from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_STATUSES, account_metadata_key
+from ..db.models import PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_STATUSES
 from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     describe_exception,
@@ -56,7 +56,7 @@ from ..message_utils import (
     utcnow_naive,
 )
 from ..realtime import RealtimeListener, resolve_internal_push_secret
-from ..status import collect_status
+from ..status import collect_status, listener_states
 from ..transcription_contract import (
     apply_job_outcome,
     event_data,
@@ -4186,19 +4186,12 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         stats["stats_calculation_hour"] = config.stats_calculation_hour
         stats["show_stats"] = config.show_stats  # Whether to show stats UI
 
-        # Check if real-time listener is active (written by backup container)
+        # Is a real-time listener running (written by the backup container)?
         # Per-account keys since 8.1 (#313): active = any account's listener is
-        # up; "since" = the earliest active one. Account 1 uses the legacy key.
-        active_times = []
-        try:
-            account_ids = list(await db.get_account_ids())
-        except Exception:
-            # Advisory UI status only — degrade to the legacy single-account key.
-            account_ids = [DEFAULT_ACCOUNT_ID]
-        for account_id in account_ids:
-            value = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
-            if value:
-                active_times.append(value)
+        # up; "since" = the earliest active one. The rule is status.py's
+        # listener_states, the one Archive status and `telegram-archive status`
+        # use: a start time and a fresh heartbeat.
+        active_times = [state["active_since"] for state in await listener_states(db) if state["active"]]
         stats["listener_active"] = bool(active_times)
         stats["listener_active_since"] = min(active_times) if active_times else None
 
@@ -4452,7 +4445,9 @@ async def internal_push(request: Request):
         return {"status": "ok"}
     except Exception as e:
         logger.warning(f"Error handling internal push: {e}")
-        return {"status": "error", "detail": "Internal push processing failed"}
+        # A 500, not a 200 with an error body: the backup's notifier counts a
+        # 200 as delivered and would re-arm its once-per-outage warning on it.
+        return JSONResponse({"status": "error", "detail": "Internal push processing failed"}, status_code=500)
 
 
 # ============================================================================

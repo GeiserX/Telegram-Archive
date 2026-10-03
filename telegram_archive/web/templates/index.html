@@ -11996,36 +11996,48 @@
                     facts.push(state.enabled && state.configured ? 'transcripts on' : 'transcripts off')
                     return facts.join(' · ')
                 })
+                // The headline. The backup part follows backupHealthOf. The listener
+                // part differs from `telegram-archive status`, which knows from its
+                // own ENABLE_LISTENER how many listeners should run: the viewer's
+                // environment does not carry the backup's, so it flags only a
+                // listener that started and then stopped stamping its heartbeat
+                // without shutting down (a killed or crashed backup). A clean stop
+                // clears the start time and reads as Off.
                 const statusProblem = computed(() => {
                     const data = statusData.value
                     if (!data) return ''
                     const health = backupHealthOf(data.backup?.last_run, data.backup?.in_progress, data.stats_calculated_at)
                     if (health === 'never') return 'No backup has run yet'
                     if (health === 'unfinished') return 'The last backup did not finish'
+                    if ((data.listeners || []).some(l => !l.active && l.active_since)) return 'A listener is not running'
                     return ''
                 })
                 // The sidebar's status line, under the archive's name. One line,
                 // calm: live sync with a still dot, a backup running with a small
                 // ring, or when the last backup ran. Only the owner sees a backup
                 // that did not finish, in the warning colour, and it opens Archive
-                // status.
+                // status. With the listener up the line says Live, even while the
+                // daily full pass runs: messages still arrive as they are sent. It
+                // keeps the start of the last full pass as visible text, since a
+                // title never shows on a phone and Archive status is master-only.
+                // last_backup_time is written when a pass starts, so while one
+                // runs it is that pass's start.
                 const sidebarStatusNow = () => {
                     if (loadingStats.value && !lastBackupTime.value) return { kind: 'loading', text: 'Loading…', title: '' }
                     const last = lastBackupTime.value
                     const zoned = last ? formatStamp(last, true) : ''
                     const health = backupHealth.value
-                    if (health === 'running') {
-                        return { kind: 'running', text: 'Backing up…', title: last ? `A backup is running. The one before ran on ${zoned}.` : 'A backup is running.' }
-                    }
                     if (health === 'unfinished' && userRole.value === 'master') {
                         return { kind: 'unfinished', text: 'Last backup did not finish', title: `The backup started on ${zoned} did not finish. Open Archive status.` }
                     }
                     if (listenerActive.value) {
-                        return {
-                            kind: 'live',
-                            text: last ? `Live · backed up ${formatAgo(last)}` : 'Live',
-                            title: `New messages arrive as they are sent.${last ? ` Last full backup: ${zoned}.` : ''}`,
-                        }
+                        const facts = ['New messages arrive as they are sent.']
+                        if (health === 'running') facts.push(last ? `A full pass is running, started on ${zoned}.` : 'A full pass is running.')
+                        else if (last) facts.push(`Last full pass started on ${zoned}.`)
+                        return { kind: 'live', text: last ? `Live · full pass ${formatAgo(last)}` : 'Live', title: facts.join(' ') }
+                    }
+                    if (health === 'running') {
+                        return { kind: 'running', text: 'Backing up…', title: last ? `A backup is running. The one before ran on ${zoned}.` : 'A backup is running.' }
                     }
                     if (!last) return { kind: 'never', text: 'No backup yet', title: '' }
                     return { kind: 'idle', text: `Backed up ${formatAgo(last)}`, title: `Last backup: ${zoned}` }

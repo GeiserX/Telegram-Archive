@@ -124,7 +124,8 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
             "Report the last backup run, listener state, media pipeline counts and "
             "database size, the same answer as the viewer's status panel, without "
             "the viewer. Exits 1 when no backup has run, the last backup did not "
-            "finish, SCHEDULE has missed a run, or the database cannot be read."
+            "finish, SCHEDULE has missed a run, a listener is not running while "
+            "ENABLE_LISTENER is on, or the database cannot be read."
         ),
     )
     status_parser.add_argument("--json", action="store_true", help="Print the status as JSON")
@@ -369,7 +370,9 @@ async def run_status(args) -> int:
             status = await collect_status(DatabaseAdapter(manager), config)
         finally:
             await close_database()
-        problems = health_problems(status, config.schedule)
+        problems = health_problems(
+            status, config.schedule, listener_accounts=len(config.accounts) if config.enable_listener else 0
+        )
     except Exception as e:
         print(f"Status failed: {e}", file=sys.stderr)
         return 1

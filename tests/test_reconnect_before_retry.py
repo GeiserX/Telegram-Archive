@@ -616,6 +616,10 @@ class TestListenerRestartAfterAGiveUp:
                 listener.client = client
                 return listener
 
+            async def attach(self):
+                # Handlers go on before the heal (catch-up on reconnect).
+                seen["connected_at_attach"] = self.client.is_connected()
+
             async def connect(self):
                 # Mirrors the real guard (telegram_archive/listener.py, TelegramListener.connect).
                 seen["connected_at_connect"] = self.client.is_connected()
@@ -625,10 +629,14 @@ class TestListenerRestartAfterAGiveUp:
             async def run(self):
                 return None
 
+            async def close(self):
+                return None
+
         with patch("telegram_archive.listener.TelegramListener", StubListener):
             await scheduler._start_listener()
 
         assert state["ensure"] == 1
+        assert seen["connected_at_attach"] is False
         assert seen["connected_at_connect"] is True
         entry = scheduler._accounts[0]
         assert entry.listener is not None
@@ -639,12 +647,34 @@ class TestListenerRestartAfterAGiveUp:
         client = _dead_client()
         connection, state = self._connection(client, ensure_raises=OSError("Network is unreachable"))
         scheduler = self._scheduler(connection)
+        closed = []
 
-        with caplog.at_level(logging.WARNING, logger="telegram_archive.scheduler"):
+        class StubListener:
+            @classmethod
+            async def create(cls, config, client=None, *, account_id):
+                listener = cls()
+                listener.client = client
+                return listener
+
+            async def attach(self):
+                return None
+
+            async def connect(self):
+                raise AssertionError("connect() must not run on a client that did not come back")
+
+            async def close(self):
+                closed.append(self)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="telegram_archive.scheduler"),
+            patch("telegram_archive.listener.TelegramListener", StubListener),
+        ):
             await scheduler._start_listener()
 
         assert state["ensure"] == 1
         entry = scheduler._accounts[0]
         assert entry.listener is None
         assert entry.listener_task is None
+        # The handlers attached before the heal are taken off the shared client again.
+        assert len(closed) == 1
         assert any("Cannot start listener" in r.getMessage() for r in caplog.records)

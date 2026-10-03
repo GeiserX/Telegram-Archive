@@ -2831,3 +2831,103 @@ class TestNotifierBindsToOwnManager:
 
         assert listener._notifier._db_manager is own_manager
         global_resolver.assert_not_called()
+
+
+# ===========================================================================
+# Live media downloads are capped, and a running listener keeps a heartbeat
+# ===========================================================================
+
+
+class TestLiveMediaConcurrency:
+    async def test_a_burst_of_media_messages_downloads_at_most_the_cap_at_once(self):
+        """A catch-up replays a whole outage at once; only LISTENER_MEDIA_CONCURRENCY files transfer together."""
+        from types import SimpleNamespace
+
+        from telegram_archive.listener import LISTENER_MEDIA_CONCURRENCY
+
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
+        in_flight = 0
+        peak = 0
+        started = 0
+
+        async def fake_download(message, chat_id):
+            nonlocal in_flight, peak, started
+            in_flight += 1
+            started += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return None
+
+        listener._download_media = fake_download
+        messages = [SimpleNamespace(id=index, media=None, edit_date=None) for index in range(10)]
+
+        await asyncio.gather(*(listener._store_message_media(m, -1001234567890, "photo") for m in messages))
+
+        assert started == 10
+        assert LISTENER_MEDIA_CONCURRENCY == 3
+        assert peak == LISTENER_MEDIA_CONCURRENCY
+
+
+class TestListenerHeartbeat:
+    async def test_run_stamps_the_heartbeat_and_stops_it_on_exit(self):
+        """The viewer counts a listener as running only while this stamp is fresh."""
+        db = _make_db()
+        listener = TelegramListener(_make_config(listen_reactions=False), db, account_id=1)
+        disconnected = asyncio.Event()
+
+        async def run_until_disconnected():
+            await disconnected.wait()
+
+        listener.client = MagicMock()
+        listener.client.run_until_disconnected = run_until_disconnected
+        task = asyncio.create_task(listener.run())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if any(call.args[0] == "listener_heartbeat" for call in db.set_metadata.await_args_list):
+                break
+
+        heartbeats = [call.args[1] for call in db.set_metadata.await_args_list if call.args[0] == "listener_heartbeat"]
+        assert len(heartbeats) == 1
+        assert datetime.fromisoformat(heartbeats[0]).tzinfo is not None
+        heartbeat_task = listener._heartbeat_task
+        assert heartbeat_task is not None and not heartbeat_task.done()
+
+        disconnected.set()
+        await task
+
+        assert heartbeat_task.done()
+        assert listener._heartbeat_task is None
+        db.set_metadata.assert_any_await("listener_active_since", "")
+
+    async def test_the_heartbeat_key_is_per_account(self):
+        db = _make_db()
+        listener = TelegramListener(_make_config(), db, account_id=3)
+
+        with (
+            patch("telegram_archive.listener.asyncio.sleep", side_effect=asyncio.CancelledError),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await listener._heartbeat_loop()
+
+        assert db.set_metadata.await_args.args[0] == "listener_heartbeat_account_3"
+
+    async def test_a_failed_stamp_keeps_the_loop_going(self):
+        db = _make_db()
+        db.set_metadata = AsyncMock(side_effect=RuntimeError("database down"))
+        listener = TelegramListener(_make_config(), db, account_id=1)
+        sleeps = 0
+
+        async def fake_sleep(seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 2:
+                raise asyncio.CancelledError
+
+        with (
+            patch("telegram_archive.listener.asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await listener._heartbeat_loop()
+
+        assert db.set_metadata.await_count == 2
