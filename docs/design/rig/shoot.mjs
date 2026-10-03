@@ -628,8 +628,9 @@ async function openEdited(page) {
 }
 
 // The location, venue, live location and contact cards in a private chat,
-// the venue at the top of the list so the four cards show together on a wide
-// screen. A phone shows two or three, so its second view starts lower.
+// the venue at the top of the list. With their map pictures, a wide screen
+// shows the venue and the location; the live location and the contact,
+// which have no picture in the demo, sit below them.
 async function openLocationCards(page, from = 'Where is that bakery you keep talking about?') {
     await open(page)
     await page.locator('.cursor-pointer h3').filter({ hasText: 'Juniper Vale' }).first().click()
