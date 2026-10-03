@@ -13,6 +13,7 @@ at merge time changes only the migration file.
 
 import hashlib
 import importlib.util
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -53,8 +54,17 @@ def _tables(conn) -> set[str]:
     return set(sa.inspect(conn).get_table_names())
 
 
-def test_revision_chain():
-    assert migration.down_revision == "039"
+def test_revision_chain_points_at_an_existing_revision_and_does_not_fork():
+    revisions = {}
+    for path in _VERSIONS.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        rev = re.search(r'^revision: str = "([^"]+)"', source, re.M)
+        down = re.search(r'^down_revision: str \| None = "([^"]+)"', source, re.M)
+        if rev:
+            revisions[rev.group(1)] = down.group(1) if down else None
+    assert migration.down_revision in revisions
+    assert list(revisions.values()).count(migration.down_revision) == 1
+    assert list(revisions.values()).count(migration.revision) <= 1
 
 
 def test_upgrade_on_an_empty_database_creates_the_table_and_seeds_nothing():

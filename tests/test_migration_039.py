@@ -80,7 +80,7 @@ def _version_snapshot(conn):
     ).all()
 
 
-def test_revision_chain_points_at_an_existing_revision_and_is_the_head():
+def test_revision_chain_points_at_an_existing_revision_and_does_not_fork():
     revisions = {}
     for path in _VERSIONS.glob("*.py"):
         source = path.read_text(encoding="utf-8")
@@ -89,7 +89,8 @@ def test_revision_chain_points_at_an_existing_revision_and_is_the_head():
         if rev:
             revisions[rev.group(1)] = down.group(1) if down else None
     assert migration.down_revision in revisions
-    assert migration.revision not in revisions.values()
+    # 039 was the head when it shipped; a later migration may follow it, two may not.
+    assert list(revisions.values()).count(migration.revision) <= 1
 
 
 def test_upgrade_without_the_media_table_does_nothing():
