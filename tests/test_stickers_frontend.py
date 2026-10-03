@@ -32,6 +32,11 @@ class TestStickerKind(unittest.TestCase):
             "webmNullMime": _sticker(mime_type=None, file_name="5550002_sticker.webm"),
             "webpByMime": _sticker(mime_type="image/webp", file_name="5550003_sticker.webp"),
             "webpNullMime": _sticker(file_name="5550003_sticker.webp"),
+            "pngByMime": _sticker(mime_type="image/png", file_name="5550005_sticker.png"),
+            # A video with stickers drawn on it that an older release filed as a sticker.
+            "mp4Mime": _sticker(mime_type="video/mp4", file_name="5550009_funny.mp4"),
+            "mp4NullMime": _sticker(file_name="5550009_funny.mp4"),
+            "noName": _sticker(),
             "notSticker": json.dumps({"media": {"type": "video", "file_name": "5550004_sticker.webm"}}),
         }
         program = "const cases = {" + ",".join(f"{k}: {v}" for k, v in cases.items()) + "};\n"
@@ -47,6 +52,10 @@ class TestStickerKind(unittest.TestCase):
                 "webmNullMime": "webm",
                 "webpByMime": "image",
                 "webpNullMime": "image",
+                "pngByMime": "image",
+                "mp4Mime": "other",
+                "mp4NullMime": "other",
+                "noName": "other",
                 "notSticker": None,
             },
         )
@@ -57,14 +66,33 @@ class TestStickerKind(unittest.TestCase):
             "const tgs = { media: { type: 'sticker', file_name: '1_AnimatedSticker.tgs' } };\n"
             "const webm = { media: { type: 'sticker', file_name: '1_sticker.webm' } };\n"
             "const webp = { media: { type: 'sticker', file_name: '1_sticker.webp' } };\n"
-            "const before = [canPlaySticker(tgs), canPlaySticker(webm), canPlaySticker(webp)];\n"
+            "const mp4 = { media: { type: 'sticker', mime_type: 'video/mp4', file_name: '1_funny.mp4' } };\n"
+            "const all = [tgs, webm, webp, mp4];\n"
+            "const before = all.map(canPlaySticker);\n"
+            "const labels = all.map(stickerLabel);\n"
             "stickerSupport.tgs = true; stickerSupport.webm = true;\n"
-            "console.log(JSON.stringify({ before, after: [canPlaySticker(tgs), canPlaySticker(webm), canPlaySticker(webp)] }))"
+            "console.log(JSON.stringify({ before, after: all.map(canPlaySticker), labels }))"
         )
         result = _run_setup_program(
-            HTML, (*_NAMES, "const stickerKind = (msg) =>", "const canPlaySticker = (msg) =>"), "", program
+            HTML,
+            (
+                *_NAMES,
+                "const stickerKind = (msg) =>",
+                "const stickerLabel = (msg) =>",
+                "const canPlaySticker = (msg) =>",
+            ),
+            "",
+            program,
         )
-        self.assertEqual(result, {"before": [False, False, True], "after": [True, True, True]})
+        # A sticker row whose file is a video never becomes an <img> that fails and calls it missing.
+        self.assertEqual(
+            result,
+            {
+                "before": [False, False, True, False],
+                "after": [True, True, True, False],
+                "labels": ["Animated sticker", "Video sticker", "Sticker", "Sticker"],
+            },
+        )
 
 
 @unittest.skipUnless(NODE, "node is required to run the sticker helpers")
@@ -154,19 +182,124 @@ class TestTgsReader(unittest.TestCase):
         result = self._read("zlib.gzipSync(Buffer.from(JSON.stringify({ v: '5.5.2', fr: 60, w: 512, h: 512 })))")
         self.assertEqual(result, {"ok": True, "value": {"v": "5.5.2", "fr": 60, "w": 512, "h": 512}})
 
-    def test_a_file_that_unpacks_past_8_mb_is_refused(self) -> None:
-        """A gzip bomb: a few kilobytes on disk, nine megabytes unpacked."""
-        result = self._read("zlib.gzipSync(Buffer.alloc(9 * 1024 * 1024, 32))")
+    def test_a_file_that_unpacks_past_2_mb_is_refused(self) -> None:
+        """A gzip bomb: a few kilobytes on disk, three megabytes unpacked."""
+        result = self._read("zlib.gzipSync(Buffer.alloc(3 * 1024 * 1024, 32))")
         self.assertEqual(result, {"ok": False, "error": "sticker animation too large"})
 
-    def test_a_file_past_2_mb_packed_is_refused(self) -> None:
-        result = self._read("zlib.gzipSync(crypto.randomBytes(2 * 1024 * 1024 + 4096))")
+    def test_a_file_past_256_kb_packed_is_refused(self) -> None:
+        result = self._read("zlib.gzipSync(crypto.randomBytes(256 * 1024 + 4096))")
         self.assertFalse(result["ok"])
         self.assertIn("too large", result["error"])
+
+    def test_a_file_just_under_both_caps_is_read(self) -> None:
+        """The positive control of the two caps: about 100 KB packed that unpacks to 200 KB."""
+        result = self._read(
+            "zlib.gzipSync(Buffer.from(JSON.stringify({ pad: crypto.randomBytes(100 * 1024).toString('hex') })))"
+        )
+        self.assertTrue(result["ok"], result)
 
     def test_bytes_that_are_not_gzip_are_refused(self) -> None:
         result = self._read("Buffer.from(JSON.stringify({ v: '5.5.2' }))")
         self.assertFalse(result["ok"])
+
+
+_SANITIZE = ("const LOTTIE_REFUSED_LAYERS = ", "const sanitizeLottie = (data) =>")
+
+
+@unittest.skipUnless(NODE, "node is required to run the sticker helpers")
+class TestSanitizeLottie(unittest.TestCase):
+    """Nothing in a sender's Lottie file may make lottie-web load a font, a script or a picture."""
+
+    def _sanitize(self, data: dict) -> dict:
+        program = (
+            f"const data = {json.dumps(data)};\n"
+            "try {\n"
+            "  console.log(JSON.stringify({ ok: true, value: sanitizeLottie(data) }));\n"
+            "} catch (error) {\n"
+            "  console.log(JSON.stringify({ ok: false, error: String(error.message || error) }));\n"
+            "}"
+        )
+        return _run_setup_program(HTML, _SANITIZE, "", program)
+
+    SHAPE_LAYER = {"ty": 4, "ind": 1, "shapes": []}
+
+    def test_fonts_glyphs_and_image_assets_are_dropped(self) -> None:
+        precomp = {"id": "comp_0", "layers": [self.SHAPE_LAYER]}
+        result = self._sanitize(
+            {
+                "v": "5.5.2",
+                "fonts": {"list": [{"fFamily": "x", "fOrigin": "t", "fPath": "/static/evil.js"}]},
+                "chars": [{"ch": "a"}],
+                "assets": [
+                    {"id": "image_0", "w": 1, "h": 1, "u": "/media/", "p": "secret.png"},
+                    {"id": "image_1", "p": "data:image/png;base64,AAAA"},
+                    precomp,
+                ],
+                "layers": [self.SHAPE_LAYER, {"ty": 0, "refId": "comp_0"}],
+            }
+        )
+        self.assertTrue(result["ok"], result)
+        value = result["value"]
+        self.assertNotIn("fonts", value)
+        self.assertNotIn("chars", value)
+        self.assertEqual(value["assets"], [precomp])
+        self.assertEqual(len(value["layers"]), 2)
+
+    def test_an_image_or_text_layer_refuses_the_sticker(self) -> None:
+        for layer_type in (2, 5):
+            for where in ("top", "precomp"):
+                layers = [self.SHAPE_LAYER, {"ty": layer_type, "refId": "image_0"}]
+                data = (
+                    {"layers": layers}
+                    if where == "top"
+                    else {"assets": [{"id": "comp_0", "layers": layers}], "layers": [{"ty": 0, "refId": "comp_0"}]}
+                )
+                result = self._sanitize(data)
+                self.assertEqual(result, {"ok": False, "error": "unsupported sticker"}, (layer_type, where))
+
+    def test_a_plain_sticker_passes_untouched(self) -> None:
+        data = {"v": "5.5.2", "fr": 60, "ip": 0, "op": 180, "w": 512, "h": 512, "layers": [self.SHAPE_LAYER]}
+        self.assertEqual(self._sanitize(data), {"ok": True, "value": data})
+
+    def test_json_that_is_not_an_object_is_refused(self) -> None:
+        program = (
+            "const out = [null, [], 'x', 3].map(value => {\n"
+            "  try { sanitizeLottie(value); return 'kept' } catch (error) { return 'refused' }\n"
+            "});\n"
+            "console.log(JSON.stringify(out))"
+        )
+        self.assertEqual(_run_setup_program(HTML, _SANITIZE, "", program), ["refused"] * 4)
+
+
+@unittest.skipUnless(NODE, "node is required to run the sticker helpers")
+class TestTgsCache(unittest.TestCase):
+    """The text cache is bounded by bytes, drops the oldest first, and forgets a failed load."""
+
+    def test_the_cache_stays_under_its_byte_budget(self) -> None:
+        program = (
+            "(async () => {\n"
+            "  const cache = createTgsCache(100);\n"
+            "  const text = (n) => () => Promise.resolve('x'.repeat(n));\n"
+            "  await cache.add('a', text(40));\n"
+            "  await cache.add('b', text(40));\n"
+            "  cache.get('a');\n"
+            "  await cache.add('c', text(40));\n"
+            "  const afterC = { urls: cache.urls(), bytes: cache.bytes() };\n"
+            "  await cache.add('d', text(90));\n"
+            "  const afterD = { urls: cache.urls(), bytes: cache.bytes() };\n"
+            "  await cache.add('e', () => Promise.reject(new Error('gone'))).catch(() => {});\n"
+            "  await new Promise(resolve => setTimeout(resolve, 0));\n"
+            "  const hit = await cache.get('d');\n"
+            "  console.log(JSON.stringify({ afterC, afterD, afterE: cache.urls(), hit: hit.length }));\n"
+            "})()"
+        )
+        result = _run_setup_program(HTML, ("const createTgsCache = (maxBytes) =>",), "", program)
+        # 'a' was read after 'b', so 'b' is the oldest and goes first.
+        self.assertEqual(result["afterC"], {"urls": ["a", "c"], "bytes": 80})
+        self.assertEqual(result["afterD"], {"urls": ["d"], "bytes": 90})
+        self.assertEqual(result["afterE"], ["d"])
+        self.assertEqual(result["hit"], 90)
 
 
 _BUDGET_PRELUDE = """
@@ -266,11 +399,23 @@ class TestStickerTemplate(unittest.TestCase):
         image = self._tag('alt="Sticker"')
         self.assertTrue(image.startswith("<img"), image)
 
-    def test_the_old_label_only_stays_as_the_fallback(self) -> None:
+    def test_the_label_only_stays_as_the_fallback_and_downloads_when_allowed(self) -> None:
         branch = HTML[HTML.index("<div v-else-if=\"msg.media?.type === 'sticker'\"") :]
         branch = branch[: branch.index("<!-- Documents that are actually images")]
-        self.assertEqual(branch.count("Animated sticker"), 1)
-        self.assertLess(branch.index("canPlaySticker(msg)"), branch.index("Animated sticker"))
+        self.assertNotIn("Animated sticker", branch)
+        self.assertEqual(branch.count("{{ stickerLabel(msg) }}"), 2)
+        self.assertLess(branch.index("canPlaySticker(msg)"), branch.index("stickerLabel(msg)"))
+        link = self._tag('class="sticker-fallback ')
+        self.assertTrue(link.startswith('<a v-else-if="!noDownload && getMediaUrl(msg)"'), link)
+        self.assertIn(':href="mediaDownloadUrl(getMediaUrl(msg))" download', link)
+        self.assertIn(":aria-label=\"stickerLabel(msg) + ', download'\"", link)
+
+    def test_a_lottie_error_event_fails_the_sticker_like_a_failed_load(self) -> None:
+        start = HTML.index("const mountTgs = (el) => {")
+        body = HTML[start : HTML.index("const unmountTgs = (el) => {", start)]
+        self.assertIn("animationData: sanitizeLottie(JSON.parse(text))", body)
+        self.assertIn("anim.addEventListener('data_failed', fail)", body)
+        self.assertIn("anim.addEventListener('error', () => {", body)
 
     def test_reduced_motion_holds_a_video_sticker_in_the_gif_observer(self) -> None:
         start = HTML.index("const setupGifObserver = () => {")

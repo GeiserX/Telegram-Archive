@@ -2,7 +2,8 @@
 
 The upgrade runs from the revision before to head on SQLite and on PostgreSQL.
 A video sticker stored as ``video`` and an animated sticker stored as
-``document`` are re-typed. An ordinary webm video, a webm named like a sticker
+``document`` are re-typed, in ``media`` and in the earlier media of an edited
+message (``media_versions``). An ordinary webm video, a webm named like a sticker
 but too wide, one too long, and an ordinary document stay as they were. Ids,
 paths and the downloaded flag never change, and a second run changes nothing.
 
@@ -46,6 +47,18 @@ ROWS = [
     ("-1001_7_document", 7, "document", "5550007_report.pdf", "application/pdf", None, None, None, "document"),
     ("-1001_8_video", 8, "video", "5550008xsticker.webm", "video/webm", 512, 512, 3, "video"),
     ("-1001_9_sticker", 9, "sticker", "5550009_sticker.webp", "image/webp", 512, 512, None, "sticker"),
+    # A video with stickers drawn on it, filed as a sticker by an older release: the row cannot tell a
+    # video from a GIF, so it stays for a backup that reads the message again.
+    ("-1001_10_sticker", 10, "sticker", "5550010_funny.mp4", "video/mp4", 640, 360, 8, "sticker"),
+]
+
+# Earlier media of an edited message: (media id, message id, type, file name, mime type, width, height,
+# duration, expected type after). The edit history must name a sticker as the current row does.
+VERSION_ROWS = [
+    ("-1001_1_video_old", 1, "video", "5550101_sticker.webm", "video/webm", 512, 512, 3, "sticker"),
+    ("-1001_3_document_old", 3, "document", "5550103_AnimatedSticker.tgs", None, None, None, None, "sticker"),
+    ("-1001_4_video_old", 4, "video", "5550104_clip.webm", "video/webm", 512, 512, 3, "video"),
+    ("-1001_5_video_old", 5, "video", "5550105_sticker.webm", "video/webm", 1280, 720, 3, "video"),
 ]
 
 
@@ -58,6 +71,12 @@ def _run(conn, fn) -> None:
 def _snapshot(conn):
     return conn.execute(
         sa.text("SELECT id, type, file_path, file_name, downloaded FROM media ORDER BY message_id")
+    ).all()
+
+
+def _version_snapshot(conn):
+    return conn.execute(
+        sa.text("SELECT media_id, type, file_path, file_name, downloaded FROM media_versions ORDER BY media_id")
     ).all()
 
 
@@ -133,7 +152,28 @@ def test_upgrade_retypes_only_stickers_and_is_idempotent(database_urls):
                         "d": duration,
                     },
                 )
+            for media_id, message_id, media_type, name, mime, width, height, duration, _ in VERSION_ROWS:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO media_versions (account_id, chat_id, message_id, media_id, type, file_path, "
+                        "file_name, mime_type, width, height, duration, downloaded, date, captured_at) VALUES "
+                        "(1, -1001, :mid, :id, :type, :path, :name, :mime, :w, :h, :d, 1, :sent, :sent)"
+                    ),
+                    {
+                        "id": media_id,
+                        "mid": message_id,
+                        "type": media_type,
+                        "path": f"/data/backups/media/-1001/{name}",
+                        "name": name,
+                        "mime": mime,
+                        "w": width,
+                        "h": height,
+                        "d": duration,
+                        "sent": str(SENT),
+                    },
+                )
             before = _snapshot(conn)
+            versions_before = _version_snapshot(conn)
 
         _build_alembic_schema(async_url, "head")
 
@@ -144,9 +184,17 @@ def test_upgrade_retypes_only_stickers_and_is_idempotent(database_urls):
             assert [(r.id, r.file_path, r.file_name, r.downloaded) for r in after] == [
                 (r.id, r.file_path, r.file_name, r.downloaded) for r in before
             ]
+            versions_after = _version_snapshot(conn)
+            expected = {row[0]: row[-1] for row in VERSION_ROWS}
+            assert {r.media_id: r.type for r in versions_after} == expected
+            assert [(r.media_id, r.file_path, r.file_name, r.downloaded) for r in versions_after] == [
+                (r.media_id, r.file_path, r.file_name, r.downloaded) for r in versions_before
+            ]
             _run(conn, migration.upgrade)
             assert _snapshot(conn) == after
+            assert _version_snapshot(conn) == versions_after
             _run(conn, migration.downgrade)
             assert _snapshot(conn) == after
+            assert _version_snapshot(conn) == versions_after
     finally:
         engine.dispose()

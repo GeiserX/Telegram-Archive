@@ -1656,6 +1656,9 @@ _INLINE_MEDIA_FAMILIES = frozenset({"image", "video", "audio"})
 # browser that navigates to one has no renderer for the type and downloads it.
 _INLINE_MEDIA_EXTRA = frozenset({"application/pdf", "application/x-tgsticker"})
 _INLINE_MEDIA_BLOCKED = frozenset({"image/svg+xml"})
+# Served inline for the viewer's own player, but never handed to the operator's
+# "Open" command: a .tgs is a gzip archive a desktop opener would unpack.
+_NOT_OPENABLE_MEDIA = frozenset({"application/x-tgsticker"})
 
 
 def _inline_media_type(filename: str) -> str | None:
@@ -2232,8 +2235,9 @@ async def _launch_media_command(template: str, chat: ChatContext, media_key: str
     """Start the operator's command on an entitled media file; the process is not awaited.
 
     ``inline_only`` limits the file to the families the viewer renders inline
-    (images, video, audio, PDF, .tgs stickers): "Open" hands the file to an application, and
-    a sender's ``.exe``, ``.command`` or ``.desktop`` must never be that file.
+    (images, video, audio, PDF), less the .tgs sticker the viewer only draws:
+    "Open" hands the file to an application, and a sender's ``.exe``,
+    ``.command``, ``.desktop`` or archive must never be that file.
     Showing a folder reveals the file without running it, so it takes any type.
     """
     if not _media_root:
@@ -2243,7 +2247,7 @@ async def _launch_media_command(template: str, chat: ChatContext, media_key: str
     resolved = _resolve_media_file(relative) if relative else None
     if resolved is None:
         raise HTTPException(status_code=404, detail="File not found")
-    if inline_only and _inline_media_type(resolved.name) is None:
+    if inline_only and _inline_media_type(resolved.name) in (None, *_NOT_OPENABLE_MEDIA):
         raise HTTPException(status_code=415, detail="File type cannot be opened")
     try:
         command = _render_media_command(template, resolved)

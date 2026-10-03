@@ -96,7 +96,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 ## Upgrading to 9.2 { #upgrading-to-92 }
 
-Before 9.2.0 the backup archived every video sticker as a `video`, and some older rows hold animated stickers as a `document`. The first start runs migration 039. It changes only the type of those rows to `sticker`: no file, no file name and no id changes, and nothing is deleted. A row is changed only when its file carries the name Telegram gives a sticker: a `video` ending in `_sticker.webm` within Telegram's limits for a video sticker (512 px on each side and 3 seconds at most), or a `document` ending in `_AnimatedSticker.tgs`. It reads the media table once.
+Before 9.2.0 the backup archived every video sticker as a `video`, and some older rows hold animated stickers as a `document`. The first start runs migration 039. It changes only the type of those rows to `sticker`: no file, no file name and no id changes, and nothing is deleted. A row is changed only when its file carries the name Telegram gives a sticker: a `video` ending in `_sticker.webm` within Telegram's limits for a video sticker (512 px on each side and 3 seconds at most), or a `document` ending in `_AnimatedSticker.tgs`. The earlier media of edited messages get the same fix, so the edit history calls them Sticker too. It reads the media table and the earlier-media table once each.
 
 What changes for those rows:
 
@@ -106,7 +106,7 @@ What changes for those rows:
 - Transcription no longer picks them up. A video sticker has no sound.
 - `DOWNLOAD_MEDIA_TYPES` governs them as `sticker`. With a list that names `video` but not `sticker`, new video stickers are no longer downloaded. Files already on disk stay.
 
-A file that had stickers drawn on it was archived as a `sticker` before 9.2.0. New ones are archived as the video, GIF or file they are. The migration leaves the old rows as they are, since their file name does not tell them apart. A backup that reads such a message again corrects its type.
+A file that had stickers drawn on it was archived as a `sticker` before 9.2.0. New ones are archived as the video, GIF or file they are. The migration leaves the old rows as they are: the row does not say whether the file was a video or a GIF. The chat shows them as the text "Sticker", a link that downloads the file when your login may download. A backup that reads such a message again corrects its type.
 
 ## Upgrading to 9.0 { #upgrading-to-90 }
 

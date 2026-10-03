@@ -8315,7 +8315,9 @@
                                              inside it and reports a failed load with a stickerfail event.
                                              The moving kinds are a button: a press plays a held sticker,
                                              or plays it once under reduced motion. A browser that cannot
-                                             play the format keeps the label. -->
+                                             play the format, or a row whose file is no sticker (a video
+                                             an older release filed as one), keeps the label, which
+                                             downloads the file when the login may download. -->
                                         <div v-else-if="msg.media?.type === 'sticker'" class="max-w-[200px]">
                                             <div v-if="stickerKind(msg) === 'image'" class="sticker-box" :style="stickerBoxStyle(msg)">
                                                 <img :src="getMediaUrl(msg)" alt="Sticker" loading="lazy"
@@ -8332,8 +8334,11 @@
                                                 <div v-else :key="getMediaUrl(msg)" class="tgs-sticker sticker-media" :data-src="getMediaUrl(msg)"
                                                     aria-hidden="true" @stickerfail="handleMediaError($event, msg)"></div>
                                             </button>
+                                            <a v-else-if="!noDownload && getMediaUrl(msg)" :href="mediaDownloadUrl(getMediaUrl(msg))" download @click.stop
+                                                class="sticker-fallback block text-xs text-tg-meta p-2 bg-tg-quote-bg rounded hover:underline"
+                                                :aria-label="stickerLabel(msg) + ', download'">{{ stickerLabel(msg) }}</a>
                                             <div v-else class="text-xs text-tg-meta p-2 bg-tg-quote-bg rounded">
-                                                Animated sticker
+                                                {{ stickerLabel(msg) }}
                                             </div>
                                         </div>
 
@@ -13855,7 +13860,10 @@
                 // animated sticker (.tgs) a Lottie animation drawn on a canvas. Both
                 // moving kinds loop while on screen and stop when they leave it.
                 // The mime type decides the kind, and the file name when a row from
-                // an older backup has none.
+                // an older backup has none. 'other' is a sticker row whose file is
+                // none of these: older releases filed a video or GIF with stickers
+                // drawn on it as a sticker. It keeps the label, never an <img> that
+                // would fail and call a file on disk missing.
                 const stickerKind = (msg) => {
                     const media = msg?.media
                     if (media?.type !== 'sticker') return null
@@ -13863,7 +13871,15 @@
                     const name = getDocumentDisplayName(msg).toLowerCase()
                     if (mime === 'application/x-tgsticker' || name.endsWith('.tgs')) return 'tgs'
                     if (mime === 'video/webm' || name.endsWith('.webm')) return 'webm'
-                    return 'image'
+                    if (mime.startsWith('image/') || (!mime && /\.(webp|png|jpe?g|gif)$/.test(name))) return 'image'
+                    return 'other'
+                }
+                // The words a sticker the browser cannot play shows in its place.
+                const stickerLabel = (msg) => {
+                    const kind = stickerKind(msg)
+                    if (kind === 'webm') return 'Video sticker'
+                    if (kind === 'tgs') return 'Animated sticker'
+                    return 'Sticker'
                 }
 
                 // Which moving kinds this browser can play. A .tgs needs
@@ -13962,10 +13978,11 @@
                 }
 
                 // A .tgs file is gzip-compressed Lottie JSON. Both sizes are capped
-                // (2 MB packed, Telegram Desktop's own limit, and 8 MB unpacked), so
-                // a hostile file cannot hang the tab. Returns the JSON text.
-                const TGS_MAX_PACKED = 2 * 1024 * 1024
-                const TGS_MAX_UNPACKED = 8 * 1024 * 1024
+                // (256 KB packed, four times what Telegram accepts for a sticker, and
+                // 2 MB unpacked), so a hostile file cannot hang the tab. Returns the
+                // JSON text.
+                const TGS_MAX_PACKED = 256 * 1024
+                const TGS_MAX_UNPACKED = 2 * 1024 * 1024
                 const readTgsText = async (response) => {
                     let packed = 0
                     const counter = new TransformStream({
@@ -13997,11 +14014,57 @@
                     return new TextDecoder().decode(bytes)
                 }
 
+                // The JSON text of the stickers seen last, by URL, so one sent many
+                // times is fetched once and a sticker scrolled back to starts at once.
+                // The cache holds at most 16 MB of text and drops the oldest first.
+                // Each player parses its own copy: lottie-web writes into its data.
+                const TGS_CACHE_BYTES = 16 * 1024 * 1024
+                const createTgsCache = (maxBytes) => {
+                    const entries = new Map()
+                    let total = 0
+                    const drop = (url) => {
+                        const entry = entries.get(url)
+                        if (!entry) return
+                        total -= entry.size
+                        entries.delete(url)
+                    }
+                    return {
+                        get(url) {
+                            const entry = entries.get(url)
+                            if (!entry) return null
+                            entries.delete(url)
+                            entries.set(url, entry)
+                            return entry.pending
+                        },
+                        // `load` returns a promise of the text. Its size counts once it
+                        // arrives; a failed load leaves the cache.
+                        add(url, load) {
+                            drop(url)
+                            const entry = { pending: load(), size: 0 }
+                            entries.set(url, entry)
+                            entry.pending.then(text => {
+                                if (entries.get(url) !== entry) return
+                                entry.size = text.length
+                                total += entry.size
+                                for (const key of entries.keys()) {
+                                    if (total <= maxBytes) break
+                                    if (key !== url) drop(key)
+                                }
+                            }, () => {
+                                if (entries.get(url) === entry) drop(url)
+                            })
+                            return entry.pending
+                        },
+                        bytes: () => total,
+                        urls: () => [...entries.keys()],
+                    }
+                }
+
                 // The Lottie player (lottie-web, the light canvas build, vendored) is
                 // loaded the first time a .tgs sticker comes near the screen, not
                 // with the page.
                 const LOTTIE_SRC = '/static/vendor/lottie_light_canvas-5.13.0.min.js'
-                const tgsState = { lottie: null, root: null, load: null, view: null, budget: null, players: new Map(), observed: new Set(), cache: new Map() }
+                const tgsState = { lottie: null, root: null, load: null, view: null, budget: null, players: new Map(), observed: new Set(), cache: createTgsCache(TGS_CACHE_BYTES) }
                 const loadLottie = () => {
                     if (!tgsState.lottie) {
                         tgsState.lottie = new Promise((resolve, reject) => {
@@ -14019,28 +14082,38 @@
                     return tgsState.lottie
                 }
 
-                // The JSON text of the last 40 stickers, by URL, so one sent many
-                // times is fetched once and a sticker scrolled back to starts at once.
-                // Each player parses its own copy: lottie-web writes into its data.
-                const TGS_CACHE_SIZE = 40
-                const fetchTgsText = (url) => {
-                    const cache = tgsState.cache
-                    let pending = cache.get(url)
-                    if (pending) {
-                        cache.delete(url)
-                        cache.set(url, pending)
-                        return pending
+                // Telegram allows no images, fonts or text layers in an animated
+                // sticker. lottie-web would fetch any of them from a URL the sender
+                // chose (a font stylesheet, a script, a picture), so they never reach
+                // it: the font and glyph tables and every image asset are dropped,
+                // and an image or text layer refuses the sticker. Image assets carry
+                // `p` (and `u`); a precomposition asset carries `layers` instead.
+                const LOTTIE_REFUSED_LAYERS = [2, 5]
+                const sanitizeLottie = (data) => {
+                    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not a sticker animation')
+                    delete data.fonts
+                    delete data.chars
+                    if (Array.isArray(data.assets)) {
+                        data.assets = data.assets.filter(asset => asset && typeof asset === 'object' && !('p' in asset) && !('u' in asset))
+                    } else {
+                        delete data.assets
                     }
-                    pending = fetch(url, { credentials: 'same-origin' }).then(response => {
-                        if (!response.ok) throw new Error(`sticker answered ${response.status}`)
-                        return readTgsText(response)
-                    })
-                    pending.catch(() => {
-                        if (cache.get(url) === pending) cache.delete(url)
-                    })
-                    cache.set(url, pending)
-                    while (cache.size > TGS_CACHE_SIZE) cache.delete(cache.keys().next().value)
-                    return pending
+                    const layerLists = [data.layers, ...(data.assets || []).map(asset => asset.layers)]
+                    for (const layers of layerLists) {
+                        if (!Array.isArray(layers)) continue
+                        if (layers.some(layer => layer && LOTTIE_REFUSED_LAYERS.includes(layer.ty))) {
+                            throw new Error('unsupported sticker')
+                        }
+                    }
+                    return data
+                }
+
+                const fetchTgsText = (url) => {
+                    return tgsState.cache.get(url) || tgsState.cache.add(url, () =>
+                        fetch(url, { credentials: 'same-origin' }).then(response => {
+                            if (!response.ok) throw new Error(`sticker answered ${response.status}`)
+                            return readTgsText(response)
+                        }))
                 }
 
                 // One player per .tgs element. `want` is what the budget asked for
@@ -14049,7 +14122,7 @@
                 const tgsPlayer = (el) => {
                     let player = tgsState.players.get(el)
                     if (!player) {
-                        player = { anim: null, want: null, loading: false, gone: false }
+                        player = { anim: null, want: null, loading: false, gone: false, failed: false }
                         tgsState.players.set(el, player)
                     }
                     return player
@@ -14079,10 +14152,14 @@
                 const mountTgs = (el) => {
                     const player = tgsPlayer(el)
                     player.gone = false
-                    if (player.anim || player.loading) return
+                    if (player.anim || player.loading || player.failed) return
                     player.loading = true
+                    // A failure far off screen is retried when the sticker comes back;
+                    // one reported to the row is not tried again.
                     const fail = () => {
-                        if (!player.gone) el.dispatchEvent(new CustomEvent('stickerfail'))
+                        if (player.gone) return
+                        player.failed = true
+                        el.dispatchEvent(new CustomEvent('stickerfail'))
                     }
                     Promise.all([loadLottie(), fetchTgsText(el.dataset.src)]).then(([lottie, text]) => {
                         player.loading = false
@@ -14092,13 +14169,22 @@
                             renderer: 'canvas',
                             loop: true,
                             autoplay: false,
-                            animationData: JSON.parse(text),
+                            animationData: sanitizeLottie(JSON.parse(text)),
                             rendererSettings: { clearCanvas: true, preserveAspectRatio: 'xMidYMid meet' },
                         })
                         // Whole frames only: a 120 Hz screen does not draw a 60 fps
                         // sticker twice as often.
                         anim.setSubframe(false)
                         anim.addEventListener('data_failed', fail)
+                        // With animationData given, a bad shape or a failed frame is an
+                        // 'error' event: the player is freed and the row gets the
+                        // shared placeholder like any failed load.
+                        anim.addEventListener('error', () => {
+                            if (player.anim === anim) player.anim = null
+                            // Freed after lottie-web's own handler returns.
+                            setTimeout(() => anim.destroy(), 0)
+                            fail()
+                        })
                         anim.addEventListener('complete', () => {
                             player.want = null
                             tgsState.budget?.done(el)
@@ -20358,6 +20444,7 @@
                     hasForwardHeader,
                     showNameAt,
                     stickerKind,
+                    stickerLabel,
                     canPlaySticker,
                     stickerBoxStyle,
                     pressSticker,
