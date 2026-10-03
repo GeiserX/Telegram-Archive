@@ -1502,6 +1502,13 @@ def is_map_preview_name(file_name: object) -> bool:
     return isinstance(file_name, str) and _MAP_PREVIEW_NAME_RE.match(file_name) is not None
 
 
+# The ``skip_reason`` of a location row Telegram serves no picture for
+# (refused the point, no longer serves the message, or sent no point it can
+# draw). It takes the row off backfill-details' picture list, so a refusal is
+# asked once, not on every run. 14 characters: the column holds 16.
+MAP_NOT_SERVED_REASON = "map_not_served"
+
+
 def payload_has_point(payload: object) -> bool:
     """True when a stored location payload holds two real coordinates."""
     return isinstance(payload, dict) and _is_number(payload.get("lat")) and _is_number(payload.get("long"))

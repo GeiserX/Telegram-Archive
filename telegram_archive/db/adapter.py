@@ -49,6 +49,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
+    MAP_NOT_SERVED_REASON,
     MAP_PREVIEW_TYPES,
     MEDIA_PAYLOAD_KEYS,
     METADATA_ONLY_MEDIA_TYPES,
@@ -5525,9 +5526,10 @@ class DatabaseAdapter:
         message's ``raw_data`` lacks the key of the same name, when the row
         still carries a ``file_path`` that is not a map picture (the leftover
         of releases up to v7.28.0), or when it is a location, a venue or a
-        live location whose payload has a point and whose row has no map
-        picture yet (``needs_map``). Each entry is ``{message_id, media_id,
-        type, file_path, file_name, has_payload, needs_map}``; ``file_path``
+        live location whose payload has a point, whose row has no map
+        picture yet and is not marked ``MAP_NOT_SERVED_REASON``
+        (``needs_map``). Each entry is ``{message_id, media_id, type,
+        file_path, file_name, has_payload, needs_map}``; ``file_path``
         is None when the row's file is its map picture, so it is never taken
         for a leftover. A row whose ``raw_data`` does not parse is left out:
         nothing may be added to a payload the archive cannot read without
@@ -5543,6 +5545,7 @@ class DatabaseAdapter:
                 Media.type,
                 Media.file_path,
                 Media.file_name,
+                Media.skip_reason,
                 Message.raw_data,
             )
             .join(
@@ -5561,7 +5564,8 @@ class DatabaseAdapter:
         grouped: dict[int, list[dict[str, Any]]] = {}
         async with self.db_manager.async_session_factory() as session:
             result = await session.stream(stmt.execution_options(yield_per=1000))
-            async for row_chat, message_id, media_id, media_type, file_path, file_name, raw_data in result:
+            async for row in result:
+                row_chat, message_id, media_id, media_type, file_path, file_name, skip_reason, raw_data = row
                 raw = _raw_data_dict(raw_data)
                 if raw is None:
                     continue
@@ -5572,6 +5576,7 @@ class DatabaseAdapter:
                     media_type in MAP_PREVIEW_TYPES
                     and has_payload
                     and not has_map
+                    and skip_reason != MAP_NOT_SERVED_REASON
                     and payload_has_point(raw[media_type])
                 )
                 if has_payload and not leftover and not needs_map:

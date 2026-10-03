@@ -361,7 +361,7 @@ class TestBackup:
 
     async def test_a_backup_read_keeps_a_picture_the_listener_stored(self, real_adapter, tmp_path):
         await _seed_message(real_adapter, 3)
-        picture = tmp_path / str(CHAT_ID) / "map_0123456789abcdef.png"
+        picture = tmp_path / str(CHAT_ID) / (map_preview.map_preview_stem(1.5, DEMO_LONG) + ".png")
         picture.parent.mkdir(parents=True)
         picture.write_bytes(PNG)
         await real_adapter.insert_media(
@@ -378,13 +378,83 @@ class TestBackup:
             account_id=1,
         )
 
-        row = await _backup(real_adapter, FakeTelegram(), tmp_path)._process_media(
+        client = FakeTelegram()
+        row = await _backup(real_adapter, client, tmp_path)._process_media(
             _telegram_message(3, _media("geo_live", _geo(lat=1.5))), CHAT_ID
         )
         await real_adapter.insert_media(row, account_id=1)
 
         stored = await _media_row(real_adapter, 3)
         assert (stored.downloaded, stored.file_size, stored.file_path) == (1, len(PNG), str(picture))
+        assert client.calls == []
+
+    async def test_a_moved_live_location_gets_the_new_points_picture(self, real_adapter, tmp_path):
+        """The Telegram apps draw the latest position; the earlier picture stays on disk."""
+        await _seed_message(real_adapter, 8)
+        first = await _backup(real_adapter, FakeTelegram(), tmp_path)._process_media(
+            _telegram_message(8, _media("geo_live")), CHAT_ID
+        )
+        await real_adapter.insert_media(first, account_id=1)
+        before = await _media_row(real_adapter, 8)
+
+        client = FakeTelegram([JPEG])
+        moved = await _backup(real_adapter, client, tmp_path)._process_media(
+            _telegram_message(8, _media("geo_live", _geo(lat=1.5))), CHAT_ID
+        )
+        await real_adapter.insert_media(moved, account_id=1)
+
+        after = await _media_row(real_adapter, 8)
+        assert len(client.calls) == 1
+        assert after.id == before.id
+        assert after.file_name == map_preview.map_preview_stem(1.5, DEMO_LONG) + ".jpg"
+        assert (after.downloaded, after.mime_type) == (1, "image/jpeg")
+        assert os.path.isfile(after.file_path)
+        assert os.path.isfile(before.file_path)  # never removed
+
+    async def test_a_venue_read_at_another_point_keeps_its_picture(self, real_adapter, tmp_path):
+        """Control: only a live location moves, so only its picture follows the point."""
+        await _seed_message(real_adapter, 9)
+        first = await _backup(real_adapter, FakeTelegram(), tmp_path)._process_media(
+            _telegram_message(9, _media("venue")), CHAT_ID
+        )
+        await real_adapter.insert_media(first, account_id=1)
+        client = FakeTelegram()
+        await _backup(real_adapter, client, tmp_path)._process_media(
+            _telegram_message(9, _media("venue", _geo(lat=1.5))), CHAT_ID
+        )
+        assert client.calls == []
+
+    async def test_a_picture_never_lands_behind_an_old_bin_link(self, real_adapter, tmp_path):
+        """A row up to 7.28.0 can name a dangling link into _shared; the picture keeps its own path."""
+        await _seed_message(real_adapter, 10)
+        chat_dir = tmp_path / str(CHAT_ID)
+        chat_dir.mkdir()
+        (tmp_path / "_shared").mkdir()
+        link = chat_dir / "123.bin"
+        os.symlink(os.path.join("..", "_shared", "ab", "123.bin"), link)
+        await real_adapter.insert_media(
+            {
+                "id": f"{CHAT_ID}_10_geo",
+                "type": "geo",
+                "message_id": 10,
+                "chat_id": CHAT_ID,
+                "file_name": "123.bin",
+                "file_path": str(link),
+                "file_size": 0,
+                "downloaded": True,
+            },
+            account_id=1,
+        )
+
+        row = await _backup(real_adapter, FakeTelegram(), tmp_path)._process_media(
+            _telegram_message(10, _media("geo")), CHAT_ID
+        )
+        await real_adapter.insert_media(row, account_id=1)
+
+        stored = await _media_row(real_adapter, 10)
+        assert is_map_preview_name(stored.file_name)
+        assert stored.file_path == str(chat_dir / stored.file_name)
+        assert [entry for _dir, _subdirs, files in os.walk(tmp_path / "_shared") for entry in files] == []
 
     async def test_no_picture_leaves_the_metadata_row(self, real_adapter, tmp_path):
         await _seed_message(real_adapter, 4)
@@ -394,6 +464,7 @@ class TestBackup:
         await real_adapter.insert_media(row, account_id=1)
         stored = await _media_row(real_adapter, 4)
         assert (stored.type, stored.downloaded, stored.file_path, stored.file_name) == ("geo", 0, None, None)
+        assert stored.skip_reason == "map_not_served"
 
     async def test_one_flood_answer_stops_the_pictures_for_the_run(self, real_adapter, tmp_path):
         await _seed_message(real_adapter, 5)
@@ -533,6 +604,8 @@ class TestBackfill:
 
         assert first["maps"] == {"saved": 2, "not_served": 0, "no_point": 0, "deferred": 0, "errors": 0}
         assert first["kinds"]["venue"]["filled"] == 1
+        # Listed for its picture only, not for a leftover path.
+        assert first["kinds"]["geo"]["already_present"] == 0
         for row in rows.values():
             assert row.downloaded == 1 and is_map_preview_name(row.file_name) and os.path.isfile(row.file_path)
         assert second["maps"]["saved"] == 0
@@ -610,28 +683,60 @@ class TestBackfill:
         assert (dry["maps"]["saved"], dry["maps"]["deferred"]) == (2, 2)
         for mid in range(1, 5):
             assert (await _media_row(real_adapter, mid)).file_name is None
+        # A deferred row is not read either.
+        assert client.read_calls == [[1, 2]]
 
         applied = await backup.backfill_details(apply=True)
         assert (applied["maps"]["saved"], applied["maps"]["deferred"]) == (2, 2)
+        assert applied["kinds"]["geo"]["already_present"] == 0
         assert len(client.calls) == 2
+        assert client.read_calls[1:] == [[1, 2]]
         rest = await backup.backfill_details(apply=True)
         assert (rest["maps"]["saved"], rest["maps"]["deferred"]) == (2, 0)
+        assert client.read_calls[2:] == [[3, 4]]
 
-    async def test_no_point_and_refusals_are_counted_and_stay_listed(self, real_adapter, tmp_path):
+        # A run with every picture deferred reads nothing.
+        monkeypatch.setattr(telegram_backup, "MAP_PREVIEW_BACKFILL_MAX_PER_RUN", 0)
+        await _seed_location(real_adapter, 5, "geo")
+        none_left = await backup.backfill_details(apply=True)
+        assert (none_left["maps"]["saved"], none_left["maps"]["deferred"]) == (0, 1)
+        assert len(client.read_calls) == 3
+
+    async def test_no_point_and_refusals_are_counted_and_not_asked_again(self, real_adapter, tmp_path):
+        """A refusal leaves the list, so it never spends the cap of a later run; an error stays."""
         root = _media_root(tmp_path)
-        await _seed_location(real_adapter, 1, "geo")
-        await _seed_location(real_adapter, 2, "geo")
+        for mid in range(1, 5):
+            await _seed_location(real_adapter, mid, "geo")
         client = BackfillTelegram(
-            {1: _media("geo", _geo(access_hash=0)), 2: _media("geo", _geo(lat=1.5))},
-            answers=[LocationInvalidError(None)],
+            {
+                1: _media("geo", _geo(access_hash=0)),
+                2: _media("geo", _geo(lat=1.5)),
+                3: _media("geo", _geo(lat=2.5)),
+                # 4: Telegram no longer returns the message.
+            },
+            answers=[LocationInvalidError(None), RPCError(request=None, message="SOMETHING_ELSE", code=400)],
         )
+        backup = _backup(real_adapter, client, root)
 
-        summary = await _backup(real_adapter, client, root).backfill_details(apply=True)
-
-        assert (summary["maps"]["no_point"], summary["maps"]["not_served"]) == (1, 1)
-        assert len(client.calls) == 1
+        dry = await backup.backfill_details(apply=False)
+        assert client.calls == []
         listed = await real_adapter.get_payload_backfill_rows(account_id=1)
-        assert sorted(row["message_id"] for row in listed[CHAT_ID]) == [1, 2]
+        assert sorted(row["message_id"] for row in listed[CHAT_ID]) == [1, 2, 3, 4]
+        assert (dry["maps"]["no_point"], dry["maps"]["not_served"]) == (1, 1)
+
+        summary = await backup.backfill_details(apply=True)
+        assert (summary["maps"]["no_point"], summary["maps"]["not_served"], summary["maps"]["errors"]) == (1, 2, 1)
+        assert len(client.calls) == 2
+        listed = await real_adapter.get_payload_backfill_rows(account_id=1)
+        assert [row["message_id"] for row in listed[CHAT_ID]] == [3]
+        for mid in (1, 2, 4):
+            row = await _media_row(real_adapter, mid)
+            assert (row.skip_reason, row.downloaded, row.file_path, row.file_size) == ("map_not_served", 0, None, 0)
+        assert (await _media_row(real_adapter, 3)).skip_reason is None
+
+        again = await backup.backfill_details(apply=True)
+        assert client.read_calls[-1] == [3]
+        assert again["maps"]["saved"] == 1
 
     async def test_a_long_flood_wait_stops_the_run(self, real_adapter, tmp_path):
         root = _media_root(tmp_path)
@@ -653,13 +758,17 @@ class TestBackfill:
         client = BackfillTelegram({1: _media("geo")})
         backup = _backup(real_adapter, client, root)
         backup.config.should_download_media_for_chat = MagicMock(return_value=False)
-        await backup.backfill_details(apply=True)
+        skipped = await backup.backfill_details(apply=True)
         assert client.read_calls == [] and client.calls == []
+        # A chat the settings skip is never fetched, so nothing waits for a later run.
+        assert skipped["maps"]["deferred"] == 0
 
         empty = tmp_path / "empty"
         empty.mkdir()
-        await _backup(real_adapter, client, empty).backfill_details(apply=True)
+        missing = await _backup(real_adapter, client, empty).backfill_details(apply=True)
         assert client.read_calls == [] and client.calls == []
+        # Left for a run where the media folder is there: never reported as done.
+        assert missing["maps"]["deferred"] == 1
 
     async def test_the_work_list_flags_rows_that_need_a_picture(self, real_adapter):
         await _seed_location(real_adapter, 1, "geo")
@@ -667,6 +776,17 @@ class TestBackfill:
         await _seed_message(real_adapter, 3, {"venue": {"title": "Demo Cafe"}})
         await real_adapter.insert_media(
             {"id": "v3", "type": "venue", "message_id": 3, "chat_id": CHAT_ID, "downloaded": False}, account_id=1
+        )
+        await _seed_location(real_adapter, 4, "geo")
+        await real_adapter.insert_media(
+            {
+                "id": f"{CHAT_ID}_4_geo",
+                "type": "geo",
+                "message_id": 4,
+                "chat_id": CHAT_ID,
+                "skip_reason": "map_not_served",
+            },
+            account_id=1,
         )
         groups = await real_adapter.get_payload_backfill_rows(account_id=1)
         assert [(r["message_id"], r["needs_map"], r["file_path"]) for r in groups[CHAT_ID]] == [(1, True, None)]
