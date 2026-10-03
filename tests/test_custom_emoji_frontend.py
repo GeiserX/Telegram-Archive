@@ -75,6 +75,14 @@ class TestCustomEmojiHtml(unittest.TestCase):
         # Not fetched yet, tinted with the text colour, unknown, not an id.
         self.assertEqual(result, ["🏔️", "🎨", "🎭", "🎭", "🎭"])
 
+    def test_an_id_that_is_not_digits_never_reaches_the_markup(self) -> None:
+        hostile = '1" onmouseover="alert(1)'
+        result = _build(
+            {hostile: {"kind": "image", "alt": "x", "text_color": False, "ready": True}},
+            f"customEmojiHtml({json.dumps(hostile)}, '🎭')",
+        )
+        self.assertEqual(result, "🎭")
+
     def test_a_kind_this_browser_cannot_play_keeps_the_character(self) -> None:
         result = _build(
             self.INFO,
@@ -231,3 +239,50 @@ class TestTheEmojiBudget(unittest.TestCase):
                 r"watch\(\[sortedMessages, mediaRevision, showMediaGallery, customEmojiInfo, openRemovedReactions, showChangesFeed, changeCards\]"
             ),
         )
+
+
+@unittest.skipUnless(NODE, "node is required to run the custom emoji helpers")
+class TestCustomEmojiInText(unittest.TestCase):
+    """renderEntityHtml draws a custom emoji entity, with the bubble's own renderer."""
+
+    def _render(self, body: str) -> object:
+        from test_entity_rendering_frontend import _renderer_bundle
+
+        info = {
+            "5000000000000000002": {"kind": "tgs", "alt": "🌞", "text_color": False, "ready": True},
+            "5000000000000000003": {"kind": None, "alt": "🌙", "text_color": False, "ready": False},
+        }
+        prelude = (
+            "const ref = (value) => ({ value })\n"
+            f"const customEmojiInfo = ref({json.dumps(info)})\n"
+            "const stickerSupport = { tgs: true, webm: true }\n"
+            "const noted = []\n"
+            "const noteCustomEmoji = (id) => noted.push(id)\n"
+        )
+        return _run_setup_program(HTML, _BUILDER, prelude + _renderer_bundle(HTML), _STRIP + body)
+
+    def test_a_known_id_is_drawn_and_an_unknown_keeps_its_character(self) -> None:
+        result = self._render(
+            "const R = (text, ents) => renderMessageHtml({ text, raw_data: { entities: ents } })\n"
+            "const drawn = R('Look 🌞 up', [{ type: 'bold', offset: 0, length: 4 }, { type: 'custom_emoji', offset: 5, length: 2, document_id: '5000000000000000002' }])\n"
+            "const pending = R('Look 🌙 up', [{ type: 'custom_emoji', offset: 5, length: 2, document_id: '5000000000000000003' }])\n"
+            "const unknown = R('Look ⭐ up', [{ type: 'custom_emoji', offset: 5, length: 1, document_id: '5000000000000000009' }])\n"
+            # An integer id from an older API, already rounded by JSON.parse, never addresses a file.
+            "const rounded = R('Look 🌞 up', [{ type: 'custom_emoji', offset: 5, length: 2, document_id: 5000000000000000002 }])\n"
+            "console.log(JSON.stringify({ drawn, pending, unknown, rounded, text: strip(drawn), noted }))"
+        )
+        self.assertTrue(
+            result["drawn"].startswith(
+                '<strong>Look</strong> <span class="custom-emoji" data-emoji-id="5000000000000000002">'
+            )
+        )
+        self.assertIn(
+            '<span class="custom-emoji-text">🌞</span><span class="custom-emoji-picture tgs-sticker tgs-emoji"',
+            result["drawn"],
+        )
+        self.assertTrue(result["drawn"].endswith("</span> up"))
+        self.assertEqual(result["pending"], "Look 🌙 up")
+        self.assertEqual(result["unknown"], "Look ⭐ up")
+        self.assertEqual(result["rounded"], "Look 🌞 up")
+        self.assertEqual(result["text"], "Look 🌞 up")
+        self.assertEqual(result["noted"][:3], ["5000000000000000002", "5000000000000000003", "5000000000000000009"])

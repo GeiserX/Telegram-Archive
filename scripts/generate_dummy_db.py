@@ -21,7 +21,8 @@ quiet chip: on a photo beside live reactions, on a photo with no caption,
 on the only reaction of an outgoing message, on a message deleted later, and
 a day after the message. One photo carries custom emoji reactions: a
 picture and an animated one the viewer draws, and one whose file the
-archive has not fetched yet, which shows its character. Every reaction has its history (reaction_history):
+archive has not fetched yet, which shows its character. The message after it
+holds the animated one in its text. Every reaction has its history (reaction_history):
 on one photo seven hearts dropped to five, and a surprised face was taken
 back and given again. A poll gained votes after its first capture and was
 then closed, and a channel post's link card changed a day later: the archive
@@ -761,6 +762,23 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     s.reaction_moves(
         view, "😮", [(1, t + timedelta(minutes=84)), (0, t + timedelta(minutes=88)), (1, t + timedelta(minutes=89))]
     )
+    # A custom emoji in text, at its fallback character's place (UTF-16 units).
+    summit = "Same sun from the summit "
+    s.add(
+        t + timedelta(minutes=85),
+        HUGO,
+        summit + "🌞",
+        raw={
+            "entities": [
+                {
+                    "type": "custom_emoji",
+                    "offset": len(summit.encode("utf-16-le")) // 2,
+                    "length": 2,
+                    "document_id": EMOJI_SUN_ANIMATED,
+                }
+            ]
+        },
+    )
     s.add(
         t + timedelta(minutes=95),
         ORSON,
@@ -777,6 +795,8 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     # A reaction taken back on a message deleted later, and the only reaction
     # of an outgoing message taken back.
     s.take_back(parking, "👍", 1, t + timedelta(minutes=98))
+    # A custom emoji taken back: its chip holds the first frame, faded.
+    s.take_back(parking, f"custom_{EMOJI_SUN_ANIMATED}", 1, t + timedelta(minutes=99))
     drive = s.add(t + timedelta(minutes=97), OWNER_PERSONAL, "I can drive, room for three more.")
     s.take_back(drive, "👍", 2, t + timedelta(minutes=100))
     s.add(

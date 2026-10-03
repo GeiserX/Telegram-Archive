@@ -136,7 +136,7 @@ Messages archived before the archive kept locations, venues, live locations and 
 
 It also fetches the map picture of each location, venue and live location that has a point and no picture yet, from Telegram's own servers, the way the backup now keeps it for new messages. It reads those messages in the same requests, so a message on several lists is still asked for once. Each picture is one more request, after the same one-second pause, and a run fetches at most 500; the rest are counted as deferred and wait for the next run. Pictures follow `DOWNLOAD_MEDIA` and `SKIP_MEDIA_CHAT_IDS`, and none is fetched when the media folder is missing or empty where the command runs. The picture takes the place of an old placeholder path on the same row.
 
-It also collects every custom emoji the account's reactions hold. An emoji the archive has no record of gets one, and an emoji whose file is still missing, because Telegram left it out of three answers or its download failed three times, is marked to be fetched again. Nothing is deleted. It then fetches the files the way the backup does, at most 500 per run. A dry run only counts them. See [Custom emoji](../configuration/media.md#custom-emoji).
+It also collects every custom emoji the account's reactions hold, and those in the text of its messages and their earlier versions. An emoji the archive has no record of gets one, and an emoji whose file is still missing, because Telegram left it out of three answers or its download failed three times, is marked to be fetched again. Nothing is deleted. It then fetches the files the way the backup does, at most 500 per run. A dry run only counts them. See [Custom emoji](../configuration/media.md#custom-emoji).
 
 It is a dry run unless you add `--apply`:
 

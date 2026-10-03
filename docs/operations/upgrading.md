@@ -103,7 +103,13 @@ The first start runs migration 040. It adds the `custom_emoji` table and, for ev
 
 The next backup run then fetches the files of those emoji into `media/_emoji`, up to 500 per account, with one request per 100 emoji and a second between requests. A large archive with more custom emoji than that gets the rest over the next runs, or at once with `telegram-archive backfill-details --apply`. The fetch does not follow `DOWNLOAD_MEDIA`: like profile photos, custom emoji are always fetched. See [Custom emoji](../configuration/media.md#custom-emoji).
 
+Custom emoji in message text are noted as messages are stored from this release on. For messages archived before, run `telegram-archive backfill-details --apply` once with the backup stopped: it finds the custom emoji in old texts and their earlier versions without asking Telegram for the messages, and fetches their files.
+
 Logins whose downloads are off see custom emoji, as they see profile photos.
+
+### API clients { #api-clients-93 }
+
+In the viewer's API and live frames, a custom emoji entity's `document_id` is now a string of digits, because a JSON number rounds it in a browser. A script or a bridge that reads `raw_data.entities` or message versions and compares `document_id` as a number must read it as a string. The chat exports keep the number. See [Custom emoji](../reference/api.md#custom-emoji).
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 

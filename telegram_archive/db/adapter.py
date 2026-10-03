@@ -55,6 +55,7 @@ from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     PAYLOAD_BACKFILL_TYPES,
     compute_directory_size,
+    custom_emoji_ids_from_entities,
     custom_emoji_reaction_id,
     is_map_preview_name,
     merge_geo_live,
@@ -1778,6 +1779,7 @@ class DatabaseAdapter:
     async def _insert_or_update_message(self, session, message_data: dict[str, Any], *, account_id: int) -> None:
         values = self._message_values(message_data, account_id)
         result = await session.execute(self._insert_message_stmt(values))
+        await self._note_text_custom_emoji(session, values.get("raw_data"))
         if result.rowcount:
             return
 
@@ -3239,6 +3241,7 @@ class DatabaseAdapter:
                     and message.text == new_text
                     and self._fill_missing_formatting(message, entities, rich_message)
                 ):
+                    await self._note_custom_emoji(session, custom_emoji_ids_from_entities(entities))
                     await session.execute(
                         update(Message)
                         .where(
@@ -3285,6 +3288,7 @@ class DatabaseAdapter:
                     )
                     .values(raw_data=message.raw_data)
                 )
+            await self._note_custom_emoji(session, custom_emoji_ids_from_entities(entities))
             await session.commit()
             logger.debug("Updated archived message text")
             return "applied", prior
@@ -6704,6 +6708,13 @@ class DatabaseAdapter:
         stmt = insert_fn(CustomEmoji).values([{"document_id": document_id, "first_seen": now} for document_id in ids])
         await session.execute(stmt.on_conflict_do_nothing(index_elements=["document_id"]))
 
+    async def _note_text_custom_emoji(self, session, raw_data: object) -> None:
+        """Note the custom emoji of a message's stored entities. A substring check first: most text has none."""
+        if not isinstance(raw_data, str) or '"custom_emoji"' not in raw_data:
+            return
+        raw = _raw_data_dict(raw_data) or {}
+        await self._note_custom_emoji(session, custom_emoji_ids_from_entities(raw.get("entities")))
+
     @retry_on_locked()
     async def note_custom_emoji(self, document_ids: Iterable[int]) -> int:
         """Add a pending row for each id not known yet. Returns how many were new."""
@@ -6826,6 +6837,25 @@ class DatabaseAdapter:
                     document_id = custom_emoji_reaction_id(emoji)
                     if document_id is not None:
                         ids.add(document_id)
+        return ids
+
+    async def get_text_custom_emoji_ids(self, *, account_id: int, chat_id: int | None = None) -> set[int]:
+        """Every custom emoji id in one account's message entities and earlier versions (optionally one chat)."""
+        ids: set[int] = set()
+        sources = (
+            (Message.raw_data, Message.account_id, Message.chat_id),
+            (MessageVersion.entities, MessageVersion.account_id, MessageVersion.chat_id),
+        )
+        async with self.db_manager.async_session_factory() as session:
+            for column, account_column, chat_column in sources:
+                stmt = select(column).where(account_column == account_id, column.like('%"custom_emoji"%'))
+                if chat_id is not None:
+                    stmt = stmt.where(chat_column == chat_id)
+                result = await session.stream(stmt.execution_options(yield_per=1000))
+                async for (value,) in result:
+                    if column is Message.raw_data:
+                        value = (_raw_data_dict(value) or {}).get("entities")
+                    ids.update(custom_emoji_ids_from_entities(value))
         return ids
 
     @retry_on_locked()

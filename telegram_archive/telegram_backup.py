@@ -2145,6 +2145,9 @@ class TelegramBackup:
     ) -> None:
         """Collect the custom emoji this account's archive holds and fetch their files.
 
+        The ids come from its reactions and their history, and from the
+        entities of its messages and their earlier versions.
+
         Every id found gets a ``custom_emoji`` row if it has none, and a row
         not downloaded whose skip reason may change (none, 'unavailable',
         'failed') is marked for a new download: attempts back to 0. Nothing is
@@ -2153,6 +2156,7 @@ class TelegramBackup:
         """
         emoji = summary["emoji"]
         ids = await self.db.get_reaction_custom_emoji_ids(account_id=self.account_id, chat_id=chat_id)
+        ids |= await self.db.get_text_custom_emoji_ids(account_id=self.account_id, chat_id=chat_id)
         emoji["collected"] = len(ids)
         if not apply:
             rows = await self.db.get_custom_emoji(ids)

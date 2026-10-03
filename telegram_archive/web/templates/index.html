@@ -18437,6 +18437,13 @@
                         }
                         case 'mention':
                         case 'mention_name': return `<span class="tg-mention">${inner}</span>`
+                        // A custom emoji: its picture over its fallback character
+                        // (customEmojiHtml), addressed by the document id the API
+                        // sends as a string. Anything else keeps the character.
+                        case 'custom_emoji': {
+                            noteCustomEmoji(node.document_id)
+                            return customEmojiHtml(node.document_id, text.slice(node.offset, node.end))
+                        }
                         default: return inner
                     }
                 }
@@ -18450,7 +18457,7 @@
                     const valid = entityList
                         .filter(e => e && Number.isInteger(e.offset) && Number.isInteger(e.length)
                             && e.offset >= 0 && e.length > 0 && e.offset < len)
-                        .map(e => ({ type: e.type, url: e.url, offset: e.offset, end: Math.min(e.offset + e.length, len), children: [] }))
+                        .map(e => ({ type: e.type, url: e.url, document_id: e.document_id, offset: e.offset, end: Math.min(e.offset + e.length, len), children: [] }))
                         .sort((a, b) => a.offset - b.offset || b.end - a.end)
                     // Proper forest: children fully inside their parent; the rare
                     // partially-overlapping entity is clipped to the open parent.

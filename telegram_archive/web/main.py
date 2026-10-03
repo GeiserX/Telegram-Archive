@@ -414,6 +414,8 @@ async def handle_realtime_notification(payload: dict):
 
     if notification_type == "new_message":
         message = data.get("message")
+        if isinstance(message, dict) and "raw_data" in message:
+            message = {**message, "raw_data": _with_string_document_ids(message["raw_data"])}
         frame = {"type": "new_message", "chat_ref": chat_ref, "message": message}
         no_download_frame = None
         if isinstance(message, dict):
@@ -473,7 +475,7 @@ async def handle_realtime_notification(payload: dict):
             "new_text": data.get("new_text"),
             "edit_date": data.get("edit_date"),
             "edit_hide": data.get("edit_hide"),
-            **({"entities": data["entities"]} if "entities" in data else {}),
+            **({"entities": _string_document_ids(data["entities"])} if "entities" in data else {}),
         }
         # The edit replaced the photo or file: its current media, shaped like
         # the messages API's. No key means the media did not change.
@@ -1563,6 +1565,36 @@ def _without_contact_vcard(raw_data: object) -> object:
     if not isinstance(contact, dict) or "vcard" not in contact:
         return raw_data
     return {**raw_data, "contact": {key: value for key, value in contact.items() if key != "vcard"}}
+
+
+def _string_document_ids(entities: object) -> object:
+    """Entities with each ``document_id`` (a custom emoji's) as a decimal string.
+
+    A document id is above 2**53, so a JSON number loses its last digits in a
+    browser's JSON.parse and in any JavaScript client. Returns a copy when it
+    changes something, and ``entities`` itself otherwise. The exports keep the
+    integers.
+    """
+    if not isinstance(entities, list):
+        return entities
+
+    def numeric(entity: object) -> bool:
+        if not isinstance(entity, dict):
+            return False
+        value = entity.get("document_id")
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    if not any(numeric(entity) for entity in entities):
+        return entities
+    return [{**entity, "document_id": str(entity["document_id"])} if numeric(entity) else entity for entity in entities]
+
+
+def _with_string_document_ids(raw_data: object) -> object:
+    """``raw_data`` whose entities carry string document ids (``_string_document_ids``)."""
+    if not isinstance(raw_data, dict):
+        return raw_data
+    entities = _string_document_ids(raw_data.get("entities"))
+    return raw_data if entities is raw_data.get("entities") else {**raw_data, "entities": entities}
 
 
 def _strip_original_media_paths(messages: list[dict]) -> None:
@@ -3174,6 +3206,8 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
     for message in messages:
         if not isinstance(message, dict):
             continue
+        if "raw_data" in message:
+            message["raw_data"] = _with_string_document_ids(message["raw_data"])
         sender_id = message.get("sender_id")
         message["sender_avatar_url"] = (
             f"/media/avatar/{chat.ref}/{message.get('id')}"
@@ -3639,6 +3673,8 @@ async def get_message_versions(
             chat_id=chat.chat_id, message_id=message_id, limit=limit, account_id=chat.account_id
         )
         for version in versions:
+            if "entities" in version:
+                version["entities"] = _string_document_ids(version["entities"])
             for media in version.get("media") or ():
                 has_file = bool(media.pop("file_path", None)) and bool(media.get("downloaded"))
                 media.pop("id", None)
@@ -5598,6 +5634,8 @@ async def broadcast_new_message(chat_id: int, message: dict, account_id: int | N
     chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
+    if isinstance(message, dict) and "raw_data" in message:
+        message = {**message, "raw_data": _with_string_document_ids(message["raw_data"])}
     await ws_manager.broadcast_to_chat(chat, {"type": "new_message", "chat_ref": chat["ref"], "message": message})
 
 
@@ -5625,7 +5663,7 @@ async def broadcast_message_edit(
         "edit_date": edit_date,
     }
     if entities is not None:
-        frame["entities"] = entities
+        frame["entities"] = _string_document_ids(entities)
     await ws_manager.broadcast_to_chat(chat, frame)
 
 
