@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.3.0 | Nothing. |
 | 9.2.1 | Nothing. |
 | 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See the [Files cut short](#cut-short-92) section. Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
@@ -94,6 +95,10 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.5.0 | Round video messages captured before this release stay typed as ordinary videos. Run `reclassify-round-videos` once to correct them, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
+
+## Upgrading to 9.3.0 { #upgrading-to-930 }
+
+Only an archive that holds more than one Telegram account looks different, and only for a login that can see more than one of them. A private chat between two of your archived accounts is drawn from each row's own account: its messages on the right, the other account's on the left, with no account name on the messages. Before, both rows showed every message on the right with an account name. In a group or channel several of your accounts hold, the account name beside the time now takes the colour of that account's tag. Nothing needs doing: no setting, no migration and no stored data changes.
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 

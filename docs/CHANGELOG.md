@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Changed
+- **A private chat between two archived accounts is drawn the way the Telegram apps draw it.** Each account keeps its own row of the conversation. In each row that account's messages are on the right and the other account's are on the left, so the two rows mirror each other. The messages carry no account name, since the header names the row's account. Before, every message sat on the right in both rows, each with an account name. Saved Messages, groups and channels keep their sides. See [Multiple accounts](configuration/multiple-accounts.md#in-the-viewer).
+- **In a group or channel several archived accounts hold, the account name beside the time takes the account's tag colour.** It now matches that account's tag in the chat list. Before, it was grey, like the time. The light palettes use the tag colour itself. The dark palettes, where that colour cannot reach 4.5:1 on the outgoing bubble, use a lighter tint of it. Over a picture the name keeps the time pill's colour. See [Multiple accounts](configuration/multiple-accounts.md#in-the-viewer).
+
 ## [9.2.1] - 2026-10-03
 
 One fix for the map pictures: a short FloodWait no longer ends the run. No migration, nothing else changes. Docker deployments only need the new pins.
