@@ -278,6 +278,20 @@ class TestOpenEndpoints(_OpenEndpointBase):
             self.assertEqual((await client.post("/media/open-path/c1/12_document")).status_code, 200)
         self.spawn.assert_awaited_once()
 
+    async def test_open_never_hands_over_a_tgs_sticker_the_viewer_serves_inline(self):
+        """A .tgs is served inline for the viewer's player, but it is a gzip archive an opener would unpack."""
+        web_main.config.media_open_cmd = "viewer %PATH%"
+        web_main.config.media_open_path_cmd = "filer %DIR%"
+        tgs = self.media_root / "-100123" / "12_AnimatedSticker.tgs"
+        tgs.write_bytes(b"\x1f\x8b")
+        self.assertEqual(web_main._inline_media_type(tgs.name), "application/x-tgsticker")
+        self.mock_db.get_media_for_message.return_value = {"file_path": str(tgs)}
+        async with self._client() as client:
+            self.assertEqual((await client.post("/media/open/c1/12_sticker")).status_code, 415)
+            self.spawn.assert_not_called()
+            self.assertEqual((await client.post("/media/open-path/c1/12_sticker")).status_code, 200)
+        self.spawn.assert_awaited_once()
+
     async def test_a_name_the_shell_cannot_take_is_refused_rather_than_mangled(self):
         web_main.config.media_open_cmd = "viewer %PATH%"
         with patch.object(web_main.platform, "system", return_value="Windows"):
