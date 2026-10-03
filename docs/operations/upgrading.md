@@ -102,9 +102,12 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 With `TRANSCRIPTION_URL` set, the `schedule` command now runs a transcription drain every 15 minutes, besides the one after each full pass. A pressed file, a backlog of `TRANSCRIPTION_TYPES` and akou results for files the listener sent no longer wait for the daily pass.
 
-- A backlog now drains at up to `TRANSCRIPTION_BACKFILL_PER_RUN` files every 15 minutes per account, where it drained that many once a day. A server shared with other work sees a steadier load. That load is at most one synchronous request at a time, or at most `TRANSCRIPTION_BACKFILL_PER_RUN` open akou jobs per account.
+- A backlog now drains at up to `TRANSCRIPTION_BACKFILL_PER_RUN` files per account every 15 minutes. With the default of 50 that is up to 4800 files a day per account, where the daily pass sent 50. There are 96 drains a day where there was one. On a paid provider (the OpenAI endpoint, Deepgram, AssemblyAI, ElevenLabs) a backlog can cost up to 96 times as much per day. On a paid or shared server, set `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES` to `0` or to a larger interval, or lower `TRANSCRIPTION_BACKFILL_PER_RUN`.
+- Drains send at most one synchronous request at a time, or keep at most `TRANSCRIPTION_BACKFILL_PER_RUN` akou jobs open per account. Files the listener sends itself come on top of that.
+- A timeout or a server error on the OpenAI endpoint counts toward a file's three attempts. After a timer drain that ended on the server's side, the timer waits twice as long before the next one, up to a day, so an outage does not use up the attempts of many files. See [Retries](../configuration/transcription.md#retries).
 - A drain with nothing to do reads the database only. It makes no request to the server and logs nothing at info level.
-- While the server is down and files wait, each drain logs one warning. That is 4 an hour at the default interval.
+- While the server cannot be reached and files wait, each drain logs one warning, up to 4 an hour at the default interval.
+- Only the drain after a full pass sends a missing file back to download. A timer drain stores `file_missing`, which does not count toward the three.
 - Set [`TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`](../reference/environment-variables.md#transcription_drain_interval_minutes) to `0` to keep only the drain after each full pass. See [When files are sent](../configuration/transcription.md#when-files-are-sent).
 
 The one-shot `backup` command and the standalone listener do not change.

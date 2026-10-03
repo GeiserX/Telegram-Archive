@@ -179,8 +179,13 @@ def test_the_token_check_can_fail():
 def test_the_toast_wraps_between_words():
     """A refusal such as the full transcription queue wraps on a phone. With
     break-all the toast cut words in two ("wait ing"); break-words wraps at
-    spaces and still breaks a long unbroken token that would overflow."""
+    spaces and still breaks a long unbroken token that would overflow.
+
+    The toast is fixed at left 50%, so without a width of its own it shrinks
+    to the half of the screen right of that edge and a short message takes
+    four lines on a phone. w-max sizes it to its text, capped at 90vw."""
     html = TEMPLATE.read_text(encoding="utf-8")
     toast = next(line for line in html.splitlines() if "z-[9999]" in line and "bg-tg-n900" in line)
     assert "break-all" not in toast
     assert "break-words" in toast
+    assert "w-max" in toast.split()

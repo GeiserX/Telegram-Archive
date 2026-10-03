@@ -150,7 +150,8 @@ Only downloaded files are transcribed. A chat or media type whose downloads are 
 - When the [real-time listener](listener.md) downloads a file itself, it sends that file at once. This needs `LISTEN_NEW_MESSAGES_MEDIA`, on by default, and the file's type in `TRANSCRIPTION_TYPES`. Otherwise the file waits for the next drain.
 - Pressing the button only queues the file. The next drain sends it.
 - Without `TRANSCRIPTION_CALLBACK_URL`, akou results for files the listener sent arrive with the next drain. Set the callback to get results as soon as they are ready. See [Callbacks with akou](#callbacks-with-akou).
-- A file the drain sends back to download waits for the next backup run, which downloads it from Telegram.
+- Only the drain after a backup run sends a missing file back to download. A timer drain can run while that backup run has the file moved aside to check it (`VERIFY_MEDIA`), so it stores `file_missing` instead, which does not count toward the three. The drain after the next backup run sends the file back to download, and the run after it downloads the file from Telegram.
+- After a timer drain that ended on the server's side, the timer waits longer before the next one. See [Retries](#retries).
 - Files that are still missing do not start a timer drain on their own. A drain with other work checks them again, and so does the drain after each backup run.
 
 ### Drain order and limits
@@ -175,9 +176,10 @@ One drain handles at most `TRANSCRIPTION_BACKFILL_PER_RUN` files per account. Th
 - Every other failure counts, including `decode_failed`, `too_long`, `cancelled`, a timeout and a server error on the OpenAI endpoint.
 - A failure about earlier bytes of the file does not count once the file has been downloaded again with other bytes. A video cut short fails with `decode_failed`, and after `check-media --repair` and a new download the drain sends the complete file, however many times the short one failed (see [A file cut short](media.md#a-file-cut-short)). The 10 failed attempts in all still count every failure.
 - A press always gets one more attempt, whatever happened before.
-- A queued file that never got a job is sent again after 10 minutes.
+- A timeout and a server error on the OpenAI endpoint count toward the three, and the drain retries the newest such file first. So under `schedule`, after a timer drain that ended on the server's side, the timer waits twice as long before the next one, up to a day. That covers a timeout, a server error, a refusal of the request, a server that went away mid-run, and files refused with a 4xx error while none was transcribed. A drain in which the server transcribed or took a file sets the wait back to `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`. During such an outage the newest waiting file can still use its three attempts in about two hours, but a whole day of it uses about six attempts in all, where a drain every 15 minutes would use close to a hundred. The drain after each backup run does not wait.
+- A queued file that never got a job is sent again after 10 minutes, unless the backup is still sending it.
 - An unreachable server spends no retry. The file stays queued.
-- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the media is marked not downloaded, the next backup downloads it again, and a later drain sends it. That happens only when the file is provably gone: with the media folder missing or empty, or the row's folder gone, the media row stays as it is and the file fails with `file_missing`, without counting toward the three.
+- A file that is not at its path spends no retry when the archive can still get it. A copy already on disk is put back (see [A missing shared file](media.md#a-missing-shared-file)). With no copy, the drain after a backup run marks the media not downloaded, the next backup downloads it again, and a later drain sends it. That happens only when the file is provably gone: with the media folder missing or empty, or the row's folder gone, the media row stays as it is and the file fails with `file_missing`, without counting toward the three.
 - Changing the language, preset, speaker labels or server means files are sent again instead of reusing earlier results. On the OpenAI endpoint the model and the hotwords count too. On Deepgram, AssemblyAI and ElevenLabs the model counts and the hotwords do not.
 - The same audio already transcribed with the same settings, in this account or another, is copied instead of sent.
 
@@ -345,6 +347,6 @@ Transcription logs never contain the key, media ids, file names or transcript te
 | A warning to check `TRANSCRIPTION_MODEL` and `TRANSCRIPTION_LANGUAGE` | Two files were refused with a 4xx error and none succeeded. The model or language is usually wrong for this provider. |
 | `callback_not_allowed` | The callback host is not on the akou key's callback allowlist. Add it on akou's side, or unset `TRANSCRIPTION_CALLBACK_URL`. |
 | A file failed with `engine_unavailable`, `not_found` or `expired` and is not sent again | The failure was the server's. The drain sends the file once the server has finished another transcript, or sooner as the drain's one test file once its wait is over. See [Retries](#retries). After 10 failed attempts only a press sends it. |
-| Archive status says "On, server not found yet" | No drain has reached the server yet. It fills after the next drain. |
+| Archive status says "On, server not found yet" | No drain has reached the server yet. It fills after the next drain that has work to do, or after the next backup run. |
 
 For general log and health checks, see [Monitoring and troubleshooting](../operations/troubleshooting.md).

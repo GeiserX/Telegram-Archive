@@ -895,9 +895,10 @@ _transcript_asks: dict[str, list[float]] = {}
 _TRANSCRIPT_ASK_WINDOW = 600
 # What a press refused for TRANSCRIPTION_ASK_MAX_OPEN says to wait. The
 # waiting rows leave the count only when a drain of the backup picks them up,
-# and the viewer does not know the backup's SCHEDULE or
-# TRANSCRIPTION_DRAIN_INTERVAL_MINUTES, so this is a polling hint.
-_TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 3600
+# every TRANSCRIPTION_DRAIN_INTERVAL_MINUTES under `schedule`. The viewer does
+# not read the backup's settings, so this is a polling hint: the default
+# interval, 15 minutes.
+_TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 900
 # An ask older than this stops counting toward TRANSCRIPTION_ASK_MAX_OPEN, so
 # asks no backup run picks up cannot hold the cap full for good.
 _TRANSCRIPT_ASK_WAIT_WINDOW = timedelta(hours=24)
