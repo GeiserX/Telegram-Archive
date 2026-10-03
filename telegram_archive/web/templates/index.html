@@ -13242,8 +13242,10 @@
                                 // media did not change (or did not fit the frame) and stays.
                                 if (data.media && typeof data.media === 'object') {
                                     editMsg.media = { ...data.media }
-                                    // The earlier file's load failure says nothing about this one.
+                                    // The earlier file's load failure says nothing about this one,
+                                    // and neither does its map picture's.
                                     editMsg.mediaLoadFailed = false
+                                    editMsg.mapLoadFailed = false
                                     // The <video> elements are keyed by their URL, which the
                                     // replacement changes (?v=), so the new clip gets a new
                                     // element. The revision tells the GIF watcher to observe

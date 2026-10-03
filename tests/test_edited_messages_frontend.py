@@ -510,10 +510,18 @@ handle({json.dumps(frame)})
     }
 
     def test_a_replacing_edit_swaps_in_the_new_media_at_once(self) -> None:
-        msg = {"id": 5, "text": "Look at this", "version_count": 0, "media": self._OLD_MEDIA, "mediaLoadFailed": True}
+        msg = {
+            "id": 5,
+            "text": "Look at this",
+            "version_count": 0,
+            "media": self._OLD_MEDIA,
+            "mediaLoadFailed": True,
+            "mapLoadFailed": True,
+        }
         out = self._handle(msg, self._MEDIA_FRAME)
         self.assertEqual(out["media"], self._NEW_MEDIA)
         self.assertFalse(out["mediaLoadFailed"])
+        self.assertFalse(out["mapLoadFailed"])
         self.assertEqual(out["version_count"], 1)
 
         # A frame without media (the media did not change, or did not fit) keeps it.
