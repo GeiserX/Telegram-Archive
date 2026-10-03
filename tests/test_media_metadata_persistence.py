@@ -307,7 +307,9 @@ class TestSweepPreservesLiveCapturedMetadata:
 
     async def test_sweep_extraction_matches_the_listener_extraction(self, adapter):
         """Same media object in, same five columns out — one shared extractor."""
-        media = _video_media(width=1280, height=720, duration=30.2, size=4242)
+        # Telegram declares fewer bytes than the fake writes: a longer file is
+        # kept, and a shorter one is refused as cut short.
+        media = _video_media(width=1280, height=720, duration=30.2, size=4)
         message = _message(7, media)
 
         backup = _make_backup(self.media_root)
@@ -321,7 +323,7 @@ class TestSweepPreservesLiveCapturedMetadata:
         assert sweep_row["file_size"] == len(b"mediabytes")
 
     async def test_sweep_writes_an_int_duration_into_the_integer_column(self, adapter):
-        media = _video_media(duration=12.4)
+        media = _video_media(duration=12.4, size=len(b"mediabytes"))
         backup = _make_backup(self.media_root)
         sweep_row = await backup._process_media(_message(7, media), CHAT_ID)
 

@@ -2408,8 +2408,9 @@ class TestProcessMedia(unittest.TestCase):
         self.backup._get_media_filename = MagicMock(return_value="test.mp4")
 
         async def fake_download(_message, path):
+            # All 5000 declared bytes: a shorter file is refused as cut short.
             with open(path, "wb") as f:
-                f.write(b"video")
+                f.write(b"video" * 1000)
             return path
 
         self.backup.client.download_media = AsyncMock(side_effect=fake_download)

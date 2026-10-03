@@ -110,9 +110,12 @@ def _make_backup(media_root, **env_overrides):
     backup._owns_client = True
     backup._cleaned_media_chats = set()
 
-    async def fake_download(_message, path):
+    async def fake_download(message, path):
+        # Every byte Telegram declares: a shorter file is a download that
+        # stopped early, which the backup refuses.
+        declared = getattr(getattr(message.media, "document", None), "size", None)
         with open(path, "wb") as handle:
-            handle.write(b"mediabytes")
+            handle.write(b"m" * declared if isinstance(declared, int) else b"mediabytes")
         return path
 
     backup.client.download_media = AsyncMock(side_effect=fake_download)

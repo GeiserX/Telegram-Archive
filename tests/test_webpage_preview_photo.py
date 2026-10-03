@@ -221,7 +221,8 @@ class TestListenerDownloadsPreviewPhoto(unittest.TestCase):
 
         message = MagicMock()
         message.id = 35
-        doc = SimpleNamespace(id=777, size=2000, mime_type="image/gif", attributes=[])
+        # The size the fake download writes: a shorter file is refused as cut short.
+        doc = SimpleNamespace(id=777, size=len(b"previewbytes"), mime_type="image/gif", attributes=[])
         message.media = _webpage_media(photo=None, document=doc)
 
         result = self._run(listener._download_media(message, CHAT_ID))
