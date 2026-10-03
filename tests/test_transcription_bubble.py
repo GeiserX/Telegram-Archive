@@ -991,7 +991,7 @@ class TestAskLimits:
         assert [resp.status_code for resp in [*full, still_full]] == [429, 429, 429]
         # Only a backup run frees room, and the viewer does not know its schedule: an hour, said plainly.
         assert {resp.headers["retry-after"] for resp in full} == {"3600"}
-        assert full[0].json()["detail"] == "Many transcripts are waiting for the next backup run. Try again later."
+        assert full[0].json()["detail"] == "Many transcripts are waiting to be sent. Try again later."
         assert await real_adapter.list_media_transcripts("m_3_voice", account_id=1) != []
         assert len(await real_adapter.list_media_transcripts("m_4_voice", account_id=1)) == 1
 

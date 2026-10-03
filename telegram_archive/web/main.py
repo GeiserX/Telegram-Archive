@@ -894,8 +894,9 @@ _login_attempts: dict[str, list[float]] = {}  # ip -> list of timestamps
 _transcript_asks: dict[str, list[float]] = {}
 _TRANSCRIPT_ASK_WINDOW = 600
 # What a press refused for TRANSCRIPTION_ASK_MAX_OPEN says to wait. The
-# waiting rows leave the count only when a backup run picks them up, and the
-# viewer does not know the backup's SCHEDULE, so this is a polling hint.
+# waiting rows leave the count only when a drain of the backup picks them up,
+# and the viewer does not know the backup's SCHEDULE or
+# TRANSCRIPTION_DRAIN_INTERVAL_MINUTES, so this is a polling hint.
 _TRANSCRIPT_ASK_FULL_RETRY_SECONDS = 3600
 # An ask older than this stops counting toward TRANSCRIPTION_ASK_MAX_OPEN, so
 # asks no backup run picks up cannot hold the cap full for good.
@@ -3868,7 +3869,7 @@ async def _ask_transcript(media: dict | None, account_id: int, user: UserContext
             if await db.count_waiting_transcript_asks(since=since) >= cap:
                 _forget_transcript_ask(client)
                 raise _too_many_asks(
-                    "Many transcripts are waiting for the next backup run. Try again later.",
+                    "Many transcripts are waiting to be sent. Try again later.",
                     _TRANSCRIPT_ASK_FULL_RETRY_SECONDS,
                 )
             row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=force)
