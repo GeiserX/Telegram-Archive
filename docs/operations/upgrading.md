@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.2.0 | Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See [Upgrading to 9.2](#upgrading-to-92). |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
 | 9.0.0 | Scripts that read a chat export must change, and so must readers of `raw_data.poll`, `raw_data.webpage` and `raw_data.entities`, `/ws/updates` clients, and scripts that press the transcript button many times as a viewer login. The first start runs migrations 034 to 038; on a large archive it takes longer. After it, run `telegram-archive check-media` once, and `telegram-archive backfill-details --apply` once with the backup stopped. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
@@ -92,6 +93,20 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.5.0 | Round video messages captured before this release stay typed as ordinary videos. Run `reclassify-round-videos` once to correct them, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
+
+## Upgrading to 9.2 { #upgrading-to-92 }
+
+Before 9.2.0 the backup archived every video sticker as a `video`, and some older rows hold animated stickers as a `document`. The first start runs migration 039. It changes only the type of those rows to `sticker`: no file, no file name and no id changes, and nothing is deleted. A row is changed only when its file carries the name Telegram gives a sticker: a `video` ending in `_sticker.webm` within Telegram's limits for a video sticker (512 px on each side and 3 seconds at most), or a `document` ending in `_AnimatedSticker.tgs`. It reads the media table once.
+
+What changes for those rows:
+
+- They play in the chat as stickers, and leave **Photos & Videos** and **Files** in the shared media gallery.
+- Replies, the pinned bar and the chat list call them Sticker, not Video or File.
+- Both chat exports give them the type `sticker`.
+- Transcription no longer picks them up. A video sticker has no sound.
+- `DOWNLOAD_MEDIA_TYPES` governs them as `sticker`. With a list that names `video` but not `sticker`, new video stickers are no longer downloaded. Files already on disk stay.
+
+A file that had stickers drawn on it was archived as a `sticker` before 9.2.0. New ones are archived as the video, GIF or file they are. The migration leaves the old rows as they are, since their file name does not tell them apart. A backup that reads such a message again corrects its type.
 
 ## Upgrading to 9.0 { #upgrading-to-90 }
 
