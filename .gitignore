@@ -74,6 +74,7 @@ site/
 # only the scaffolding (config.yaml, README.md, hooks/, metadata.json, .gitignore) is committed.
 .beads/issues.jsonl
 .beads/interactions.jsonl
+.beads/events.jsonl
 .beads/dolt/
 .beads/embeddeddolt/
 .beads/backup/
