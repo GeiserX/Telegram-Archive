@@ -3,8 +3,8 @@
 
 Every person, chat and message in it is invented. The archive holds two
 accounts, private chats, groups, a forum with topics and channels, with
-photos, an album, a sticker, voice notes with transcripts, a round video, a
-document, a location, a venue, a live location and a shared contact, replies,
+photos, an album, stickers (a picture, an animated one and a video one),
+voice notes with transcripts, a round video, a document, a location, a venue, a live location and a shared contact, replies,
 forwards, reactions, edits with their earlier versions,
 messages deleted in Telegram that the archive kept, and pinned messages.
 
@@ -32,12 +32,14 @@ Then point the viewer at it and log in with the credentials you set:
     export BACKUP_PATH=./demo-data/backups VIEWER_USERNAME=admin VIEWER_PASSWORD=change-me
     uvicorn telegram_archive.web.main:app
 
-Pillow draws the pictures. ffmpeg, when it is on PATH, makes the voice notes
-and the round video; without it those messages keep their rows but no file.
+Pillow draws the pictures. ffmpeg, when it is on PATH, makes the voice notes,
+the round video and the video sticker; without it those messages keep their
+rows but no file.
 """
 
 import argparse
 import asyncio
+import gzip
 import hashlib
 import json
 import math
@@ -193,6 +195,85 @@ def draw_sticker(path: Path):
     img.save(path, "WEBP", quality=90)
 
 
+def lottie_sun() -> dict:
+    """The same sun as a Lottie animation, the format of a Telegram animated sticker.
+
+    512 square, 60 fps, three seconds: the rays turn by one ray's width, so the
+    loop has no seam, and the face swells and settles.
+    """
+
+    def static(value):
+        return {"a": 0, "k": value}
+
+    def keyed(frames):
+        ease = {"i": {"x": [0.5], "y": [1]}, "o": {"x": [0.5], "y": [0]}}
+        return {
+            "a": 1,
+            "k": [{"t": t, "s": v, **ease} for t, v in frames[:-1]] + [{"t": frames[-1][0], "s": frames[-1][1]}],
+        }
+
+    def group(*items):
+        tr = {
+            "ty": "tr",
+            "p": static([0, 0]),
+            "a": static([0, 0]),
+            "s": static([100, 100]),
+            "r": static(0),
+            "o": static(100),
+        }
+        return {"ty": "gr", "it": [*items, tr]}
+
+    def fill(r, g, b):
+        return {"ty": "fl", "c": static([r / 255, g / 255, b / 255, 1]), "o": static(100), "r": 1}
+
+    def ellipse(x, y, w, h):
+        return {"ty": "el", "p": static([x, y]), "s": static([w, h]), "d": 1}
+
+    def layer(index, name, shapes, rotation=None, scale=None):
+        transform = {
+            "o": static(100),
+            "r": rotation or static(0),
+            "p": static([256, 256, 0]),
+            "a": static([0, 0, 0]),
+            "s": scale or static([100, 100, 100]),
+        }
+        return {"ddd": 0, "ind": index, "ty": 4, "nm": name, "sr": 1, "ks": transform, "ao": 0, "shapes": shapes}
+
+    rays = {"ty": "sr", "sy": 1, "d": 1, "pt": static(12), "p": static([0, 0]), "r": static(0)}
+    rays |= {"ir": static(150), "is": static(0), "or": static(235), "os": static(0)}
+    face = [
+        group(ellipse(-50, -22, 40, 55), ellipse(50, -22, 40, 55), fill(60, 40, 30)),
+        group(ellipse(0, 50, 110, 40), fill(60, 40, 30)),
+        group(ellipse(-95, 30, 40, 30), ellipse(95, 30, 40, 30), fill(255, 140, 110)),
+        group(ellipse(0, 0, 300, 300), fill(255, 204, 51)),
+    ]
+    layers = [
+        layer(1, "face", face, scale=keyed([(0, [100, 100, 100]), (90, [106, 106, 100]), (180, [100, 100, 100])])),
+        layer(2, "rays", [group(rays, fill(255, 176, 32))], rotation=keyed([(0, [0]), (180, [30])])),
+    ]
+    for item in layers:
+        item |= {"ip": 0, "op": 180, "st": 0, "bm": 0}
+    return {
+        "v": "5.7.0",
+        "fr": 60,
+        "ip": 0,
+        "op": 180,
+        "w": 512,
+        "h": 512,
+        "nm": "sun",
+        "ddd": 0,
+        "assets": [],
+        "layers": layers,
+    }
+
+
+def write_tgs(path: Path) -> None:
+    """The Lottie sun gzipped as a .tgs file; mtime 0 keeps the bytes the same on every run."""
+    data = json.dumps(lottie_sun(), separators=(",", ":")).encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(gzip.compress(data, mtime=0))
+
+
 def draw_document(path: Path, title: str, lines: list[str]):
     """A one-page PDF with a title and a short table of plain lines."""
     from PIL import Image, ImageDraw
@@ -227,6 +308,21 @@ def ffmpeg_round_video(path: Path, seconds: int) -> bool:
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"gradients=s=384x384:d={seconds}:speed=0.03:seed=7"]
     cmd += ["-f", "lavfi", "-i", f"sine=frequency=220:duration={seconds}"]
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(path)]
+    return subprocess.run(cmd, check=False).returncode == 0
+
+
+def ffmpeg_video_sticker(path: Path) -> bool:
+    """A pulsing orange disc on a transparent ground, in VP9 with alpha: a Telegram video sticker."""
+    if not shutil.which("ffmpeg"):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    radius = "(150+40*sin(2*PI*T/1.5))"
+    shape = (
+        "nullsrc=s=512x512:d=3:r=30,format=rgba,"
+        f"geq=r='255':g='120+80*hypot(X-256,Y-256)/{radius}':b='40':a='if(lt(hypot(X-256,Y-256),{radius}),255,0)'"
+    )
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", shape]
+    cmd += ["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "40", "-an", str(path)]
     return subprocess.run(cmd, check=False).returncode == 0
 
 
@@ -607,6 +703,8 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         "sync",
     )
     s.add(t + timedelta(minutes=70), HUGO, "", media={"type": "sticker"}, raw={"sticker": {"emoji": "☀️"}})
+    # The same sun again, animated: a .tgs file the viewer plays in place.
+    s.add(t + timedelta(minutes=71), HUGO, "", media={"type": "sticker", "format": "tgs"})
     # Sent with another photo, which Kofi replaced three minutes later with
     # the caption unchanged: the archive keeps the first one as a media version.
     view = s.add(
@@ -760,6 +858,8 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     pick = s.add(t + timedelta(minutes=6), OWNER_PERSONAL, "Ha, yes please. Saturday morning?")
     s.add(t + timedelta(minutes=7), JUNIPER, "Saturday works. Ten o'clock?", reply=pick, react={"👍": 1})
     s.add(t + timedelta(minutes=8), JUNIPER, "", media={"type": "sticker"}, raw={"sticker": {"emoji": "☀️"}})
+    # A video sticker: a .webm with a transparent ground, played in place.
+    s.add(t + timedelta(minutes=9), JUNIPER, "", media={"type": "sticker", "format": "webm"})
     s.add(
         t + timedelta(minutes=15),
         JUNIPER,
@@ -1288,10 +1388,22 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
                         }
                     )
             elif kind == "sticker":
-                name = f"{file_id}_sticker.webp"
-                folder.mkdir(parents=True, exist_ok=True)
-                shutil.copy(sticker, folder / name)
-                m.update(file_name=name, mime_type="image/webp", width=512, height=512)
+                sticker_format = m.pop("format", "webp")
+                if sticker_format == "tgs":
+                    # Telegram's own name for an animated sticker file.
+                    name = f"{file_id}_AnimatedSticker.tgs"
+                    write_tgs(folder / name)
+                    m.update(file_name=name, mime_type="application/x-tgsticker", width=512, height=512)
+                elif sticker_format == "webm":
+                    name = f"{file_id}_sticker.webm"
+                    if not ffmpeg_video_sticker(folder / name):
+                        continue
+                    m.update(file_name=name, mime_type="video/webm", width=512, height=512, duration=3)
+                else:
+                    name = f"{file_id}_sticker.webp"
+                    folder.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(sticker, folder / name)
+                    m.update(file_name=name, mime_type="image/webp", width=512, height=512)
             elif kind == "voice":
                 name = f"{file_id}_voice.ogg"
                 if not ffmpeg_voice(folder / name, m["duration"], m.pop("seed")):
