@@ -442,8 +442,12 @@ class TestRunForever:
             task = asyncio.create_task(scheduler.run_forever())
             await asyncio.wait_for(in_tick.wait(), 5)
             scheduler._request_shutdown(task, 15)
-            await asyncio.wait_for(task, 5)
+            # Not wait_for: its own cancel on a timeout would reach the drain and hide a teardown that never cancels it.
+            done, _ = await asyncio.wait({task}, timeout=5)
+            if not done:
+                task.cancel()
 
+        assert done == {task}
         assert seen == ["cancelled"]
         db.close.assert_awaited_once()
         assert scheduler._drain_task is None
