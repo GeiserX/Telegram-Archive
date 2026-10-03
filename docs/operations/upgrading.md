@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.3.0 | Nothing required. With `TRANSCRIPTION_URL` set, `schedule` now sends waiting files to the transcription server every 15 minutes, not only after a full pass. See [Upgrading to 9.3.0](#upgrading-to-930). |
 | 9.2.1 | Nothing. |
 | 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Run `telegram-archive check-media` once. A dry run now exits 1 when it finds a video or audio file whose download stopped early, and `--repair` marks such files to download again. See the [Files cut short](#cut-short-92) section. Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
@@ -94,6 +95,22 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.5.0 | Round video messages captured before this release stay typed as ordinary videos. Run `reclassify-round-videos` once to correct them, with the backup stopped and the viewer idle. See [Import and maintenance tasks](maintenance.md). |
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
+
+## Upgrading to 9.3.0 { #upgrading-to-930 }
+
+### Transcription drains every 15 minutes { #drain-timer-93 }
+
+With `TRANSCRIPTION_URL` set, the `schedule` command now runs a transcription drain every 15 minutes, besides the one after each full pass. A pressed file, a backlog of `TRANSCRIPTION_TYPES` and akou results for files the listener sent no longer wait for the daily pass.
+
+- A backlog now drains at up to `TRANSCRIPTION_BACKFILL_PER_RUN` files per account every 15 minutes. With the default of 50 that is up to 4800 files a day per account, where the daily pass sent 50. There are 96 drains a day where there was one. On a paid provider (the OpenAI endpoint, Deepgram, AssemblyAI, ElevenLabs) a backlog can cost up to 96 times as much per day. On a paid or shared server, set `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES` to `0` or to a larger interval, or lower `TRANSCRIPTION_BACKFILL_PER_RUN`.
+- Drains send at most one synchronous request at a time, or keep at most `TRANSCRIPTION_BACKFILL_PER_RUN` akou jobs open per account. Files the listener sends itself come on top of that.
+- A timeout or a server error on the OpenAI endpoint counts toward a file's three attempts. After a timer drain that ended on the server's side, the timer waits twice as long before the next one, up to a day, so an outage does not use up the attempts of many files. See [Retries](../configuration/transcription.md#retries).
+- A drain with nothing to do reads the database only. It makes no request to the server and logs nothing at info level.
+- While the server cannot be reached and files wait, each drain logs one warning, up to 4 an hour at the default interval.
+- Only the drain after a full pass sends a missing file back to download. A timer drain stores `file_missing`, which does not count toward the three.
+- Set [`TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`](../reference/environment-variables.md#transcription_drain_interval_minutes) to `0` to keep only the drain after each full pass. See [When files are sent](../configuration/transcription.md#when-files-are-sent).
+
+The one-shot `backup` command and the standalone listener do not change.
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 

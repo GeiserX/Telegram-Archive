@@ -6,6 +6,11 @@ Also runs the real-time listener, on by default since 9.2.0 (ENABLE_LISTENER),
 which saves new messages, edits, chat changes and reactions as they happen. The
 scheduled full pass then reconciles what the listener cannot see.
 
+And the transcription drain on a timer of its own
+(TRANSCRIPTION_DRAIN_INTERVAL_MINUTES), so a pressed Transcribe button, a
+backlog and akou results never wait for the daily pass. The drain needs the
+database and the transcription server, never Telegram.
+
 SHARED CONNECTION ARCHITECTURE:
 Each configured account has a single TelegramClient shared between its backup
 and listener components. This avoids session file lock conflicts and allows
@@ -94,6 +99,9 @@ class BackupScheduler:
         # the watchdog keep retrying after a failed start -- _start_account_listener
         # resets listener_task to None on failure, but the listener is still "enabled".
         self._listener_enabled = False
+
+        # The transcription drain timer (run_forever), when it runs.
+        self._drain_task: asyncio.Task | None = None
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -582,6 +590,109 @@ class BackupScheduler:
                 logger.warning(f"Could not write heartbeat: {type(e).__name__}")
             await asyncio.sleep(30)
 
+    def _drain_interval_seconds(self) -> int:
+        """Seconds between timer drains; 0 when there is no timer.
+
+        No timer with transcription off, no TRANSCRIPTION_URL, or
+        TRANSCRIPTION_DRAIN_INTERVAL_MINUTES at 0. The type checks keep a
+        bare MagicMock config (the tests') from starting one.
+        """
+        config = self.config
+        if getattr(config, "transcription_enabled", False) is not True:
+            return 0
+        url = getattr(config, "transcription_url", None)
+        if not isinstance(url, str) or not url:
+            return 0
+        minutes = getattr(config, "transcription_drain_interval_minutes", 0)
+        if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0:
+            return 0
+        return minutes * 60
+
+    async def _drain_loop(self, interval: int, sleep=asyncio.sleep) -> None:
+        """Every ``interval`` seconds, drain each account that has transcription work.
+
+        One adapter and one realtime notifier for the life of the process:
+        each would log at info level when built, and an idle tick must log
+        nothing at that level. The next sleep starts when a tick ends, so two
+        timer drains never overlap. A database that cannot be opened is a
+        warning and is tried again on the next tick.
+
+        After a tick that ended on the server's side (see ``_drain_tick``)
+        the wait doubles, up to a day, and a tick in which the server
+        transcribed or took a file sets it back to ``interval``. A server
+        that takes a request and then times out, or answers 5xx, spends a
+        failed row on the newest waiting file each time, and the drain
+        retries that file at once: at a fixed 15 minutes a day of such an
+        outage would give up on dozens of files, where the daily pass spent
+        one try. A tick with nothing to do leaves the wait as it is.
+        """
+        from .db import create_adapter
+        from .realtime import RealtimeNotifier
+
+        db = None
+        notifier = None
+        wait = interval
+        try:
+            while True:
+                await sleep(wait)
+                if db is None:
+                    try:
+                        db = await create_adapter()
+                    except Exception as e:
+                        logger.warning(f"Transcription drain: database not available ({type(e).__name__})")
+                        continue
+                    notifier = RealtimeNotifier(getattr(db, "db_manager", None))
+                verdict = await self._drain_tick(db, notifier)
+                if verdict == _DRAIN_PROGRESS:
+                    wait = interval
+                elif verdict == _DRAIN_TROUBLE:
+                    wait = min(wait * 2, max(interval, _DRAIN_MAX_WAIT_SECONDS))
+                    logger.info(
+                        f"Transcription timer: the drain ended on the server's side; next timer drain in "
+                        f"{wait // 60} minutes"
+                    )
+        finally:
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    await db.close()
+
+    async def _drain_tick(self, db, notifier) -> str | None:
+        """One timer drain per account, in config order, for those with work waiting.
+
+        An account whose row is not resolved yet (it never connected) is
+        skipped. Its connection is not needed otherwise: a Telegram outage
+        does not stop the drain. One account's failure never stops the
+        next account or the loop.
+
+        Returns ``_DRAIN_PROGRESS`` when any account's drain had a file
+        transcribed or taken by the server, else ``_DRAIN_TROUBLE`` when
+        any drain ended on the server's side (``_drain_trouble``), else
+        None: nothing waited, or nothing said either way.
+        """
+        from .transcription import drain_if_waiting
+
+        progress = trouble = False
+        for entry in self._accounts:
+            if entry.row_id is None:
+                continue
+            try:
+                stats = await drain_if_waiting(
+                    self.config.for_account(entry.account.index), db, account_id=entry.row_id, notifier=notifier
+                )
+            except Exception as e:
+                # Type name only, as everywhere here: exception text can carry a URL.
+                logger.warning(f"{entry.log_prefix}Transcription drain failed: {type(e).__name__}")
+                continue
+            if not isinstance(stats, dict):
+                continue
+            if stats.get("done", 0) > 0 or stats.get("submitted", 0) > 0:
+                progress = True
+            elif _drain_trouble(stats):
+                trouble = True
+        if progress:
+            return _DRAIN_PROGRESS
+        return _DRAIN_TROUBLE if trouble else None
+
     async def run_forever(self):
         """
         Keep the scheduler running with optional listeners.
@@ -626,6 +737,15 @@ class BackupScheduler:
             # Start real-time listeners if enabled (each uses its shared connection).
             self._listener_enabled = self.config.enable_listener
             await self._start_listener()
+
+            # The transcription drain timer starts before the startup backup, so a
+            # press is drained during an hours-long first pass too.
+            interval = self._drain_interval_seconds()
+            if interval > 0:
+                self._drain_task = asyncio.create_task(self._drain_loop(interval), name="transcription_drain")
+                logger.info(
+                    f"Transcription drain every {interval // 60} minutes (TRANSCRIPTION_DRAIN_INTERVAL_MINUTES)"
+                )
 
             # Run initial backup immediately on startup (uses shared connections)
             logger.info("Running initial backup on startup...")
@@ -684,6 +804,18 @@ class BackupScheduler:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
+            # A drain cancelled mid-request leaves its row queued; the next
+            # drain sends it again after ten minutes. Its loop closes its adapter.
+            drain_task = getattr(self, "_drain_task", None)
+            if drain_task is not None:
+                drain_task.cancel()
+                try:
+                    await drain_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Transcription drain teardown failed: {type(e).__name__}")
+                self._drain_task = None
             # Teardown steps are independent: one failing must not skip the
             # rest, or a raised listener close leaves connections open.
             try:
@@ -708,6 +840,28 @@ class BackupScheduler:
 
 # More fires than a minute-resolution cron can make in a day, the extra hour
 # of a DST fall-back included: a bound the loop below can never reach honestly.
+# What a timer tick tells the drain loop (``_drain_tick``), and the longest
+# wait its back-off reaches.
+_DRAIN_PROGRESS = "progress"
+_DRAIN_TROUBLE = "trouble"
+_DRAIN_MAX_WAIT_SECONDS = 24 * 60 * 60
+
+
+def _drain_trouble(stats: dict) -> bool:
+    """Whether a drain with nothing transcribed or taken ended on the server's side.
+
+    A request the server took and never answered, or failed with a 5xx
+    (``stalled``), a server that could not be reached mid-run or refused the
+    request (``unreachable``, ``refused``), or a file the server refused
+    with a 4xx (``failed`` with ``file_refusals``; the two refusals that end
+    a run land here). A file that failed only because it is missing here
+    is not the server's doing and does not count.
+    """
+    if any(stats.get(name, 0) > 0 for name in ("stalled", "unreachable", "refused")):
+        return True
+    return stats.get("failed", 0) > 0 and stats.get("file_refusals", 0) > 0
+
+
 _MAX_FIRES_COUNTED = 1600
 
 

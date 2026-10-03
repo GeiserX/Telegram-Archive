@@ -56,7 +56,7 @@ At startup the scheduler logs one line that says which mode it runs, for example
 | `0 * * * *` | Every hour (deprecated with the listener on) |
 
 !!! warning "Deprecated: frequent full passes with the listener on"
-    An hourly or other frequent `SCHEDULE` made sense when the scheduled pass was the only capture. With the listener on, each pass walks every chat, finds almost nothing new and spends Telegram's rate limits, so FloodWaits slow the listener's own requests too. Such schedules still work. When the listener is on and `SCHEDULE` runs more than 4 passes a day, startup logs a note. With the listener off, a frequent schedule is still a normal choice.
+    An hourly or other frequent `SCHEDULE` made sense when the scheduled pass was the only capture. With the listener on, each pass walks every chat, finds almost nothing new and spends Telegram's rate limits, so FloodWaits slow the listener's own requests too. Such schedules still work. When the listener is on and `SCHEDULE` runs more than 4 passes a day, startup logs a note. With the listener off, a frequent schedule is still a normal choice. Transcription does not need a frequent pass either. Its drain runs on its own timer, [`TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`](../reference/environment-variables.md#transcription_drain_interval_minutes).
 
 ### Why the daily pass stays
 
@@ -66,7 +66,7 @@ The listener does not see everything, so the full pass is still needed:
 - Reactions you add from another device are not always pushed to the listener.
 - A chat you join while the backup is down is picked up by the next pass.
 - Gap-fill (`FILL_GAPS`) and the [reaction re-sweep](#reaction-re-sweep) run as part of the pass.
-- Media retries, avatar checks, folder refreshes and the transcription queue run as part of each pass.
+- Media retries, avatar checks and folder refreshes run as part of each pass. So does a transcription drain, besides the one `schedule` runs every `TRANSCRIPTION_DRAIN_INTERVAL_MINUTES`. A file the drain sends back to download waits for the pass.
 
 !!! tip "Use day names"
     In the day-of-week field, `0` means Monday, not Sunday as in crontab. Names such as `mon`, `sun` or `mon-fri` avoid the confusion.

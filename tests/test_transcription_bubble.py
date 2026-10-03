@@ -989,9 +989,10 @@ class TestAskLimits:
                 room = await client.post("/api/media/m_4_voice/transcripts")
         assert (first.status_code, second.status_code, master.status_code, room.status_code) == (200, 200, 200, 200)
         assert [resp.status_code for resp in [*full, still_full]] == [429, 429, 429]
-        # Only a backup run frees room, and the viewer does not know its schedule: an hour, said plainly.
-        assert {resp.headers["retry-after"] for resp in full} == {"3600"}
-        assert full[0].json()["detail"] == "Many transcripts are waiting for the next backup run. Try again later."
+        # Only a drain of the backup frees room, and the viewer does not read the backup's
+        # settings: the default drain interval, 15 minutes, as a polling hint.
+        assert {resp.headers["retry-after"] for resp in full} == {"900"}
+        assert full[0].json()["detail"] == "Many transcripts are waiting to be sent. Try again later."
         assert await real_adapter.list_media_transcripts("m_3_voice", account_id=1) != []
         assert len(await real_adapter.list_media_transcripts("m_4_voice", account_id=1)) == 1
 
