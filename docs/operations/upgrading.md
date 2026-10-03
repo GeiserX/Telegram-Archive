@@ -96,7 +96,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 
-`check-media` now finds video and audio files that were cut short. A release from late 2025 stored some downloads that stopped early as complete files, and nothing in the archive knew. A dry run counts them as `Cut short` and exits 1, so a script or a health check that runs `check-media` reports them until they are repaired. Run `check-media --repair` once to mark them to download again. The next backup run downloads each one and replaces the short file only when its bytes are the start of the new download. See [A file cut short](../configuration/media.md#a-file-cut-short).
+`check-media` now finds video and audio files that were cut short. A release from late 2025 stored some downloads that stopped early as complete files, and nothing in the archive knew. A dry run counts them as `Cut short` and exits 1, so a script or a health check that runs `check-media` reports them until they are repaired. Run `check-media --repair` once to mark them to download again. The next backup run downloads each one and replaces the short file only when its bytes are the start of the new download. Otherwise it keeps the short file and stores the new download beside it. See [A file cut short](../configuration/media.md#a-file-cut-short).
 
 The backup and the real-time listener now refuse a download shorter than the size Telegram declares for the file. The backup tries it again and then records it not downloaded, so the pending downloads retry it. Before, the short file was stored as complete.
 

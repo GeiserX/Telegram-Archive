@@ -70,7 +70,7 @@ from .message_utils import (
     message_plain_text,
     message_rich_payload,
     message_seen_at,
-    replace_short_file_checked,
+    replace_short_file_or_keep_beside,
     sanitize_media_filename,
     sender_display_name,
     service_action_type,
@@ -89,7 +89,19 @@ logger = logging.getLogger(__name__)
 # The media fields an edit frame carries: the message API's nested media row.
 # The viewer turns the storage id into the URL key and the URL (the id's
 # ``_v{n}`` becomes the ``?v=`` cache key) and applies the login's download rule.
-_FRAME_MEDIA_KEYS = ("id", "type", "file_path", "file_name", "file_size", "mime_type", "width", "height", "duration")
+# ``downloaded`` lets it word a file the archive will download again.
+_FRAME_MEDIA_KEYS = (
+    "id",
+    "type",
+    "file_path",
+    "file_name",
+    "file_size",
+    "mime_type",
+    "width",
+    "height",
+    "duration",
+    "downloaded",
+)
 
 # The UpdateMessagePoll lookup cache (TelegramListener._poll_messages): how
 # many polls it holds, and how long a poll not found in the archive is not
@@ -1082,6 +1094,7 @@ class TelegramListener:
                 "width": media_row["width"],
                 "height": media_row["height"],
                 "duration": media_row["duration"],
+                "downloaded": True,
             }
         except Exception as e:
             logger.warning(f"Failed to download media for message {message.id}: {describe_exception(e)}")
@@ -1233,7 +1246,7 @@ class TelegramListener:
                                 pass
                         raise
 
-                shared_file_path, content_hash = await download_and_shard_media(
+                shared_file_path, content_hash, kept_entry = await download_and_shard_media(
                     db=self.db,
                     download_coro=_download_fn,
                     shared_dir=shared_dir,
@@ -1244,6 +1257,11 @@ class TelegramListener:
                     account_id=self.account_id,
                     declared_size=declared,
                 )
+                if kept_entry:
+                    # The complete download, kept beside a short file it does
+                    # not extend: the row names it.
+                    file_path = kept_entry
+                    file_name = os.path.basename(kept_entry)
                 if not shared_file_path and not os.path.lexists(file_path):
                     return None
             else:
@@ -1285,11 +1303,23 @@ class TelegramListener:
                             logger.warning("Media download did not produce a file")
                             return None
                         try:
-                            await asyncio.to_thread(replace_short_file_checked, short_target, landed)
+                            kept = await asyncio.to_thread(
+                                replace_short_file_or_keep_beside, short_target, landed, file_path
+                            )
                         finally:
                             if os.path.exists(landed):
                                 os.remove(landed)  # the private .part copy
-                        logger.info("Replaced a media file whose earlier download had stopped early")
+                        if kept:
+                            # The short file's bytes are not the start of the
+                            # new ones: it stays, and the row names the
+                            # complete download kept beside it.
+                            logger.warning(
+                                "Kept a new download beside a cut-short media file whose bytes differ from it"
+                            )
+                            file_path = kept
+                            file_name = os.path.basename(kept)
+                        else:
+                            logger.info("Replaced a media file whose earlier download had stopped early")
                     else:
                         file_path = finalize_atomic_download(
                             actual_path if isinstance(actual_path, str) else None,

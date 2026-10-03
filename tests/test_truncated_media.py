@@ -40,6 +40,11 @@ from telethon.tl.types import (
     DocumentAttributeFilename,
     DocumentAttributeVideo,
     MessageMediaDocument,
+    MessageMediaPhoto,
+    Photo,
+    PhotoSize,
+    PhotoSizeProgressive,
+    VideoSize,
 )
 
 from telegram_archive.__main__ import create_parser, run_check_media
@@ -60,6 +65,7 @@ from telegram_archive.message_utils import (
     check_complete_download,
     declared_document_size,
     download_and_shard_media,
+    kept_beside_name,
     utcnow_naive,
 )
 from telegram_archive.parallel_download import ParallelDownloadUnavailable
@@ -156,6 +162,34 @@ def _message(size: int = len(FULL)) -> MagicMock:
     return message
 
 
+PHOTO_FILE = "6000000000000000002.jpg"
+PHOTO_SIZE = 300_000  # the largest rendition, progressive
+PHOTO_FULL = _filler(PHOTO_SIZE, seed=3)
+PHOTO_CUT = PHOTO_FULL[: 256 * 1024]  # stopped at a 128 KiB request boundary
+
+
+def _photo(*, video_sizes=None) -> Photo:
+    return Photo(
+        id=6000000000000000002,
+        access_hash=1,
+        file_reference=b"",
+        date=datetime(2025, 12, 6, 12),
+        sizes=[
+            PhotoSize(type="m", w=320, h=240, size=20_000),
+            PhotoSizeProgressive(type="y", w=1280, h=960, sizes=[40_000, 120_000, PHOTO_SIZE]),
+        ],
+        dc_id=2,
+        video_sizes=video_sizes,
+    )
+
+
+def _photo_message(**kwargs) -> MagicMock:
+    message = MagicMock(id=MESSAGE_ID, edit_date=None, edit_hide=False)
+    message.media = MessageMediaPhoto(photo=_photo(**kwargs))
+    message.date = datetime(2025, 12, 6, 12)
+    return message
+
+
 def _writer(*payloads: bytes):
     """A ``client.download_media`` that writes the next payload to the path it is given."""
     remaining = list(payloads)
@@ -191,8 +225,11 @@ def _backup(adapter, media: str, *, dedup: bool = True) -> TelegramBackup:
     return backup
 
 
-async def _seed(adapter, *, file_path: str, data: bytes, downloaded: bool = True) -> None:
-    """The row as the late-2025 release wrote it: downloaded, sized and hashed from the short file."""
+async def _seed(adapter, *, file_path: str, data: bytes, downloaded: bool = True, hashed: bool = True) -> None:
+    """The row as the late-2025 release wrote it: downloaded and sized from the short file.
+
+    ``hashed=False`` is a row from before ``media.content_hash`` existed; nothing backfills it.
+    """
     await adapter.upsert_chat({"id": CHAT, "type": "channel", "title": "Channel A"}, account_id=1)
     await adapter.insert_message(
         {"id": MESSAGE_ID, "chat_id": CHAT, "text": "", "date": datetime(2025, 12, 6, 12), "raw_data": {}},
@@ -208,7 +245,7 @@ async def _seed(adapter, *, file_path: str, data: bytes, downloaded: bool = True
             "file_path": file_path,
             "file_size": len(data),
             "mime_type": "video/mp4",
-            "content_hash": _sha(data),
+            "content_hash": _sha(data) if hashed else None,
             "telegram_file_id": FILE_ID,
             "downloaded": downloaded,
             "download_date": datetime(2025, 12, 6, 12),
@@ -469,6 +506,15 @@ class TestDeclaredSize:
         assert declared_document_size(MagicMock()) is None  # a test double stays inert
         assert declared_document_size(MagicMock(media=None)) is None
 
+    def test_a_photo_declares_its_largest_rendition(self):
+        """The size Telethon passes for the rendition it downloads: max(sizes) of a progressive one."""
+        assert declared_document_size(_photo_message()) == PHOTO_SIZE
+        assert declared_document_size(_photo_message(video_sizes=[])) == PHOTO_SIZE
+
+    def test_a_photo_with_a_video_rendition_declares_nothing(self):
+        video = VideoSize(type="u", w=640, h=640, size=900_000)
+        assert declared_document_size(_photo_message(video_sizes=[video])) is None
+
     def test_check_complete_download(self, tmp_path):
         path = _write(str(tmp_path / "f.mp4"), CUT)
         with pytest.raises(ShortDownloadError) as caught:
@@ -477,6 +523,61 @@ class TestDeclaredSize:
         check_complete_download(path, len(CUT))
         check_complete_download(path, None)
         check_complete_download(str(tmp_path / "absent"), len(FULL))
+
+
+class TestAPhotoCutShortIsRefused:
+    """Telethon fetches a photo through the same loop that stops at a short answer."""
+
+    async def _seed_message(self, adapter):
+        await adapter.upsert_chat({"id": CHAT, "type": "channel", "title": "Channel A"}, account_id=1)
+        await adapter.insert_message(
+            {"id": MESSAGE_ID, "chat_id": CHAT, "text": "", "date": datetime(2025, 12, 6, 12), "raw_data": {}},
+            account_id=1,
+        )
+
+    @pytest.mark.parametrize("dedup", [True, False])
+    async def test_the_backup_refuses_a_short_photo(self, real_adapter, tmp_path, dedup):
+        media = str(tmp_path / "media")
+        await self._seed_message(real_adapter)
+        backup = _backup(real_adapter, media, dedup=dedup)
+        backup._get_media_filename = MagicMock(return_value=PHOTO_FILE)
+        backup.client.download_media = _writer(PHOTO_CUT)
+
+        result = await backup._process_media(_photo_message(), CHAT)
+
+        assert not result.get("downloaded")
+        assert backup.client.download_media.await_count == MEDIA_REFRESH_MAX_ATTEMPTS
+        assert not os.path.lexists(os.path.join(media, str(CHAT), PHOTO_FILE))
+        assert [f for _root, _dirs, files in os.walk(media) for f in files] == []
+
+    @pytest.mark.parametrize("dedup", [True, False])
+    async def test_control_the_backup_stores_a_whole_photo(self, real_adapter, tmp_path, dedup):
+        media = str(tmp_path / "media")
+        await self._seed_message(real_adapter)
+        backup = _backup(real_adapter, media, dedup=dedup)
+        backup._get_media_filename = MagicMock(return_value=PHOTO_FILE)
+        backup.client.download_media = _writer(PHOTO_FULL)
+
+        result = await backup._process_media(_photo_message(), CHAT)
+
+        assert result["downloaded"] is True
+        assert _read(os.path.join(media, str(CHAT), PHOTO_FILE)) == PHOTO_FULL
+
+    @pytest.mark.parametrize("dedup", [True, False])
+    async def test_the_listener_refuses_a_short_photo_and_keeps_a_whole_one(self, tmp_path, dedup):
+        media = str(tmp_path / "media")
+        listener = _listener(media, dedup=dedup)
+        listener._get_media_filename = MagicMock(return_value=PHOTO_FILE)
+        listener.client.download_media = _writer(PHOTO_CUT)
+
+        assert await listener._download_media(_photo_message(), CHAT) is None
+        assert not os.path.lexists(os.path.join(media, str(CHAT), PHOTO_FILE))
+        assert _part_files(media) == []
+
+        listener.client.download_media = _writer(PHOTO_FULL)
+        result = await listener._download_media(_photo_message(), CHAT)
+        assert result is not None and result[2] == _sha(PHOTO_FULL)
+        assert _read(os.path.join(media, str(CHAT), PHOTO_FILE)) == PHOTO_FULL
 
 
 # --- (h) the shared store replaces a short blob ---------------------------------------
@@ -521,9 +622,10 @@ class TestTheSharedStoreReplacesAShortBlob:
         targets = (os.readlink(link_a), os.readlink(link_b))
         download = _download_of(FULL)
 
-        path, digest = await _shard(media, link_a, download, declared_size=len(FULL))
+        path, digest, kept = await _shard(media, link_a, download, declared_size=len(FULL))
 
         download.assert_awaited_once()
+        assert kept is None
         assert digest == _sha(FULL)
         assert _read(path) == FULL
         assert _read(blob) == FULL
@@ -541,18 +643,47 @@ class TestTheSharedStoreReplacesAShortBlob:
 
         assert (_read(blob), _read(other), _read(link)) == (FULL, FULL, FULL)
 
-    async def test_new_bytes_that_do_not_start_with_the_old_ones_leave_the_old_blob_untouched(self, tmp_path):
+    async def test_new_bytes_that_do_not_start_with_the_old_ones_are_kept_beside_the_old_blob(self, tmp_path):
+        media = str(tmp_path / "media")
+        blob, (link,) = _shared_layout(media, CUT)
+        target = os.readlink(link)
+        other = _complete_mp4(len(FULL), seed=7)
+        kept_name = kept_beside_name(FILE, _sha(other))
+
+        path, digest, kept = await _shard(media, link, _download_of(other), declared_size=len(FULL))
+
+        assert (_read(blob), _read(link), os.readlink(link)) == (CUT, CUT, target)  # the old file is untouched
+        assert path == os.path.join(media, "_shared", _sha(other)[:2], kept_name)
+        assert digest == _sha(other)
+        assert kept == os.path.join(media, str(CHAT), kept_name)
+        assert os.path.islink(kept) and _read(kept) == other
+        assert _part_files(media) == []
+
+    async def test_a_second_mismatch_finds_the_kept_download(self, tmp_path):
+        media = str(tmp_path / "media")
+        blob, (link,) = _shared_layout(media, CUT)
+        other = _complete_mp4(len(FULL), seed=7)
+        first = await _shard(media, link, _download_of(other), declared_size=len(FULL))
+
+        again = await _shard(media, link, _download_of(other), declared_size=len(FULL))
+
+        assert again == first
+        assert _read(blob) == CUT and _read(first[2]) == other
+        assert _part_files(media) == []
+
+    async def test_a_mismatch_with_no_hash_still_keeps_nothing(self, tmp_path):
         media = str(tmp_path / "media")
         blob, (link,) = _shared_layout(media, CUT)
         other = _complete_mp4(len(FULL), seed=7)
 
-        with pytest.raises(ShortFileMismatchError):
+        with (
+            patch("telegram_archive.message_utils.compute_file_hash_async", AsyncMock(return_value=None)),
+            pytest.raises(ShortFileMismatchError),
+        ):
             await _shard(media, link, _download_of(other), declared_size=len(FULL))
 
         assert _read(blob) == CUT
-        assert _read(link) == CUT
         assert _part_files(media) == []
-        assert not os.path.exists(os.path.join(media, "_shared", _sha(other)[:2], FILE))
 
     async def test_a_new_download_that_is_short_too_publishes_nothing(self, tmp_path):
         media = str(tmp_path / "media")
@@ -569,10 +700,10 @@ class TestTheSharedStoreReplacesAShortBlob:
         blob, (link,) = _shared_layout(media, CUT)
         download = _download_of(FULL)
 
-        path, digest = await _shard(media, link, download, declared_size=None)
+        path, digest, kept = await _shard(media, link, download, declared_size=None)
 
         download.assert_not_awaited()
-        assert (path, digest) == (blob, _sha(CUT))
+        assert (path, digest, kept) == (blob, _sha(CUT), None)
         assert _read(blob) == CUT
 
     async def test_a_complete_entry_is_reused(self, tmp_path):
@@ -580,7 +711,7 @@ class TestTheSharedStoreReplacesAShortBlob:
         blob, (link,) = _shared_layout(media, FULL)
         download = _download_of(FULL)
 
-        assert await _shard(media, link, download, declared_size=len(FULL)) == (blob, _sha(FULL))
+        assert await _shard(media, link, download, declared_size=len(FULL)) == (blob, _sha(FULL), None)
         download.assert_not_awaited()
 
     async def test_a_link_out_of_the_archive_is_never_judged(self, tmp_path):
@@ -630,18 +761,42 @@ class TestTheBackupWithoutDedupReplacesAShortFile:
         assert os.path.islink(link)
         assert (_read(blob), _read(link)) == (FULL, FULL)
 
-    async def test_a_mismatch_keeps_the_old_file_and_records_a_retry(self, real_adapter, tmp_path):
+    async def test_a_mismatch_keeps_the_old_file_and_records_the_download_beside_it(self, real_adapter, tmp_path):
         media = str(tmp_path / "media")
         path = _write(os.path.join(media, str(CHAT), FILE), CUT)
         await _seed(real_adapter, file_path=path, data=CUT, downloaded=False)
         backup = _backup(real_adapter, media, dedup=False)
-        backup.client.download_media = _writer(_complete_mp4(len(FULL), seed=7))
+        other = _complete_mp4(len(FULL), seed=7)
+        backup.client.download_media = _writer(other)
 
         result = await backup._process_media(_message(), CHAT)
 
-        assert not result.get("downloaded")
-        assert _read(path) == CUT
+        beside = os.path.join(media, str(CHAT), kept_beside_name(FILE, _sha(other)))
+        assert _read(path) == CUT  # the old file is unchanged
+        assert result["downloaded"] is True
+        assert (result["file_path"], result["file_name"]) == (beside, os.path.basename(beside))
+        assert (result["file_size"], result["content_hash"]) == (len(other), _sha(other))
+        assert _read(beside) == other
         assert _part_files(media) == []
+        await real_adapter.insert_media(result, account_id=1)
+        row = await _row(real_adapter)
+        assert (row["downloaded"], row["file_path"], row["content_hash"]) == (1, beside, _sha(other))
+
+    async def test_with_dedup_a_mismatch_records_the_download_beside_it(self, real_adapter, tmp_path):
+        media = str(tmp_path / "media")
+        blob, (link,) = _shared_layout(media, CUT)
+        await _seed(real_adapter, file_path=link, data=CUT, downloaded=False)
+        backup = _backup(real_adapter, media)
+        other = _complete_mp4(len(FULL), seed=7)
+        backup.client.download_media = _writer(other)
+
+        result = await backup._process_media(_message(), CHAT)
+
+        beside = os.path.join(media, str(CHAT), kept_beside_name(FILE, _sha(other)))
+        assert (_read(blob), _read(link)) == (CUT, CUT)
+        assert result["downloaded"] is True
+        assert (result["file_path"], result["content_hash"], result["file_size"]) == (beside, _sha(other), len(other))
+        assert _read(beside) == other
 
 
 # --- (j) the listener ---------------------------------------------------------------
@@ -714,6 +869,25 @@ class TestTheListener:
         assert _read(path) == FULL
         assert _part_files(media) == []
 
+    @pytest.mark.parametrize("dedup", [True, False])
+    async def test_a_mismatch_keeps_the_old_file_and_names_the_download_beside_it(self, tmp_path, dedup):
+        media = str(tmp_path / "media")
+        if dedup:
+            old, (path,) = _shared_layout(media, CUT)
+        else:
+            old = path = _write(os.path.join(media, str(CHAT), FILE), CUT)
+        listener = _listener(media, dedup=dedup)
+        other = _complete_mp4(len(FULL), seed=7)
+        listener.client.download_media = _writer(other)
+
+        result = await listener._download_media(_message(), CHAT)
+
+        kept_name = kept_beside_name(FILE, _sha(other))
+        assert result == (f"{media}/{CHAT}/{kept_name}", kept_name, _sha(other))
+        assert (_read(old), _read(path)) == (CUT, CUT)
+        assert _read(os.path.join(media, str(CHAT), kept_name)) == other
+        assert _part_files(media) == []
+
 
 # --- (k) end to end ------------------------------------------------------------------
 
@@ -761,10 +935,22 @@ async def _drain(adapter) -> list[str]:
     return [row["id"] for row in rows]
 
 
-async def _fail_three_times(adapter, content_hash: str | None) -> None:
+async def _fail_three_times(adapter, content_hash: str | None, *, key: str | None = None) -> None:
+    """Three decode failures. ``key`` is the file's sha256 that transcribe_media stores when the media has no hash."""
     for _ in range(3):
         row = await adapter.enqueue_media_transcript(MEDIA_ID, account_id=1, content_hash=content_hash)
+        if key is not None:
+            await adapter.fill_media_transcript(row["id"], status="queued", idempotency_key=key)
         await adapter.fill_media_transcript(row["id"], status="failed", error="decode_failed")
+
+
+async def _downloaded_again(adapter, data: bytes) -> None:
+    """The new download writes the complete file's hash on the media row."""
+    await adapter.insert_media(
+        {"id": MEDIA_ID, "message_id": MESSAGE_ID, "chat_id": CHAT, "type": "video", "content_hash": _sha(data)},
+        account_id=1,
+    )
+    assert (await _row(adapter))["content_hash"] == _sha(data)
 
 
 class TestTheDrainForgetsFailuresAboutEarlierBytes:
@@ -773,20 +959,31 @@ class TestTheDrainForgetsFailuresAboutEarlierBytes:
         await _fail_three_times(real_adapter, _sha(CUT))
         assert await _drain(real_adapter) == []
 
-        # The new download changes the row's hash.
-        await real_adapter.insert_media(
-            {"id": MEDIA_ID, "message_id": MESSAGE_ID, "chat_id": CHAT, "type": "video", "content_hash": _sha(FULL)},
-            account_id=1,
-        )
-        assert (await _row(real_adapter))["content_hash"] == _sha(FULL)
+        await _downloaded_again(real_adapter, FULL)
         assert await _drain(real_adapter) == [MEDIA_ID]
+
+    async def test_failures_keyed_by_the_short_files_sha_do_not_count_on_a_row_that_had_no_hash(self, real_adapter):
+        """The production shape: a row written before media.content_hash existed."""
+        await _seed(real_adapter, file_path=f"{CHAT}/{FILE}", data=CUT, hashed=False)
+        await _fail_three_times(real_adapter, None, key=_sha(CUT))
+        assert await _drain(real_adapter) == []
+
+        await _downloaded_again(real_adapter, FULL)
+        assert await _drain(real_adapter) == [MEDIA_ID]
+
+    async def test_control_keyed_failures_about_the_bytes_the_row_holds_still_count(self, real_adapter):
+        await _seed(real_adapter, file_path=f"{CHAT}/{FILE}", data=CUT, hashed=False)
+        await _fail_three_times(real_adapter, None, key=_sha(FULL))
+
+        await _downloaded_again(real_adapter, FULL)
+        assert await _drain(real_adapter) == []
 
     async def test_control_failures_about_the_same_bytes_still_end_the_retries(self, real_adapter):
         await _seed(real_adapter, file_path=f"{CHAT}/{FILE}", data=FULL)
         await _fail_three_times(real_adapter, _sha(FULL))
         assert await _drain(real_adapter) == []
 
-    async def test_a_failure_with_no_hash_still_counts(self, real_adapter):
+    async def test_a_failure_with_neither_hash_nor_key_still_counts(self, real_adapter):
         await _seed(real_adapter, file_path=f"{CHAT}/{FILE}", data=FULL)
         await _fail_three_times(real_adapter, None)
         assert await _drain(real_adapter) == []
@@ -839,6 +1036,20 @@ def _function_source(name: str) -> str:
     return html[start : _matching_brace(html, html.index("{", start)) + 1]
 
 
+def _const_source(name: str) -> str:
+    """``const <name> = ...`` from the template: to its closing brace, or to the end of a one-line arrow."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index(f"const {name} = ")
+    line_end = html.index("\n", start)
+    first_line = html[start:line_end].rstrip()
+    if not first_line.endswith(("{", "[")):
+        return first_line
+    opening = start + len(first_line) - 1
+    if first_line.endswith("["):
+        return html[start : html.index("])", opening) + 2]
+    return html[start : _matching_brace(html, opening) + 1]
+
+
 def _run_node(script: str) -> str:
     node = shutil.which("node")
     if node is None:
@@ -873,4 +1084,48 @@ console.log(JSON.stringify(out))
             "older_payload": "missing",
             "no_path": "pending",
             "oversize": "oversize",
+        }
+
+    def test_a_row_marked_for_a_new_download_shows_its_placeholder_before_any_load(self):
+        """No load is tried, so neither the cut-short bytes nor a broken player ever show; audio included."""
+        cases = {
+            "video_marked": {"type": "video", "file_path": "a.mp4", "downloaded": False},
+            "audio_marked": {"type": "audio", "file_path": "a.m4a", "mime_type": "audio/mp4", "downloaded": False},
+            "voice_marked": {"type": "voice", "file_path": "a.ogg", "downloaded": False},
+            "video_kept": {"type": "video", "file_path": "a.mp4", "downloaded": True},
+            "older_payload": {"type": "video", "file_path": "a.mp4"},
+            "marked_then_oversize": {
+                "type": "video",
+                "file_path": "a.mp4",
+                "downloaded": False,
+                "skip_reason": "oversize",
+            },
+        }
+        names = ("mediaUnavailable", "mediaMissingReason", "mediaPlaceholder", "MISSING_REASONS", "STICKER_REASONS")
+        sources = "\n".join(_const_source(name) for name in names)
+        script = f"""
+const METADATA_ONLY_TYPES = new Set()
+const MEDIA_TYPE_WORDS = {{ video: 'Video', audio: 'Audio', voice: 'Voice message' }}
+const sessionWord = {{ value: 'login' }}
+const formatBytes = (n) => `${{n}} B`
+const getExtendedMediaChip = () => null
+const isLockedAudio = () => false
+const getMediaDisplayName = (media) => media.file_name
+{sources}
+const cases = {json.dumps(cases)}
+const out = {{}}
+for (const [name, media] of Object.entries(cases)) {{
+    const msg = {{ media, mediaLoadFailed: false }}
+    const ph = mediaPlaceholder(msg)
+    out[name] = [mediaUnavailable(msg), ph ? ph.kind : null]
+}}
+console.log(JSON.stringify(out))
+"""
+        assert json.loads(_run_node(script)) == {
+            "video_marked": [True, "pending"],
+            "audio_marked": [True, "pending"],
+            "voice_marked": [True, "pending"],
+            "video_kept": [False, None],
+            "older_payload": [False, None],
+            "marked_then_oversize": [True, "oversize"],
         }

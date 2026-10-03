@@ -7960,12 +7960,12 @@
                                         </div>
                                     </div>
                                     </template>
-                                    <div v-if="(msg.media?.file_path && !msg.mediaLoadFailed && !isMetadataOnlyMedia(msg)) || isFirstInAlbum(msg, index) || isLockedAudio(msg)" class="media-block space-y-1" :class="{ 'is-edge': isEdgeMedia(msg) || isFirstInAlbum(msg, index) }">
+                                    <div v-if="(msg.media?.file_path && !mediaUnavailable(msg) && !isMetadataOnlyMedia(msg)) || isFirstInAlbum(msg, index) || isLockedAudio(msg)" class="media-block space-y-1" :class="{ 'is-edge': isEdgeMedia(msg) || isFirstInAlbum(msg, index) }">
                                         <!-- Album Grid (multiple photos/videos grouped together) -->
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
                                             <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
-                                                    <div v-if="albumMsg.mediaLoadFailed || !albumMsg.media?.file_path" class="album-item album-missing" role="img"
+                                                    <div v-if="mediaUnavailable(albumMsg) || !albumMsg.media?.file_path" class="album-item album-missing" role="img"
                                                         :class="{ 'is-attention': mediaMissingReason(albumMsg) === 'missing' }"
                                                         :aria-label="`${albumMsg.media?.type === 'video' ? 'Video' : 'Photo'}. ${mediaMissingWords(albumMsg)}`"
                                                         :title="mediaMissingWords(albumMsg)">
@@ -14541,7 +14541,7 @@
                 // failed load, not an open or failed transcript (the circle then gives
                 // way to text, which needs a bubble under it).
                 const rendersAsPicture = (msg) => {
-                    if (msg.mediaLoadFailed) return false
+                    if (mediaUnavailable(msg)) return false
                     if (msg.media?.type === 'sticker') return isStickerImage(msg)
                     if (!hasTranscriptButton(msg)) return true
                     return !isTranscriptExpanded(msg) && transcriptStatus(msg) !== 'error'
@@ -14552,7 +14552,7 @@
                 // text and keeps the padding.
                 const EDGE_MEDIA_TYPES = ['photo', 'video', 'animation']
                 const isEdgeMedia = (msg) => {
-                    if (!msg.media?.file_path || msg.mediaLoadFailed) return false
+                    if (!msg.media?.file_path || mediaUnavailable(msg)) return false
                     return EDGE_MEDIA_TYPES.includes(msg.media.type)
                 }
 
@@ -17263,6 +17263,12 @@
                 // A no-download login keeps the voice row, its play disc dimmed and
                 // "playback off for this login" (or "this link") beside the duration:
                 // a chat of voice notes still reads like one.
+                // A file the bubble does not try to load: one that failed to load,
+                // or one the row says is not downloaded, such as a file
+                // check-media marked to download again. Its old bytes may still
+                // be on disk, cut short, so nothing fetches them: the
+                // placeholder shows at once, for audio rows too.
+                const mediaUnavailable = (msg) => !!msg.mediaLoadFailed || msg.media?.downloaded === false
                 const isLockedAudio = (msg) => !!msg.media?.no_download && !msg.media?.file_path && isAudioFile(msg)
                 // Why the archive does not show a file, with the glyph that says it:
                 // a download arrow over a bar for over the limit, a clock for not yet,
@@ -17288,12 +17294,13 @@
                     pending: 'not downloaded yet',
                     get hidden() { return `hidden for this ${sessionWord.value}` },
                 }
-                // A file that would not load is missing, unless the row says the
-                // archive will download it again (check-media marked a file cut
-                // short or gone): then it is "not downloaded yet", with the clock.
+                // A file that would not load is missing. A row the archive will
+                // download again (check-media marked a file cut short or gone)
+                // is not missing: it reads by its skip reason, or "not
+                // downloaded yet" with the clock.
                 const mediaMissingReason = (msg) => {
                     const media = msg.media || {}
-                    if (media.file_path && msg.mediaLoadFailed) return media.downloaded === false ? 'pending' : 'missing'
+                    if (media.file_path && msg.mediaLoadFailed && media.downloaded !== false) return 'missing'
                     if (media.skip_reason === 'oversize') return 'oversize'
                     if (media.skip_reason === 'filtered') return 'filtered'
                     if (media.no_download) return 'hidden'
@@ -17318,7 +17325,7 @@
                     // A location, a contact, a poll: no file, whatever an older
                     // release left in file_path. The card draws it instead.
                     if (METADATA_ONLY_TYPES.has(media.type)) return null
-                    const missing = !!media.file_path && !!msg.mediaLoadFailed
+                    const missing = !!media.file_path && mediaUnavailable(msg)
                     if (media.file_path && !missing) return null
                     if (!media.file_path && getExtendedMediaChip(msg)) return null
                     // An album's pictures draw their own tiles (album-missing), the
@@ -19650,6 +19657,7 @@
                     mediaMissingWords,
                     MISSING_GLYPHS,
                     isLockedAudio,
+                    mediaUnavailable,
                     replyTargetDeleted,
                     deletedTitle,
                     deletedOnly,

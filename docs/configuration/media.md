@@ -119,11 +119,11 @@ Three places repair: [`check-media`](../reference/cli.md#check-media) checks eve
 
 ### A file cut short { #a-file-cut-short }
 
-Telegram declares the exact size of every document. A download that ends below it stopped early, and the backup and the real-time listener treat it as a failure, never as a finished file. The backup tries it again within the same run and, if it is still short, records it not downloaded so a later run retries it under `MEDIA_MAX_DOWNLOAD_ATTEMPTS`. The listener stores nothing.
+Telegram declares the exact size of every document, and of every rendition of a photo. A download that ends below it stopped early, and the backup and the real-time listener treat it as a failure, never as a finished file. The backup tries it again within the same run and, if it is still short, records it not downloaded so a later run retries it under `MEDIA_MAX_DOWNLOAD_ATTEMPTS`. The listener stores nothing.
 
 A release from late 2025 did store some of these short files as complete. Such a video has no playable end and its transcription fails. Run [`check-media`](../reference/cli.md#check-media) to find them, and `check-media --repair` to mark them to download again. The marked file stays where it is until the new download arrives.
 
-When the backup meets an existing file shorter than Telegram's declared size, it downloads the file again instead of reusing it. It replaces the short file only when every byte the short file holds is also the first bytes of the new download, so the replacement loses nothing. The replacement is one atomic rename of the same name, so every chat folder link and every row that pointed at the short file now reads the complete one, and no link is rewritten. When the bytes differ, the short file is left exactly as it is and the row stays not downloaded.
+When the backup meets an existing file shorter than Telegram's declared size, it downloads the file again instead of reusing it. It replaces the short file only when every byte the short file holds is also the first bytes of the new download, so the replacement loses nothing. The replacement is one atomic rename of the same name, so every chat folder link and every row that pointed at the short file now reads the complete one, and no link is rewritten. When the bytes differ, the short file and every link to it are left exactly as they are. The complete download is kept beside it under the same name with part of its hash before the extension, and the row names that new file.
 
 With `DEDUPLICATE_MEDIA=false`, files go straight into `media/<chat_id>/`. A file that already exists there is never downloaded again, unless it is shorter than Telegram's declared size.
 
@@ -249,7 +249,7 @@ A message whose file the viewer cannot show keeps its place: a placeholder in th
 | over the download limit | Skip reason `oversize`. Raise `MAX_MEDIA_SIZE_MB` to fetch it. |
 | skipped by the media filter | Skip reason `filtered`. Relax `DOWNLOAD_MEDIA_TYPES` or `DOWNLOAD_DOCUMENT_MIME_TYPES`, or remove the chat from `SKIP_MEDIA_CHAT_IDS`. |
 | hidden for this login, hidden for this link | The viewer account or share token has downloads off. A share-link session reads "link". The file may be archived. See [No-download logins](../viewer/access.md#no-download-logins). |
-| not downloaded yet | The row is pending. The retry pass picks it up, until it gives up. Archive status counts the files that gave up. A file `check-media --repair` marked to download again, such as one cut short, reads this way too, even while its old bytes are still on disk. |
+| not downloaded yet | The row is pending. The retry pass picks it up, until it gives up. Archive status counts the files that gave up. A file `check-media --repair` marked to download again, such as one cut short, reads this way too, even while its old bytes are still on disk. The viewer does not load those bytes. |
 | missing from the archive disk | The row says the file was downloaded, but the viewer could not load it: the file was moved or deleted outside the archive. |
 
 ![The four reasons in one chat](../images/screenshots/media-missing.png)

@@ -3108,6 +3108,7 @@ _FRAME_MEDIA_FIELDS = (
     "height",
     "duration",
     "skip_reason",
+    "downloaded",
 )
 
 
@@ -3120,6 +3121,8 @@ def _frame_media(media: dict, message_id: object, chat_ref: str) -> tuple[dict, 
     and a login whose downloads are off gets no URL and no path.
     """
     shaped = {key: media.get(key) for key in _FRAME_MEDIA_FIELDS}
+    if shaped["downloaded"] is not None:
+        shaped["downloaded"] = bool(shaped["downloaded"])  # a database row's 0 or 1, as the API's false or true
     _attach_media_url(shaped, message_id, chat_ref)
     no_download = {"media": dict(shaped)}
     _strip_original_media_paths([no_download])

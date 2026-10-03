@@ -2374,7 +2374,9 @@ class TestProcessMedia(unittest.TestCase):
         msg = self._make_photo_message(22)
         self._setup_photo_download()
         self.backup.config.deduplicate_media = True
-        with patch("telegram_archive.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None))):
+        with patch(
+            "telegram_archive.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None, None))
+        ):
             result = _run(self.backup._process_media(msg, 100))
 
         self.assertIsNotNone(result)

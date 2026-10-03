@@ -93,7 +93,7 @@ from .message_utils import (
     message_rich_payload,
     message_seen_at,
     place_copy,
-    replace_short_file_checked,
+    replace_short_file_or_keep_beside,
     resolve_shared_file_path,
     sender_display_name,
     service_action_type,
@@ -4644,7 +4644,7 @@ class TelegramBackup:
                 async def _download_fn(tmp_path):
                     return await self._download_media_to_path(message, tmp_path, file_size, chat_id)
 
-                shared_file_path, content_hash = await download_and_shard_media(
+                shared_file_path, content_hash, kept_entry = await download_and_shard_media(
                     db=self.db,
                     download_coro=_download_fn,
                     shared_dir=shared_dir,
@@ -4655,6 +4655,11 @@ class TelegramBackup:
                     account_id=self.account_id,
                     declared_size=declared_document_size(message),
                 )
+                if kept_entry:
+                    # The complete download, kept beside a short file it does
+                    # not extend: the row names it.
+                    file_path = kept_entry
+                    file_name = os.path.basename(kept_entry)
                 if not shared_file_path and not os.path.lexists(file_path):
                     # A download that yields no file must still leave a row:
                     # the retry drain only sees downloaded=0 rows, so returning
@@ -4700,12 +4705,25 @@ class TelegramBackup:
                     )
                     if short_target and landed:
                         try:
-                            await asyncio.to_thread(replace_short_file_checked, short_target, landed)
+                            kept = await asyncio.to_thread(
+                                replace_short_file_or_keep_beside, short_target, landed, file_path
+                            )
                         finally:
                             if os.path.exists(landed):
                                 os.remove(landed)  # the private .part copy
-                        logger.info("Replaced a media file whose earlier download had stopped early")
-                        landed = short_target
+                        if kept:
+                            # The short file's bytes are not the start of the
+                            # new ones: it stays, and the row names the
+                            # complete download kept beside it.
+                            logger.warning(
+                                "Kept a new download beside a cut-short media file whose bytes differ from it"
+                            )
+                            file_path = kept
+                            file_name = os.path.basename(kept)
+                            landed = kept
+                        else:
+                            logger.info("Replaced a media file whose earlier download had stopped early")
+                            landed = short_target
                     if landed is None:
                         file_path = None
                     if not file_path or not os.path.exists(file_path):

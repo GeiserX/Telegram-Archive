@@ -86,7 +86,7 @@ class TestSharedStorePublishIsAtomic(unittest.TestCase):
         db.find_media_by_content_hash = AsyncMock(side_effect=_observe)
         chat_dir = self._chat_dir(100)
 
-        shared_file_path, content_hash = self._run(self._ingest(db, chat_dir))
+        shared_file_path, content_hash, _kept = self._run(self._ingest(db, chat_dir))
 
         assert observed["resolved"] is None, "in-flight blob was discoverable under its plain shared name"
         assert observed["flat_entries"] == [], "in-flight blob was published into the shared store root"
@@ -120,7 +120,7 @@ class TestSharedStorePublishIsAtomic(unittest.TestCase):
             second_done.set()
             return await first, second_result
 
-        (first_path, _), (second_path, second_hash) = self._run(scenario())
+        (first_path, _, _), (second_path, second_hash, _) = self._run(scenario())
 
         second_link = os.path.join(chat_second, self.FILE_NAME)
         assert os.path.islink(second_link)
@@ -141,7 +141,7 @@ class TestSharedStorePublishIsAtomic(unittest.TestCase):
         chat_dir = self._chat_dir(100)
 
         with patch("telegram_archive.message_utils.compute_file_hash", return_value=None):
-            shared_file_path, content_hash = self._run(self._ingest(db, chat_dir))
+            shared_file_path, content_hash, _kept = self._run(self._ingest(db, chat_dir))
 
         assert content_hash is None
         assert shared_file_path == os.path.join(self.shared_dir, self.FILE_NAME)

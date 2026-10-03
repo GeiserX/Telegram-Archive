@@ -227,7 +227,8 @@ class TestFilteredMediaRows:
 
     async def test_type_whitelist_passes_the_allowed_type_through(self, adapter):
         backup = _make_backup(self.media_root, DOWNLOAD_MEDIA_TYPES="photo")
-        row = await backup._process_media(_message(7, _photo_media()), CHAT_ID)
+        # The photo declares the bytes the fake writes: a shorter file is refused.
+        row = await backup._process_media(_message(7, _photo_media(size=len(b"mediabytes"))), CHAT_ID)
 
         assert row["downloaded"] is True
 

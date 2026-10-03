@@ -315,7 +315,7 @@ const getMediaDisplayName = (media) => media.file_name
 
     def test_the_media_block_never_opens_for_one(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        self.assertIn("!msg.mediaLoadFailed && !isMetadataOnlyMedia(msg)) || isFirstInAlbum(msg, index)", html)
+        self.assertIn("!mediaUnavailable(msg) && !isMetadataOnlyMedia(msg)) || isFirstInAlbum(msg, index)", html)
 
 
 class TestCardMarkupAndColours(unittest.TestCase):

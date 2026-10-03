@@ -1669,8 +1669,21 @@ class TestOnNewMessageAdvanced:
         # attributes extracted from the media object (#263).
         media_data = db.insert_media.call_args[0][0]
         assert ws_message["media"] == {
-            key: media_data[key]
-            for key in ("id", "type", "file_path", "file_name", "file_size", "mime_type", "width", "height", "duration")
+            **{
+                key: media_data[key]
+                for key in (
+                    "id",
+                    "type",
+                    "file_path",
+                    "file_name",
+                    "file_size",
+                    "mime_type",
+                    "width",
+                    "height",
+                    "duration",
+                )
+            },
+            "downloaded": True,
         }
 
         # message_data passed to db.insert_message is untouched -- DB path unchanged
@@ -2758,6 +2771,7 @@ class TestRealtimeMediaAttributes:
             "width": media_data["width"],
             "height": media_data["height"],
             "duration": media_data["duration"],
+            "downloaded": True,
         }
         assert ws_media["duration"] == 9
         assert ws_media["file_size"] == 555
