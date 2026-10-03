@@ -18,7 +18,7 @@ The names load on first use. The viewer image installs no telethon, and
 
 import importlib
 
-__version__ = "9.2.0"
+__version__ = "9.2.1"
 
 __all__ = ["Config", "TelegramBackup", "run_backup", "__version__"]
 
