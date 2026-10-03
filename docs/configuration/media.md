@@ -14,7 +14,7 @@ With no media settings, the backup downloads every media type up to 100 MB per f
 | `animation` | GIFs |
 | `voice` | Voice messages |
 | `audio` | Music and other audio files |
-| `sticker` | Stickers |
+| `sticker` | Stickers: pictures (`.webp`), animated stickers (`.tgs`) and video stickers (`.webm`) |
 | `document` | Any other file |
 | `webpage` | Link previews that carry a photo or a document |
 

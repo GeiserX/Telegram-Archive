@@ -681,6 +681,14 @@ def classify_media_type(media: object) -> str | None:
         attributes = getattr(document, "attributes", None)
         if attributes is None:
             return None
+        # A sticker is decided by DocumentAttributeSticker wherever it sits, the
+        # way every official client decides it. Telegram sends a video sticker as
+        # [Video, Filename('sticker.webm'), Sticker], so a first-match ladder
+        # filed it as a video. The name is matched exactly: the old substring
+        # test also caught DocumentAttributeHasStickers, which marks a video,
+        # GIF or picture with stickers drawn on it, not a sticker.
+        if any(type(attr).__name__ == "DocumentAttributeSticker" for attr in attributes):
+            return "sticker"
         is_animated = False
         for attr in attributes:
             attr_type = type(attr).__name__
@@ -706,8 +714,6 @@ def classify_media_type(media: object) -> str | None:
                 if getattr(attr, "voice", False):
                     return "voice"
                 return "audio"
-            elif "Sticker" in attr_type:
-                return "sticker"
         # If animated but no video attribute, still an animation
         if is_animated:
             return "animation"

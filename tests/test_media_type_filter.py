@@ -453,6 +453,10 @@ def _every_classified_media_type():
         _document_with(DocumentAttributeAudio(duration=1)),
         _document_with(DocumentAttributeAudio(duration=1, voice=True)),
         _document_with(DocumentAttributeSticker(alt="x", stickerset=None)),
+        # A video sticker: the Video attribute comes first on the wire.
+        _document_with(
+            DocumentAttributeVideo(duration=3, w=512, h=512), DocumentAttributeSticker(alt="x", stickerset=None)
+        ),
     ]
     from telegram_archive.message_utils import classify_media_type
 
