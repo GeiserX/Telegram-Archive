@@ -9,6 +9,11 @@ Two archives at the same head revision are required: the table list below is
 the schema at head, and a source at another revision would be missing columns
 or carry columns this code does not know.
 
+Custom emoji (``custom_emoji`` and the files in ``media/_emoji``) are shared by
+every account, so the rows and files the target lacks are added and the
+target's own stay as they are. A row whose file does not come across arrives
+pending, and the target's next backup fetches it.
+
 What is not merged, on purpose: viewer accounts, viewer sessions, share
 tokens, push subscriptions, the viewer audit log and app settings. Those
 describe who may read the source install, not what it archived. Global
@@ -39,6 +44,7 @@ from .db.models import (
     Chat,
     ChatFolder,
     ChatFolderMember,
+    CustomEmoji,
     ForumTopic,
     Media,
     MediaTranscript,
@@ -54,7 +60,7 @@ from .db.models import (
     account_metadata_key,
     new_chat_ref,
 )
-from .message_utils import compute_file_hash, resolve_shared_file_path
+from .message_utils import CUSTOM_EMOJI_DIR, CUSTOM_EMOJI_FILE_RE, compute_file_hash, resolve_shared_file_path
 
 BATCH_SIZE = 1000
 
@@ -122,6 +128,8 @@ class MediaPlan:
     avatars: int = 0
     avatars_present: int = 0
     avatars_kept: int = 0
+    emoji: int = 0
+    emoji_present: int = 0
 
 
 @dataclass
@@ -591,6 +599,44 @@ def missing_users(source: Connection, target: Connection, wanted: set[int] | Non
             yield fresh
 
 
+def missing_custom_emoji(source: Connection, target: Connection) -> Iterator[list[dict[str, Any]]]:
+    """Batches of source custom emoji rows the target does not have. The target's rows win."""
+    stmt = sa.select(*CustomEmoji.__table__.c).order_by(CustomEmoji.document_id)
+    for batch in stream(source, stmt):
+        ids = [row["document_id"] for row in batch]
+        known = set(
+            target.execute(sa.select(CustomEmoji.document_id).where(CustomEmoji.document_id.in_(ids))).scalars()
+        )
+        fresh = [row for row in batch if row["document_id"] not in known]
+        if fresh:
+            yield fresh
+
+
+def custom_emoji_file_comes(row: dict[str, Any], source_media: str | None) -> bool:
+    """Whether a downloaded row's file is in the source media folder, so the media copy brings it."""
+    name = row.get("file_name")
+    if not row.get("downloaded") or source_media is None or not isinstance(name, str):
+        return False
+    if CUSTOM_EMOJI_FILE_RE.match(name) is None:
+        return False
+    path = os.path.join(source_media, CUSTOM_EMOJI_DIR, name)
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def copy_custom_emoji(source: Connection, target: Connection, source_media: str | None) -> int:
+    """Add the custom emoji rows the target lacks; one whose file does not come across arrives pending."""
+    copied = 0
+    for batch in missing_custom_emoji(source, target):
+        for row in batch:
+            if row["downloaded"] and not custom_emoji_file_comes(row, source_media):
+                row["downloaded"] = 0
+                row["download_date"] = None
+                row["attempts"] = 0
+        target.execute(sa.insert(CustomEmoji), batch)
+        copied += len(batch)
+    return copied
+
+
 def count_source_rows(
     source: Connection,
     target: Connection,
@@ -601,6 +647,7 @@ def count_source_rows(
     """The row counts the merge will add, per table."""
     users = sum(len(batch) for batch in missing_users(source, target, wanted_users))
     counts = {"accounts": len(account_ids), "users": users}
+    counts[CustomEmoji.__tablename__] = sum(len(batch) for batch in missing_custom_emoji(source, target))
     for table, _ in ACCOUNT_TABLES:
         counts[table.name] = count_account_rows(source, table, account_ids)
     counts[MediaTranscript.__tablename__] = count_account_rows(source, MediaTranscript.__table__, account_ids)
@@ -824,6 +871,27 @@ def place_avatar(copier: MediaCopier, source_file: str, destination: str) -> Non
     copier.plan.bytes += os.path.getsize(source_file)
 
 
+def place_custom_emoji(copier: MediaCopier) -> None:
+    """Copy the custom emoji files the target lacks. A name the target has is the same file."""
+    source_dir = os.path.join(copier.source_root, CUSTOM_EMOJI_DIR)
+    if not os.path.isdir(source_dir):
+        return
+    for name in sorted(os.listdir(source_dir)):
+        source_file = os.path.join(source_dir, name)
+        if CUSTOM_EMOJI_FILE_RE.match(name) is None or not os.path.isfile(source_file):
+            continue
+        destination = os.path.join(copier.target_root, CUSTOM_EMOJI_DIR, name)
+        if destination in copier.planned or os.path.lexists(destination):
+            copier.plan.emoji_present += 1
+            continue
+        if copier.write:
+            copy_new_file(source_file, destination)
+        else:
+            copier.planned.add(destination)
+        copier.plan.emoji += 1
+        copier.plan.bytes += os.path.getsize(source_file)
+
+
 def copy_media_files(copier: MediaCopier, source: Connection, account_ids: list[int]) -> MediaPlan:
     """One pass over the merged accounts' media rows, their earlier media, and avatars."""
     stmt = (
@@ -844,6 +912,7 @@ def copy_media_files(copier: MediaCopier, source: Connection, account_ids: list[
         for row in batch:
             place_media_row(copier, row)
     place_avatars(copier, avatar_owner_ids(source, account_ids))
+    place_custom_emoji(copier)
     return copier.plan
 
 
@@ -977,6 +1046,7 @@ def copy_rows(
     metadata_rows: list[dict[str, Any]],
     wanted_users: set[int] | None = None,
     missing: dict[str, list[tuple]] | None = None,
+    source_media: str | None = None,
 ) -> tuple[dict[str, int], int]:
     """Copy every merged row, parents before children. Returns counts and dropped links.
 
@@ -992,6 +1062,8 @@ def copy_rows(
         step = User.__tablename__
         copied[step] = copy_users(source, target, wanted_users)
         insert_placeholders(target, step, missing, account_map)
+        step = CustomEmoji.__tablename__
+        copied[step] = copy_custom_emoji(source, target, source_media)
         for table, drop_id in ACCOUNT_TABLES:
             step = table.name
             transform = rebase_media_row if table in (Media.__table__, MediaVersion.__table__) else None
@@ -1132,7 +1204,9 @@ def run_merge(
             dry_run=True, account_ids=account_map, rows=expected, media=media_plan, placeholders=placeholders
         )
 
-    copied, dropped = copy_rows(source, target, source_accounts, account_map, metadata_rows, wanted_users, missing)
+    copied, dropped = copy_rows(
+        source, target, source_accounts, account_map, metadata_rows, wanted_users, missing, source_media
+    )
     verify_counts(target, new_ids, expected, copied, placeholders)
     if source_media is not None:
         copier = MediaCopier(source_media, target_media, target, write=True, new_account_ids=new_ids)
@@ -1177,6 +1251,7 @@ def format_report(report: MergeReport) -> list[str]:
             f"  Missing in the source folder: {media.missing}",
             f"  Avatar files copied: {media.avatars} (already there: {media.avatars_present}, "
             f"target's own kept: {media.avatars_kept})",
+            f"  Custom emoji files copied: {media.emoji} (already there: {media.emoji_present})",
             f"  Size: {size_mb:.1f} MB",
         ]
     )

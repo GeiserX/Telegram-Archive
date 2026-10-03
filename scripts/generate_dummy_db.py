@@ -19,7 +19,9 @@ log entries. A few reactions were taken back: the archive keeps them as
 tombstones, and the viewer shows them after the live ones, folded into one
 quiet chip: on a photo beside live reactions, on a photo with no caption,
 on the only reaction of an outgoing message, on a message deleted later, and
-a day after the message. Every reaction has its history (reaction_history):
+a day after the message. One photo carries custom emoji reactions: a
+picture and an animated one the viewer draws, and one whose file the
+archive has not fetched yet, which shows its character. Every reaction has its history (reaction_history):
 on one photo seven hearts dropped to five, and a surprised face was taken
 back and given again. A poll gained votes after its first capture and was
 then closed, and a channel post's link card changed a day later: the archive
@@ -172,8 +174,11 @@ def draw_avatar(path: Path, seed: int, kind: str):
     img.filter(ImageFilter.GaussianBlur(18)).save(path, "JPEG", quality=88)
 
 
-def draw_sticker(path: Path):
-    """A smiling sun on a transparent background, the shape of a Telegram sticker."""
+def draw_sticker(path: Path, size: int | None = None):
+    """A smiling sun on a transparent background, the shape of a Telegram sticker.
+
+    ``size`` scales it down: a custom emoji is 100x100.
+    """
     from PIL import Image, ImageDraw
 
     s = 512
@@ -191,6 +196,8 @@ def draw_sticker(path: Path):
     d.arc([c - 80, c - 30, c + 80, c + 90], 20, 160, fill=(60, 40, 30, 255), width=14)
     d.ellipse([c - 115, c + 15, c - 75, c + 45], fill=(255, 140, 110, 200))
     d.ellipse([c + 75, c + 15, c + 115, c + 45], fill=(255, 140, 110, 200))
+    if size is not None:
+        img = img.resize((size, size), Image.LANCZOS)
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path, "WEBP", quality=90)
 
@@ -744,7 +751,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         KOFI,
         "Found this view on the way back",
         media={"type": "photo", "seed": 24, "replaced_seed": 27},
-        react={"🔥": 1},
+        react={"🔥": 1, f"custom_{EMOJI_SUN}": 3, f"custom_{EMOJI_SUN_ANIMATED}": 2, f"custom_{EMOJI_PENDING}": 1},
         edited_from="Found this view on the way back",
     )
     # Seven hearts dropped to five, and someone took their 😮 back and gave it
@@ -1360,6 +1367,30 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     return chats, scripts, topics
 
 
+# Custom emoji, by document id. The ids sit above 2**53, as real ones do, so the
+# demo shows the viewer keeps every digit. The third has no file yet: the viewer
+# shows its character.
+EMOJI_SUN = 5000000000000000001
+EMOJI_SUN_ANIMATED = 5000000000000000002
+EMOJI_PENDING = 5000000000000000003
+CUSTOM_EMOJI = [
+    {"document_id": EMOJI_SUN, "file_name": f"{EMOJI_SUN}.webp", "mime_type": "image/webp", "alt": "☀️"},
+    {
+        "document_id": EMOJI_SUN_ANIMATED,
+        "file_name": f"{EMOJI_SUN_ANIMATED}.tgs",
+        "mime_type": "application/x-tgsticker",
+        "alt": "🌞",
+    },
+    {"document_id": EMOJI_PENDING, "file_name": None, "mime_type": None, "alt": "🏔️"},
+]
+
+
+def write_custom_emoji_files(media_root: Path) -> None:
+    """The two custom emoji files the archive keeps under media/_emoji."""
+    draw_sticker(media_root / "_emoji" / f"{EMOJI_SUN}.webp", size=100)
+    write_tgs(media_root / "_emoji" / f"{EMOJI_SUN_ANIMATED}.tgs")
+
+
 def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
     """Draw every file a media row points at, and fill in the row's file metadata."""
     sticker = media_root / "_demo" / "sticker.webp"
@@ -1488,6 +1519,7 @@ async def seed(data_dir: Path) -> None:
     from telegram_archive.db import close_adapter, create_adapter
     from telegram_archive.db.models import (
         AvatarHistory,
+        CustomEmoji,
         MediaTranscript,
         MediaVersion,
         MessageSnapshot,
@@ -1511,6 +1543,21 @@ async def seed(data_dir: Path) -> None:
         now = datetime.now(UTC).replace(tzinfo=None, second=0, microsecond=0)
         chats, scripts, topics = build(now)
         write_media_files(media_root, scripts)
+        write_custom_emoji_files(media_root)
+        async with db.db_manager.async_session_factory() as session:
+            for row in CUSTOM_EMOJI:
+                kept = row["file_name"] is not None
+                await session.execute(
+                    insert(CustomEmoji).values(
+                        **row,
+                        width=100 if kept else None,
+                        height=100 if kept else None,
+                        downloaded=1 if kept else 0,
+                        download_date=now - timedelta(days=2) if kept else None,
+                        first_seen=now - timedelta(days=2),
+                    )
+                )
+            await session.commit()
 
         for i, chat in enumerate(chats):
             chat = dict(chat)

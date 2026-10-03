@@ -173,7 +173,7 @@ A viewer account or share token with downloads off can read messages but cannot 
 - **Export chat** is not offered, and What changed shows no transcripts.
 - The lightbox has no download button, and search skips hits that match only inside a transcript.
 - The main menu says "downloads off" under the login's name.
-- Profile photos still show.
+- Profile photos and custom emoji still show. A custom emoji is a file from a public emoji pack, the same for every chat, not a file someone sent.
 
 ## A second viewer
 

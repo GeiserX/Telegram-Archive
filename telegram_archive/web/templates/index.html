@@ -6303,6 +6303,51 @@
         .tg-mention {
             color: rgb(var(--tg-quote));
         }
+        /* A custom emoji: a square 1.25 times the text's emoji size (20px in a
+           reaction chip, whose emoji is 16px), sitting on the text line. The
+           fallback character is real text under the picture, so selection and
+           copy give the character; it turns invisible only once the picture
+           has drawn (is-ready), and comes back if it fails (is-failed). */
+        .custom-emoji {
+            display: inline-block;
+            position: relative;
+            width: 1.25em;
+            height: 1.25em;
+            vertical-align: -0.2em;
+            line-height: 1.25em;
+            text-align: center;
+        }
+        .custom-emoji-text {
+            display: inline-block;
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        .custom-emoji.is-ready > .custom-emoji-text {
+            opacity: 0;
+        }
+        /* Two selectors: the bubble's own img and video rules (up to 0,2,1)
+           must not size the picture. */
+        .custom-emoji > .custom-emoji-picture,
+        .message-bubble .custom-emoji > .custom-emoji-picture {
+            display: block;
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            max-width: none;
+            margin: 0;
+            border-radius: 0;
+            object-fit: contain;
+            pointer-events: none;
+            opacity: 0;
+        }
+        .custom-emoji.is-ready > .custom-emoji-picture {
+            opacity: 1;
+        }
+        .custom-emoji.is-failed > .custom-emoji-picture {
+            display: none;
+        }
     </style>
     <script>
         tailwind.config = {
@@ -7220,7 +7265,7 @@
                                                          emoji and how many went ("2 of 7" for a partial drop). -->
                                                     <span v-else-if="card.kind === 'reaction'" class="inline-flex items-center gap-1.5">
                                                         <span class="reaction-chip reaction-removed change-reaction">
-                                                            <span class="reaction-emoji" aria-hidden="true">{{ formatReactionEmoji(card.emoji) }}</span>
+                                                            <span class="reaction-emoji" aria-hidden="true" v-html="reactionEmojiHtml(card.emoji, { still: true })"></span>
                                                             <span class="reaction-count" aria-hidden="true">{{ changeReactionText(card) }}</span>
                                                             <span class="sr-only">{{ changeReactionLabel(card) }}</span>
                                                         </span>taken back
@@ -8561,7 +8606,7 @@
                                         <span v-for="reaction in (msg.reactions || [])" :key="reaction.emoji"
                                             class="reaction-chip"
                                             :title="reaction.count > 1 ? `${reaction.count} reactions` : '1 reaction'">
-                                            <span class="reaction-emoji">{{ formatReactionEmoji(reaction.emoji) }}</span>
+                                            <span class="reaction-emoji" v-html="reactionEmojiHtml(reaction.emoji)"></span>
                                             <span class="reaction-count">{{ formatCount(reaction.count || 1) }}</span>
                                         </span>
                                         <button v-if="removedReactions(msg).length > 0" type="button"
@@ -8580,7 +8625,7 @@
                                             <span v-for="removed in removedReactions(msg)" :key="removed.emoji"
                                                 class="reaction-chip reaction-removed"
                                                 :title="removedReactionTitle(removed)">
-                                                <span class="reaction-emoji" aria-hidden="true">{{ formatReactionEmoji(removed.emoji) }}</span>
+                                                <span class="reaction-emoji" aria-hidden="true" v-html="reactionEmojiHtml(removed.emoji, { still: true })"></span>
                                                 <span class="sr-only">{{ removedReactionTitle(removed) }}</span>
                                                 <span class="reaction-count" aria-hidden="true">{{ removedReactionText(msg, removed) }}</span>
                                             </span>
@@ -14019,6 +14064,118 @@
                     return kind === 'image'
                 }
 
+                // Custom (premium) emoji, drawn the way Telegram's Web A draws
+                // them: the fallback character stays in the page as real text, so
+                // selection, copy and screen readers get it, and the picture sits
+                // over it, hidden from assistive technology. The character turns
+                // invisible only once the picture reports it is drawn, so anything
+                // that never loads or plays keeps the character. A reaction is
+                // stored as custom_<document id>; the id stays a string here and
+                // never passes through Number(), which would round it.
+                const customEmojiInfo = ref({})
+                const CUSTOM_EMOJI_BATCH = 100
+                const CUSTOM_EMOJI_ID_RE = /^\d{1,19}$/
+                // Asks for the ids seen during one render together: every id once,
+                // up to 100 per request, sent after the render that noted them.
+                const createCustomEmojiBatcher = ({ request, schedule }) => {
+                    const requested = new Set()
+                    let queue = []
+                    let scheduled = false
+                    const flush = () => {
+                        scheduled = false
+                        const ids = queue
+                        queue = []
+                        for (let i = 0; i < ids.length; i += CUSTOM_EMOJI_BATCH) request(ids.slice(i, i + CUSTOM_EMOJI_BATCH))
+                    }
+                    return {
+                        note(id) {
+                            if (typeof id !== 'string' || !CUSTOM_EMOJI_ID_RE.test(id) || requested.has(id)) return
+                            requested.add(id)
+                            queue.push(id)
+                            if (!scheduled) {
+                                scheduled = true
+                                schedule(flush)
+                            }
+                        },
+                        forget(id) {
+                            requested.delete(id)
+                        },
+                    }
+                }
+                const requestCustomEmoji = async (ids) => {
+                    try {
+                        const res = await fetch(`/api/custom-emoji?ids=${ids.join(',')}`, { credentials: 'same-origin' })
+                        if (!res.ok) return
+                        const answer = await res.json()
+                        const next = { ...customEmojiInfo.value }
+                        for (const id of ids) next[id] = answer[id] || { kind: null, alt: null, text_color: false, ready: false }
+                        customEmojiInfo.value = next
+                    } catch (e) {
+                        // Kept as asked: the characters stay, and the next chat asks again.
+                    }
+                }
+                const customEmojiBatcher = createCustomEmojiBatcher({ request: requestCustomEmoji, schedule: (fn) => setTimeout(fn, 0) })
+                const noteCustomEmoji = (id) => customEmojiBatcher.note(id)
+                // On a chat change, ids not drawn yet are asked again: the backup
+                // may have fetched them meanwhile.
+                const forgetUnreadyCustomEmoji = () => {
+                    const next = {}
+                    for (const [id, info] of Object.entries(customEmojiInfo.value)) {
+                        if (info && info.ready) next[id] = info
+                        else customEmojiBatcher.forget(id)
+                    }
+                    customEmojiInfo.value = next
+                }
+                // Escaped without the DOM: the result goes through v-html.
+                const escapeEmojiText = (text) => String(text ?? '')
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+                // The HTML of one custom emoji: the fallback character, and over it
+                // the picture (an <img>, a muted looping <video> or a .tgs player)
+                // when the archive holds the file and this browser can draw it.
+                // Otherwise the character alone. `still` draws the first frame and
+                // never plays, for the faded chips of reactions taken back. An emoji
+                // Telegram tints with the text colour shows its character: the
+                // untinted picture would often be white on a light bubble.
+                const customEmojiHtml = (id, fallbackText, options = {}) => {
+                    const fallback = escapeEmojiText(fallbackText)
+                    if (typeof id !== 'string' || !CUSTOM_EMOJI_ID_RE.test(id)) return fallback
+                    const info = customEmojiInfo.value[id]
+                    if (!info || !info.ready || info.text_color) return fallback
+                    const kind = info.kind
+                    if (kind === 'tgs' ? !stickerSupport.tgs : kind === 'webm' ? !stickerSupport.webm : kind !== 'image') return fallback
+                    const src = `/media/emoji/${id}`
+                    const still = options.still ? ' data-still="1"' : ''
+                    let picture
+                    if (kind === 'image') {
+                        picture = `<img class="custom-emoji-picture" src="${src}" alt="" aria-hidden="true" draggable="false" decoding="async">`
+                    } else if (kind === 'webm') {
+                        picture = `<video class="custom-emoji-picture emoji-video" data-src="${src}"${still} muted loop playsinline disablepictureinpicture preload="none" aria-hidden="true"></video>`
+                    } else {
+                        picture = `<span class="custom-emoji-picture tgs-sticker tgs-emoji" data-src="${src}"${still} aria-hidden="true"></span>`
+                    }
+                    return `<span class="custom-emoji" data-emoji-id="${id}"><span class="custom-emoji-text">${fallback}</span>${picture}</span>`
+                }
+                // A picture reports it is drawn (load, loadeddata, or the .tgs
+                // player's first frame): the character under it turns invisible.
+                // A failure brings the character back for good.
+                const markCustomEmoji = (el, ready) => {
+                    const box = el?.closest ? el.closest('.custom-emoji') : null
+                    if (!box) return
+                    if (ready && !box.classList.contains('is-failed')) box.classList.add('is-ready')
+                    if (!ready) {
+                        box.classList.remove('is-ready')
+                        box.classList.add('is-failed')
+                    }
+                }
+                const onCustomEmojiEvent = (event) => {
+                    const el = event.target
+                    if (!el?.classList?.contains('custom-emoji-picture')) return
+                    markCustomEmoji(el, event.type === 'load' || event.type === 'loadeddata')
+                }
+                // Capture phase: load, error and stickerfail do not bubble.
+                for (const type of ['load', 'loadeddata', 'error', 'stickerfail']) document.addEventListener(type, onCustomEmojiEvent, true)
+
                 // One box for every kind, at Telegram's size: the file's own
                 // proportions (512 square when the row does not say) fitted into 200
                 // wide by 192 tall, so nothing moves when the file arrives.
@@ -14041,6 +14198,9 @@
                 // plays on its own and a press plays a sticker once. Pure: `play` and
                 // `hold` are what it does to a sticker.
                 const STICKER_MAX_PLAYING = 4
+                // Moving custom emoji have a budget of their own, so a wall of
+                // reactions never takes a sticker's slot.
+                const EMOJI_MAX_PLAYING = 3
                 const createStickerBudget = ({ max, reducedMotion, play, hold }) => {
                     const visible = []
                     const playing = []
@@ -14177,7 +14337,7 @@
                 // loaded the first time a .tgs sticker comes near the screen, not
                 // with the page.
                 const LOTTIE_SRC = '/static/vendor/lottie_light_canvas-5.13.0.min.js'
-                const tgsState = { lottie: null, root: null, load: null, view: null, budget: null, players: new Map(), observed: new Set(), cache: createTgsCache(TGS_CACHE_BYTES) }
+                const tgsState = { lottie: null, root: null, load: null, view: null, budget: null, emojiBudget: null, players: new Map(), observed: new Set(), cache: createTgsCache(TGS_CACHE_BYTES) }
                 const loadLottie = () => {
                     if (!tgsState.lottie) {
                         tgsState.lottie = new Promise((resolve, reject) => {
@@ -14288,6 +14448,13 @@
                         // Whole frames only: a 120 Hz screen does not draw a 60 fps
                         // sticker twice as often.
                         anim.setSubframe(false)
+                        // A custom emoji hides its character once the first frame
+                        // is drawn. With the data given, lottie-web is often
+                        // loaded before this line runs.
+                        if (el.classList.contains('tgs-emoji')) {
+                            if (anim.isLoaded) markCustomEmoji(el, true)
+                            else anim.addEventListener('DOMLoaded', () => markCustomEmoji(el, true))
+                        }
                         anim.addEventListener('data_failed', fail)
                         // With animationData given, a bad shape or a failed frame is an
                         // 'error' event: the player is freed and the row gets the
@@ -14300,7 +14467,7 @@
                         })
                         anim.addEventListener('complete', () => {
                             player.want = null
-                            tgsState.budget?.done(el)
+                            budgetFor(el)?.done(el)
                         })
                         player.anim = anim
                         applyTgsWant(player)
@@ -14318,17 +14485,45 @@
                     player.anim = null
                 }
 
+                // A moving custom emoji (a .tgs player or a muted .webm) plays on
+                // the emoji budget, a sticker on the sticker budget.
+                const isMovingEmoji = (el) => el.classList.contains('tgs-emoji') || el.classList.contains('emoji-video')
+                const budgetFor = (el) => (isMovingEmoji(el) ? tgsState.emojiBudget : tgsState.budget)
+                const playEmoji = (el, once) => {
+                    if (el.tagName !== 'VIDEO') return playTgs(el, once)
+                    if (!el.src && el.dataset.src) {
+                        el.preload = 'auto'
+                        el.src = el.dataset.src
+                    }
+                    el.loop = !once
+                    if (once) el.currentTime = 0
+                    el.play().catch(() => { })
+                }
+                const holdEmoji = (el) => (el.tagName === 'VIDEO' ? el.pause() : holdTgs(el))
+                // Near the screen: a .tgs gets its player, a video emoji its file,
+                // which shows the first frame until the budget plays it.
+                const mountMoving = (el) => {
+                    if (el.tagName !== 'VIDEO') return mountTgs(el)
+                    if (!el.src && el.dataset.src) {
+                        el.preload = 'auto'
+                        el.src = el.dataset.src
+                    }
+                }
+                const unmountMoving = (el) => (el.tagName === 'VIDEO' ? el.pause() : unmountTgs(el))
+
                 // Run after every render of the message list: observe the new .tgs
-                // stickers (loaded 200px before they show, played while at least a
-                // tenth is on screen) and forget the ones no longer in the page, so
-                // a chat change leaves no player behind. Video stickers join the GIF
+                // stickers and moving custom emoji (loaded 200px before they show,
+                // played while at least a tenth is on screen; a still one, data-still,
+                // only loads) and forget the ones no longer in the page, so a chat
+                // change leaves no player behind. Video stickers join the GIF
                 // observer here too, which also covers a list rebuilt when the
                 // gallery closes.
                 const forgetTgs = (el) => {
                     tgsState.load?.unobserve(el)
                     tgsState.view?.unobserve(el)
-                    tgsState.budget?.leave(el)
-                    unmountTgs(el)
+                    budgetFor(el)?.leave(el)
+                    if (el.tagName === 'VIDEO') el.pause()
+                    else unmountTgs(el)
                     tgsState.players.delete(el)
                     tgsState.observed.delete(el)
                 }
@@ -14351,21 +14546,27 @@
                             play: playTgs,
                             hold: holdTgs,
                         })
+                        tgsState.emojiBudget = createStickerBudget({
+                            max: EMOJI_MAX_PLAYING,
+                            reducedMotion: prefersReducedMotion,
+                            play: playEmoji,
+                            hold: holdEmoji,
+                        })
                         tgsState.load = new IntersectionObserver((entries) => {
-                            entries.forEach(entry => (entry.isIntersecting ? mountTgs(entry.target) : unmountTgs(entry.target)))
+                            entries.forEach(entry => (entry.isIntersecting ? mountMoving(entry.target) : unmountMoving(entry.target)))
                         }, { root, rootMargin: '200px' })
                         tgsState.view = new IntersectionObserver((entries) => {
-                            entries.forEach(entry => (entry.isIntersecting ? tgsState.budget.enter(entry.target) : tgsState.budget.leave(entry.target)))
+                            entries.forEach(entry => (entry.isIntersecting ? budgetFor(entry.target).enter(entry.target) : budgetFor(entry.target).leave(entry.target)))
                         }, { root, threshold: 0.1 })
                     }
                     for (const el of [...tgsState.observed]) {
                         if (!el.isConnected) forgetTgs(el)
                     }
-                    document.querySelectorAll('.tgs-sticker').forEach(el => {
+                    document.querySelectorAll('.tgs-sticker, .emoji-video').forEach(el => {
                         if (tgsState.observed.has(el)) return
                         tgsState.observed.add(el)
                         tgsState.load.observe(el)
-                        tgsState.view.observe(el)
+                        if (!el.dataset.still) tgsState.view.observe(el)
                     })
                     if (!gifObserver) setupGifObserver()
                     document.querySelectorAll('.sticker-video').forEach(video => gifObserver.observe(video))
@@ -14420,6 +14621,7 @@
 
                 // Subscribe to WebSocket updates when chat changes
                 watch(selectedChat, (newChat, oldChat) => {
+                    forgetUnreadyCustomEmoji()
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         // Unsubscribe from old chat
                         if (oldChat) {
@@ -15258,7 +15460,10 @@
                     })
                 })
                 // Stickers watch the gallery as well: closing it rebuilds the list.
-                watch([sortedMessages, mediaRevision, showMediaGallery], () => {
+                // Custom emoji draw when their info arrives, when the reactions
+                // taken back open, and in What changed, which replaces the list
+                // (the observers then watch the page itself).
+                watch([sortedMessages, mediaRevision, showMediaGallery, customEmojiInfo, openRemovedReactions, showChangesFeed, changeCards], () => {
                     nextTick(syncStickers)
                 })
 
@@ -17763,14 +17968,22 @@
                     msg.removed_reactions = [...drops, ...kept]
                 }
 
+                // The text of a reaction's emoji. A custom emoji (stored as
+                // custom_<document id>) reads as the emoji Telegram gives as its
+                // meaning once the archive knows it, and as 🎭 until then.
                 const formatReactionEmoji = (emoji) => {
-                    // Handle custom emojis (stored as custom_documentId)
-                    if (emoji && emoji.startsWith('custom_')) {
-                        // For custom emojis, show a placeholder or try to extract emoji
-                        // In the future, we could load the actual sticker/emoji
-                        return '🎭'
-                    }
+                    if (emoji && emoji.startsWith('custom_')) return customEmojiInfo.value[emoji.slice(7)]?.alt || '🎭'
                     return emoji || '👍'
+                }
+                // The HTML of a reaction chip's emoji: a custom emoji is drawn
+                // (customEmojiHtml) over its character, any other is its text.
+                const reactionEmojiHtml = (emoji, options = {}) => {
+                    if (typeof emoji === 'string' && emoji.startsWith('custom_')) {
+                        const id = emoji.slice(7)
+                        noteCustomEmoji(id)
+                        return customEmojiHtml(id, formatReactionEmoji(emoji), options)
+                    }
+                    return escapeEmojiText(formatReactionEmoji(emoji))
                 }
 
                 const getMediaUrl = (msg) => {
@@ -20402,6 +20615,7 @@
                     reloadMessageVersions,
                     versionEntries,
                     formatReactionEmoji,
+                    reactionEmojiHtml,
                     removedReactions,
                     hasReactionRow,
                     removedReactionCount,

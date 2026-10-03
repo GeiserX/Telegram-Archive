@@ -398,6 +398,7 @@ class TestMergeCopiesEverything(MergeCase):
         expected = {
             "accounts": 2,
             "users": 1,
+            "custom_emoji": 0,
             "chats": 3,
             "chat_folders": 1,
             "messages": 5,

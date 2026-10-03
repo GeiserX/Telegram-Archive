@@ -95,6 +95,16 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | 8.3.0 | Migration 028 runs on start and indexes every existing message for full-text search. |
 | Other releases from 8.0.1 to 8.9.2 | Nothing. Their migrations run on start. |
 
+## Upgrading to 9.3.0 { #upgrading-to-930 }
+
+### Custom emoji { #custom-emoji-93 }
+
+The first start runs migration 040. It adds the `custom_emoji` table and, for every custom emoji already stored as a reaction, a record marked as not fetched yet, dated when the archive first saw that emoji. It reads the reactions and their history once and changes no other table.
+
+The next backup run then fetches the files of those emoji into `media/_emoji`, up to 500 per account, with one request per 100 emoji and a second between requests. A large archive with more custom emoji than that gets the rest over the next runs, or at once with `telegram-archive backfill-details --apply`. The fetch does not follow `DOWNLOAD_MEDIA`: like profile photos, custom emoji are always fetched. See [Custom emoji](../configuration/media.md#custom-emoji).
+
+Logins whose downloads are off see custom emoji, as they see profile photos.
+
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 
 The real-time listener is on by default, and the full pass runs once a day. The listener saves new messages, their media, edits, chat actions and reactions as they happen. `LISTEN_NEW_MESSAGES_MEDIA` and `LISTEN_REACTIONS` now default to `true` as well. `LISTEN_DELETIONS` stays `false`, so the archive still keeps deleted messages untouched.

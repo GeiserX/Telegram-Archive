@@ -934,6 +934,11 @@ async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, t
         side_effect=lambda chat, account_id: [(5, edited)] if chat == -1001 else []
     )
     backup.db.fill_edit_hide = AsyncMock(return_value=True)
+    backup.db.get_reaction_custom_emoji_ids = AsyncMock(return_value=set())
+    backup.db.note_custom_emoji = AsyncMock(return_value=0)
+    backup.db.rearm_custom_emoji = AsyncMock(return_value=0)
+    backup.db.get_pending_custom_emoji = AsyncMock(return_value=[])
+    backup.db.count_pending_custom_emoji = AsyncMock(return_value=0)
 
     summary = await backup.backfill_details(apply=True)
 

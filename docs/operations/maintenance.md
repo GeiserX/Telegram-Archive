@@ -136,6 +136,8 @@ Messages archived before the archive kept locations, venues, live locations and 
 
 It also fetches the map picture of each location, venue and live location that has a point and no picture yet, from Telegram's own servers, the way the backup now keeps it for new messages. It reads those messages in the same requests, so a message on several lists is still asked for once. Each picture is one more request, after the same one-second pause, and a run fetches at most 500; the rest are counted as deferred and wait for the next run. Pictures follow `DOWNLOAD_MEDIA` and `SKIP_MEDIA_CHAT_IDS`, and none is fetched when the media folder is missing or empty where the command runs. The picture takes the place of an old placeholder path on the same row.
 
+It also collects every custom emoji the account's reactions hold. An emoji the archive has no record of gets one, and an emoji whose file is still missing, because Telegram left it out of three answers or its download failed three times, is marked to be fetched again. Nothing is deleted. It then fetches the files the way the backup does, at most 500 per run. A dry run only counts them. See [Custom emoji](../configuration/media.md#custom-emoji).
+
 It is a dry run unless you add `--apply`:
 
 ```bash
@@ -147,7 +149,7 @@ docker compose start telegram-backup
 
 It costs one request per 100 messages to read, plus one per chat, plus one per map picture, with a second between requests. An archive with 50,000 old edited messages takes at least 500 requests, so ten minutes or more, and 500 old locations add about ten minutes more. A dry run reads the same messages as a real run, but fetches no map picture.
 
-`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the edit flags filled as hidden (the pencil goes) and as shown (a real edit keeps it), the edits with a later edit time, then the chats Telegram no longer serves and the placeholder paths cleared and kept, then the map pictures saved, not served, with no point and deferred. If the run stops, run it again: it picks up the messages still missing their details, their flag or their picture, and a second complete run fills nothing. A location Telegram serves no picture for is marked and not asked for again. For every flag and the full output, see [backfill-details](../reference/cli.md#backfill-details).
+`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the edit flags filled as hidden (the pencil goes) and as shown (a real edit keeps it), the edits with a later edit time, then the chats Telegram no longer serves and the placeholder paths cleared and kept, then the map pictures saved, not served, with no point and deferred, then the custom emoji collected, saved, unavailable and deferred. If the run stops, run it again: it picks up the messages still missing their details, their flag or their picture, and a second complete run fills nothing. A location Telegram serves no picture for is marked and not asked for again. For every flag and the full output, see [backfill-details](../reference/cli.md#backfill-details).
 
 ## Verify media files
 
@@ -203,6 +205,7 @@ Media rows are rewritten to paths relative to the target's media folder. The fil
 - A plain file in a chat folder is copied.
 - A file stored once in `media/_shared` is copied by content hash. When one of the target's own media rows names a `_shared` file with the same hash, and that file's bytes match the hash, the new chat-folder link points at that file and nothing is copied. The chat-folder entry is created as a relative symlink into `_shared`.
 - The avatar files of the merged accounts' chats and senders are copied when the target lacks them.
+- Custom emoji are shared by every account. The emoji records and the files in `media/_emoji` that the target lacks are added, and the target's own stay as they are. An emoji whose file does not come across, because the source folder lacks it or no source media folder is given, arrives as not fetched yet, and the target's next backup fetches it.
 
 A name the target already uses for the same bytes counts as already there. A file the source's database lists but its media folder lacks is counted as missing, and its row is still copied.
 
@@ -216,7 +219,7 @@ A name the target already uses for the same bytes counts as already there. A fil
 
 ### The dry run
 
-`--dry-run` runs every check, then prints the row counts per table and the media plan: files, `_shared` files, links, avatars and their size. It writes nothing. The real run prints the same report, and it matches the dry run.
+`--dry-run` runs every check, then prints the row counts per table and the media plan: files, `_shared` files, links, avatars, custom emoji files and their size. It writes nothing. The real run prints the same report, and it matches the dry run.
 
 ### When it refuses
 

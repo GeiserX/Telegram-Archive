@@ -4,6 +4,7 @@ import asyncio
 import base64
 import errno
 import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -1431,8 +1432,8 @@ def normalize_reaction_emoji(reaction: object) -> str | None:
     """Normalize a Telethon ``Reaction`` variant to a stable storage string.
 
     - ``ReactionEmoji`` -> its ``emoticon`` (e.g. ``"👍"``)
-    - ``ReactionCustomEmoji`` -> ``f"custom_{document_id}"`` (the viewer renders a
-      placeholder; resolving the sticker needs a separate API call, out of scope)
+    - ``ReactionCustomEmoji`` -> ``f"custom_{document_id}"`` (the backup fetches
+      the emoji's file by that id, ``custom_emoji.fetch_custom_emoji``)
     - ``ReactionPaid`` (Telegram Stars) -> ``"paid"`` sentinel (no per-instance emoji)
     - ``ReactionEmpty`` / unknown -> ``None`` (ignored by the caller)
 
@@ -2025,6 +2026,68 @@ def media_read_date(message: object) -> datetime | None:
 
 _ENTITY_CLASS_PREFIX = "MessageEntity"
 _ENTITY_SNAKE_RE = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+# Custom (premium) emoji. A reaction stores one as ``custom_<document_id>`` and
+# text keeps it as a ``custom_emoji`` entity with its ``document_id``. The file
+# Telegram serves for it is kept once per id, for every chat and account, as
+# ``<media>/_emoji/<document_id>.<webp|tgs|webm>`` (telegram_archive/custom_emoji.py).
+# Written here because the viewer image imports this module and not the backup's.
+CUSTOM_EMOJI_DIR = "_emoji"
+CUSTOM_EMOJI_REACTION_RE = re.compile(r"^custom_(\d{1,19})$")
+CUSTOM_EMOJI_FILE_RE = re.compile(r"^\d{1,19}\.(webp|tgs|webm)$")
+# The three kinds Telegram serves a custom emoji as, the same as stickers.
+CUSTOM_EMOJI_EXTENSIONS = {"image/webp": ".webp", "application/x-tgsticker": ".tgs", "video/webm": ".webm"}
+_MAX_DOCUMENT_ID = 2**63 - 1
+
+
+def _document_id(value: object) -> int | None:
+    """A positive 64-bit document id, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 < value <= _MAX_DOCUMENT_ID else None
+
+
+def custom_emoji_reaction_id(emoji: object) -> int | None:
+    """The document id of a stored ``custom_<id>`` reaction, or None for any other value."""
+    match = CUSTOM_EMOJI_REACTION_RE.match(emoji) if isinstance(emoji, str) else None
+    return _document_id(int(match[1])) if match else None
+
+
+def custom_emoji_ids_from_reactions(observed: object) -> set[int]:
+    """The custom emoji ids of a reaction snapshot (``[{"emoji", "count"}]``)."""
+    ids: set[int] = set()
+    for entry in observed if isinstance(observed, (list, tuple)) else ():
+        document_id = custom_emoji_reaction_id(entry.get("emoji") if isinstance(entry, dict) else None)
+        if document_id is not None:
+            ids.add(document_id)
+    return ids
+
+
+def custom_emoji_ids_from_entities(entities: object) -> set[int]:
+    """The custom emoji ids of stored entities (``[{"type": "custom_emoji", "document_id"}]``).
+
+    Accepts the list itself or its JSON text, as ``message_versions.entities``
+    holds it. Anything unreadable yields nothing.
+    """
+    if isinstance(entities, str):
+        try:
+            entities = json.loads(entities)
+        except ValueError:
+            return set()
+    ids: set[int] = set()
+    for entity in entities if isinstance(entities, list) else ():
+        if isinstance(entity, dict) and entity.get("type") == "custom_emoji":
+            document_id = _document_id(entity.get("document_id"))
+            if document_id is not None:
+                ids.add(document_id)
+    return ids
+
+
+def custom_emoji_file_name(document_id: int, mime_type: object) -> str | None:
+    """``<id>.webp|.tgs|.webm`` for a kind the viewer draws, else None."""
+    extension = CUSTOM_EMOJI_EXTENSIONS.get(mime_type.lower() if isinstance(mime_type, str) else "")
+    return f"{document_id}{extension}" if extension and _document_id(document_id) is not None else None
 
 
 def serialize_message_entities(entities: object) -> list[dict] | None:

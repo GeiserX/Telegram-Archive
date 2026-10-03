@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **Custom emoji reactions are drawn as their emoji.** A reaction made with a custom emoji, the premium kind from an emoji pack, showed a theatre-mask placeholder. The backup now fetches the emoji's file once, the way the Telegram apps do: 100 ids per request, at most 500 files per run and account, each file written once to `media/_emoji/<id>.webp`, `.tgs` or `.webm` and shared by every chat and account. The viewer draws it in the chip, and an animated one moves while it is on screen, at most three at once beside the four stickers. The ordinary emoji Telegram gives as its meaning stays in the page under the picture, so copying the chip gives it, a screen reader reads it, and a browser that cannot play the kind shows it. The fetch is always on, like profile photos, and logins whose downloads are off see custom emoji too. Migration 040 adds the `custom_emoji` table and a pending record for every custom emoji already stored as a reaction, so old reactions are drawn after the next backup. `backfill-details --apply` asks again for emoji that gave up, and `merge` copies the records and files the target lacks. Two routes serve them: `/api/custom-emoji` and `/media/emoji/{document_id}`. See [Custom emoji](configuration/media.md#custom-emoji) and [Upgrading to 9.3.0](operations/upgrading.md#upgrading-to-930).
+
 ## [9.2.1] - 2026-10-03
 
 One fix for the map pictures: a short FloodWait no longer ends the run. No migration, nothing else changes. Docker deployments only need the new pins.

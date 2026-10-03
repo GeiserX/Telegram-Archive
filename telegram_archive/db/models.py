@@ -741,6 +741,47 @@ class ReactionHistory(Base):
     )
 
 
+# Why a custom emoji row holds no file: Telegram left the id out of its answer
+# (``unavailable``), the file is none of the three kinds the viewer draws
+# (``unsupported``), it is larger than the cap (``oversize``), or every download
+# failed (``failed``). NULL while it may still be fetched.
+CUSTOM_EMOJI_SKIP_REASONS = ("unavailable", "unsupported", "oversize", "failed")
+
+
+class CustomEmoji(Base):
+    """One custom (premium) emoji the archive saw, and its file (040).
+
+    A reaction made with a custom emoji is stored as ``custom_<document_id>``
+    and a custom emoji in text keeps its ``document_id`` in the message
+    entities. This table names each such document once, for every chat and
+    every account: the file is the same public sticker-set file for everyone.
+    The file lives at ``media/_emoji/<file_name>``, named after the id, and is
+    written once and never replaced (``custom_emoji.fetch_custom_emoji``).
+
+    A row is added when the id is first seen and starts pending
+    (``downloaded`` 0, ``skip_reason`` NULL). ``attempts`` counts the fetches
+    that found nothing, so an id Telegram never serves stops being asked for.
+    """
+
+    __tablename__ = "custom_emoji"
+
+    document_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    file_name: Mapped[str | None] = mapped_column(String(64))
+    mime_type: Mapped[str | None] = mapped_column(String(100))
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    # The emoji Telegram gives as the custom one's meaning (DocumentAttributeCustomEmoji.alt).
+    alt: Mapped[str | None] = mapped_column(String(64))
+    # 1 when Telegram tints the emoji with the text colour (text_color); the viewer
+    # then shows the fallback character.
+    text_color: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    downloaded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    skip_reason: Mapped[str | None] = mapped_column(String(16))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    download_date: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class SyncStatus(Base):
     """Sync status table - tracks backup progress per chat."""
 

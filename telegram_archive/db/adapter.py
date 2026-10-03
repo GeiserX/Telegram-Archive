@@ -55,6 +55,7 @@ from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     PAYLOAD_BACKFILL_TYPES,
     compute_directory_size,
+    custom_emoji_reaction_id,
     is_map_preview_name,
     merge_geo_live,
     payload_has_point,
@@ -83,6 +84,7 @@ from .models import (
     Chat,
     ChatFolder,
     ChatFolderMember,
+    CustomEmoji,
     ForumTopic,
     Media,
     MediaTranscript,
@@ -6592,6 +6594,12 @@ class DatabaseAdapter:
             if not changed and not history_written:
                 return "noop"
 
+            # A custom emoji seen for the first time gets a pending row, in the
+            # same transaction: the backup fetches its file later.
+            await self._note_custom_emoji(
+                session, {document_id for emoji in desired if (document_id := custom_emoji_reaction_id(emoji))}
+            )
+
             try:
                 await session.commit()
             except Exception as e:
@@ -6680,6 +6688,171 @@ class DatabaseAdapter:
                 )
             )
         return baseline
+
+    # ========== Custom Emoji ==========
+
+    async def _note_custom_emoji(self, session, document_ids: Iterable[int]) -> None:
+        """Add a pending ``custom_emoji`` row for each id not known yet, in the caller's transaction.
+
+        ON CONFLICT DO NOTHING: a known id keeps its row as it is.
+        """
+        ids = sorted(set(document_ids))
+        if not ids:
+            return
+        insert_fn = sqlite_insert if self._is_sqlite else pg_insert
+        now = utcnow_naive()
+        stmt = insert_fn(CustomEmoji).values([{"document_id": document_id, "first_seen": now} for document_id in ids])
+        await session.execute(stmt.on_conflict_do_nothing(index_elements=["document_id"]))
+
+    @retry_on_locked()
+    async def note_custom_emoji(self, document_ids: Iterable[int]) -> int:
+        """Add a pending row for each id not known yet. Returns how many were new."""
+        ids = sorted(set(document_ids))
+        if not ids:
+            return 0
+        async with self.db_manager.async_session_factory() as session:
+            known: set[int] = set()
+            for start in range(0, len(ids), 500):
+                result = await session.execute(
+                    select(CustomEmoji.document_id).where(CustomEmoji.document_id.in_(ids[start : start + 500]))
+                )
+                known.update(result.scalars().all())
+            fresh = [document_id for document_id in ids if document_id not in known]
+            for start in range(0, len(fresh), 500):
+                await self._note_custom_emoji(session, fresh[start : start + 500])
+            await session.commit()
+            return len(fresh)
+
+    async def get_pending_custom_emoji(self, limit: int, max_attempts: int) -> list[int]:
+        """Ids still to fetch, oldest first: not downloaded, no skip reason, under ``max_attempts``."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(CustomEmoji.document_id)
+                .where(
+                    CustomEmoji.downloaded == 0,
+                    CustomEmoji.skip_reason.is_(None),
+                    CustomEmoji.attempts < max_attempts,
+                )
+                .order_by(CustomEmoji.first_seen, CustomEmoji.document_id)
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def count_pending_custom_emoji(self, max_attempts: int) -> int:
+        """How many ids ``get_pending_custom_emoji`` would list with no limit."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(CustomEmoji)
+                .where(
+                    CustomEmoji.downloaded == 0,
+                    CustomEmoji.skip_reason.is_(None),
+                    CustomEmoji.attempts < max_attempts,
+                )
+            )
+            return int(result.scalar() or 0)
+
+    @retry_on_locked()
+    async def update_custom_emoji(self, document_id: int, values: dict[str, Any]) -> None:
+        """Write what a fetch learned about one id: its file, its kind, or why it holds none."""
+        allowed = {
+            "file_name",
+            "mime_type",
+            "width",
+            "height",
+            "alt",
+            "text_color",
+            "downloaded",
+            "skip_reason",
+            "download_date",
+        }
+        values = {key: value for key, value in values.items() if key in allowed}
+        if not values:
+            return
+        async with self.db_manager.async_session_factory() as session:
+            await session.execute(update(CustomEmoji).where(CustomEmoji.document_id == document_id).values(**values))
+            await session.commit()
+
+    @retry_on_locked()
+    async def count_custom_emoji_attempt(self, document_id: int, reason: str, max_attempts: int) -> bool:
+        """One more fetch that found nothing; at ``max_attempts`` the row gets ``reason``.
+
+        Returns True when the row reached the cap with this attempt.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            row = await session.get(CustomEmoji, document_id)
+            if row is None or row.downloaded:
+                return False
+            row.attempts = (row.attempts or 0) + 1
+            capped = row.attempts >= max_attempts
+            if capped:
+                row.skip_reason = reason
+            await session.commit()
+            return capped
+
+    async def get_custom_emoji(self, document_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+        """{id: row} of the known ids among ``document_ids``; unknown ids are left out."""
+        ids = sorted(set(document_ids))
+        rows: dict[int, dict[str, Any]] = {}
+        if not ids:
+            return rows
+        async with self.db_manager.async_session_factory() as session:
+            for start in range(0, len(ids), 500):
+                result = await session.execute(
+                    select(CustomEmoji).where(CustomEmoji.document_id.in_(ids[start : start + 500]))
+                )
+                for row in result.scalars().all():
+                    rows[row.document_id] = {
+                        "document_id": row.document_id,
+                        "file_name": row.file_name,
+                        "mime_type": row.mime_type,
+                        "alt": row.alt,
+                        "text_color": row.text_color,
+                        "downloaded": row.downloaded,
+                        "skip_reason": row.skip_reason,
+                    }
+        return rows
+
+    async def get_reaction_custom_emoji_ids(self, *, account_id: int, chat_id: int | None = None) -> set[int]:
+        """Every custom emoji id one account's reactions and their history hold (optionally one chat)."""
+        ids: set[int] = set()
+        async with self.db_manager.async_session_factory() as session:
+            for table in (Reaction, ReactionHistory):
+                stmt = select(table.emoji).where(table.account_id == account_id, table.emoji.like("custom_%"))
+                if chat_id is not None:
+                    stmt = stmt.where(table.chat_id == chat_id)
+                result = await session.execute(stmt.distinct())
+                for emoji in result.scalars().all():
+                    document_id = custom_emoji_reaction_id(emoji)
+                    if document_id is not None:
+                        ids.add(document_id)
+        return ids
+
+    @retry_on_locked()
+    async def rearm_custom_emoji(self, document_ids: Iterable[int]) -> int:
+        """Mark ids for a new download: attempts back to 0 on rows not downloaded.
+
+        Only rows with no skip reason, or one that may change ('unavailable',
+        'failed'). Nothing is deleted. Returns how many rows were marked.
+        """
+        ids = sorted(set(document_ids))
+        marked = 0
+        if not ids:
+            return 0
+        async with self.db_manager.async_session_factory() as session:
+            for start in range(0, len(ids), 500):
+                result = await session.execute(
+                    update(CustomEmoji)
+                    .where(
+                        CustomEmoji.document_id.in_(ids[start : start + 500]),
+                        CustomEmoji.downloaded == 0,
+                        or_(CustomEmoji.skip_reason.is_(None), CustomEmoji.skip_reason.in_(("unavailable", "failed"))),
+                    )
+                    .values(attempts=0, skip_reason=None)
+                )
+                marked += result.rowcount or 0
+            await session.commit()
+        return marked
 
     # ========== Sync Status Operations ==========
 
