@@ -332,6 +332,17 @@ def _no_pause(monkeypatch):
     monkeypatch.setattr(telegram_backup, "PAYLOAD_BACKFILL_PAUSE_SECONDS", 0)
 
 
+@pytest.fixture(autouse=True)
+def _no_map_pictures(monkeypatch):
+    """These tests are about payloads and paths; map pictures have their own (tests/test_map_preview.py).
+
+    FakeTelegram serves no map picture, so a location would stay on the work
+    list for its picture wherever the media folder holds a file (the SQLite
+    database itself sits in tmp_path).
+    """
+    monkeypatch.setattr(TelegramBackup, "_map_backfill_allowed", lambda self, chat, media_root: False)
+
+
 async def _seed_all_kinds(adapter):
     await _seed_chat(adapter)
     for mid, kind in enumerate(("geo", "contact", "venue", "geo_live", "poll"), start=1):

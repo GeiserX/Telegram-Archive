@@ -51,6 +51,7 @@ from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, TRANSCRIPT_OPEN_S
 from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     describe_exception,
+    is_map_preview_name,
     media_display_filename,
     resolve_sender_display_name,
     utcnow_naive,
@@ -3084,10 +3085,12 @@ def _attach_media_url(media: dict, message_id: object, chat_ref: str) -> None:
     media["id"] = media_key
     # A metadata-only kind (a location, a contact, a poll, ...) has no file.
     # Rows written by older releases still carry a path to an empty
-    # placeholder; it gets no URL, so the viewer draws the card instead.
+    # placeholder; it gets no URL, so the viewer draws the card instead. The
+    # one file such a row can hold is a location's map picture, which the
+    # card draws on top (``is_map_preview_name``).
     if (
         media_key
-        and media.get("type") not in METADATA_ONLY_MEDIA_TYPES
+        and (media.get("type") not in METADATA_ONLY_MEDIA_TYPES or is_map_preview_name(media.get("file_name")))
         and _media_relative_path(media.get("file_path"))
     ):
         media["url"] = _current_media_url(chat_ref, media_key, storage_id)

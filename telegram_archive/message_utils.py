@@ -1486,6 +1486,27 @@ def _contact_payload(media: object) -> dict:
     return payload
 
 
+# The kinds that carry a map point, and so a map picture
+# (docs/design/location-and-contact.md, "Map picture"). The picture is a
+# file on the kind's own media row, named by ``map_preview_file_name``.
+MAP_PREVIEW_TYPES = ("geo", "venue", "geo_live")
+
+# ``map_<16 hex>.jpg`` or ``.png``. No file name an older release wrote on
+# these rows (``<digits>.bin``) can match, so a row holds a picture exactly
+# when its name has this shape.
+_MAP_PREVIEW_NAME_RE = re.compile(r"^map_[0-9a-f]{16}\.(?:jpg|png)$")
+
+
+def is_map_preview_name(file_name: object) -> bool:
+    """True when ``file_name`` is a map picture's name (``map_<16 hex>.jpg|png``)."""
+    return isinstance(file_name, str) and _MAP_PREVIEW_NAME_RE.match(file_name) is not None
+
+
+def payload_has_point(payload: object) -> bool:
+    """True when a stored location payload holds two real coordinates."""
+    return isinstance(payload, dict) and _is_number(payload.get("lat")) and _is_number(payload.get("long"))
+
+
 # The kinds backfill-details re-reads, each stored under the raw_data key
 # of the same name. Releases up to v7.28.0 also left a file_path on geo,
 # contact and poll rows (docs/design/location-and-contact.md).

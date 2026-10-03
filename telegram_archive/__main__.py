@@ -621,6 +621,13 @@ def run_backfill_details(args) -> int:
     print(f"  Leftover paths cleared:          {summary['paths_cleared']}")
     print(f"  Leftover paths kept:             {summary['paths_kept']}")
     print(f"  Contacts read from vCard files:  {summary['vcards_recovered']}")
+    maps = summary.get("maps", {})
+    print(f"  Map pictures saved:              {maps.get('saved', 0)}")
+    print(f"  Map pictures not served:         {maps.get('not_served', 0)}")
+    print(f"  Map pictures with no point:      {maps.get('no_point', 0)}")
+    print(f"  Map pictures deferred:           {maps.get('deferred', 0)}")
+    if maps.get("errors"):
+        print(f"  Map picture errors (run again):  {maps['errors']}")
     if summary["errors"]:
         print(f"  Errors (run again to retry):     {summary['errors']}")
     if summary.get("flood_wait_seconds"):

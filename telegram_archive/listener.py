@@ -39,8 +39,10 @@ from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .event_webhook import EventWebhookSender
+from .map_preview import fetch_map_preview
 from .media_integrity import visible_media_root
 from .message_utils import (
+    MAP_PREVIEW_TYPES,
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
     build_media_filename,
@@ -59,6 +61,7 @@ from .message_utils import (
     extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
+    is_map_preview_name,
     is_youtube_preview_video,
     media_download_allowed,
     media_file_id,
@@ -1009,6 +1012,8 @@ class TelegramListener:
             if isinstance(existing, dict) and existing.get("superseded") is True:
                 # The archive already holds newer media for this message.
                 return None
+            if media_type in MAP_PREVIEW_TYPES:
+                return await self._store_map_preview(message, chat_id, media_type, existing)
             on_disk = (
                 resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
                 if existing and existing.get("downloaded")
@@ -1082,6 +1087,60 @@ class TelegramListener:
         except Exception as e:
             logger.warning(f"Failed to download media for message {message.id}: {describe_exception(e)}")
             return None
+
+    async def _store_map_preview(self, message, chat_id: int, media_type: str, existing: dict | None) -> dict | None:
+        """The map picture of a location, a venue or a live location, on its media row; the WS media dict, or None.
+
+        The same helper the backup uses (``fetch_map_preview``), so the live
+        frame carries the picture's url and the map shows in real time. A row
+        that holds a picture already keeps it. When no picture was saved
+        (Telegram did not serve one, a FloodWait, an error), nothing is
+        written: the backup's next read of the message, or backfill-details,
+        stores the row and tries again.
+        """
+        if isinstance(existing, dict) and is_map_preview_name(existing.get("file_name")):
+            return existing
+        threshold = getattr(self.config, "media_flood_sleep_threshold", 60)
+        if not isinstance(threshold, int) or isinstance(threshold, bool):
+            threshold = 60
+        result = await fetch_map_preview(
+            self.client,
+            message.media,
+            os.path.join(self.config.media_path, str(chat_id)),
+            flood_sleep_threshold=threshold,
+        )
+        if result.get("status") != "saved":
+            logger.debug(f"No map picture for a real-time capture ({result.get('status')})")
+            return None
+        media_id = existing["id"] if existing else f"{chat_id}_{message.id}_{media_type}"
+        media_row = {
+            "id": media_id,
+            "message_id": message.id,
+            "chat_id": chat_id,
+            "type": media_type,
+            "file_path": result["file_path"],
+            "file_name": result["file_name"],
+            "file_size": result["file_size"],
+            "mime_type": result["mime_type"],
+            "width": result["width"],
+            "height": result["height"],
+            "downloaded": True,
+            "download_date": utcnow_naive(),
+        }
+        written_id = await self.db.insert_media(media_row, account_id=self.account_id)
+        if written_id is None:
+            return None
+        return {
+            "id": written_id if isinstance(written_id, str) else media_id,
+            "type": media_type,
+            "file_path": media_row["file_path"],
+            "file_name": media_row["file_name"],
+            "file_size": media_row["file_size"],
+            "mime_type": media_row["mime_type"],
+            "width": media_row["width"],
+            "height": media_row["height"],
+            "duration": None,
+        }
 
     async def _keep_replaced_media(self, message, chat_id: int) -> str | None:
         """The media type when an edit replaced this message's photo or file, else None.
