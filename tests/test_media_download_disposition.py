@@ -95,6 +95,40 @@ class TestDownloadDisposition:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("image/jpeg")
 
+    def test_an_animated_sticker_is_served_inline_as_tgsticker(self) -> None:
+        """The viewer fetch()es a .tgs and draws it, so it needs the bytes and a type.
+
+        Before 9.2.0 it went out as an octet-stream attachment.
+        """
+        resp = self._serve("5550001_AnimatedSticker.tgs")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/x-tgsticker")
+        assert "attachment" not in resp.headers.get("content-disposition", "")
+
+    def test_an_animated_sticker_still_downloads_on_request(self) -> None:
+        resp = self._serve("5550001_AnimatedSticker.tgs", "?download=1")
+        assert resp.status_code == 200
+        assert resp.headers["content-disposition"] == 'attachment; filename="AnimatedSticker.tgs"'
+
+    def test_the_viewer_knows_the_tgs_type_without_telethon(self) -> None:
+        """Telethon registers .tgs when it is imported; the viewer image has none.
+
+        A fresh interpreter proves the viewer names the type itself.
+        """
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; import telegram_archive.web.main as m; "
+            "assert 'telethon' not in sys.modules, 'the viewer imported telethon'; "
+            "print(m._inline_media_type('5550001_AnimatedSticker.tgs'))"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {**os.environ, **ANON_ENV, "BACKUP_PATH": tmpdir}
+            result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert result.stdout.strip().splitlines()[-1] == "application/x-tgsticker"
+
     def test_quote_injecting_filename_is_escaped(self) -> None:
         """The filename is attacker-influenced (it is the Telegram document name)."""
         resp = self._serve('a"b;q=1.txt', "?download=1")

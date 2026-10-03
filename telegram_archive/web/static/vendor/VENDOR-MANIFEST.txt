@@ -6,3 +6,5 @@ https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js -> 0817379
 https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js -> d92825b456bb1537593c4c3e68eb08bad49cbd352846faf660afcf17cfe7e98b  moment-timezone-with-data-1970-2030-0.5.43.min.js
 https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css -> 1b34a42552c96f10e4dfaaa4a367276b03868aacff63c1ac42ffe331352bc754  flatpickr-4.6.13.min.css
 https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js -> 1eeab1cb779471a0b0aaa93dd91c2eb1aa537d696f01ab05ea9dabc55e8525a1  flatpickr-4.6.13.min.js
+https://registry.npmjs.org/lottie-web/-/lottie-web-5.13.0.tgz#package/build/player/lottie_light_canvas.min.js -> 0930bfecb5b5dad59dd9049a139fa957e57f70e0805fc94a311204e524e45e28  lottie_light_canvas-5.13.0.min.js (MIT, Bodymovin)
+https://registry.npmjs.org/lottie-web/-/lottie-web-5.13.0.tgz#package/LICENSE.md -> 9d8d4d8b4bb99572ee8b51025a30b8493d949798cac465c6c15b1b29420bcb06  lottie-web-5.13.0.LICENSE.md (MIT notice for lottie_light_canvas-5.13.0.min.js)

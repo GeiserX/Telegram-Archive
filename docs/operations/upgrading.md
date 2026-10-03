@@ -75,7 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
-| 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). |
+| 9.2.0 | An install that sets neither `ENABLE_LISTENER` nor `SCHEDULE` now runs the real-time listener and one full pass a day. Set `ENABLE_LISTENER=false` to keep the old behaviour. A `.env` or compose file copied from an older release keeps its values. See [Upgrading to 9.2.0](#upgrading-to-920). Migration 039 runs on start and files old video stickers and animated stickers as stickers. If you set `DOWNLOAD_MEDIA_TYPES`, `sticker` now covers video stickers. See the [Stickers](#stickers-92) section. |
 | 9.1.0 | Nothing. To use an MTProxy, set `TELEGRAM_PROXY_TYPE=mtproxy` and `TELEGRAM_PROXY_SECRET`. See [Proxy](../reference/environment-variables.md#proxy). |
 | 9.0.0 | Scripts that read a chat export must change, and so must readers of `raw_data.poll`, `raw_data.webpage` and `raw_data.entities`, `/ws/updates` clients, and scripts that press the transcript button many times as a viewer login. The first start runs migrations 034 to 038; on a large archive it takes longer. After it, run `telegram-archive check-media` once, and `telegram-archive backfill-details --apply` once with the backup stopped. See [Upgrading to 9.0](#upgrading-to-90). |
 | 8.18.0 | Nothing. A browser that never picked a theme opens in Match system instead of Slate, unless `VIEWER_DEFAULT_THEME` pins a theme. A saved choice keeps working. See [Themes and wallpaper](../viewer/themes.md). |
@@ -121,6 +121,20 @@ On SQLite, the listener sends live updates to the viewer over HTTP. A backup tha
 A running listener now stamps a heartbeat in the database every 30 seconds, and the viewer counts a listener as running only while that stamp is fresh. Upgrade both images together: a 9.2.0 viewer beside an older backup reads every listener as not running, because the older backup writes no heartbeat.
 
 The listener settings lines (`ENABLE_LISTENER enabled`, the `LISTEN_*` values, the `EVENT_WEBHOOK` lines) now appear only in the log of the backup service that runs `schedule`. The viewer and the one-shot commands no longer print them.
+
+### Stickers { #stickers-92 }
+
+Before 9.2.0 the backup archived every video sticker as a `video`, and some older rows hold animated stickers as a `document`. The first start runs migration 039. It changes only the type of those rows to `sticker`: no file, no file name and no id changes, and nothing is deleted. A row is changed only when its file carries the name Telegram gives a sticker: a `video` ending in `_sticker.webm` within Telegram's limits for a video sticker (512 px on each side and 3 seconds at most), or a `document` ending in `_AnimatedSticker.tgs`. The earlier media of edited messages get the same fix, so the edit history calls them Sticker too. It reads the media table and the earlier-media table once each.
+
+What changes for those rows:
+
+- They play in the chat as stickers, and leave **Photos & Videos** and **Files** in the shared media gallery.
+- Replies, the pinned bar and the chat list call them Sticker, not Video or File.
+- Both chat exports give them the type `sticker`.
+- Transcription no longer picks them up. A video sticker has no sound.
+- `DOWNLOAD_MEDIA_TYPES` governs them as `sticker`. With a list that names `video` but not `sticker`, new video stickers are no longer downloaded. Files already on disk stay.
+
+A file that had stickers drawn on it was archived as a `sticker` before 9.2.0. New ones are archived as the video, GIF or file they are. The migration leaves the old rows as they are: the row does not say whether the file was a video or a GIF. The chat shows them as the text "Sticker", a link that downloads the file when your login may download. A backup that reads such a message again corrects its type.
 
 ## Upgrading to 9.0 { #upgrading-to-90 }
 

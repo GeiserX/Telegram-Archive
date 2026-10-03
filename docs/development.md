@@ -153,7 +153,7 @@ The hooks:
 - block merge-conflict markers and files over 500 KB
 - run `ruff --fix` and `ruff format`
 
-None of the fixing hooks touch `telegram_archive/web/static/vendor/`. Those vendored files are checked against a sha256 manifest, and any edit breaks it. The Ruff hook version in `.pre-commit-config.yaml` can lag behind the Ruff pin in `pyproject.toml`. When they differ, the version the `ruff` CI job runs is the one that counts. When you change the Ruff pin, change the hook version to match.
+None of the fixing hooks touch `telegram_archive/web/static/vendor/`. Those vendored files are checked against a sha256 manifest, and any edit breaks it. A vendored file with no licence header ships its licence notice beside it, recorded in the manifest like the file itself: lottie-web's MIT notice is `lottie-web-5.13.0.LICENSE.md`. The Ruff hook version in `.pre-commit-config.yaml` can lag behind the Ruff pin in `pyproject.toml`. When they differ, the version the `ruff` CI job runs is the one that counts. When you change the Ruff pin, change the hook version to match.
 
 ## Database changes
 
