@@ -265,6 +265,10 @@
             --tg-tag-4: 30 110 127;
             --tg-tag-5: 17 106 158;
             --tg-tag-6: 171 57 113;
+            /* The share of the tag colour an account's label keeps on the
+               outgoing bubble, mixed toward --tg-text-out (.meta-signature),
+               fitted to 4.5:1 on its fill and on the deleted wash. */
+            --tg-tag-out-mix: 100%;
 
             /* Shadows, scrollbar, focus ring, the run-end corner and the
                wallpaper layers. A shadow token is never `none`, so it can be
@@ -419,6 +423,7 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 227 122 198;
+            --tg-tag-out-mix: 45%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.45);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.45);
@@ -565,6 +570,7 @@
             --tg-tag-4: 93 210 224;
             --tg-tag-5: 109 187 245;
             --tg-tag-6: 255 114 176;
+            --tg-tag-out-mix: 30%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.60);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.60);
@@ -714,6 +720,7 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 232 147 209;
+            --tg-tag-out-mix: 45%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.45);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.45);
@@ -860,6 +867,7 @@
             --tg-tag-4: 44 50 58;
             --tg-tag-5: 44 50 58;
             --tg-tag-6: 44 50 58;
+            --tg-tag-out-mix: 100%;
 
             --tg-shadow-popup: 0 4px 16px rgb(27 31 36 / 0.12);
             --tg-shadow-fab: 0 0 0 1px rgb(27 31 36 / 0.08);
@@ -1005,6 +1013,7 @@
             --tg-tag-4: 214 217 222;
             --tg-tag-5: 214 217 222;
             --tg-tag-6: 214 217 222;
+            --tg-tag-out-mix: 100%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.50);
             --tg-shadow-fab: 0 0 0 1px rgb(255 255 255 / 0.08);
@@ -1150,6 +1159,7 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 226 116 196;
+            --tg-tag-out-mix: 85%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.80);
             --tg-shadow-fab: 0 0 0 1px rgb(255 255 255 / 0.10);
@@ -1295,6 +1305,7 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 228 127 201;
+            --tg-tag-out-mix: 60%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.50);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.50);
@@ -1440,6 +1451,7 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 230 134 204;
+            --tg-tag-out-mix: 80%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.50);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.50);
@@ -1586,6 +1598,7 @@
             --tg-tag-4: 30 110 127;
             --tg-tag-5: 17 106 158;
             --tg-tag-6: 171 57 113;
+            --tg-tag-out-mix: 95%;
 
             --tg-shadow-popup: 0 4px 16px rgb(15 23 42 / 0.15);
             --tg-shadow-fab: 0 1px 4px rgb(15 23 42 / 0.18);
@@ -1734,6 +1747,7 @@
             --tg-tag-4: 26 95 110;
             --tg-tag-5: 122 74 18;
             --tg-tag-6: 148 49 97;
+            --tg-tag-out-mix: 100%;
 
             --tg-shadow-popup: 0 4px 16px rgb(43 34 24 / 0.18);
             --tg-shadow-fab: 0 1px 4px rgb(43 34 24 / 0.20);
@@ -1968,12 +1982,6 @@
             line-height: 18px;
             font-variant-numeric: tabular-nums;
             white-space: nowrap;
-        }
-        .sender-account + .deleted-head-group {
-            padding-left: 8px;
-        }
-        .message-bubble.is-deleted > div.flex.items-baseline > .sender-account {
-            margin-left: 0;
         }
         .deleted-head {
             font-weight: 500;
@@ -2319,12 +2327,26 @@
             white-space: nowrap;
             border: 0;
         }
-        /* The account an outgoing message came from, in a chat several
-           accounts share: where a channel puts its signature. */
+        /* The account an outgoing message came from, in a group or channel
+           several accounts share: where a channel puts its signature, in the
+           account's tag colour (--tag, set by accountTagStyle, as on the chip).
+           --tg-tag-out-mix is how much of that colour each palette keeps,
+           mixed toward the outgoing text colour: all of it where the chip
+           colour reads at 4.5:1 on the outgoing bubble, a lighter tint of the
+           same hue where it cannot. In the palettes where that tint sits close
+           to the text colour (iOS Night most of all) the hue alone does not set
+           the name apart, so it takes the chip's weight, 600, in every palette.
+           Over a picture the label is part of the time pill and takes the
+           pill's colour. */
         .meta-signature {
             max-width: 8rem;
             overflow: hidden;
             text-overflow: ellipsis;
+            color: color-mix(in srgb, rgb(var(--tag, var(--tg-tag-5))) var(--tg-tag-out-mix), rgb(var(--tg-text-out)));
+            font-weight: 600;
+        }
+        .message-bubble.bubble-media-only .meta-signature {
+            color: inherit;
         }
         /* The time and the "deleted" marker as buttons (metaOpensInfo): they
            look exactly like the text they replace. */
@@ -2356,20 +2378,6 @@
             text-overflow: ellipsis;
             color: rgb(var(--tag, var(--tg-tag-5)));
             background: rgb(var(--tag, var(--tg-tag-5)) / 0.10);
-        }
-        /* The account beside a sender's name, where Telegram puts "admin":
-           12px in the time colour, at the name row's far end. */
-        .sender-account {
-            margin-left: auto;
-            padding-left: 12px;
-            flex-shrink: 0;
-            max-width: 50%;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            font-size: 12px;
-            line-height: 18px;
-            color: rgb(var(--tg-meta));
         }
         /* A forward from an archived chat opens it: the name underlines on hover. */
         .forward-header[role="button"]:hover .forward-origin-link {
@@ -7908,6 +7916,7 @@
                                     <span v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)" class="deleted-pill-name" dir="auto"
                                         :style="{ color: getSenderNameColor(msg) }">{{ getSenderName(msg) }}</span>
                                     <span v-else-if="!isOwnMessage(msg) && isGroup" class="sr-only">{{ getSenderName(msg) }},</span>
+                                    <span v-else-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">{{ privateSpeakerLabel(msg) }},</span>
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                                     <span class="deleted-pill-what">{{ deletedKindLabel(msg) }}</span>
                                     <span class="sr-only">, sent {{ formatTime(msg.date) }}</span>
@@ -7929,20 +7938,21 @@
                                         metaRidesTranscript(msg) ? 'meta-on-transcript' : ''
                                     ]"
                                     :style="[getSenderStyle(msg), bubbleMediaStyle(msg, index)]">
+                                    <!-- In a private chat only the side says who spoke, so a screen
+                                         reader hears the speaker at the first bubble of each run it
+                                         reaches. The list is reversed, newest first in the page, so
+                                         that is the run's newest bubble (isRunEnd). -->
+                                    <span v-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">{{ privateSpeakerLabel(msg) }}:</span>
                                     <!-- Who spoke, at the start of each run: the sender's name in
-                                         a group, in its peer colour, and, when the open chat is
-                                         held by more than one archived account (bubbleAccountLabel),
-                                         which account an incoming message came from, at the row's
-                                         far end in the time colour, where Telegram puts "admin".
-                                         An outgoing message names its account in the meta row
-                                         instead, like a channel signature. -->
-                                    <div v-if="(!isOwnMessage(msg) && bubbleAccountLabel(msg) && showSenderName(index)) || (!isOwnMessage(msg) && isGroup && showNameAt(index))"
+                                         a group, in its peer colour. A message an archived account
+                                         sent is the reader's own and names its account in the meta
+                                         row instead, like a channel signature (bubbleAccountLabel). -->
+                                    <div v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)"
                                         class="flex items-baseline min-w-0 mb-0.5">
-                                        <span v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)" dir="auto"
+                                        <span dir="auto"
                                             class="sender-name min-w-0 truncate text-sm font-semibold leading-[1.125rem]" :style="{ color: getSenderNameColor(msg) }">
                                             {{ getSenderName(msg) }}
                                         </span>
-                                        <span v-if="bubbleAccountLabel(msg)" class="sender-account">{{ bubbleAccountLabel(msg) }}</span>
                                         <!-- A deleted message, opened: "Deleted · 21:59" at the far end
                                              of the name line, where Telegram puts "admin", with the time
                                              the archive noticed and, on a later day, its date. Hide folds
@@ -8708,11 +8718,14 @@
                                          out of the body's direction guess. -->
                                     <span class="message-meta" dir="ltr">
                                         <!-- Marks first, then the time, in Telegram's order:
-                                             the pencil, then for an outgoing message of a chat several
-                                             accounts share, the account that sent it, like a channel
-                                             signature. On a touch screen or a narrow pane the time is
-                                             a button that opens the info panel on this message
-                                             (metaOpensInfo): a tooltip cannot show there. -->
+                                             the pencil, then for an outgoing message of a group or
+                                             channel several accounts share, the account that sent it,
+                                             like a channel signature, in that account's tag colour
+                                             (accountTagStyle, the chip's colour). A private chat has
+                                             none: its side says who spoke. On a touch screen or a
+                                             narrow pane the time is a button that opens the info panel
+                                             on this message (metaOpensInfo): a tooltip cannot show
+                                             there. -->
                                         <button v-if="isEditedMessage(msg)"
                                             type="button"
                                             @click.stop="onEditMarkClick(msg)"
@@ -8732,7 +8745,7 @@
                                             :aria-describedby="isEditPeekFor(msg) ? 'edit-peek-desc' : null">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span v-if="editedCount(msg) > 0" class="meta-edited-count">{{ formatCount(editedCount(msg)) }}</span>
                                         </button>
-                                        <span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2">{{ bubbleAccountLabel(msg) }}</span>
+                                        <span v-if="isOwnMessage(msg) && bubbleAccountLabel(msg)" class="meta-signature order-2" :style="accountTagStyle(msg.sender_account_id)">{{ bubbleAccountLabel(msg) }}</span>
                                         <button v-if="metaOpensInfo" type="button"
                                             @click.stop="openMessageInfo(msg, $event)"
                                             class="meta-info-btn hit-40 order-3"
@@ -15118,13 +15131,13 @@
                     (i) => isFramelessMedia(sortedMessages.value[i], i),
                 ))
 
-                // The archived accounts a bubble's chip could name: the ones that hold
-                // the open chat, plus any that speak in the loaded rows. The chip says
-                // which of them wrote a message, so it shows only when there is more
-                // than one to tell apart. A chat that belongs to one account shows none
-                // (the header names it), unless a second archived account writes in
-                // it, as in a private chat between two archived accounts, where both
-                // sides would otherwise read as the same identity.
+                // The archived accounts a bubble's label could name: the ones that
+                // hold the open group or channel, plus any that speak in the loaded
+                // rows. The label says which of them wrote a message, so it shows
+                // only when there is more than one to tell apart. A chat that
+                // belongs to one account shows none (the header names it). A
+                // private chat never shows one: its side already says who speaks,
+                // as in the Telegram apps, and the header names the row's account.
                 const bubbleAccountIds = computed(() => {
                     const ids = new Set(selectedChat.value?.accounts || [])
                     for (const row of sortedMessages.value) {
@@ -15133,7 +15146,20 @@
                     return ids
                 })
                 const bubbleAccountLabel = (msg) =>
-                    bubbleAccountIds.value.size > 1 ? senderAccountLabel(msg) : ''
+                    selectedChat.value?.type !== 'private' && bubbleAccountIds.value.size > 1
+                        ? senderAccountLabel(msg)
+                        : ''
+                // Who spoke in a private chat, for a screen reader: the side says it
+                // on screen and nothing else does. "You", or the row's account when
+                // the archive holds several, for an own message; the chat's name for
+                // the other person. '' outside a private chat, where a group names
+                // its senders itself.
+                const privateSpeakerLabel = (msg) => {
+                    const chat = selectedChat.value
+                    if (chat?.type !== 'private') return ''
+                    if (!isOwnMessage(msg)) return getChatName(chat)
+                    return multiAccount.value && chat.account_id != null ? accountLabel(chat.account_id) : 'You'
+                }
 
                 // Group consecutive messages that belong to an album (same grouped_id)
                 // Note: grouped_id may be string or number depending on source, so compare as strings
@@ -15316,7 +15342,6 @@
                     if (hasForwardHeader(msg)) return false
                     const namesSender = isGroup.value && !isOwnMessage(msg) && !FRAMELESS_MEDIA_TYPES.includes(msg.media.type)
                     if (namesSender && showNameAt(index)) return false
-                    if (!isOwnMessage(msg) && showSenderName(index) && bubbleAccountLabel(msg)) return false
                     const captionMsg = getAlbumCaptionMessage(msg)
                     return !(captionMsg && captionMsg.text && captionMsg.text.trim() !== '')
                 }
@@ -16033,19 +16058,32 @@
                 }
 
                 const isOwnMessage = (msg) => {
-                    // A chat several accounts hold is shown once, through one
-                    // account's copy (8.12), so the OTHER account's messages carry
-                    // is_outgoing=0 — that flag is written per copy, from the point
-                    // of view of the account that captured it. They are still the
-                    // reader's own messages, and rendering them on the left with a
-                    // stranger's name is the bug this fixes. sender_account_id is
-                    // only ever set for an account the reader is entitled to (the
-                    // server masks the rest), so its presence IS the answer.
+                    // A group or channel several accounts hold is shown once,
+                    // through one account's copy (8.12), so the OTHER account's
+                    // messages carry is_outgoing=0: that flag is written per copy,
+                    // from the point of view of the account that captured it. They
+                    // are still the reader's own messages, so they go on the right.
+                    // sender_account_id is only ever set for an account the reader
+                    // is entitled to (the server masks the rest), so its presence
+                    // is the answer there.
+                    //
+                    // A private chat is never folded: each account keeps its own
+                    // row. There the side follows the row's account, as in the
+                    // Telegram apps, which draw each account's copy from its own
+                    // `out` flag. Right is what the row's account sent, left is the
+                    // other person, even when that person is also an archived
+                    // account, so the two rows of one conversation mirror each
+                    // other. Comparing with the row's account, not reading
+                    // is_outgoing alone, keeps Saved Messages whole: a forward
+                    // there has out=false and is still the row's own.
                     //
                     // Gated on multiAccount so a single-account install renders
                     // exactly as before: there the one account's own messages
                     // already carry is_outgoing=1, so the two agree anyway.
-                    if (multiAccount.value && msg.sender_account_id != null) return true
+                    if (multiAccount.value && msg.sender_account_id != null) {
+                        const chat = selectedChat.value
+                        if (chat?.type !== 'private' || msg.sender_account_id === chat.account_id) return true
+                    }
 
                     // Check explicit flag first (available in v2.0+)
                     if (msg.is_outgoing !== undefined && msg.is_outgoing !== null) {
@@ -20411,6 +20449,7 @@
                     chatAccountLabels,
                     senderAccountLabel,
                     bubbleAccountLabel,
+                    privateSpeakerLabel,
                     grantAccountLabels,
                     selectedChat,
                     selectedPaneTopic,

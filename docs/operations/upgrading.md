@@ -118,6 +118,10 @@ Photos, videos and GIFs in the viewer take the size Telegram Desktop gives them,
 
 A photo imported from a Telegram Desktop HTML export before 9.3.0 was stored with the size of the export's thumbnail, not the photo's. The shape is right, but the viewer now draws the photo at that smaller size. `check-media` does not change it, because a repair never replaces a stored size. Photos imported from a JSON export, and photos the backup downloaded, are not affected.
 
+### Chats several accounts hold { #accounts-93 }
+
+Only an archive that holds more than one Telegram account looks different, and only for a login that can see more than one of them. A private chat between two of your archived accounts is drawn from each row's own account: its messages on the right, the other account's on the left, with no account name on the messages. Before, both rows showed every message on the right with an account name. In a group or channel several of your accounts hold, the account name beside the time is now in bold, in the colour of that account's tag. Nothing needs doing: no setting, no migration and no stored data changes.
+
 ## Upgrading to 9.2.0 { #upgrading-to-920 }
 
 The real-time listener is on by default, and the full pass runs once a day. The listener saves new messages, their media, edits, chat actions and reactions as they happen. `LISTEN_NEW_MESSAGES_MEDIA` and `LISTEN_REACTIONS` now default to `true` as well. `LISTEN_DELETIONS` stays `false`, so the archive still keeps deleted messages untouched.
