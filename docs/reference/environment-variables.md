@@ -145,7 +145,7 @@ Feature page: [Media downloads](../configuration/media.md).
 
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
-| <span id="download_media"></span>`DOWNLOAD_MEDIA` | `true` | backup | Download media files at all. When false, messages are stored with no media rows. |
+| <span id="download_media"></span>`DOWNLOAD_MEDIA` | `true` | backup | Download media files at all, the map pictures of locations included. When false, messages are stored with no media rows. |
 | <span id="max_media_size_mb"></span>`MAX_MEDIA_SIZE_MB` | `100` | backup | Skip files larger than this. `0` or a negative value means no limit. Skipped files keep a row and are fetched on a later run if you raise the limit. |
 | <span id="download_media_types"></span>`DOWNLOAD_MEDIA_TYPES` | empty, every type | backup | Comma-separated allow-list: `photo`, `video`, `video_note`, `animation`, `voice`, `audio`, `sticker`, `document`, `webpage`. An unknown type stops startup. Applies to the scheduled backup and the listener. `sticker` covers picture, animated and video stickers. Before 9.2.0 a video sticker counted as `video`. |
 | <span id="download_document_mime_types"></span>`DOWNLOAD_DOCUMENT_MIME_TYPES` | empty, every document | backup | Narrows `document` to full `type/subtype` MIME types. A document passes on an exact MIME match or on a file extension that belongs to one of the listed types. Wildcards and bare extensions stop startup. |
@@ -196,7 +196,7 @@ Feature page: [Real-time listener](../configuration/listener.md).
 |---|---|---|---|
 | <span id="enable_listener"></span>`ENABLE_LISTENER` | `true` | backup | Start one real-time listener per account inside the `schedule` command. The `LISTEN_*` settings do nothing without it. On by default since 9.2.0. With it off, the scheduled pass is the only capture and `SCHEDULE` defaults to every 6 hours. |
 | <span id="listen_new_messages"></span>`LISTEN_NEW_MESSAGES` | `true` | backup | Save new messages as they arrive. Viewer notifications depend on it. |
-| <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `true` | backup | Also download the media of new messages at once, within the usual media filters. When false, media waits for the next scheduled pass. |
+| <span id="listen_new_messages_media"></span>`LISTEN_NEW_MESSAGES_MEDIA` | `true` | backup | Also download the media of new messages at once, within the usual media filters, and the map picture of a new location. When false, media waits for the next scheduled pass. |
 | <span id="listen_edits"></span>`LISTEN_EDITS` | `true` | backup | Apply text edits as they happen. The previous text is kept as a version. |
 | <span id="listen_deletions"></span>`LISTEN_DELETIONS` | `false` | backup | Apply deletions as `DELETION_MODE` says. When false, the listener only counts them. |
 | <span id="deletion_mode"></span>`DELETION_MODE` | `soft` | backup | `soft` marks messages deleted and keeps them. `hard` removes them with their versions, media rows, earlier media, transcripts, reactions and reaction history. Any other value stops startup, in the viewer too. Also applies to `SYNC_DELETIONS_EDITS`. |

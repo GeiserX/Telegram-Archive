@@ -131,6 +131,7 @@ The caption comes from whichever item carries it. The viewer renders only the fi
 
 A location, a venue, a live location and a shared contact each show as a card in the bubble, the way the Telegram apps draw them.
 
+- **Map.** When the archive kept the map picture of a location, a venue or a live location, the card shows it on top, with the pin on the point, the way the Telegram apps do. The map picture is explained below.
 - **Location.** A pin, the word Location, the coordinates to six decimals and, when Telegram sent it, how accurate the point is (`± 25 m`).
 - **Venue.** The place's name on one line and its address on up to two.
 - **Live location.** The sender's picture in the pin and when the archive last saw a position, for example `Last position, updated yesterday at 20:14`. While the sharing period has not run out, a second line says until when, or `Sharing until turned off`. The archive does not follow a live share as it moves, so the card never says the share is live now.
@@ -138,13 +139,17 @@ A location, a venue, a live location and a shared contact each show as a card in
 
 Click a location, venue or live location card to open the place on [OpenStreetMap](https://www.openstreetmap.org) in a new tab. OpenStreetMap needs no account, its pages carry no ads or ad trackers, and its map data is open. The viewer loads no map tiles and sends nothing anywhere until you click, so the page you open is the only one that sees the coordinates. The copy button beside the card copies the coordinates instead.
 
+**The map picture.** The Telegram apps draw a location as a small map that Telegram's own servers render for the point. The backup asks Telegram for the same picture once, when it first stores a location, a venue or a live location, and keeps it as that message's media file. The viewer serves it from the archive like any other file, so no map server and no other third party sees the point, and the picture still shows after Telegram stops serving it. It is 640 by 480 pixels, at the zoom Telegram uses, with the pin drawn by the viewer over the centre.
+
+The picture follows the media rules: `DOWNLOAD_MEDIA=false` and a chat in `SKIP_MEDIA_CHAT_IDS` fetch none, and neither does the listener with `LISTEN_NEW_MESSAGES_MEDIA=false`. A login without downloads gets the card without the picture. When Telegram serves no picture for a point, or the picture fails to load, the card shows the pin and the lines as before. When the backup reads a live location again at a new position, it keeps the picture of that position as well and shows it, as the Telegram apps show the latest position. The earlier picture stays on disk. The listener updates the position in the text but takes no new picture, so until the backup reads the message again the picture can show an earlier position than the line under it. Messages archived before this release get their picture from [`backfill-details --apply`](../operations/maintenance.md#fill-old-locations-contacts-polls-and-edit-flags).
+
 A card says `Location unavailable` when Telegram sent the location without a point. A message archived before the archive kept these details shows the card with `Details not archived` and no link, until [`backfill-details`](../operations/maintenance.md#fill-old-locations-contacts-polls-and-edit-flags) reads it from Telegram again. An older release left an empty placeholder file on some of these messages; the viewer ignores it and never offers it as a download, and the same command clears the leftover path. A poll archived without its details shows a Poll chip with `Details not archived`, and the same command fills it in.
 
 A login without downloads still sees the coordinates and phone numbers: they are the message's content, like its text.
 
 === "Desktop"
 
-    ![A venue, a location, a live location that has ended and a shared contact in a private chat](../images/screenshots/location-cards.png)
+    ![A venue and a location in a private chat, each with its map picture on top](../images/screenshots/location-cards.png)
 
 === "Night"
 
@@ -152,7 +157,7 @@ A login without downloads still sees the coordinates and phone numbers: they are
 
 === "Phone"
 
-    ![A live location and a shared contact on a phone](../images/screenshots/location-cards-mobile.png){ width="300" }
+    ![The venue and the location with their map pictures on a phone](../images/screenshots/location-cards-mobile.png){ width="300" }
 
 When a file is not in the archive, a placeholder takes its place in the same shape: a photo or a video keeps its proportions, a round video its circle, and a voice message, an audio or a document its file row. A ring in the middle holds a sign for the reason, and two lines say what it is and why, with its size when the archive knows it, for example `24 MB · over the download limit`. The ring is not a button: nothing downloads from here. A file missing from the archive disk, the one fault among the reasons, shows an amber disc instead. [Why media is missing in the viewer](../configuration/media.md#why-media-is-missing-in-the-viewer) lists each reason and the setting behind it.
 

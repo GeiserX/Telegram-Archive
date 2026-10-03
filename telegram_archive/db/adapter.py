@@ -49,11 +49,15 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
+    MAP_NOT_SERVED_REASON,
+    MAP_PREVIEW_TYPES,
     MEDIA_PAYLOAD_KEYS,
     METADATA_ONLY_MEDIA_TYPES,
     PAYLOAD_BACKFILL_TYPES,
     compute_directory_size,
+    is_map_preview_name,
     merge_geo_live,
+    payload_has_point,
     resolve_sender_display_name,
     stored_media_file_id,
     utcnow_naive,
@@ -5519,16 +5523,31 @@ class DatabaseAdapter:
         """The work list of ``backfill-details``, grouped by chat, ordered by message id.
 
         A media row of a ``PAYLOAD_BACKFILL_TYPES`` kind is listed when its
-        message's ``raw_data`` lacks the key of the same name, or when the row
-        still carries a ``file_path`` (the leftover of releases up to v7.28.0).
-        Each entry is ``{message_id, media_id, type, file_path, has_payload}``.
-        A row whose ``raw_data`` does not parse is left out: nothing may be
-        added to a payload the archive cannot read without destroying it.
-        Filling a key or clearing a path takes a row off the list, so an
-        interrupted run resumes by running again.
+        message's ``raw_data`` lacks the key of the same name, when the row
+        still carries a ``file_path`` that is not a map picture (the leftover
+        of releases up to v7.28.0), or when it is a location, a venue or a
+        live location whose payload has a point, whose row has no map
+        picture yet and is not marked ``MAP_NOT_SERVED_REASON``
+        (``needs_map``). Each entry is ``{message_id, media_id, type,
+        file_path, file_name, has_payload, needs_map}``; ``file_path``
+        is None when the row's file is its map picture, so it is never taken
+        for a leftover. A row whose ``raw_data`` does not parse is left out:
+        nothing may be added to a payload the archive cannot read without
+        destroying it. Filling a key, storing a picture or clearing a path
+        takes a row off the list, so an interrupted run resumes by running
+        again. Decided in Python, so SQLite and PostgreSQL list the same rows.
         """
         stmt = (
-            select(Media.chat_id, Media.message_id, Media.id, Media.type, Media.file_path, Message.raw_data)
+            select(
+                Media.chat_id,
+                Media.message_id,
+                Media.id,
+                Media.type,
+                Media.file_path,
+                Media.file_name,
+                Media.skip_reason,
+                Message.raw_data,
+            )
             .join(
                 Message,
                 and_(
@@ -5545,20 +5564,32 @@ class DatabaseAdapter:
         grouped: dict[int, list[dict[str, Any]]] = {}
         async with self.db_manager.async_session_factory() as session:
             result = await session.stream(stmt.execution_options(yield_per=1000))
-            async for row_chat, message_id, media_id, media_type, file_path, raw_data in result:
+            async for row in result:
+                row_chat, message_id, media_id, media_type, file_path, file_name, skip_reason, raw_data = row
                 raw = _raw_data_dict(raw_data)
                 if raw is None:
                     continue
                 has_payload = media_type in raw
-                if has_payload and not file_path:
+                has_map = is_map_preview_name(file_name)
+                leftover = (file_path or None) if not has_map else None
+                needs_map = (
+                    media_type in MAP_PREVIEW_TYPES
+                    and has_payload
+                    and not has_map
+                    and skip_reason != MAP_NOT_SERVED_REASON
+                    and payload_has_point(raw[media_type])
+                )
+                if has_payload and not leftover and not needs_map:
                     continue
                 grouped.setdefault(row_chat, []).append(
                     {
                         "message_id": message_id,
                         "media_id": media_id,
                         "type": media_type,
-                        "file_path": file_path or None,
+                        "file_path": leftover,
+                        "file_name": file_name,
                         "has_payload": has_payload,
+                        "needs_map": needs_map,
                     }
                 )
         return grouped
@@ -5611,14 +5642,18 @@ class DatabaseAdapter:
         return raw is not None and key in raw
 
     @retry_on_locked()
-    async def clear_metadata_media_path(self, chat_id: int, media_id: str, *, account_id: int) -> bool:
+    async def clear_metadata_media_path(
+        self, chat_id: int, media_id: str, *, account_id: int, file_path: str | None = None
+    ) -> bool:
         """Clear the leftover file fields of a metadata-only media row; True if a row changed.
 
         Sets ``file_path``, ``file_name`` and ``download_date`` to NULL and
         ``downloaded`` to 0, so the row reads as what it is: a location, a
         contact or a poll with no file. The row stays, and nothing on disk is
         touched. Only a metadata-only row that still has a path matches, so a
-        second call changes nothing.
+        second call changes nothing. With ``file_path``, only a row that still
+        holds exactly that path matches: a map picture stored on the row since
+        the work list was read is never cleared.
         """
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(
@@ -5629,7 +5664,7 @@ class DatabaseAdapter:
                         Media.chat_id == chat_id,
                         Media.id == media_id,
                         Media.type.in_(METADATA_ONLY_MEDIA_TYPES),
-                        Media.file_path.is_not(None),
+                        Media.file_path.is_not(None) if file_path is None else Media.file_path == file_path,
                     )
                 )
                 .values(file_path=None, file_name=None, download_date=None, downloaded=0)

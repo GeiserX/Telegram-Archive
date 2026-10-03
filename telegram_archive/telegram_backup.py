@@ -53,9 +53,12 @@ from .folder_utils import (
     resolve_folder_member_ids,
     resolve_include_folder_chat_ids,
 )
+from .map_preview import fetch_map_preview, map_point, map_preview_stem
 from .media_errors import is_media_location_error
 from .media_integrity import PRESENT, RESTORED, missing_under_root, repair_media_row, visible_media_root
 from .message_utils import (
+    MAP_NOT_SERVED_REASON,
+    MAP_PREVIEW_TYPES,
     METADATA_ONLY_MEDIA_TYPES,
     PAYLOAD_BACKFILL_TYPES,
     VCARD_MAX_BYTES,
@@ -82,6 +85,7 @@ from .message_utils import (
     extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
+    is_map_preview_name,
     is_youtube_preview_video,
     is_youtube_url,
     media_download_allowed,
@@ -154,6 +158,9 @@ FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
 # pause between two calls, so a long run stays well under the flood limits.
 PAYLOAD_BACKFILL_BATCH = 100
 PAYLOAD_BACKFILL_PAUSE_SECONDS = 1.0
+# backfill-details: map pictures fetched per run and account, one request
+# each. The rest are counted as deferred and wait for the next run.
+MAP_PREVIEW_BACKFILL_MAX_PER_RUN = 500
 MEDIA_REFRESH_MAX_ATTEMPTS = _get_int_env("MEDIA_REFRESH_MAX_ATTEMPTS", 3)
 # Upper bound on a single message-refresh round-trip so it can never hang.
 MEDIA_REFRESH_TIMEOUT_SECONDS = _get_int_env("MEDIA_REFRESH_TIMEOUT_SECONDS", 120)
@@ -1088,6 +1095,7 @@ class TelegramBackup:
         This is the main entry point for scheduled backups.
         """
         self._description_fetch_paused = False  # a FloodWait pauses the fetch until the next run
+        self._map_previews_paused = False  # same rule for the map pictures
         self._broken_links_met = set()
         try:
             logger.info("Starting backup process...")
@@ -1783,6 +1791,10 @@ class TelegramBackup:
         """
         if not isinstance(existing, dict) or not isinstance(result, dict) or not result.get("downloaded"):
             return result
+        if is_map_preview_name(result.get("file_name")):
+            # A map picture is a new file of its own, never the bytes the old
+            # ``.bin`` link of a location row named: it keeps its own path.
+            return result
         old_path = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
         missing_target = self._broken_shared_link(old_path)
         new_path = resolve_stored_media_path(result.get("file_path"), self.config.media_path)
@@ -1901,8 +1913,15 @@ class TelegramBackup:
           later edit time is counted (``date_changed``) and left for the
           sync, which records it as an edit.
 
-        A message on both lists is asked for once. Without ``apply`` it reads
-        and counts but writes nothing.
+        A third list rides on the same reads: a location, a venue or a live
+        location with a point and no map picture gets its picture
+        (``_backfill_map``), at most ``MAP_PREVIEW_BACKFILL_MAX_PER_RUN`` per
+        run and only where DOWNLOAD_MEDIA and SKIP_MEDIA_CHAT_IDS let the
+        backup fetch media and the media folder is there. The rest are counted
+        as deferred and stay on the list.
+
+        A message on every list is asked for once. Without ``apply`` it reads
+        and counts but writes nothing, and fetches no picture.
 
         A row Telegram never answered (its batch failed, or its chat could
         not be reached for a reason other than a refusal) stays on the work
@@ -1918,19 +1937,26 @@ class TelegramBackup:
         message content.
         """
         groups = await self.db.get_payload_backfill_rows(account_id=self.account_id, chat_id=chat_id)
+        self._map_backfill_attempts = 0
+        self._map_previews_paused = False  # a FloodWait pauses the pictures until the next run
+        # Rows read this run that may fetch a picture. A row listed only for
+        # its picture is read only while this is under the cap, so a run past
+        # the cap reads no message it would fetch nothing for.
+        map_slots_taken = 0
         if chat_id is not None:
             chats = {chat_id}
         else:
             # The chats table drives the edit list, one bounded query per chat.
             chats = set(await self.db.get_chats_with_messages(account_id=self.account_id))
         summary = _empty_backfill_summary()
-        kinds, edits = summary["kinds"], summary["edits"]
+        kinds, edits, maps = summary["kinds"], summary["edits"], summary["maps"]
         prefix = "" if apply else "[DRY RUN] "
         logger.info(f"{prefix}Backfilling details across {len(chats | set(groups))} chat(s)...")
         media_root = self._visible_media_root()
         if media_root is None:
             logger.warning(
-                f"{prefix}The media folder is missing, unreadable or empty here; every leftover path is kept"
+                f"{prefix}The media folder is missing, unreadable or empty here; every leftover path is kept "
+                "and no map picture is fetched"
             )
         first_call = True
 
@@ -1940,14 +1966,34 @@ class TelegramBackup:
             unflagged = dict(await self.db.get_edit_hide_backfill_rows(chat, account_id=self.account_id))
             if not rows and not unflagged:
                 continue
+            if not self._map_backfill_allowed(chat, media_root):
+                if media_root is None:
+                    # Left for a run that can store them, so counted as
+                    # deferred: a run here must not read as "all done".
+                    maps["deferred"] += sum(1 for row in rows if row.get("needs_map"))
+                # No picture is fetched here, so a row listed for one only is not read.
+                rows = [row for row in rows if not row.get("needs_map") or not row["has_payload"] or row["file_path"]]
+                for row in rows:
+                    row["needs_map"] = False
+                    row["maps_allowed"] = False
+                if not rows and not unflagged:
+                    continue
             summary["chats_scanned"] += 1
             for row in rows:
-                if row["has_payload"]:
+                if row["has_payload"] and row["file_path"]:
                     kinds[row["type"]]["already_present"] += 1
             missing = [row for row in rows if not row["has_payload"]]
             payload_rows: dict[int, list[dict]] = {}
-            for row in missing:
-                payload_rows.setdefault(row["message_id"], []).append(row)
+            for row in rows:
+                map_only = row["has_payload"] and not row["file_path"] and row.get("needs_map")
+                if map_only and map_slots_taken >= MAP_PREVIEW_BACKFILL_MAX_PER_RUN:
+                    # Its picture waits for the next run, and so does its read.
+                    maps["deferred"] += 1
+                    continue
+                if row.get("needs_map") or (not row["has_payload"] and row["type"] in MAP_PREVIEW_TYPES):
+                    map_slots_taken += 1
+                if not row["has_payload"] or row.get("needs_map"):
+                    payload_rows.setdefault(row["message_id"], []).append(row)
             # Each message once, whichever lists it is on.
             ids = sorted(set(payload_rows) | set(unflagged))
             # Message ids Telegram never answered for: their paths stay this run.
@@ -1965,6 +2011,7 @@ class TelegramBackup:
                     summary["chats_unavailable"] += 1
                     for row in missing:
                         kinds[row["type"]]["not_served"] += 1
+                    maps["not_served"] += sum(1 for row in rows if row.get("needs_map"))
                     edits["not_served"] += len(unflagged)
                     logger.warning(f"A chat is no longer served by Telegram ({type(e).__name__}); skipped")
                 except Exception as e:
@@ -1994,11 +2041,20 @@ class TelegramBackup:
                     for message_id in batch:
                         message = by_id.get(message_id)
                         for row in payload_rows.get(message_id, ()):
-                            await self._backfill_payload(chat, row, message, apply, kinds)
+                            listed_for_payload = not row["has_payload"]
+                            if listed_for_payload:
+                                await self._backfill_payload(chat, row, message, apply, kinds)
+                            if row.get("maps_allowed", True) and not summary["flood_wait_seconds"]:
+                                await self._backfill_map(chat, row, message, apply, summary, listed_for_payload)
                         if message_id in unflagged:
                             await self._backfill_edit_hide(
                                 chat, message_id, unflagged[message_id], message, apply, edits
                             )
+                    if summary["flood_wait_seconds"]:
+                        # A map picture met a FloodWait too long to sleep out:
+                        # the batches not read keep their paths, as above.
+                        unanswered.update(ids[start + len(batch) :])
+                        break
 
             for row in rows:
                 if not row["file_path"] or row["message_id"] in unanswered:
@@ -2013,8 +2069,15 @@ class TelegramBackup:
                         summary["paths_kept"] += 1
                         continue
                     summary["vcards_recovered"] += 1
-                if apply:
-                    if await self.db.clear_metadata_media_path(chat, row["media_id"], account_id=self.account_id):
+                if row.get("map_saved"):
+                    # The map picture took the leftover path's place on the row.
+                    summary["paths_cleared"] += 1
+                elif apply:
+                    # Only while the row still holds the listed path: a picture
+                    # stored meanwhile is never cleared.
+                    if await self.db.clear_metadata_media_path(
+                        chat, row["media_id"], account_id=self.account_id, file_path=row["file_path"]
+                    ):
                         summary["paths_cleared"] += 1
                 else:
                     summary["paths_cleared"] += 1
@@ -2034,9 +2097,110 @@ class TelegramBackup:
             f"edit flags: {edits['hidden']} hidden, {edits['shown']} shown, {edits['date_changed']} with a later "
             f"edit time, {edits['not_served']} not served; {summary['chats_unavailable']} chat(s) unavailable, "
             f"{summary['paths_cleared']} leftover path(s) cleared, {summary['paths_kept']} kept, "
-            f"{summary['errors']} error(s)"
+            f"{summary['errors']} error(s); map pictures: {maps['saved']} saved, {maps['not_served']} not served, "
+            f"{maps['no_point']} with no point, {maps['deferred']} deferred, {maps['errors']} error(s)"
         )
         return summary
+
+    def _map_backfill_allowed(self, chat: int, media_root: str | None) -> bool:
+        """True when backfill-details may fetch map pictures for this chat.
+
+        The gate the backup's own media row passes (DOWNLOAD_MEDIA,
+        SKIP_MEDIA_CHAT_IDS), and a media folder that is visibly there, so a
+        picture never lands beside a missing volume.
+        """
+        return media_root is not None and bool(self.config.should_download_media_for_chat(chat))
+
+    async def _backfill_map(
+        self, chat: int, row: dict, message: object | None, apply: bool, summary: dict, listed_for_payload: bool
+    ) -> None:
+        """Fetch and store the map picture of one listed location row, and count it.
+
+        Only for a location, a venue or a live location that holds its
+        payload now and no picture yet, read back as the same kind. The
+        picture goes on the row as its file (``insert_media``), which also
+        takes the place of a leftover path. A row read only for its payload
+        that Telegram did not serve is already counted there.
+        """
+        maps = summary["maps"]
+        if row["type"] not in MAP_PREVIEW_TYPES or is_map_preview_name(row.get("file_name")) or not row["has_payload"]:
+            return
+        media = getattr(message, "media", None) if message is not None else None
+        built = extract_media_payload(media, seen_at=message_seen_at(message)) if media is not None else None
+        if built is None or built[0] != row["type"]:
+            if not listed_for_payload:
+                maps["not_served"] += 1
+                await self._mark_map_not_served(chat, row, apply)
+            return
+        if map_point(media) is None:
+            maps["no_point"] += 1
+            await self._mark_map_not_served(chat, row, apply)
+            return
+        attempted = getattr(self, "_map_backfill_attempts", 0)
+        if attempted >= MAP_PREVIEW_BACKFILL_MAX_PER_RUN:
+            maps["deferred"] += 1
+            return
+        self._map_backfill_attempts = attempted + 1
+        if not apply:
+            maps["saved"] += 1
+            return
+        if attempted:
+            await asyncio.sleep(PAYLOAD_BACKFILL_PAUSE_SECONDS)
+        result = await self._map_preview(media, chat)
+        status = result.get("status")
+        if status == "flood":
+            summary["flood_wait_seconds"] = result.get("seconds") or 1
+            return
+        if status in ("not_served", "no_point"):
+            maps[status] += 1
+            await self._mark_map_not_served(chat, row, apply)
+            return
+        if status != "saved":
+            maps["errors"] += 1
+            return
+        written = await self.db.insert_media(
+            {
+                "id": row["media_id"],
+                "type": row["type"],
+                "message_id": row["message_id"],
+                "chat_id": chat,
+                "file_name": result["file_name"],
+                "file_path": result["file_path"],
+                "file_size": result["file_size"],
+                "mime_type": result["mime_type"],
+                "width": result["width"],
+                "height": result["height"],
+                "downloaded": True,
+                "download_date": utcnow_naive(),
+            },
+            account_id=self.account_id,
+        )
+        if written is None:
+            maps["errors"] += 1
+            return
+        maps["saved"] += 1
+        row["file_name"] = result["file_name"]
+        row["map_saved"] = True
+
+    async def _mark_map_not_served(self, chat: int, row: dict, apply: bool) -> None:
+        """Mark a location row Telegram serves no picture for, so later runs do not ask again.
+
+        Only ``skip_reason`` is written: no file field and no ``downloaded``
+        key, so insert_media keeps everything the row holds. A picture stored
+        later clears the mark (insert_media with ``downloaded``).
+        """
+        if not apply:
+            return
+        await self.db.insert_media(
+            {
+                "id": row["media_id"],
+                "type": row["type"],
+                "message_id": row["message_id"],
+                "chat_id": chat,
+                "skip_reason": MAP_NOT_SERVED_REASON,
+            },
+            account_id=self.account_id,
+        )
 
     async def _backfill_payload(self, chat: int, row: dict, message: object | None, apply: bool, kinds: dict) -> None:
         """Add the payload Telegram returned for one listed media row, and count it."""
@@ -4508,6 +4672,82 @@ class TelegramBackup:
             result["replaced"] = True
         return result
 
+    async def _map_preview_row(
+        self, message: Message, chat_id: int, media, media_type: str, media_id: str, existing: dict | None
+    ) -> dict:
+        """The media row of a location, a venue or a live location, with its map picture.
+
+        The picture is fetched when the row has none yet
+        (``fetch_map_preview``), and kept on the row as its file. Every other
+        read writes the row with no ``downloaded`` key and no file size, so
+        insert_media keeps a picture any writer stored: a read used to send
+        ``downloaded`` False and size 0, which reset both on a row holding a
+        file. A live location this read shows at another point than its
+        picture gets the picture of the new point, as the Telegram apps draw
+        the latest position; the earlier picture stays on disk (pictures are
+        named by their point and never removed). Only this read refreshes it,
+        not the listener, which sees every update of the position. A row
+        Telegram serves no picture for is marked ``MAP_NOT_SERVED_REASON``.
+        """
+        row = {"id": media_id, "type": media_type, "message_id": message.id, "chat_id": chat_id, "file_size": None}
+        has_picture = isinstance(existing, dict) and is_map_preview_name(existing.get("file_name"))
+        if has_picture and not self._live_point_moved(media, media_type, existing):
+            return row
+        result = await self._map_preview(media, chat_id)
+        if not has_picture and result.get("status") in ("not_served", "no_point"):
+            row["skip_reason"] = MAP_NOT_SERVED_REASON
+        if result.get("status") == "saved":
+            row.update(
+                {
+                    "file_name": result["file_name"],
+                    "file_path": result["file_path"],
+                    "file_size": result["file_size"],
+                    "mime_type": result["mime_type"],
+                    "width": result["width"],
+                    "height": result["height"],
+                    "downloaded": True,
+                    "download_date": utcnow_naive(),
+                }
+            )
+        return row
+
+    @staticmethod
+    def _live_point_moved(media, media_type: str, existing: dict) -> bool:
+        """True when a live location now shows another point than its stored picture."""
+        if media_type != "geo_live":
+            return False
+        point = map_point(media)
+        if point is None:
+            return False
+        stem, _extension = os.path.splitext(existing.get("file_name") or "")
+        return map_preview_stem(point[0], point[1]) != stem
+
+    async def _map_preview(self, media, chat_id: int) -> dict:
+        """``fetch_map_preview`` for one location, until a FloodWait pauses map pictures for this run.
+
+        A FloodWait longer than MEDIA_FLOOD_SLEEP_THRESHOLD stops the pictures
+        for the rest of the run, so the backup never stalls on maps; the rows
+        get their picture from a later read or from ``backfill-details``.
+        """
+        if getattr(self, "_map_previews_paused", False):
+            return {"status": "paused"}
+        threshold = getattr(self.config, "media_flood_sleep_threshold", 60)
+        if not isinstance(threshold, int) or isinstance(threshold, bool):
+            threshold = 60
+        result = await fetch_map_preview(
+            self.client,
+            media,
+            os.path.join(self.config.media_path, str(chat_id)),
+            flood_sleep_threshold=threshold,
+        )
+        if result.get("status") == "flood":
+            self._map_previews_paused = True
+            logger.warning(
+                f"Map pictures paused for this run after a FloodWait of {result.get('seconds', 0)}s; "
+                "a later run or backfill-details fetches the rest"
+            )
+        return result
+
     async def _media_row_for(
         self,
         message: Message,
@@ -4530,6 +4770,8 @@ class TelegramBackup:
         # downloadable files. Store them as metadata-only records when the
         # caller asks for media processing.
         if media_type in METADATA_ONLY_MEDIA_TYPES:
+            if media_type in MAP_PREVIEW_TYPES:
+                return await self._map_preview_row(message, chat_id, media, media_type, media_id, existing)
             return {
                 "id": media_id,
                 "type": media_type,
@@ -5653,6 +5895,7 @@ def _empty_backfill_summary() -> dict:
     return {
         "kinds": {kind: {"filled": 0, "already_present": 0, "not_served": 0} for kind in PAYLOAD_BACKFILL_TYPES},
         "edits": {"hidden": 0, "shown": 0, "date_changed": 0, "already_filled": 0, "not_served": 0},
+        "maps": {"saved": 0, "not_served": 0, "no_point": 0, "deferred": 0, "errors": 0},
         "chats_scanned": 0,
         "chats_unavailable": 0,
         "paths_cleared": 0,
@@ -5670,6 +5913,8 @@ def _add_backfill_summary(total: dict, summary: dict) -> None:
             bucket[key] = bucket.get(key, 0) + value
     for key, value in summary.get("edits", {}).items():
         total["edits"][key] = total["edits"].get(key, 0) + value
+    for key, value in summary.get("maps", {}).items():
+        total["maps"][key] = total["maps"].get(key, 0) + value
     for key in ("chats_scanned", "chats_unavailable", "paths_cleared", "paths_kept", "vcards_recovered", "errors"):
         total[key] += summary.get(key, 0)
     total["flood_wait_seconds"] = max(total.get("flood_wait_seconds", 0), summary.get("flood_wait_seconds", 0))

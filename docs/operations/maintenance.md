@@ -134,6 +134,8 @@ docker compose start telegram-backup
 
 Messages archived before the archive kept locations, venues, live locations and contacts show their card with `Details not archived`. Old polls archived by the backup can be in the same state. Messages archived before 9.0 also lack Telegram's flag for an edit time moved by a reaction, so a reaction shows as a pencil until a backup reads the message again. `backfill-details` asks Telegram for those messages again, each once, and adds only the missing details and flags. It never replaces text, dates, reactions or details already stored. It also clears the placeholder path older releases left on these rows when the file is empty, missing or no longer needed, and leaves every file on disk where it is. Run it where the media folder is mounted, as in the commands below: without it, every path is kept.
 
+It also fetches the map picture of each location, venue and live location that has a point and no picture yet, from Telegram's own servers, the way the backup now keeps it for new messages. It reads those messages in the same requests, so a message on several lists is still asked for once. Each picture is one more request, after the same one-second pause, and a run fetches at most 500; the rest are counted as deferred and wait for the next run. Pictures follow `DOWNLOAD_MEDIA` and `SKIP_MEDIA_CHAT_IDS`, and none is fetched when the media folder is missing or empty where the command runs. The picture takes the place of an old placeholder path on the same row.
+
 It is a dry run unless you add `--apply`:
 
 ```bash
@@ -143,9 +145,9 @@ docker compose run --rm telegram-backup python -m telegram_archive backfill-deta
 docker compose start telegram-backup
 ```
 
-It costs one request per 100 messages to read, plus one per chat, with a second between requests. An archive with 50,000 old edited messages takes at least 500 requests, so ten minutes or more. A dry run asks Telegram the same questions as a real run.
+It costs one request per 100 messages to read, plus one per chat, plus one per map picture, with a second between requests. An archive with 50,000 old edited messages takes at least 500 requests, so ten minutes or more, and 500 old locations add about ten minutes more. A dry run reads the same messages as a real run, but fetches no map picture.
 
-`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the edit flags filled as hidden (the pencil goes) and as shown (a real edit keeps it), the edits with a later edit time, then the chats Telegram no longer serves and the placeholder paths cleared and kept. If the run stops, run it again: it picks up the messages still missing their details or their flag, and a second complete run fills nothing. For every flag and the full output, see [backfill-details](../reference/cli.md#backfill-details).
+`-c CHAT_ID` limits it to one chat. The summary counts, per kind, the messages filled, the ones that already had their details and the ones Telegram no longer serves, then the edit flags filled as hidden (the pencil goes) and as shown (a real edit keeps it), the edits with a later edit time, then the chats Telegram no longer serves and the placeholder paths cleared and kept, then the map pictures saved, not served, with no point and deferred. If the run stops, run it again: it picks up the messages still missing their details, their flag or their picture, and a second complete run fills nothing. A location Telegram serves no picture for is marked and not asked for again. For every flag and the full output, see [backfill-details](../reference/cli.md#backfill-details).
 
 ## Verify media files
 

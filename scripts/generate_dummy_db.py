@@ -195,6 +195,38 @@ def draw_sticker(path: Path):
     img.save(path, "WEBP", quality=90)
 
 
+def draw_fake_map(path: Path, seed: int, size=(640, 480)):
+    """A made-up street plan in pale map colours: the shape of a map picture, no real place."""
+    from PIL import Image, ImageDraw
+
+    rng = random.Random(seed)
+    w, h = size
+    img = Image.new("RGB", size, (241, 238, 232))
+    d = ImageDraw.Draw(img)
+    # A park and a pond.
+    px, py = rng.randint(40, w // 2), rng.randint(40, h // 2)
+    d.rounded_rectangle([px, py, px + rng.randint(120, 200), py + rng.randint(90, 150)], 18, fill=(205, 232, 196))
+    wx, wy = rng.randint(w // 2, w - 160), rng.randint(h // 2, h - 120)
+    d.ellipse([wx, wy, wx + rng.randint(110, 170), wy + rng.randint(70, 110)], fill=(174, 212, 236))
+    # Side streets, then two main roads on top.
+    for _ in range(9):
+        if rng.random() < 0.5:
+            y = rng.randint(0, h)
+            d.line([(0, y), (w, y + rng.randint(-40, 40))], fill=(255, 255, 255), width=7)
+        else:
+            x = rng.randint(0, w)
+            d.line([(x, 0), (x + rng.randint(-40, 40), h)], fill=(255, 255, 255), width=7)
+    for points in (
+        [(0, h * 0.42), (w * 0.45, h * 0.52), (w, h * 0.47)],
+        [(w * 0.58, 0), (w * 0.5, h * 0.5), (w * 0.62, h)],
+    ):
+        d.line(points, fill=(214, 206, 190), width=20, joint="curve")
+        d.line(points, fill=(253, 226, 160), width=14, joint="curve")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "PNG", optimize=True)
+    return size
+
+
 def lottie_sun() -> dict:
     """The same sun as a Lottie animation, the format of a Telegram animated sticker.
 
@@ -766,11 +798,12 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
     filler(s, "casual", [JUNIPER, OWNER_PERSONAL], now - 40 * day, now - 2 * day, 30)
     # A location, a venue, a live location that has ended and a shared
     # contact, drawn as cards. Demo places and a fake number only. The venue
-    # and the location carry the media row the backup writes; the live
-    # location and the contact have none, as the listener stores them. The
-    # oldest location and the poll after it were archived by a release that
-    # kept no payload and left a path to an empty placeholder file, so they
-    # say "Details not archived".
+    # and the location carry the media row the backup writes, with a map
+    # picture (a made-up street plan); the live location and the contact have
+    # none, as the listener stores them when Telegram serves no picture, so
+    # they show the card without a map. The oldest location and the poll after
+    # it were archived by a release that kept no payload and left a path to an
+    # empty placeholder file, so they say "Details not archived".
     t = today - day + timedelta(hours=8)
     s.add(t - 5 * day, JUNIPER, "", media={"type": "geo", "legacy_bin": True})
     s.add(t - 5 * day + timedelta(minutes=1), JUNIPER, "", media={"type": "poll", "legacy_bin": True})
@@ -780,7 +813,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         JUNIPER,
         "",
         reply=bakery_q,
-        media={"type": "venue"},
+        media={"type": "venue", "map": True},
         raw={
             "venue": {
                 "title": "Elm Street Bakery",
@@ -797,7 +830,7 @@ def build(now: datetime) -> tuple[list[dict], list[ChatScript], list[dict]]:
         t + timedelta(minutes=3),
         JUNIPER,
         "",
-        media={"type": "geo"},
+        media={"type": "geo", "map": True},
         raw={"geo": {"lat": 40.41902, "long": -3.70091, "accuracy_radius": 25}},
     )
     s.add(t + timedelta(minutes=4), JUNIPER, "I parked there, the bakery is two streets down.", reply=parked)
@@ -1342,6 +1375,18 @@ def write_media_files(media_root: Path, scripts: list[ChatScript]) -> None:
                 # which no longer exists on disk.
                 m["file_size"] = 0
                 m["downloaded"] = False
+                if m.pop("map", False):
+                    # The map picture the backup keeps on a location's row,
+                    # drawn here as a made-up street plan.
+                    name = f"map_{hashlib.sha256(m['id'].encode()).hexdigest()[:16]}.png"
+                    w, h = draw_fake_map(folder / name, file_id)
+                    path = folder / name
+                    m.update(file_name=name, mime_type="image/png", width=w, height=h)
+                    m["file_path"] = f"{s.chat_id}/{name}"
+                    m["file_size"] = path.stat().st_size
+                    m["downloaded"] = True
+                    m["download_date"] = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+                    continue
                 if m.pop("legacy_bin", False):
                     m["file_name"] = f"{file_id}.bin"
                     m["file_path"] = f"{s.chat_id}/{file_id}.bin"

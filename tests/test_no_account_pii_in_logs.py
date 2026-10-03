@@ -945,6 +945,24 @@ async def test_the_payload_backfill_never_logs_a_location_or_a_contact(caplog, t
     _assert_no_card_values(caplog)
 
 
+async def test_the_map_picture_never_logs_the_point(caplog, tmp_path, monkeypatch):
+    """fetch_map_preview through a saved picture, a network error naming the point, a non-image answer and a refusal."""
+    import logging
+
+    from telethon.errors import LocationInvalidError
+    from test_map_preview import JPEG, FakeTelegram, _media
+
+    import telegram_archive.map_preview as map_preview
+
+    monkeypatch.setattr(map_preview, "_webfile_dc_id", None)
+    caplog.set_level(logging.DEBUG)
+    cases = ([JPEG], [ConnectionError("40.416775,-3.70379")], [b"<html>"], [LocationInvalidError(None)])
+    for index, answers in enumerate(cases):
+        await map_preview.fetch_map_preview(FakeTelegram(answers), _media("geo"), str(tmp_path / str(index)))
+    assert caplog.records, "nothing was logged, so this check proves nothing"
+    _assert_no_card_values(caplog)
+
+
 def test_the_card_check_can_fail(caplog):
     """Positive control: a record that does carry the phone is caught."""
     import logging
