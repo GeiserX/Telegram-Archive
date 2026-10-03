@@ -1975,6 +1975,20 @@ class TestInternalPushEndpoint(_WebTestBase):
         finally:
             web_main.realtime_listener = saved_listener
 
+    async def test_a_push_the_viewer_cannot_process_is_not_answered_as_delivered(self):
+        """A processing error answers 500, so the backup's notifier counts it as a failure, not a delivery."""
+        mock_listener = MagicMock()
+        mock_listener.handle_http_push = AsyncMock(side_effect=RuntimeError("boom"))
+        saved_listener = web_main.realtime_listener
+        web_main.realtime_listener = mock_listener
+        try:
+            async with self._client() as client:
+                resp = await client.post("/internal/push", json={"type": "new_message", "chat_id": 1})
+            self.assertEqual(resp.status_code, 500)
+            self.assertEqual(resp.json()["status"], "error")
+        finally:
+            web_main.realtime_listener = saved_listener
+
 
 # ============================================================================
 # Exception handler

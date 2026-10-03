@@ -4433,7 +4433,9 @@ async def internal_push(request: Request):
         return {"status": "ok"}
     except Exception as e:
         logger.warning(f"Error handling internal push: {e}")
-        return {"status": "error", "detail": "Internal push processing failed"}
+        # A 500, not a 200 with an error body: the backup's notifier counts a
+        # 200 as delivered and would re-arm its once-per-outage warning on it.
+        return JSONResponse({"status": "error", "detail": "Internal push processing failed"}, status_code=500)
 
 
 # ============================================================================
