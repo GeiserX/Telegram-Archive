@@ -538,9 +538,10 @@ handle({json.dumps(frame)})
         clip gets a new element."""
         videos = [chunk.split(">", 1)[0] for chunk in HTML.split("<video")[1:]]
         # A <video :src> (the info panel, the lightbox) reloads when its src changes;
-        # the bubble's four load through a <source> or data-src and need the key.
+        # the bubble's five (an album tile, a GIF, a round video, a video and a
+        # video sticker) load through a <source> or data-src and need the key.
         bubble = [tag for tag in videos if "getMediaUrl(" in tag and ':src="' not in tag]
-        self.assertEqual(len(bubble), 4, bubble)
+        self.assertEqual(len(bubble), 5, bubble)
         for tag in bubble:
             self.assertRegex(tag, r':key="getMediaUrl\((msg|albumMsg)\)"', tag)
 
