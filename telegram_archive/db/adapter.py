@@ -6834,16 +6834,24 @@ class DatabaseAdapter:
 
         Returns True when the row reached the cap with this attempt.
         """
+        # Two statements the database runs atomically, not a read and a write:
+        # the listener and a backup run can count the same id at once, and a
+        # read-then-write would lose one of the two attempts.
+        pending = and_(CustomEmoji.document_id == document_id, CustomEmoji.downloaded == 0)
         async with self.db_manager.async_session_factory() as session:
-            row = await session.get(CustomEmoji, document_id)
-            if row is None or row.downloaded:
+            counted = await session.execute(
+                update(CustomEmoji).where(pending).values(attempts=func.coalesce(CustomEmoji.attempts, 0) + 1)
+            )
+            if not counted.rowcount:
+                await session.rollback()
                 return False
-            row.attempts = (row.attempts or 0) + 1
-            capped = row.attempts >= max_attempts
-            if capped:
-                row.skip_reason = reason
+            capped = await session.execute(
+                update(CustomEmoji)
+                .where(pending, CustomEmoji.attempts >= max_attempts, CustomEmoji.skip_reason.is_(None))
+                .values(skip_reason=reason)
+            )
             await session.commit()
-            return capped
+            return bool(capped.rowcount)
 
     async def get_custom_emoji(self, document_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
         """{id: row} of the known ids among ``document_ids``; unknown ids are left out."""
@@ -6904,10 +6912,12 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def rearm_custom_emoji(self, document_ids: Iterable[int]) -> int:
-        """Mark ids for a new download: attempts back to 0 on rows not downloaded.
+        """Mark ids that gave up for a new download: attempts back to 0, the reason cleared.
 
-        Only rows with no skip reason, or one that may change ('unavailable',
-        'failed'). Nothing is deleted. Returns how many rows were marked.
+        Only rows not downloaded whose skip reason may change ('unavailable',
+        'failed'). A row still counting its attempts is left alone, so repeated
+        runs cannot reset the count and step past the cap. Nothing is deleted.
+        Returns how many rows were marked.
         """
         ids = sorted(set(document_ids))
         marked = 0
@@ -6920,7 +6930,7 @@ class DatabaseAdapter:
                     .where(
                         CustomEmoji.document_id.in_(ids[start : start + 500]),
                         CustomEmoji.downloaded == 0,
-                        or_(CustomEmoji.skip_reason.is_(None), CustomEmoji.skip_reason.in_(("unavailable", "failed"))),
+                        CustomEmoji.skip_reason.in_(("unavailable", "failed")),
                     )
                     .values(attempts=0, skip_reason=None)
                 )

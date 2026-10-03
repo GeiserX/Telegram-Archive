@@ -499,6 +499,36 @@ class TestBackfill:
         rows = await _rows(real_adapter)
         assert [(i, r["downloaded"], r["skip_reason"]) for i, r in rows.items()] == [(SUN, 1, None), (MOON, 1, None)]
 
+    async def test_rearming_leaves_a_row_still_counting_its_attempts(self, real_adapter):
+        """Only a row that gave up is marked again: repeated runs cannot reset a count and step past the cap."""
+        await _seed(real_adapter)
+        await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": f"custom_{SUN}", "count": 1}], account_id=1)
+        await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": f"custom_{MOON}", "count": 1}], account_id=1)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(update(CustomEmoji).where(CustomEmoji.document_id == SUN).values(attempts=2))
+            await session.execute(
+                update(CustomEmoji).where(CustomEmoji.document_id == MOON).values(attempts=3, skip_reason="failed")
+            )
+            await session.commit()
+
+        assert await real_adapter.rearm_custom_emoji([SUN, MOON]) == 1
+
+        rows = await _rows(real_adapter)
+        assert (rows[SUN]["attempts"], rows[SUN]["skip_reason"]) == (2, None)
+        assert (rows[MOON]["attempts"], rows[MOON]["skip_reason"]) == (0, None)
+
+    async def test_an_attempt_is_counted_in_the_database_and_caps_once(self, real_adapter):
+        """The count is one UPDATE, so two writers cannot both read the old value; the cap is reported once."""
+        await _seed(real_adapter)
+        await real_adapter.reconcile_reactions(1, CHAT_ID, [{"emoji": f"custom_{SUN}", "count": 1}], account_id=1)
+
+        answers = [await real_adapter.count_custom_emoji_attempt(SUN, "unavailable", 3) for _ in range(4)]
+
+        assert answers == [False, False, True, False]
+        row = (await _rows(real_adapter))[SUN]
+        assert (row["attempts"], row["skip_reason"]) == (4, "unavailable")
+        assert await real_adapter.count_custom_emoji_attempt(MOON, "unavailable", 3) is False
+
 
 # ---------------------------------------------------------------------------
 # The viewer
