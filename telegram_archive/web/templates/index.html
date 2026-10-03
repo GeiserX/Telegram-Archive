@@ -6065,6 +6065,90 @@
             width: 20px;
             height: 20px;
         }
+        /* A location with its map picture: the picture Telegram's own servers
+           rendered for the point, kept by the archive and served by this
+           viewer like any file, so no tile server or third party sees the
+           point. The pin is drawn over the centre, as the official apps draw
+           it, and the title, the lines and the copy button stay under the
+           picture. The 44px disc steps aside. */
+        .geo-card.has-map {
+            position: relative;
+            padding: 4px;
+        }
+        .geo-card.has-map .geo-card-main {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 6px;
+        }
+        .geo-card.has-map .geo-card-pin {
+            display: none;
+        }
+        .geo-card.has-map .geo-card-text {
+            padding-block-end: 4px;
+            padding-inline: 6px 44px;
+        }
+        .geo-card.has-map .geo-card-action {
+            position: absolute;
+            bottom: 4px;
+            inset-inline-end: 6px;
+        }
+        .geo-card-map {
+            position: relative;
+            display: block;
+            overflow: hidden;
+            aspect-ratio: 4 / 3;
+            border-radius: 8px;
+            background: rgb(var(--tg-quote) / 0.12);
+        }
+        .geo-card-map img {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        /* The pin's tip sits on the centre of the picture, which is the point. */
+        .geo-card-map-pin {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -100%);
+            color: rgb(var(--tg-quote));
+            filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.35));
+        }
+        .geo-card-map-pin svg {
+            display: block;
+            width: 32px;
+            height: 42px;
+        }
+        .geo-card-map-pin svg path {
+            fill: currentColor;
+            stroke: #fff;
+            stroke-width: 2;
+        }
+        .geo-card-map-pin svg circle {
+            fill: #fff;
+        }
+        /* A live location holds the sender's picture in a ring with a tail. */
+        .geo-card-map-pin.is-live {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 44px;
+            border-radius: 9999px;
+            background: rgb(var(--tg-quote));
+            transform: translate(-50%, calc(-100% - 7px));
+        }
+        .geo-card-map-pin.is-live::after {
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            border-top: 8px solid rgb(var(--tg-quote));
+            border-right: 6px solid transparent;
+            border-left: 6px solid transparent;
+            content: "";
+            transform: translate(-50%, -1px);
+        }
 
         /* Album Grid Styles: 2px seams, no rounding inside. */
         .album-grid {
@@ -7860,17 +7944,32 @@
 
                                     <!-- A location, a venue or a live location: a static card with
                                          a pin, as the Telegram apps draw one, keyed on raw_data first
-                                         (the listener writes no media row for these). The card opens
-                                         the place on OpenStreetMap in a new tab; nothing is requested
-                                         from anyone until the reader clicks. A row with the type and no
-                                         payload yet says so, with no link. -->
+                                         (the listener writes no media row when it has no map picture).
+                                         With the map picture the archive kept, the picture tops the
+                                         card. The card opens the place on OpenStreetMap in a new tab;
+                                         nothing is requested from anyone else until the reader clicks.
+                                         A row with the type and no payload yet says so, with no link. -->
                                     <template v-for="card in [locationCard(msg)]" :key="'location-card'">
-                                    <div v-if="card" class="geo-card bg-tg-quote-bg mb-1.5" :class="'is-' + card.kind">
+                                    <div v-if="card" class="geo-card bg-tg-quote-bg mb-1.5" :class="['is-' + card.kind, { 'has-map': card.map }]">
                                         <component :is="card.url ? 'a' : 'div'" class="geo-card-main"
                                             :href="card.url" :target="card.url ? '_blank' : null"
                                             :rel="card.url ? 'noopener noreferrer' : null"
                                             :title="card.url ? 'Open on OpenStreetMap' : null"
                                             :aria-label="card.url ? `${card.label}. Open on OpenStreetMap` : null">
+                                            <!-- The map picture Telegram rendered for the point, kept on
+                                                 the location's own media row and served by this viewer
+                                                 (a relative /media/ URL, never a tile server). When it
+                                                 does not load, the card falls back to the disc. -->
+                                            <span v-if="card.map" class="geo-card-map">
+                                                <img :src="card.map" alt="" loading="lazy" decoding="async" width="320" height="240" @error="msg.mapLoadFailed = true">
+                                                <span class="geo-card-map-pin" :class="{ 'is-live': card.kind === 'geo_live' }" aria-hidden="true">
+                                                    <span v-if="card.kind === 'geo_live'" class="geo-card-avatar avatar-initials" :style="{ background: getAvatarFill(msg) }">
+                                                        <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url" alt="" loading="lazy" @error="msg.sender_avatar_url = null">
+                                                        <template v-else>{{ getSenderInitials(msg) }}</template>
+                                                    </span>
+                                                    <svg v-else viewBox="0 0 32 42"><path d="M16 1C7.7 1 1 7.6 1 15.8 1 27 16 41 16 41s15-14 15-25.2C31 7.6 24.3 1 16 1Z"/><circle cx="16" cy="16" r="5.5"/></svg>
+                                                </span>
+                                            </span>
                                             <span class="geo-card-pin" aria-hidden="true">
                                                 <span v-if="card.kind === 'geo_live'" class="geo-card-avatar avatar-initials" :style="{ background: getAvatarFill(msg) }">
                                                     <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url" alt="" loading="lazy" @error="msg.sender_avatar_url = null">
@@ -16145,7 +16244,14 @@
                         }
                     }
                     const label = [title, ...lines.map(line => line.text)].join('. ')
-                    return { kind, archived, point, coordinates, url: openStreetMapUrl(point), title, lines, label }
+                    // The map picture the archive kept on this kind's own media
+                    // row: the server's relative /media/ URL, or null when there
+                    // is none, this login may not download, or it failed to load.
+                    const media = msg.media
+                    const map = media && media.type === kind && typeof media.url === 'string' && media.url.startsWith('/media/') && !msg.mapLoadFailed
+                        ? media.url
+                        : null
+                    return { kind, archived, point, coordinates, url: openStreetMapUrl(point), title, lines, label, map }
                 }
 
                 // The card of a shared contact, or null. The name falls back to

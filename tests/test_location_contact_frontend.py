@@ -198,6 +198,43 @@ class TestCards(unittest.TestCase):
         self.assertEqual(card["kind"], "geo_live")
         self.assertEqual(card["title"], "Live location")
 
+    # --- map picture ------------------------------------------------------
+
+    def test_the_map_is_the_kinds_own_media_url(self):
+        geo = {"lat": 40.416775, "long": -3.70379}
+        for kind in ("geo", "venue", "geo_live"):
+            with self.subTest(kind=kind):
+                card = self._location(
+                    {"date": SENT, "media": {"type": kind, "url": f"/media/r1/5_{kind}"}, "raw_data": {kind: geo}}
+                )
+                self.assertEqual(card["map"], f"/media/r1/5_{kind}")
+
+    def test_no_map_without_a_url_of_the_same_kind(self):
+        geo = {"lat": 1.0, "long": 2.0}
+        for msg in (
+            {"date": SENT, "raw_data": {"geo": geo}},  # the listener stored no row
+            {"date": SENT, "media": {"type": "geo", "url": None}, "raw_data": {"geo": geo}},  # no-download login
+            {"date": SENT, "media": {"type": "geo"}, "raw_data": {"geo": geo}},
+            {"date": SENT, "media": {"type": "geo", "url": "/media/r1/5_geo"}, "raw_data": {"geo_live": geo}},
+            {"date": SENT, "media": {"type": "geo", "url": "https://tile.example/1.png"}, "raw_data": {"geo": geo}},
+            {
+                "date": SENT,
+                "media": {"type": "geo", "url": "/media/r1/5_geo"},
+                "raw_data": {"geo": geo},
+                "mapLoadFailed": True,
+            },
+        ):
+            with self.subTest(msg=msg):
+                self.assertIsNone(self._location(msg)["map"])
+
+    def test_the_map_changes_nothing_else_on_the_card(self):
+        msg = {"date": SENT, "raw_data": {"geo": {"lat": 1.0, "long": 2.0}}}
+        plain = self._location(msg)
+        mapped = self._location({**msg, "media": {"type": "geo", "url": "/media/r1/5_geo"}})
+        self.assertEqual(
+            {k: v for k, v in mapped.items() if k != "map"}, {k: v for k, v in plain.items() if k != "map"}
+        )
+
     # --- contact ----------------------------------------------------------
 
     def _contact(self, data):
@@ -367,6 +404,33 @@ class TestCardMarkupAndColours(unittest.TestCase):
         )
         self.assertEqual(hosts, {"www.openstreetmap.org"})
         self.assertNotIn("innerHTML", self.markup)
+
+    def test_the_map_picture_tops_the_card_inside_its_link(self):
+        """A decorative picture inside the one link, from the viewer's own /media/ route, with a fallback."""
+        self.assertIn(":class=\"['is-' + card.kind, { 'has-map': card.map }]\"", self.markup)
+        link_start = self.markup.index("<component :is=\"card.url ? 'a' : 'div'\" class=\"geo-card-main\"")
+        link_end = self.markup.index("</component>", link_start)
+        image = self.markup.index('<img :src="card.map"', link_start)
+        self.assertLess(image, link_end)
+        tag = self.markup[image : self.markup.index(">", image)]
+        for attribute in ('alt=""', 'loading="lazy"', '@error="msg.mapLoadFailed = true"'):
+            self.assertIn(attribute, tag)
+        self.assertIn('<span v-if="card.map" class="geo-card-map">', self.markup)
+        self.assertIn(
+            'class="geo-card-map-pin" :class="{ \'is-live\': card.kind === \'geo_live\' }" aria-hidden="true"',
+            self.markup,
+        )
+
+    def test_the_map_layout(self):
+        self.assertIn("aspect-ratio: 4 / 3;", self._rule(".geo-card-map"))
+        self.assertIn("object-fit: cover;", self._rule(".geo-card-map img"))
+        self.assertIn("display: none;", self._rule(".geo-card.has-map .geo-card-pin"))
+        self.assertIn("flex-direction: column;", self._rule(".geo-card.has-map .geo-card-main"))
+        # The pin's tip on the centre of the picture, which is the point.
+        pin = self._rule(".geo-card-map-pin")
+        self.assertIn("top: 50%;", pin)
+        self.assertIn("left: 50%;", pin)
+        self.assertIn("transform: translate(-50%, -100%);", pin)
 
     def test_screen_readers_get_a_label_for_every_control(self):
         self.assertIn(':aria-label="card.url ? `${card.label}. Open on OpenStreetMap` : null"', self.markup)
