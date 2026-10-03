@@ -261,7 +261,7 @@ Log in once, then start the backup:
 
 ```bash
 docker run -it --rm --env-file .env -v ./data:/data \
-  drumsergio/telegram-archive:9.2.1 python -m telegram_archive auth
+  drumsergio/telegram-archive:9.3.0 python -m telegram_archive auth
 
 docker run -d --name telegram-backup --restart unless-stopped \
   --network telegram-archive \
@@ -271,7 +271,7 @@ docker run -d --name telegram-backup --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --stop-timeout 90 \
   --log-opt max-size=10m --log-opt max-file=3 \
-  drumsergio/telegram-archive:9.2.1 python -m telegram_archive schedule
+  drumsergio/telegram-archive:9.3.0 python -m telegram_archive schedule
 ```
 
 The viewer gets explicit `-e` variables, never the whole `.env`. Its database settings must match the backup's. With the image defaults, both use `/data/backups/telegram_backup.db`:
@@ -290,7 +290,7 @@ docker run -d --name telegram-viewer --restart unless-stopped \
   -e VIEWER_TIMEZONE=Europe/London \
   -e DB_TYPE=sqlite \
   -e DB_PATH=/data/backups/telegram_backup.db \
-  drumsergio/telegram-archive-viewer:9.2.1
+  drumsergio/telegram-archive-viewer:9.3.0
 ```
 
 For PostgreSQL, see [SQLite and PostgreSQL](../configuration/database.md). What each setting means is in [Environment variables](../reference/environment-variables.md).
