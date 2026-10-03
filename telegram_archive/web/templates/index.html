@@ -17288,9 +17288,12 @@
                     pending: 'not downloaded yet',
                     get hidden() { return `hidden for this ${sessionWord.value}` },
                 }
+                // A file that would not load is missing, unless the row says the
+                // archive will download it again (check-media marked a file cut
+                // short or gone): then it is "not downloaded yet", with the clock.
                 const mediaMissingReason = (msg) => {
                     const media = msg.media || {}
-                    if (media.file_path && msg.mediaLoadFailed) return 'missing'
+                    if (media.file_path && msg.mediaLoadFailed) return media.downloaded === false ? 'pending' : 'missing'
                     if (media.skip_reason === 'oversize') return 'oversize'
                     if (media.skip_reason === 'filtered') return 'filtered'
                     if (media.no_download) return 'hidden'

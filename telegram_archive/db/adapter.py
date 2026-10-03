@@ -8044,6 +8044,10 @@ class DatabaseAdapter:
                         "height": media_row.height,
                         "duration": media_row.duration,
                         "skip_reason": media_row.skip_reason,
+                        # The viewer words a file that will not play by it: a
+                        # row marked for a new download is "not downloaded
+                        # yet", not "missing from the archive disk".
+                        "downloaded": bool(media_row.downloaded),
                     }
                 for account, msg in zip(row_accounts, messages, strict=True):
                     msg["media"] = media_by_key.get((account, msg["id"]))
@@ -8361,6 +8365,7 @@ class DatabaseAdapter:
                     Media.height.label("media_height"),
                     Media.duration.label("media_duration"),
                     Media.skip_reason.label("media_skip_reason"),
+                    Media.downloaded.label("media_downloaded"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
                 .outerjoin(
@@ -8416,6 +8421,7 @@ class DatabaseAdapter:
                     "height": row.media_height,
                     "duration": row.media_duration,
                     "skip_reason": row.media_skip_reason,
+                    "downloaded": bool(row.media_downloaded),
                 }
             else:
                 msg["media"] = None
@@ -8527,6 +8533,7 @@ class DatabaseAdapter:
                     Media.height.label("media_height"),
                     Media.duration.label("media_duration"),
                     Media.skip_reason.label("media_skip_reason"),
+                    Media.downloaded.label("media_downloaded"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
                 .outerjoin(
@@ -8569,6 +8576,7 @@ class DatabaseAdapter:
                         "height": row.media_height,
                         "duration": row.media_duration,
                         "skip_reason": row.media_skip_reason,
+                        "downloaded": bool(row.media_downloaded),
                     }
                 else:
                     msg["media"] = None
