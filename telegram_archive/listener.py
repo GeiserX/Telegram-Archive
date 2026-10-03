@@ -1150,6 +1150,11 @@ class TelegramListener:
         """
         if isinstance(existing, dict) and is_map_preview_name(existing.get("file_name")):
             return existing
+        # A long FloodWait pauses the pictures for as long as Telegram asked,
+        # as the backup pauses them for its run: asking again inside the
+        # window only lengthens it, on the client the backup shares.
+        if time.monotonic() < getattr(self, "_map_previews_paused_until", 0.0):
+            return None
         threshold = getattr(self.config, "media_flood_sleep_threshold", 60)
         if not isinstance(threshold, int) or isinstance(threshold, bool):
             threshold = 60
@@ -1159,6 +1164,14 @@ class TelegramListener:
             os.path.join(self.config.media_path, str(chat_id)),
             flood_sleep_threshold=threshold,
         )
+        if result.get("status") == "flood":
+            seconds = result.get("seconds", 0)
+            seconds = seconds if isinstance(seconds, (int, float)) and seconds > 0 else threshold
+            self._map_previews_paused_until = time.monotonic() + seconds
+            logger.warning(
+                f"Map pictures paused for {int(seconds)}s after a FloodWait; backfill-details fetches the rest"
+            )
+            return None
         if result.get("status") != "saved":
             logger.debug(f"No map picture for a real-time capture ({result.get('status')})")
             return None

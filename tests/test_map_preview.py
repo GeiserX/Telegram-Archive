@@ -540,6 +540,32 @@ class TestListener:
         assert await listener._store_message_media(_telegram_message(13, _media("geo")), CHAT_ID, "geo") is None
         assert client.calls == []
 
+    async def test_a_long_flood_wait_pauses_the_pictures_for_its_length(self, real_adapter, tmp_path, monkeypatch):
+        """Inside the window no request goes out; once it has passed, the next location asks again."""
+        from telegram_archive import listener as listener_module
+
+        await _seed_message(real_adapter, 14)
+        await _seed_message(real_adapter, 15)
+        await _seed_message(real_adapter, 16)
+        client = FakeTelegram([FloodWaitError(request=None, capture=900), PNG])
+        listener = _listener(real_adapter, client, tmp_path)
+        clock = [1000.0]
+        monkeypatch.setattr(listener_module.time, "monotonic", lambda: clock[0])
+
+        assert await listener._store_message_media(_telegram_message(14, _media("geo")), CHAT_ID, "geo") is None
+        clock[0] += 10
+        assert (
+            await listener._store_message_media(_telegram_message(15, _media("geo", _geo(lat=1.5))), CHAT_ID, "geo")
+            is None
+        )
+        assert len(client.calls) == 1
+
+        clock[0] += 900
+        ws_media = await listener._store_message_media(
+            _telegram_message(16, _media("geo", _geo(lat=2.5))), CHAT_ID, "geo"
+        )
+        assert ws_media is not None and len(client.calls) == 2
+
 
 # ---------------------------------------------------------------------------
 # backfill-details
