@@ -98,3 +98,10 @@ class TestShippedDefaults(unittest.TestCase):
         cell = _reference_default("SCHEDULE")
         self.assertTrue(cell.startswith(f"`{_config().schedule}`"), cell)
         self.assertIn(f"`{_config(ENABLE_LISTENER='false').schedule}` with `ENABLE_LISTENER=false`", cell)
+
+    def test_the_drain_interval_matches_the_code(self):
+        default = str(_config().transcription_drain_interval_minutes)
+        self.assertEqual(default, "15")
+        self.assertEqual(_compose_default("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES", commented=True), default)
+        self.assertEqual(_env_example_value("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES", commented=True), default)
+        self.assertEqual(_reference_default("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES"), f"`{default}`")
