@@ -23,10 +23,14 @@ The media folder lives beside the SQLite file, never around it.
 
 import hashlib
 import io
+import json
 import os
+import shutil
 import struct
+import subprocess
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -786,3 +790,87 @@ class TestTheDrainForgetsFailuresAboutEarlierBytes:
         await _seed(real_adapter, file_path=f"{CHAT}/{FILE}", data=FULL)
         await _fail_three_times(real_adapter, None)
         assert await _drain(real_adapter) == []
+
+
+# --- the viewer words a marked file as not downloaded yet ----------------------------
+
+
+INDEX_HTML = Path(__file__).resolve().parents[1] / "telegram_archive" / "web" / "templates" / "index.html"
+
+
+class TestTheMessagePayloadSaysWhetherTheFileIsDownloaded:
+    async def test_a_marked_row_reads_not_downloaded_and_a_kept_one_downloaded(self, real_adapter, tmp_path):
+        media = str(tmp_path / "media")
+        _blob, (link,) = _shared_layout(media, CUT)
+        await _seed(real_adapter, file_path=link, data=CUT)
+
+        def media_of(messages):
+            return [m["media"] for m in messages if m["id"] == MESSAGE_ID][0]
+
+        page = await real_adapter.get_messages_paginated(CHAT, limit=10, account_id=1)
+        assert media_of(page)["downloaded"] is True
+        await check_media(real_adapter, media, repair=True)
+        page = await real_adapter.get_messages_paginated(CHAT, limit=10, account_id=1)
+        assert media_of(page)["downloaded"] is False
+        assert media_of(page)["file_path"] == link  # the path stays, so the bytes can still be served
+
+        found = await real_adapter.find_message_by_date_with_joins(CHAT, datetime(2025, 12, 6, 12), account_id=1)
+        assert found["media"]["downloaded"] is False
+        await real_adapter.update_message_pinned(CHAT, MESSAGE_ID, True, account_id=1)
+        pinned = await real_adapter.get_pinned_messages(CHAT, account_id=1)
+        assert media_of(pinned)["downloaded"] is False
+
+
+def _matching_brace(source: str, opening: int) -> int:
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise ValueError("unbalanced")
+
+
+def _function_source(name: str) -> str:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index(f"const {name} = (msg) => {{")
+    return html[start : _matching_brace(html, html.index("{", start)) + 1]
+
+
+def _run_node(script: str) -> str:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node executable is not installed")
+    # The script is built here from the shipped template; no input reaches a shell.
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+class TestThePlaceholderReason:
+    def test_a_failed_load_of_a_row_marked_for_a_new_download_is_not_downloaded_yet(self):
+        cases = {
+            "marked": {"file_path": "a.mp4", "downloaded": False},
+            "kept": {"file_path": "a.mp4", "downloaded": True},
+            "older_payload": {"file_path": "a.mp4"},
+            "no_path": {"downloaded": False},
+            "oversize": {"downloaded": False, "skip_reason": "oversize"},
+        }
+        script = f"""
+{_function_source("mediaMissingReason")}
+const cases = {json.dumps(cases)}
+const out = {{}}
+for (const [name, media] of Object.entries(cases)) {{
+    out[name] = mediaMissingReason({{ media, mediaLoadFailed: !!media.file_path }})
+}}
+console.log(JSON.stringify(out))
+"""
+        assert json.loads(_run_node(script)) == {
+            "marked": "pending",
+            "kept": "missing",
+            "older_payload": "missing",
+            "no_path": "pending",
+            "oversize": "oversize",
+        }
