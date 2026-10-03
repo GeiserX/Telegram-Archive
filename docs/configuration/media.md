@@ -103,7 +103,7 @@ media/
 
 - The real file sits at `media/_shared/<first two hex characters of its SHA-256>/<name>`.
 - Each chat folder holds a relative symlink to it.
-- When a file with the same name already exists in `_shared`, the backup creates the symlink and downloads nothing.
+- When a file with the same name already exists in `_shared`, the backup creates the symlink and downloads nothing, unless the file is shorter than Telegram's declared size (see [A file cut short](#a-file-cut-short)).
 - A new download is hashed. If a file with identical content already exists for the same account, that file is reused and the new copy is deleted. Content deduplication never reuses files across accounts.
 - Where symlinks are not supported, the file is copied into the chat folder instead. The shared file stays in `_shared`, since another chat may already link to it.
 
@@ -119,7 +119,15 @@ A row is marked only when its file is provably gone: the media folder is there a
 
 Three places repair: [`check-media`](../reference/cli.md#check-media) checks every row and repairs with `--repair`, `VERIFY_MEDIA` repairs what it finds, and the transcription drain repairs a file before it sends it. Without `VERIFY_MEDIA`, a backup run that reads a downloaded row behind a broken link fetches it again, where the media settings allow, and ends with one warning: how many it met, and the `check-media` command to run. It counts only the rows the run reads, so run `check-media` to find the rest. A link into another store that this process cannot follow, such as a git-annex object outside the mount, is never touched. Locations, contacts, polls and the other metadata-only kinds have no file at all, so an old `.bin` path or link on such a row is never repaired or fetched. The map picture of a location is not checked either: when it is gone from the disk, the viewer shows the card without it.
 
-With `DEDUPLICATE_MEDIA=false`, files go straight into `media/<chat_id>/`. A file that already exists there is never downloaded again.
+### A file cut short { #a-file-cut-short }
+
+Telegram declares the exact size of every document, and of every rendition of a photo. A download that ends below it stopped early, and the backup and the real-time listener treat it as a failure, never as a finished file. The backup tries it again within the same run and, if it is still short, records it not downloaded so a later run retries it under `MEDIA_MAX_DOWNLOAD_ATTEMPTS`. The listener stores nothing.
+
+A release from late 2025 did store some of these short files as complete. Such a video has no playable end and its transcription fails. Run [`check-media`](../reference/cli.md#check-media) to find them, and `check-media --repair` to mark them to download again. The marked file stays where it is until the new download arrives.
+
+When the backup meets an existing file shorter than Telegram's declared size, it downloads the file again instead of reusing it. It replaces the short file only when every byte the short file holds is also the first bytes of the new download, so the replacement loses nothing. The replacement is one atomic rename of the same name, so every chat folder link and every row that pointed at the short file now reads the complete one, and no link is rewritten. When the bytes differ, the short file and every link to it are left exactly as they are. The complete download is kept beside it under the same name with part of its hash before the extension, and the row names that new file.
+
+With `DEDUPLICATE_MEDIA=false`, files go straight into `media/<chat_id>/`. A file that already exists there is never downloaded again, unless it is shorter than Telegram's declared size.
 
 !!! tip "Copy with symlinks intact"
     Use `rsync -a` or `cp -a` to copy the archive. Tools that follow or drop symlinks break the chat folders. See [Backing up the archive](../operations/backup-and-restore.md) for the full directory tree.
@@ -243,7 +251,7 @@ A message whose file the viewer cannot show keeps its place: a placeholder in th
 | over the download limit | Skip reason `oversize`. Raise `MAX_MEDIA_SIZE_MB` to fetch it. |
 | skipped by the media filter | Skip reason `filtered`. Relax `DOWNLOAD_MEDIA_TYPES` or `DOWNLOAD_DOCUMENT_MIME_TYPES`, or remove the chat from `SKIP_MEDIA_CHAT_IDS`. |
 | hidden for this login, hidden for this link | The viewer account or share token has downloads off. A share-link session reads "link". The file may be archived. See [No-download logins](../viewer/access.md#no-download-logins). |
-| not downloaded yet | The row is pending. The retry pass picks it up, until it gives up. Archive status counts the files that gave up. |
+| not downloaded yet | The row is pending. The retry pass picks it up, until it gives up. Archive status counts the files that gave up. A file `check-media --repair` marked to download again, such as one cut short, reads this way too, even while its old bytes are still on disk. The viewer does not load those bytes. |
 | missing from the archive disk | The row says the file was downloaded, but the viewer could not load it: the file was moved or deleted outside the archive. |
 
 ![The four reasons in one chat](../images/screenshots/media-missing.png)

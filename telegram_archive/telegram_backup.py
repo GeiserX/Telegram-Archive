@@ -62,14 +62,17 @@ from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     PAYLOAD_BACKFILL_TYPES,
     VCARD_MAX_BYTES,
+    ShortDownloadError,
     _photo_size_bytes,
     _text_with_entities_to_string,
     broken_shared_link_target,
     build_media_filename,
     chat_title_for_log,
+    check_complete_download,
     classify_media_type,
     compute_file_hash_async,
     contact_payload_from_vcard,
+    declared_document_size,
     describe_exception,
     download_and_shard_media,
     downloadable_media_payload,
@@ -94,10 +97,12 @@ from .message_utils import (
     message_rich_payload,
     message_seen_at,
     place_copy,
+    replace_short_file_or_keep_beside,
     resolve_shared_file_path,
     sender_display_name,
     service_action_type,
     service_message_text,
+    short_file_behind,
     utcnow_naive,
 )
 from .parallel_download import (
@@ -4418,6 +4423,11 @@ class TelegramBackup:
         the last real error is raised so the caller records the item as
         not-downloaded; the next scheduled backup run re-attempts it.
 
+        A download shorter than the size Telegram declares for a document is
+        not a finished file (``ShortDownloadError``): it is tried again, and
+        after the last attempt the error is raised like any other, so the row
+        is recorded not downloaded and the pending drain retries it.
+
         Returns the downloaded path on success.
         """
         timeout = getattr(self.config, "download_timeout_seconds", 3600)
@@ -4429,13 +4439,29 @@ class TelegramBackup:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 try:
-                    return await call_with_flood_retry(
+                    landed = await call_with_flood_retry(
                         self._fetch_media_bytes_bounded,
                         message,
                         tmp_path,
                         file_size,
                         timeout_val,
                         non_retryable=_is_non_retryable_media_op,
+                    )
+                    check_complete_download(
+                        landed if isinstance(landed, str) else tmp_path, declared_document_size(message)
+                    )
+                    return landed
+                except ShortDownloadError:
+                    if attempt >= last:
+                        logger.warning(
+                            "Media download stopped early on all %d attempt(s); leaving it for a future backup run",
+                            attempt + 1,
+                        )
+                        raise
+                    logger.warning(
+                        "Media download stopped early (attempt %d/%d); retrying",
+                        attempt + 1,
+                        MEDIA_REFRESH_MAX_ATTEMPTS,
                     )
                 except (FileReferenceExpiredError, RPCError) as e:
                     is_expired_ref = isinstance(e, FileReferenceExpiredError)
@@ -4860,7 +4886,7 @@ class TelegramBackup:
                 async def _download_fn(tmp_path):
                     return await self._download_media_to_path(message, tmp_path, file_size, chat_id)
 
-                shared_file_path, content_hash = await download_and_shard_media(
+                shared_file_path, content_hash, kept_entry = await download_and_shard_media(
                     db=self.db,
                     download_coro=_download_fn,
                     shared_dir=shared_dir,
@@ -4869,7 +4895,13 @@ class TelegramBackup:
                     file_path=file_path,
                     logger=logger,
                     account_id=self.account_id,
+                    declared_size=declared_document_size(message),
                 )
+                if kept_entry:
+                    # The complete download, kept beside a short file it does
+                    # not extend: the row names it.
+                    file_path = kept_entry
+                    file_name = os.path.basename(kept_entry)
                 if not shared_file_path and not os.path.lexists(file_path):
                     # A download that yields no file must still leave a row:
                     # the retry drain only sees downloaded=0 rows, so returning
@@ -4895,16 +4927,45 @@ class TelegramBackup:
                 # left from a deduplicated period whose _shared entry is gone
                 # is the exception: the download lands under the name the link
                 # holds, and the link stays as it is.
+                # A file shorter than Telegram declares (a download from a
+                # late-2025 release that stopped early) is downloaded again and
+                # replaced once its bytes prove to be the start of the new ones.
                 missing_target = self._broken_shared_link(file_path)
-                if not os.path.lexists(file_path) or missing_target:
+                short_target = None
+                if not missing_target:
+                    short_target = short_file_behind(
+                        file_path, os.path.join(self.config.media_path, "_shared"), declared_document_size(message)
+                    )
+                if not os.path.lexists(file_path) or missing_target or short_target:
                     task_id = id(asyncio.current_task()) if asyncio.current_task() else 0
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     actual_path = await self._download_media_to_path(message, tmp_file_path, file_size, chat_id)
                     landed = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,
-                        missing_target or file_path,
+                        tmp_file_path if short_target else (missing_target or file_path),
                     )
+                    if short_target and landed:
+                        try:
+                            kept = await asyncio.to_thread(
+                                replace_short_file_or_keep_beside, short_target, landed, file_path
+                            )
+                        finally:
+                            if os.path.exists(landed):
+                                os.remove(landed)  # the private .part copy
+                        if kept:
+                            # The short file's bytes are not the start of the
+                            # new ones: it stays, and the row names the
+                            # complete download kept beside it.
+                            logger.warning(
+                                "Kept a new download beside a cut-short media file whose bytes differ from it"
+                            )
+                            file_path = kept
+                            file_name = os.path.basename(kept)
+                            landed = kept
+                        else:
+                            logger.info("Replaced a media file whose earlier download had stopped early")
+                            landed = short_target
                     if landed is None:
                         file_path = None
                     if not file_path or not os.path.exists(file_path):

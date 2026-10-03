@@ -5576,7 +5576,8 @@ def test_only_a_drawn_picture_stands_without_a_frame():
         "const stickerSupport = { tgs: true, webm: false };\n"
         "const hasTranscriptButton = (msg) => Boolean(msg.transcribable);\n"
         "const isTranscriptExpanded = (msg) => Boolean(msg.open);\n"
-        "const transcriptStatus = (msg) => msg.status || 'idle';\n",
+        "const transcriptStatus = (msg) => msg.status || 'idle';\n"
+        "const mediaUnavailable = (msg) => !!msg.mediaLoadFailed || msg.media?.downloaded === false;\n",
         "const cases = {\n"
         "  sticker: { media: { type: 'sticker' }, name: 'a.webp' },\n"
         "  animatedSticker: { media: { type: 'sticker' }, name: 'a.tgs' },\n"
@@ -5585,6 +5586,7 @@ def test_only_a_drawn_picture_stands_without_a_frame():
         "  roundOpen: { media: { type: 'video_note' }, transcribable: true, open: true },\n"
         "  roundError: { media: { type: 'video_note' }, transcribable: true, status: 'error' },\n"
         "  roundFailed: { media: { type: 'video_note' }, mediaLoadFailed: true },\n"
+        "  roundMarked: { media: { type: 'video_note', downloaded: false } },\n"
         "  video: { media: { type: 'video' } },\n"
         "  videoOpen: { media: { type: 'video' }, transcribable: true, open: true },\n"
         "};\n"
@@ -5598,6 +5600,7 @@ def test_only_a_drawn_picture_stands_without_a_frame():
         "roundOpen": False,
         "roundError": False,
         "roundFailed": False,
+        "roundMarked": False,
         "video": True,
         "videoOpen": False,
     }

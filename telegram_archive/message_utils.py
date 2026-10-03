@@ -487,6 +487,180 @@ def finalize_atomic_download(actual_path: str | None, temporary_path: str, fallb
     return fallback_path if os.path.exists(fallback_path) else None
 
 
+class ShortDownloadError(Exception):
+    """A download wrote fewer bytes than the size Telegram declared for the file.
+
+    Telethon ends a download at the first answer shorter than its request,
+    an empty one included, and never compares the total with the size it was
+    given. Telegram Desktop, TDLib and the Android app call such a download
+    unfinished, not done. The message carries sizes only, never a path.
+    """
+
+
+class ShortFileMismatchError(Exception):
+    """The bytes of a file cut short are not the start of its complete download.
+
+    A cut-short file is replaced only when every byte it holds is also the
+    first bytes of the new download, so the replacement loses nothing. When
+    they differ the old file stays exactly as it is.
+    """
+
+
+def declared_document_size(message: object) -> int | None:
+    """The exact byte count Telegram declares for a message's file, or None.
+
+    ``document.size`` is a document's size, so a download that ends below it
+    stopped early. A photo declares a size per rendition, and Telethon
+    downloads the largest one (``_get_thumb`` over ``photo.sizes``) with that
+    rendition's size, ``max(sizes)`` for a progressive one: the number
+    ``_photo_size_bytes`` reads. A photo with ``video_sizes`` is left out,
+    since Telethon may fetch the animated version instead. Only a real int
+    counts, which keeps test doubles inert.
+    """
+    payload = downloadable_media_payload(getattr(message, "media", None))
+    document = getattr(payload, "document", None)
+    size = getattr(document, "size", None)
+    if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+        return size
+    photo = getattr(payload, "photo", None)
+    sizes = getattr(photo, "sizes", None)
+    if not document and isinstance(sizes, (list, tuple)) and sizes:
+        video_sizes = getattr(photo, "video_sizes", None)
+        if video_sizes is None or (isinstance(video_sizes, (list, tuple)) and not video_sizes):
+            largest = max(_photo_size_bytes(s) for s in sizes)
+            if largest > 0:
+                return largest
+    return None
+
+
+def check_complete_download(path: str | None, declared: int | None) -> None:
+    """Raise ``ShortDownloadError`` when the file at ``path`` is shorter than ``declared``.
+
+    Nothing to check without a declared size or without a file: a download
+    that produced no file is handled where its path is collected.
+    """
+    if not declared or not path:
+        return
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    if size < declared:
+        raise ShortDownloadError(f"download stopped at {size} of {declared} bytes")
+
+
+def short_file_behind(path: str, shared_dir: str, declared: int | None) -> str | None:
+    """The real file behind ``path`` when it is shorter than ``declared``, else None.
+
+    ``path`` is a chat-folder entry or a ``_shared`` entry. A link counts only
+    when it names an entry inside ``_shared`` (``shared_link_target``), and
+    that entry must be a plain file: a link out of the archive or a git-annex
+    pointer (#143) is not ours and is never judged. A missing file is not
+    short; a broken link has its own repair.
+    """
+    if not declared:
+        return None
+    real = path
+    if os.path.islink(real):
+        real = shared_link_target(real, shared_dir)
+        if real is None:
+            return None
+    try:
+        if os.path.islink(real) or not os.path.isfile(real):
+            return None
+        size = os.path.getsize(real)
+    except OSError:
+        return None
+    return real if size < declared else None
+
+
+def ensure_prefix_of(old_path: str, new_path: str, chunk_size: int = 1024 * 1024) -> None:
+    """Raise ``ShortFileMismatchError`` unless ``old_path`` holds the first bytes of ``new_path``.
+
+    The new file must be longer, and every byte of the old one must equal the
+    byte at the same offset in the new one. Reads the old file once, in
+    chunks; never the rest of the new one.
+    """
+    old_size = os.path.getsize(old_path)
+    if os.path.getsize(new_path) <= old_size:
+        raise ShortFileMismatchError("the new download is not longer than the file it replaces")
+    with open(old_path, "rb") as old, open(new_path, "rb") as new:
+        while True:
+            chunk = old.read(chunk_size)
+            if not chunk:
+                return
+            if new.read(len(chunk)) != chunk:
+                raise ShortFileMismatchError("the file cut short is not the start of the new download")
+
+
+def replace_short_file(short_path: str, complete_path: str) -> None:
+    """Put the bytes of ``complete_path`` under ``short_path`` in one atomic rename.
+
+    A hardlink when the filesystem allows one, otherwise a copy, made under a
+    private ``.part`` name beside ``short_path`` and renamed over it. Every
+    link that names ``short_path`` then reads the complete bytes, and no link
+    is rewritten. Callers check ``ensure_prefix_of`` first, so no byte the
+    archive held is lost.
+    """
+    tmp = f"{short_path}.{uuid.uuid4().hex}.part"
+    try:
+        try:
+            os.link(os.path.realpath(complete_path), tmp)
+        except OSError:
+            shutil.copy2(os.path.realpath(complete_path), tmp)
+        os.replace(tmp, short_path)
+    finally:
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+
+
+def kept_beside_name(file_name: str, content_hash: str) -> str:
+    """The name a complete download takes beside a cut-short file it does not extend.
+
+    The file name with the first 16 hex digits of the download's hash before
+    the extension: never the short file's own name, and the same name for the
+    same bytes, so a second download of them finds the first one kept.
+    """
+    root, ext = os.path.splitext(os.path.basename(file_name))
+    return f"{root}.{content_hash[:16]}{ext}"
+
+
+def keep_beside(complete_path: str, dest: str) -> None:
+    """Make ``dest`` hold the bytes of ``complete_path``, keeping an entry already there.
+
+    An entry under that name holds the same bytes (``kept_beside_name``
+    carries their hash), so it is kept as it is. The caller removes its own
+    ``complete_path``.
+    """
+    try:
+        place_copy(complete_path, dest)
+    except FileExistsError:
+        pass
+
+
+def replace_short_file_or_keep_beside(short_path: str, complete_path: str, entry_path: str) -> str | None:
+    """Replace a cut-short file with its complete download, or keep the download beside it.
+
+    For a worker thread. When ``short_path`` holds the first bytes of
+    ``complete_path`` (``ensure_prefix_of``), it is replaced
+    (``replace_short_file``) and the answer is None. When it does not, the
+    short file stays exactly as it is and the complete bytes are kept next to
+    ``entry_path`` under ``kept_beside_name``; the answer is that path, for
+    the row to name. The caller removes its own ``complete_path``.
+    """
+    try:
+        ensure_prefix_of(short_path, complete_path)
+    except ShortFileMismatchError:
+        digest = compute_file_hash(complete_path)
+        if not digest:
+            raise
+        beside = os.path.join(os.path.dirname(entry_path), kept_beside_name(entry_path, digest))
+        keep_beside(complete_path, beside)
+        return beside
+    replace_short_file(short_path, complete_path)
+    return None
+
+
 async def download_and_shard_media(
     db,
     download_coro,
@@ -497,7 +671,8 @@ async def download_and_shard_media(
     logger: logging.Logger,
     *,
     account_id: int,
-) -> tuple[str | None, str | None]:
+    declared_size: int | None = None,
+) -> tuple[str | None, str | None, str | None]:
     """Download media to sharded shared store, create symlink in chat dir.
 
     Args:
@@ -509,9 +684,27 @@ async def download_and_shard_media(
         file_path: Full path where chat-dir symlink should be created
         logger: Logger instance
         account_id: accounts.id whose media rows content-hash dedup may reuse
+        declared_size: the byte count Telegram declares for the file
+            (``declared_document_size``), or None when it is not known
 
     Returns:
-        (shared_file_path, content_hash) or (None, None) on failure
+        (shared_file_path, content_hash, kept_entry), or (None, None, None)
+        on failure. ``kept_entry`` is None unless the complete download was
+        kept beside a short file it does not extend (below): then it is the
+        chat-folder entry that holds it, for the row to name instead of
+        ``file_path``.
+
+    With ``declared_size``, an existing entry whose file is shorter is not
+    reused: a release from late 2025 stored downloads that stopped early as
+    complete. The file is downloaded again, and once the old bytes are proven
+    to be the start of the new ones, the short file is replaced in one atomic
+    rename, so every link and every row that named it reads the complete
+    bytes. A new download shorter than ``declared_size`` raises
+    ``ShortDownloadError`` and publishes nothing. When the old bytes are not
+    the start of the new ones, the short file and every link to it stay as
+    they are, and the complete download is kept under ``kept_beside_name``:
+    in ``_shared`` (unless content dedup found it already there) and as a new
+    chat-folder entry.
     """
     # Resolve existing file in shared store (sharded or flat fallback)
     shared_file_path = resolve_shared_file_path(shared_dir, file_name, None)
@@ -521,18 +714,26 @@ async def download_and_shard_media(
     # already holds, so the link itself is never rewritten.
     missing_target = broken_shared_link_target(file_path, shared_dir)
 
-    if os.path.lexists(file_path) and missing_target is None:
-        # Chat symlink already exists — resolve hash if possible
-        content_hash = None
-        if shared_file_path and os.path.exists(shared_file_path):
-            content_hash = await compute_file_hash_async(shared_file_path)
-        return shared_file_path, content_hash
+    # The real file behind an entry that would be reused, when it is shorter
+    # than Telegram declares: it is downloaded again and replaced below.
+    short_target = None
 
-    if shared_file_path and (missing_target is None or os.path.isfile(shared_file_path)):
-        # File exists in shared — create symlink. Hash only when target resolves.
-        content_hash = await compute_file_hash_async(shared_file_path) if os.path.exists(shared_file_path) else None
-        _link_chat_entry(shared_file_path, chat_media_dir, file_path, missing_target, logger)
-        return shared_file_path, content_hash
+    if os.path.lexists(file_path) and missing_target is None:
+        short_target = short_file_behind(file_path, shared_dir, declared_size)
+        if short_target is None:
+            # Chat symlink already exists — resolve hash if possible
+            content_hash = None
+            if shared_file_path and os.path.exists(shared_file_path):
+                content_hash = await compute_file_hash_async(shared_file_path)
+            return shared_file_path, content_hash, None
+
+    if short_target is None and shared_file_path and (missing_target is None or os.path.isfile(shared_file_path)):
+        short_target = short_file_behind(shared_file_path, shared_dir, declared_size)
+        if short_target is None:
+            # File exists in shared — create symlink. Hash only when target resolves.
+            content_hash = await compute_file_hash_async(shared_file_path) if os.path.exists(shared_file_path) else None
+            _link_chat_entry(shared_file_path, chat_media_dir, file_path, missing_target, logger)
+            return shared_file_path, content_hash, None
 
     # First time seeing this file — download to a unique .part name and KEEP the
     # blob there until it reaches its final home. It must never be readable under
@@ -555,13 +756,49 @@ async def download_and_shard_media(
     )
     if not tmp_shared_file_path or not os.path.exists(tmp_shared_file_path):
         logger.warning("Media download did not produce a file")
-        return None, None
+        return None, None, None
+    try:
+        check_complete_download(tmp_shared_file_path, declared_size)
+    except ShortDownloadError:
+        os.remove(tmp_shared_file_path)  # a partial download is not archive state
+        raise
     logger.debug("Downloaded media to shared")
 
     # Content-hash dedup: check if identical content already exists
     tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(
         db, tmp_shared_file_path, shared_dir, account_id=account_id
     )
+
+    if short_target is not None:
+        # The old bytes must be the start of the new ones, or nothing is
+        # replaced and the old file stays exactly as it is.
+        try:
+            await asyncio.to_thread(ensure_prefix_of, short_target, tmp_shared_file_path)
+        except ShortFileMismatchError:
+            if not content_hash:
+                if not reused and os.path.exists(tmp_shared_file_path):
+                    os.remove(tmp_shared_file_path)
+                raise
+            # The complete bytes are kept under a name of their own, in
+            # _shared and in the chat folder, and the row names them.
+            kept_name = kept_beside_name(file_name, content_hash)
+            if reused:
+                kept_shared = tmp_shared_file_path
+            else:
+                kept_shared = get_shared_file_path(shared_dir, kept_name, content_hash)
+                try:
+                    await asyncio.to_thread(keep_beside, tmp_shared_file_path, kept_shared)
+                finally:
+                    if os.path.exists(tmp_shared_file_path):
+                        os.remove(tmp_shared_file_path)  # the private .part name
+            kept_entry = os.path.join(chat_media_dir, kept_name)
+            _link_chat_entry(kept_shared, chat_media_dir, kept_entry, None, logger)
+            logger.warning("Kept a new download beside a cut-short media file whose bytes differ from it")
+            return kept_shared, content_hash, kept_entry
+        except BaseException:
+            if not reused and os.path.exists(tmp_shared_file_path):
+                os.remove(tmp_shared_file_path)
+            raise
 
     # Publish the blob if we own it (not reused): ONE rename from the private
     # .part name straight to its final path, under the clean ``file_name``. With
@@ -576,8 +813,12 @@ async def download_and_shard_media(
     else:
         shared_file_path = tmp_shared_file_path
 
+    if short_target is not None and os.path.realpath(short_target) != os.path.realpath(shared_file_path):
+        await asyncio.to_thread(replace_short_file, short_target, shared_file_path)
+        logger.info("Replaced a media file whose earlier download had stopped early")
+
     _link_chat_entry(shared_file_path, chat_media_dir, file_path, missing_target, logger)
-    return shared_file_path, content_hash
+    return shared_file_path, content_hash, None
 
 
 def _link_chat_entry(

@@ -25,8 +25,17 @@ it (``visible_media_root``, ``missing_under_root``). A media volume that is
 not mounted, or a share that dropped, makes every path read as missing; on
 that evidence no row changes.
 
-Everything here is a few ``lstat`` calls per row and a hash of each candidate.
-Nothing walks the media tree.
+A file can also be in place and still be cut short: a release from late 2025
+stored downloads that stopped early as complete (Telethon ends a download at
+the first short answer and never compares the total with the declared size).
+``cut_short_state`` tells such a video or audio file apart without decoding
+it: its size is a multiple of Telethon's smallest request size and its
+top-level boxes run past the end of the file or hold no index (``moov``).
+``check-media --repair`` marks it not downloaded, and the download replaces it.
+
+Everything here is a few ``lstat`` calls per row and a hash of each candidate,
+plus one open and a few small reads per MP4-family file. Nothing walks the
+media tree.
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import struct
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,6 +74,20 @@ KEPT = "kept"  # an entry exists but cannot be read from here: left alone
 PLACEHOLDER = "placeholder"
 # The media root is missing, unreadable or empty here: nothing was looked at.
 NOT_VISIBLE = "not_visible"
+
+# A video or audio file whose download stopped early (``cut_short_state``).
+TRUNCATED = "truncated"  # no index and a size a stopped download leaves: marked
+SUSPICIOUS = "suspicious"  # no index, but any size: counted, never marked
+
+# The ISO base media formats whose top-level boxes ``iso_bmff_incomplete``
+# walks. The extension decides, not the media type: a .mp4 sent as a file is
+# a document and has the same risk. Matroska and Ogg are not checked.
+ISO_BMFF_EXTENSIONS = frozenset({".mp4", ".m4v", ".m4a", ".mov", ".3gp"})
+# Telethon's smallest request size for a file of known size
+# (``utils.get_appropriated_part_size``: 128 KiB up to 100 MB, then 256 and
+# 512 KiB). A download that stopped at a short answer ends on a multiple of
+# its request size, so every such cut is a multiple of this.
+CUT_SHORT_GRAIN = 128 * 1024
 
 # A name that starts with a Telegram file id (a 64-bit number) names one
 # Telegram file wherever it appears. The fallback name for media without a file
@@ -139,6 +163,79 @@ def chat_folder_alternates(folder: str) -> list[str]:
         return []
     forms = (str(raw), str(-raw), str(-(CHANNEL_ID_OFFSET + raw)))
     return [form for form in forms if form != folder]
+
+
+def iso_bmff_incomplete(path: str) -> bool | None:
+    """Whether an MP4-family file ends before its own boxes do.
+
+    Walks the top-level boxes with seek and read, never reading a payload and
+    never decoding. True when a box's declared size (32-bit, or the 64-bit
+    largesize when the size field is 1) runs past the end of the file, when
+    the file ends inside a box header, or when the walk reaches the end with
+    no ``moov`` box (the index a player needs). A size of 0 means "to the end
+    of the file" and ends the walk; the ``moov`` rule still applies. False
+    when every box fits and a ``moov`` was seen. None when the file cannot be
+    read, is empty, does not start with ``ftyp`` or holds a malformed box:
+    such a file is not judged.
+
+    "Runs past the end" also catches a file with ``moov`` first (faststart)
+    whose media data was cut.
+    """
+    try:
+        with open(path, "rb") as f:
+            end = os.fstat(f.fileno()).st_size
+            offset = 0
+            seen_moov = False
+            while offset < end:
+                f.seek(offset)
+                header = f.read(8)
+                if len(header) < 8:
+                    return None if offset == 0 else True
+                size, kind = struct.unpack(">I4s", header)
+                if offset == 0 and kind != b"ftyp":
+                    return None
+                header_len = 8
+                if size == 1:
+                    large = f.read(8)
+                    if len(large) < 8:
+                        return True
+                    size = struct.unpack(">Q", large)[0]
+                    header_len = 16
+                if kind == b"moov":
+                    seen_moov = True
+                if size == 0:
+                    break
+                if size < header_len:
+                    return None
+                if offset + size > end:
+                    return True
+                offset += size
+            if end == 0:
+                return None
+            return not seen_moov
+    except OSError:
+        return None
+
+
+def cut_short_state(path: str | None) -> str | None:
+    """TRUNCATED, SUSPICIOUS or None for the file at ``path``.
+
+    Only a path with an MP4-family extension (``ISO_BMFF_EXTENSIONS``) is
+    looked at. TRUNCATED: ``iso_bmff_incomplete`` and a size that is a
+    multiple of ``CUT_SHORT_GRAIN``, the shape a stopped Telethon download
+    leaves. SUSPICIOUS: incomplete at any other size, which a stopped
+    download does not explain, so it is counted and never marked. None for
+    everything else, a file that is not judged included.
+    """
+    if not path or os.path.splitext(path)[1].lower() not in ISO_BMFF_EXTENSIONS:
+        return None
+    if iso_bmff_incomplete(path) is not True:
+        return None
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    return TRUNCATED if size % CUT_SHORT_GRAIN == 0 else SUSPICIOUS
 
 
 @dataclass
@@ -343,7 +440,10 @@ def file_in_place(row: dict[str, Any], media_root: str) -> bool:
     back. A known content hash decides alone; without one the size has to be
     within the 1% VERIFY_MEDIA allows when the row knows it, and the file must
     not be empty. A metadata-only row and a row skipped on purpose
-    (``skip_reason``) never count.
+    (``skip_reason``) never count, and neither does a file cut short
+    (``cut_short_state``): its hash and size match the row because the row
+    was written from the short file, and counting it would mark it
+    downloaded again before the new download replaces it.
     """
     if row.get("type") in METADATA_ONLY_MEDIA_TYPES or row.get("skip_reason"):
         return False
@@ -353,6 +453,8 @@ def file_in_place(row: dict[str, Any], media_root: str) -> bool:
             return False
         size = os.path.getsize(path)
         if size <= 0:
+            return False
+        if cut_short_state(path) == TRUNCATED:
             return False
         if row.get("content_hash"):
             return compute_file_hash(path) == row["content_hash"]
@@ -382,6 +484,8 @@ def _empty_report() -> dict[str, int]:
         "recovered": 0,
         "recover_failed": 0,
         "media_root_not_visible": 0,
+        "truncated": 0,
+        "suspicious": 0,
     }
 
 
@@ -398,6 +502,13 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
     counted in ``not_provable`` and never marked. A row marked not downloaded
     whose own file is at its path (``file_in_place``) is counted in
     ``recoverable``, and ``repair`` marks it downloaded again.
+
+    A file in place that a stopped download cut short (``cut_short_state``)
+    is counted in ``truncated`` instead of ``present``, and ``repair`` marks
+    it not downloaded, keeping its path, so the next backup downloads it
+    again and replaces it. Its bytes stay on disk until then. A file with no
+    index at a size a stopped download does not leave is counted in
+    ``suspicious`` and never marked.
     """
     from .db.models import DEFAULT_ACCOUNT_ID
 
@@ -424,7 +535,15 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
                 report["checked"] += 1
                 inspection = await inspect_media_row_with_db(db, row, media_root)
                 if inspection.state == PRESENT:
-                    report["present"] += 1
+                    cut = cut_short_state(inspection.path)
+                    if cut == SUSPICIOUS:
+                        report["suspicious"] += 1
+                    elif cut == TRUNCATED:
+                        report["truncated"] += 1
+                        if repair:
+                            await _mark_for_refetch(db, row, account_id, report)
+                    else:
+                        report["present"] += 1
                     continue
                 if inspection.state == KEPT:
                     report["kept"] += 1
@@ -449,15 +568,20 @@ async def check_media(db, media_root: str, *, repair: bool = False, chat_id: int
                 if not repair:
                     report["refetch"] += 1
                     continue
-                try:
-                    await db.mark_media_for_redownload(row["id"], account_id=account_id, keep_path=True)
-                except Exception as e:
-                    # One row's failure is counted and the check goes on.
-                    logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
-                    report["refetch_failed"] += 1
-                else:
-                    report["refetch"] += 1
+                await _mark_for_refetch(db, row, account_id, report)
     return report
+
+
+async def _mark_for_refetch(db, row: dict[str, Any], account_id: int, report: dict[str, int]) -> None:
+    """Mark one row not downloaded, keeping its path, and count the outcome."""
+    try:
+        await db.mark_media_for_redownload(row["id"], account_id=account_id, keep_path=True)
+    except Exception as e:
+        # One row's failure is counted and the check goes on.
+        logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
+        report["refetch_failed"] += 1
+    else:
+        report["refetch"] += 1
 
 
 async def _mark_recovered(db, row: dict[str, Any], account_id: int, report: dict[str, int]) -> None:
@@ -503,6 +627,16 @@ def format_media_check(report: dict[str, int], *, repair: bool) -> list[str]:
             f"  Copy found on disk:        {report['restorable']}  (--repair puts it back)",
             f"  No copy on disk:           {report['refetch']}  (--repair marks them to download again)",
         ]
+    if report.get("truncated"):
+        lines.append(
+            f"  Cut short:                 {report['truncated']}  "
+            "(a video or audio file whose download stopped early; --repair marks them to download again)"
+        )
+    if report.get("suspicious"):
+        lines.append(
+            f"  Possibly damaged:          {report['suspicious']}  "
+            "(no index, but the size does not match a download that stopped early; not marked)"
+        )
     if report.get("not_provable"):
         lines.append(
             f"  Not marked:                {report['not_provable']}  "
@@ -540,13 +674,17 @@ __all__ = [
     "REFETCH",
     "RESTORABLE",
     "RESTORED",
+    "SUSPICIOUS",
+    "TRUNCATED",
     "MediaInspection",
     "chat_folder_alternates",
     "check_media",
+    "cut_short_state",
     "file_in_place",
     "format_media_check",
     "inspect_media_row",
     "inspect_media_row_with_db",
+    "iso_bmff_incomplete",
     "missing_under_root",
     "repair_media_row",
     "restore_from_copy",
