@@ -18,7 +18,7 @@ A watchdog checks the listeners once a second and restarts a dead one after a 5-
 
 ## Catching up after a disconnect
 
-Telegram keeps the updates a client missed for a while and hands them over when the client asks for them. The official apps ask on every new connection, and the listener does the same. Each time a listener starts or restarts, it first attaches its handlers and only then reconnects and asks Telegram for what it missed. Messages, edits and reactions from the outage are then saved as if they had just happened.
+Telegram keeps the updates a client missed for a while and hands them over when the client asks for them. The official apps ask on every new connection, and the listener does the same. Each time a listener starts or restarts, it first attaches its handlers and only then reconnects and asks Telegram for what it missed. New messages and edits from the outage, and whatever else Telegram replays, are then saved as if they had just happened.
 
 A short network blip that the Telegram library reconnects by itself is covered too. The handlers stay attached, and the missed updates arrive once the library notices the gap, within 15 minutes at most.
 
