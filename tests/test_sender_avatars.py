@@ -342,11 +342,37 @@ class TestPeerColourContrast(unittest.TestCase):
                         _over(wash, wash_alpha, fill),
                     )
 
-    def test_the_light_palettes_keep_the_chip_colour(self):
+    def test_palettes_where_the_chip_colour_reads_keep_it(self):
         """Where the chip colour reads on the bubble, the label is that colour."""
         for name in ("telegram", "paper", "minimal", "graphite"):
             with self.subTest(theme=name):
                 self.assertEqual(self.palettes[name]["--tg-tag-out-mix"].strip(), "100%")
+
+    def _worst_label_contrast(self, tokens: dict[str, str], share: float) -> float:
+        """The lowest contrast any account label reaches at ``share`` on the
+        outgoing fills and on the deleted wash over them."""
+        wash, wash_alpha = _tint(tokens["--tg-deleted-wash"])
+        return min(
+            _contrast(self._label_colour(tokens, index, share), under)
+            for index in range(7)
+            for fill in self._fills(tokens, "out")
+            for under in (fill, _over(wash, wash_alpha, fill))
+        )
+
+    def test_each_palette_keeps_as_much_of_the_tag_colour_as_reads(self):
+        """A palette that tints its label keeps the largest 5% step of the tag
+        colour that still clears 4.5:1 by a 0.05 margin: one step more falls
+        short. The margin keeps off the list a step that clears 4.5:1 only by a
+        hair, where the browser's own rounding could tip it under. Without this
+        bound a share dropped to 0% would pass the contrast test and lose the
+        colour."""
+        floor = 4.55
+        for name, tokens in self.palettes.items():
+            share = self._label_share(tokens)
+            with self.subTest(theme=name):
+                self.assertGreaterEqual(self._worst_label_contrast(tokens, share), floor)
+                if share < 1:
+                    self.assertLess(self._worst_label_contrast(tokens, share + 0.05), floor)
 
     def test_the_raw_chip_colour_would_fail_on_ios_night(self):
         """Positive control: the exact chip colour cannot hold 4.5:1 on iOS Night's
@@ -367,6 +393,9 @@ class TestPeerColourContrast(unittest.TestCase):
             "color: color-mix(in srgb, rgb(var(--tag, var(--tg-tag-5))) var(--tg-tag-out-mix), rgb(var(--tg-text-out)));",
             rule,
         )
+        # The chip's weight, so the name stands apart from the time even where
+        # the tint sits close to the text colour (iOS Night).
+        self.assertIn("font-weight: 600;", rule)
         # Over a picture the label is part of the time pill and takes its colour.
         media = html[html.index(".message-bubble.bubble-media-only .meta-signature {") :]
         self.assertIn("color: inherit;", media[: media.index("}")])

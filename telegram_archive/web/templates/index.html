@@ -720,7 +720,7 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 232 147 209;
-            --tg-tag-out-mix: 40%;
+            --tg-tag-out-mix: 45%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.45);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.45);
@@ -2333,13 +2333,17 @@
            --tg-tag-out-mix is how much of that colour each palette keeps,
            mixed toward the outgoing text colour: all of it where the chip
            colour reads at 4.5:1 on the outgoing bubble, a lighter tint of the
-           same hue where it cannot (the dark palettes). Over a picture the
-           label is part of the time pill and takes the pill's colour. */
+           same hue where it cannot. In the palettes where that tint sits close
+           to the text colour (iOS Night most of all) the hue alone does not set
+           the name apart, so it takes the chip's weight, 600, in every palette.
+           Over a picture the label is part of the time pill and takes the
+           pill's colour. */
         .meta-signature {
             max-width: 8rem;
             overflow: hidden;
             text-overflow: ellipsis;
             color: color-mix(in srgb, rgb(var(--tag, var(--tg-tag-5))) var(--tg-tag-out-mix), rgb(var(--tg-text-out)));
+            font-weight: 600;
         }
         .message-bubble.bubble-media-only .meta-signature {
             color: inherit;
@@ -7831,6 +7835,7 @@
                                     <span v-if="!isOwnMessage(msg) && isGroup && showNameAt(index)" class="deleted-pill-name" dir="auto"
                                         :style="{ color: getSenderNameColor(msg) }">{{ getSenderName(msg) }}</span>
                                     <span v-else-if="!isOwnMessage(msg) && isGroup" class="sr-only">{{ getSenderName(msg) }},</span>
+                                    <span v-else-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">{{ privateSpeakerLabel(msg) }},</span>
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                                     <span class="deleted-pill-what">{{ deletedKindLabel(msg) }}</span>
                                     <span class="sr-only">, sent {{ formatTime(msg.date) }}</span>
@@ -7852,6 +7857,11 @@
                                         metaRidesTranscript(msg) ? 'meta-on-transcript' : ''
                                     ]"
                                     :style="getSenderStyle(msg)">
+                                    <!-- In a private chat only the side says who spoke, so a screen
+                                         reader hears the speaker at the first bubble of each run it
+                                         reaches. The list is reversed, newest first in the page, so
+                                         that is the run's newest bubble (isRunEnd). -->
+                                    <span v-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">{{ privateSpeakerLabel(msg) }}:</span>
                                     <!-- Who spoke, at the start of each run: the sender's name in
                                          a group, in its peer colour. A message an archived account
                                          sent is the reader's own and names its account in the meta
@@ -15032,6 +15042,17 @@
                     selectedChat.value?.type !== 'private' && bubbleAccountIds.value.size > 1
                         ? senderAccountLabel(msg)
                         : ''
+                // Who spoke in a private chat, for a screen reader: the side says it
+                // on screen and nothing else does. "You", or the row's account when
+                // the archive holds several, for an own message; the chat's name for
+                // the other person. '' outside a private chat, where a group names
+                // its senders itself.
+                const privateSpeakerLabel = (msg) => {
+                    const chat = selectedChat.value
+                    if (chat?.type !== 'private') return ''
+                    if (!isOwnMessage(msg)) return getChatName(chat)
+                    return multiAccount.value && chat.account_id != null ? accountLabel(chat.account_id) : 'You'
+                }
 
                 // Group consecutive messages that belong to an album (same grouped_id)
                 // Note: grouped_id may be string or number depending on source, so compare as strings
@@ -20196,6 +20217,7 @@
                     chatAccountLabels,
                     senderAccountLabel,
                     bubbleAccountLabel,
+                    privateSpeakerLabel,
                     grantAccountLabels,
                     selectedChat,
                     selectedPaneTopic,

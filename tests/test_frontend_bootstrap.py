@@ -5260,6 +5260,67 @@ def test_a_private_chat_between_two_archived_accounts_has_no_label():
     assert _bubble_chip_labels(html, [1, 2], [2], [1, 2], chat_type="private") == ["", ""]
 
 
+def _private_speakers(html: str, accounts: list[int], chat: dict, messages: list[dict]) -> list[str]:
+    """Run the real speaker helper, with the real isOwnMessage, for one open chat."""
+    return _run_setup_program(
+        html,
+        (
+            "const accountLabels = computed(() =>",
+            "const multiAccount = computed(() =>",
+            "const accountLabel = (id) =>",
+            "const privateSpeakerLabel = (msg) =>",
+            "const isOwnMessage = (msg) =>",
+            "const getChatName = (chat) =>",
+        ),
+        "const ref = (value) => ({ value });\n"
+        "const computed = (fn) => ({ get value() { return fn() } });\n"
+        f"const accountList = ref({json.dumps([{'id': a, 'label': f'Account {a}'} for a in accounts])});\n"
+        f"const selectedChat = ref({json.dumps(chat)});",
+        f"console.log(JSON.stringify({json.dumps(messages)}.map(privateSpeakerLabel)))",
+    )
+
+
+@unittest.skipUnless(NODE, "node is required to run the speaker helper")
+def test_a_private_chat_tells_a_screen_reader_who_spoke():
+    """On screen only the side says who spoke in a private chat; a screen reader hears it.
+
+    An own message is "You", or the row's account when the archive holds
+    several. The other person is the chat's name, even when that person is an
+    archived account too. Groups and channels name their senders themselves.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    pair = [{"sender_account_id": 1, "is_outgoing": 1}, {"sender_account_id": 2, "is_outgoing": 0}]
+    # Account 1's row of a chat with account 2, whose name is Robin.
+    row = {"type": "private", "id": 2002, "account_id": 1, "accounts": [1], "first_name": "Robin"}
+    assert _private_speakers(html, [1, 2], row, pair) == ["Account 1", "Robin"]
+    # Account 2's row of the same conversation: the mirror.
+    mirror = {"type": "private", "id": 1001, "account_id": 2, "accounts": [2], "first_name": "Sam"}
+    mirrored = [{"sender_account_id": 1, "is_outgoing": 0}, {"sender_account_id": 2, "is_outgoing": 1}]
+    assert _private_speakers(html, [1, 2], mirror, mirrored) == ["Sam", "Account 2"]
+    # A single-account install: the reader is "You".
+    single = {"type": "private", "id": 3003, "account_id": 1, "accounts": [1], "first_name": "Juniper"}
+    assert _private_speakers(html, [1], single, [{"is_outgoing": 1}, {"is_outgoing": 0}]) == ["You", "Juniper"]
+    # A group names its senders on screen, so the helper stays out of it.
+    group = {"type": "supergroup", "id": -1001, "account_id": 1, "accounts": [1, 2], "title": "Garden"}
+    assert _private_speakers(html, [1, 2], group, pair) == ["", ""]
+
+
+def test_the_private_speaker_is_read_at_each_run():
+    """The speaker is a visually hidden prefix on the first bubble of each run a
+    screen reader reaches: the run's newest, since the page lists newest first."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert (
+        '<span v-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">'
+        "{{ privateSpeakerLabel(msg) }}:</span>"
+    ) in html
+    # The folded deleted pill says it too, the way it names a group's sender.
+    assert (
+        '<span v-else-if="isRunEnd(index) && privateSpeakerLabel(msg)" class="sr-only">'
+        "{{ privateSpeakerLabel(msg) }},</span>"
+    ) in html
+    assert "\n                    privateSpeakerLabel,\n" in html
+
+
 def test_reply_quote_is_reachable_from_the_keyboard():
     html = INDEX_HTML.read_text(encoding="utf-8")
     start = html.index('<div v-if="msg.reply_to_msg_id" @click="jumpToReply(msg.reply_to_msg_id)"')
