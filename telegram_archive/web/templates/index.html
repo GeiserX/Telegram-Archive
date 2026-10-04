@@ -265,10 +265,6 @@
             --tg-tag-4: 30 110 127;
             --tg-tag-5: 17 106 158;
             --tg-tag-6: 171 57 113;
-            /* The share of the tag colour an account's label keeps on the
-               outgoing bubble, mixed toward --tg-text-out (.meta-signature),
-               fitted to 4.5:1 on its fill and on the deleted wash. */
-            --tg-tag-out-mix: 100%;
 
             /* Shadows, scrollbar, focus ring, the run-end corner and the
                wallpaper layers. A shadow token is never `none`, so it can be
@@ -423,7 +419,6 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 227 122 198;
-            --tg-tag-out-mix: 45%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.45);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.45);
@@ -570,7 +565,6 @@
             --tg-tag-4: 93 210 224;
             --tg-tag-5: 109 187 245;
             --tg-tag-6: 255 114 176;
-            --tg-tag-out-mix: 30%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.60);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.60);
@@ -720,7 +714,6 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 232 147 209;
-            --tg-tag-out-mix: 45%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.45);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.45);
@@ -867,7 +860,6 @@
             --tg-tag-4: 44 50 58;
             --tg-tag-5: 44 50 58;
             --tg-tag-6: 44 50 58;
-            --tg-tag-out-mix: 100%;
 
             --tg-shadow-popup: 0 4px 16px rgb(27 31 36 / 0.12);
             --tg-shadow-fab: 0 0 0 1px rgb(27 31 36 / 0.08);
@@ -1013,7 +1005,6 @@
             --tg-tag-4: 214 217 222;
             --tg-tag-5: 214 217 222;
             --tg-tag-6: 214 217 222;
-            --tg-tag-out-mix: 100%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.50);
             --tg-shadow-fab: 0 0 0 1px rgb(255 255 255 / 0.08);
@@ -1159,7 +1150,6 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 226 116 196;
-            --tg-tag-out-mix: 85%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.80);
             --tg-shadow-fab: 0 0 0 1px rgb(255 255 255 / 0.10);
@@ -1305,7 +1295,6 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 228 127 201;
-            --tg-tag-out-mix: 60%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.50);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.50);
@@ -1451,7 +1440,6 @@
             --tg-tag-4: 98 212 227;
             --tg-tag-5: 101 189 243;
             --tg-tag-6: 230 134 204;
-            --tg-tag-out-mix: 80%;
 
             --tg-shadow-popup: 0 4px 16px rgb(0 0 0 / 0.50);
             --tg-shadow-fab: 0 1px 4px rgb(0 0 0 / 0.50);
@@ -1598,7 +1586,6 @@
             --tg-tag-4: 30 110 127;
             --tg-tag-5: 17 106 158;
             --tg-tag-6: 171 57 113;
-            --tg-tag-out-mix: 95%;
 
             --tg-shadow-popup: 0 4px 16px rgb(15 23 42 / 0.15);
             --tg-shadow-fab: 0 1px 4px rgb(15 23 42 / 0.18);
@@ -1747,7 +1734,6 @@
             --tg-tag-4: 26 95 110;
             --tg-tag-5: 122 74 18;
             --tg-tag-6: 148 49 97;
-            --tg-tag-out-mix: 100%;
 
             --tg-shadow-popup: 0 4px 16px rgb(43 34 24 / 0.18);
             --tg-shadow-fab: 0 1px 4px rgb(43 34 24 / 0.20);
@@ -2328,25 +2314,32 @@
             border: 0;
         }
         /* The account an outgoing message came from, in a group or channel
-           several accounts share: where a channel puts its signature, in the
-           account's tag colour (--tag, set by accountTagStyle, as on the chip).
-           --tg-tag-out-mix is how much of that colour each palette keeps,
-           mixed toward the outgoing text colour: all of it where the chip
-           colour reads at 4.5:1 on the outgoing bubble, a lighter tint of the
-           same hue where it cannot. In the palettes where that tint sits close
-           to the text colour (iOS Night most of all) the hue alone does not set
-           the name apart, so it takes the chip's weight, 600, in every palette.
-           Over a picture the label is part of the time pill and takes the
-           pill's colour. */
+           several accounts share: where a channel puts its signature, as the
+           account's chip from the chat list (--tag, set by accountTagStyle).
+           The chip brings its own backing, the tag colour at 10% over the
+           chat list's surface, so the name keeps the account's full colour on
+           every outgoing fill: the pair is the one the chat list already
+           holds at 4.5:1, whatever the bubble under it. Over a picture the
+           label is part of the time pill and takes the pill's colour, with no
+           backing of its own. */
         .meta-signature {
             max-width: 8rem;
             overflow: hidden;
             text-overflow: ellipsis;
-            color: color-mix(in srgb, rgb(var(--tag, var(--tg-tag-5))) var(--tg-tag-out-mix), rgb(var(--tg-text-out)));
+            padding: 0 5px;
+            border-radius: 4px;
+            font-size: 11px;
+            line-height: 16px;
             font-weight: 600;
+            color: rgb(var(--tag, var(--tg-tag-5)));
+            background:
+                linear-gradient(rgb(var(--tag, var(--tg-tag-5)) / 0.10), rgb(var(--tag, var(--tg-tag-5)) / 0.10)),
+                rgb(var(--tg-sidebar));
         }
         .message-bubble.bubble-media-only .meta-signature {
+            padding: 0;
             color: inherit;
+            background: none;
         }
         /* The time and the "deleted" marker as buttons (metaOpensInfo): they
            look exactly like the text they replace. */

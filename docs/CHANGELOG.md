@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Changed
+- **In a group or channel several archived accounts hold, the account name on a message is the account's tag.** 9.3.0 drew the name in the tag's colour, mixed toward the bubble's text colour wherever the colour itself did not read on the outgoing bubble. In the dark palettes that left a pale tint, and two accounts were hard to tell apart. The name is now the tag from the chat list, the same small label on its own backing, so it keeps the account's full colour in every palette. Over a picture it stays part of the time pill. See [Multiple accounts](configuration/multiple-accounts.md#in-the-viewer).
+
 ## [9.3.0] - 2026-10-04
 
 Pictures in the chat take the sizes Telegram Desktop gives them, custom emoji are drawn in reactions and in text, a private chat between two archived accounts shows each side, and the transcription queue drains every 15 minutes. Migration 040 runs on start and adds one table for custom emoji; nothing else changes in the database. Update both images together. After upgrading, run `telegram-archive check-media` and, if it reports photos without a size, `check-media --repair`. A script that reads a custom emoji entity's `document_id` from the viewer's API now gets a string. See [Upgrading to 9.3.0](operations/upgrading.md#upgrading-to-930).
