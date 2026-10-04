@@ -189,7 +189,7 @@ The backup image ships a mover script. The image entrypoint migrates the empty P
       --network telegram-archive_telegram-network \
       -v ./data/backups/telegram_backup.db:/sqlite.db:ro \
       -e DATABASE_URL=postgresql://telegram:change-me@postgres:5432/telegram_backup \
-      drumsergio/telegram-archive:9.3.0 \
+      drumsergio/telegram-archive:9.3.1 \
       python scripts/migrate-sqlite-to-postgres.py --sqlite /sqlite.db
     ```
 

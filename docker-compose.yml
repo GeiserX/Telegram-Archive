@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:9.3.0
+    image: drumsergio/telegram-archive:9.3.1
     container_name: telegram-backup
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -217,7 +217,7 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:9.3.0
+    image: drumsergio/telegram-archive-viewer:9.3.1
     container_name: telegram-viewer
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -346,7 +346,7 @@ services:
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   image: drumsergio/telegram-archive-viewer:9.3.0
+  #   image: drumsergio/telegram-archive-viewer:9.3.1
   #   container_name: telegram-channel-viewer
   #   restart: unless-stopped
   #   ports:
