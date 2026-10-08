@@ -6,6 +6,14 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.3.2] - 2026-10-08
+
+Two dependency updates that close security advisories. No migration, nothing else changes. Docker deployments only need the new pins.
+
+### Security
+- **Mako is 1.4.3, which closes GHSA-5639-2j2p-m4mx.** The advisory covers Mako before 1.4.2. Mako comes in through Alembic, which runs the migrations.
+- **multidict is 6.9.1, which closes GHSA-54p9-h82j-f925.** The advisory covers multidict before 6.9.1. multidict comes in through aiohttp, which pywebpush uses for push notifications.
+
 ## [9.3.1] - 2026-10-04
 
 One change in the viewer: in a group several archived accounts hold, the account name on a message is the account's tag. No migration, nothing else changes. Docker deployments only need the new pins.
