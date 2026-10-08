@@ -189,7 +189,7 @@ The shipped example publishes port 8001 on every interface. It has no database v
 ```yaml
 services:
   telegram-channel-viewer:
-    image: drumsergio/telegram-archive-viewer:9.3.1
+    image: drumsergio/telegram-archive-viewer:9.3.2
     container_name: telegram-channel-viewer
     restart: unless-stopped
     ports:

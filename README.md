@@ -45,7 +45,7 @@ VIEWER_TIMEZONE=Europe/London
 EOF
 mkdir -p data && sudo chown -R 1000:1000 data
 docker compose run --rm telegram-backup python -m telegram_archive auth
-docker compose up -d   # drumsergio/telegram-archive:9.3.1 and drumsergio/telegram-archive-viewer:9.3.1
+docker compose up -d   # drumsergio/telegram-archive:9.3.2 and drumsergio/telegram-archive-viewer:9.3.2
 ```
 
 `auth` asks for the code Telegram sends you, and for your two-step password if you have one. Then open [http://127.0.0.1:8000](http://127.0.0.1:8000), sign in with the viewer username and password, and watch the first backup fill the chat list. [Run with Docker](https://geiserx.github.io/Telegram-Archive/getting-started/docker/) has every step, with the Podman and Colima notes, and [Install from PyPI](https://geiserx.github.io/Telegram-Archive/getting-started/pip/) runs the same thing from `pip install telegram-archive`.
