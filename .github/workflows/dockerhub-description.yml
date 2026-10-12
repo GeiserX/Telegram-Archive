@@ -3,7 +3,7 @@ name: Docker Hub Description
 on:
   push:
     branches: [main]
-    paths: [README.md]
+    paths: [README.md, .github/workflows/dockerhub-description.yml]
   workflow_dispatch:
 
 jobs:
@@ -11,9 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repository:
-          - drumsergio/telegram-archive
-          - drumsergio/telegram-archive-viewer
+        include:
+          - repository: drumsergio/telegram-archive
+            description: "Self-hosted Telegram backup: messages, media, edits and deletions to SQLite or PostgreSQL"
+          - repository: drumsergio/telegram-archive-viewer
+            description: "Web viewer to read and search a Telegram-Archive backup; it never talks to Telegram"
     steps:
       - uses: actions/checkout@v7
 
@@ -22,3 +24,4 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ matrix.repository }}
+          short-description: ${{ matrix.description }}
