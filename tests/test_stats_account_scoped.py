@@ -240,6 +240,7 @@ async def app_on(real_adapter):
     web_main.AUTH_ENABLED = False
     web_main.ALLOW_ANONYMOUS_VIEWER = True
     web_main.config.display_chat_ids = set()
+    web_main._visible_bytes_cache.clear()
     try:
         yield real_adapter
     finally:
@@ -314,6 +315,56 @@ class TestRestrictedTotalsAreItsOwn:
 
         assert body["chats"] == 1
         assert body["messages"] == SEEDED[(1, COLLIDING_PRIVATE)]
+
+    async def test_a_restricted_storage_figure_never_exceeds_the_archive_wide_one(self, app_on):
+        """A blob written with logical per-row sums must not show a viewer more than the master sees."""
+        import json
+
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        stats = await app_on.calculate_and_store_statistics()
+        stats["total_size_mb"] = 1.0
+        await app_on.set_metadata("cached_stats", json.dumps(stats))
+        as_principal(allowed_accounts={2})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert body["total_size_mb"] == 1.0
+
+    async def test_a_file_both_accounts_hold_counts_in_full_for_each(self, app_on):
+        """One stored blob reposted into several chats: once per viewer, whole for each."""
+        await seed_two_accounts(app_on)
+        for account_id, chat_id, message_id in [
+            (1, SHARED_CHANNEL, 1000),
+            (1, COLLIDING_PRIVATE, 1000),
+            (2, SHARED_CHANNEL, 2000),
+        ]:
+            await app_on.insert_media(
+                {
+                    "id": f"{chat_id}_{message_id}_video",
+                    "message_id": message_id,
+                    "chat_id": chat_id,
+                    "type": "video",
+                    "file_name": "same.mp4",
+                    "file_size": 100 * MIB,
+                    "content_hash": "a" * 64,
+                    "downloaded": True,
+                },
+                account_id=account_id,
+            )
+        stats = await app_on.calculate_and_store_statistics()
+        assert await app_on.get_visible_media_bytes({(1, SHARED_CHANNEL), (1, COLLIDING_PRIVATE)}) == 100 * MIB
+        assert await app_on.get_visible_media_bytes({(2, SHARED_CHANNEL)}) == 100 * MIB
+        assert await app_on.get_visible_media_bytes(set()) == 0
+        web_main._visible_bytes_cache.clear()
+        as_principal(allowed_accounts={2})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert body["total_size_mb"] == 100.0
+        assert stats["media_files"] == 3
 
     async def test_an_unrestricted_principal_keeps_the_archive_wide_totals(self, app_on):
         await seed_two_accounts(app_on)

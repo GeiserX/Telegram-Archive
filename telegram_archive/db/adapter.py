@@ -7201,6 +7201,43 @@ class DatabaseAdapter:
 
         return stats
 
+    async def get_visible_media_bytes(self, pairs: set[tuple[int, int]]) -> int:
+        """Size of the distinct downloaded files held by the given ``(account, chat)`` pairs.
+
+        What one viewer's chats occupy on their own: the archive stores one blob
+        per ``(file_name, content_hash)`` and links it into every chat that holds
+        it, so a file reposted across the viewer's chats counts once, and a file
+        the viewer shares with someone else counts in full for each of them. A
+        viewer's set of blobs is a subset of the archive's, so this can never
+        exceed the archive-wide figure (which counts each blob once too). Rows
+        with no content hash cannot be matched to a blob and count for
+        themselves.
+        """
+        if not pairs:
+            return 0
+        wanted_chats = {chat_id for _, chat_id in pairs}
+        blobs: dict[tuple[str, str | None], int] = {}
+        unhashed = 0
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.stream(
+                select(
+                    Media.account_id,
+                    Media.chat_id,
+                    Media.content_hash,
+                    Media.file_name,
+                    func.coalesce(Media.file_size, 0),
+                ).where(Media.downloaded == 1, Media.chat_id.in_(wanted_chats))
+            )
+            async for account_id, chat_id, content_hash, file_name, size in result:
+                if (account_id, chat_id) not in pairs:
+                    continue
+                if content_hash:
+                    key = (content_hash, file_name)
+                    blobs[key] = max(blobs.get(key, 0), int(size))
+                else:
+                    unhashed += int(size)
+        return unhashed + sum(blobs.values())
+
     # ========== Delete Operations ==========
 
     async def delete_chat_and_related_data(self, chat_id: int, media_base_path: str = None, *, account_id: int) -> None:
