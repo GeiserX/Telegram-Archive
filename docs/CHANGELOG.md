@@ -6,6 +6,14 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.3.3] - 2026-10-12
+
+Two fixes from a contributor. Migration 041 runs on start; on a database made by a release it does nothing. Docker deployments only need the new pins.
+
+### Fixed
+- **A restricted viewer's storage figure is the size of its own distinct files.** The archive stores one file per name and content hash and links it into every chat that holds it. Since 9.0 a restricted login saw that file counted once per chat, so its figure could pass the whole archive's. Now a file reposted across the viewer's chats counts once, and the figure never passes the archive-wide one. (#571)
+- **A database from a `:dev` image of 2026-09-26 transcribes again.** The first build of migration 032 made `media_transcripts` without `copied_from_id` and `diarize`, and the later build never re-ran, so every transcription drain failed with `column media_transcripts.copied_from_id does not exist`. Migration 041 adds whichever of those columns is missing. (#572)
+
 ## [9.3.2] - 2026-10-08
 
 Two dependency updates that close security advisories. No migration, nothing else changes. Docker deployments only need the new pins.
