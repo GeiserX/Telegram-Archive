@@ -982,6 +982,24 @@ def _user_is_restricted(user: UserContext) -> bool:
     return not _chat_scope(user).unrestricted
 
 
+_VISIBLE_BYTES_TTL_SECONDS = 300
+_visible_bytes_cache: dict[frozenset[tuple[int, int]], tuple[float, int]] = {}
+
+
+async def _visible_media_bytes(pairs: set[tuple[int, int]]) -> int:
+    """``db.get_visible_media_bytes`` behind a short cache: it scans the viewer's media rows."""
+    key = frozenset(pairs)
+    now = time.monotonic()
+    hit = _visible_bytes_cache.get(key)
+    if hit is not None and now - hit[0] < _VISIBLE_BYTES_TTL_SECONDS:
+        return hit[1]
+    value = await db.get_visible_media_bytes(pairs)
+    if len(_visible_bytes_cache) > 256:
+        _visible_bytes_cache.clear()
+    _visible_bytes_cache[key] = (now, value)
+    return value
+
+
 async def _visible_chat_pair_set(user: UserContext) -> set[tuple[int, int]] | None:
     """``(account_id, chat_id)`` pairs the user may see, or None when unrestricted.
 
@@ -4320,8 +4338,17 @@ async def get_stats(user: UserContext = Depends(require_auth)):
             # the next calculation.
             if isinstance(per_chat_media_counts, dict) and isinstance(per_chat_media_bytes, dict):
                 stats["media_files"] = sum(_scoped_chat_counts(per_chat_media_counts, user_chat_pairs).values())
-                visible_bytes = sum(_scoped_chat_counts(per_chat_media_bytes, user_chat_pairs).values())
-                stats["total_size_mb"] = float(round(visible_bytes / (1024 * 1024), 2))
+                # Bytes are the viewer's own distinct files, not the per-chat
+                # sum: a file reposted across chats is stored once, and the
+                # cached per-chat figures count it once per chat.
+                visible_bytes = await _visible_media_bytes(user_chat_pairs)
+                visible_mb = float(round(visible_bytes / (1024 * 1024), 2))
+                # Declared sizes can run past real disk use (a missing or
+                # truncated file): never show more than the archive-wide figure.
+                archive_mb = stats.get("total_size_mb")
+                if isinstance(archive_mb, (int, float)) and not isinstance(archive_mb, bool):
+                    visible_mb = min(visible_mb, float(archive_mb))
+                stats["total_size_mb"] = visible_mb
             else:
                 stats.pop("media_files", None)
                 stats.pop("total_size_mb", None)
