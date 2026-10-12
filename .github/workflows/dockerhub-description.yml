@@ -3,7 +3,7 @@ name: Docker Hub Description
 on:
   push:
     branches: [main]
-    paths: [README.md]
+    paths: [README.md, .github/workflows/dockerhub-description.yml]
   workflow_dispatch:
 
 jobs:
