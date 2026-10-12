@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use Telegram Archive in your work, please cite it as below."
+title: "Telegram Archive"
+abstract: "Automated, incremental backups of Telegram accounts with a local web viewer. Keeps messages, media, edits and deleted messages in SQLite or PostgreSQL."
+type: software
+authors:
+  - given-names: Sergio
+    family-names: Fernández Rubio
+    alias: GeiserX
+repository-code: "https://github.com/GeiserX/Telegram-Archive"
+url: "https://geiserx.github.io/Telegram-Archive/"
+license: GPL-3.0-or-later
+version: 9.3.3
+date-released: 2026-10-12
+keywords:
+  - telegram
+  - backup
+  - archive
+  - self-hosted
