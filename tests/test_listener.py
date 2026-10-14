@@ -607,6 +607,71 @@ class TestEventHandlers:
             "PageBlockParagraph",
         ]
 
+    def test_on_new_message_stores_the_whole_tree_of_a_partial_rich_message(self, listener_with_handlers, full_config):
+        """A long Rich Text Editor message arrives truncated (``part=True``); the listener fetches the rest."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        from telethon.tl.types import Message, PageBlockParagraph, PeerChannel, RichMessage, TextBold, TextPlain
+
+        whole = RichMessage(
+            blocks=[
+                PageBlockParagraph(text=TextPlain("first")),
+                PageBlockParagraph(text=TextBold(TextPlain("second"))),
+            ],
+            photos=[],
+            documents=[],
+        )
+        fetched = Message(
+            id=46,
+            peer_id=PeerChannel(1234567890),
+            date=datetime(2025, 1, 1, tzinfo=UTC),
+            message="",
+            rich_message=whole,
+        )
+        listener.client = AsyncMock(return_value=SimpleNamespace(messages=[fetched]))
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 46
+        msg.peer_id = PeerChannel(1234567890)
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, tzinfo=UTC)
+        msg.raw_text = ""
+        msg.text = ""
+        msg.message = ""
+        msg.entities = []
+        msg.rich_message = RichMessage(
+            blocks=[PageBlockParagraph(text=TextPlain("first"))], photos=[], documents=[], part=True
+        )
+        msg.reply_to_msg_id = None
+        msg.edit_date = None
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        msg.fwd_from = None
+        event.message = msg
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+
+        asyncio.run(handler(event))
+
+        saved = listener.db.insert_message.call_args[0][0]
+        assert saved["text"] == "first\nsecond"
+        assert saved["raw_data"]["entities"] == [{"type": "bold", "offset": 6, "length": 6}]
+        assert "part" not in saved["raw_data"]["rich_message"]
+        assert listener.client.call_args.args[0].peer == PeerChannel(1234567890)
+
     def test_on_new_message_adds_untracked_chat_to_tracking(self, listener_with_handlers, full_config):
         """Test new message from untracked-but-included chat gets added to tracking.
 
@@ -876,6 +941,7 @@ class TestEventHandlers:
             rich_message=None,
             source="listener",
             media_changed=False,
+            text_may_be_truncated=False,
         )
 
     def test_on_message_edited_carries_rich_text_editor_content(self, listener_with_handlers):
@@ -911,6 +977,156 @@ class TestEventHandlers:
         assert kwargs["new_text"] == "Title\nedited"
         assert kwargs["entities"] == [{"type": "bold", "offset": 0, "length": 5}]
         assert [b["_"] for b in kwargs["rich_message"]["blocks"]] == ["PageBlockHeading3", "PageBlockParagraph"]
+
+    def test_on_message_edited_stores_the_whole_tree_of_a_partial_rich_message(self, listener_with_handlers):
+        """An edited long Rich Text Editor message arrives truncated too; the edit carries the whole text."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageEdited]
+
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        from telethon.tl.types import Message, PageBlockParagraph, PeerChannel, RichMessage, TextBold, TextPlain
+
+        edit_date = datetime(2025, 1, 1, tzinfo=UTC)
+        whole = RichMessage(
+            blocks=[
+                PageBlockParagraph(text=TextPlain("first")),
+                PageBlockParagraph(text=TextBold(TextPlain("second"))),
+            ],
+            photos=[],
+            documents=[],
+        )
+        fetched = Message(
+            id=42,
+            peer_id=PeerChannel(1234567890),
+            date=edit_date,
+            message="",
+            rich_message=whole,
+            edit_date=edit_date,
+        )
+        listener.client = AsyncMock(return_value=SimpleNamespace(messages=[fetched]))
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 42
+        msg.peer_id = PeerChannel(1234567890)
+        msg.raw_text = ""
+        msg.text = ""
+        msg.message = ""
+        msg.entities = []
+        msg.rich_message = RichMessage(
+            blocks=[PageBlockParagraph(text=TextPlain("first"))], photos=[], documents=[], part=True
+        )
+        msg.edit_date = edit_date
+        event.message = msg
+
+        asyncio.run(handler(event))
+
+        kwargs = listener.db.update_message_text.call_args.kwargs
+        assert kwargs["new_text"] == "first\nsecond"
+        assert kwargs["entities"] == [{"type": "bold", "offset": 6, "length": 6}]
+        assert "part" not in kwargs["rich_message"]
+
+    def test_on_message_edited_of_a_tree_still_partial_lets_the_archive_decide(self, listener_with_handlers):
+        """The rest of a truncated tree could not be fetched: the edit says its text
+        may be truncated (a prefix of the archived text is then not an edit), and a
+        message the archive does not hold yet is still stored."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageEdited]
+
+        from datetime import datetime
+
+        from telethon.tl.types import PageBlockParagraph, PeerChannel, RichMessage, TextPlain
+
+        listener.client = AsyncMock(side_effect=ConnectionError("unreachable"))
+        listener.db.update_message_text = AsyncMock(return_value=("not_found", None))
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 42
+        msg.peer_id = PeerChannel(1234567890)
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, tzinfo=UTC)
+        msg.raw_text = ""
+        msg.text = ""
+        msg.message = ""
+        msg.entities = []
+        msg.rich_message = RichMessage(
+            blocks=[PageBlockParagraph(text=TextPlain("first"))], photos=[], documents=[], part=True
+        )
+        msg.reply_to_msg_id = None
+        msg.edit_date = datetime(2025, 1, 2, tzinfo=UTC)
+        msg.edit_hide = True
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        msg.fwd_from = None
+        event.message = msg
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+
+        asyncio.run(handler(event))
+
+        assert listener.db.update_message_text.call_args.kwargs["text_may_be_truncated"] is True
+        listener.db.insert_message.assert_called_once()
+        assert listener.db.insert_message.call_args.args[0]["text"] == "first"
+        assert listener.stats["edits_stored_as_new"] == 1
+
+    def test_on_message_edited_announces_the_kept_text_when_only_media_changed(self, listener_with_handlers):
+        """The fetch failed and the edit replaced the photo: the archive keeps its
+        whole text (the cut-short one is its prefix), so the live frame and the
+        webhook carry the stored text and the viewer keeps its formatting."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageEdited]
+
+        from datetime import datetime
+
+        from telethon.tl.types import PageBlockParagraph, PeerChannel, RichMessage, TextPlain
+
+        listener.client = AsyncMock(side_effect=ConnectionError("unreachable"))
+        listener.db.update_message_text = AsyncMock(
+            return_value=("applied", {"text": "first\nsecond", "sender_id": 111, "sender_name": None})
+        )
+        listener._keep_replaced_media = AsyncMock(return_value="photo")
+        listener._capturable_media_type = MagicMock(return_value=None)
+        listener._current_media_row = AsyncMock(return_value=None)
+        listener._notify_update = AsyncMock()
+        listener._fire_event_webhook = AsyncMock()
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 42
+        msg.peer_id = PeerChannel(1234567890)
+        msg.sender_id = 111
+        msg.raw_text = ""
+        msg.text = ""
+        msg.message = ""
+        msg.entities = []
+        msg.rich_message = RichMessage(
+            blocks=[PageBlockParagraph(text=TextPlain("first"))], photos=[], documents=[], part=True
+        )
+        msg.edit_date = datetime(2025, 1, 2, tzinfo=UTC)
+        msg.media = None
+        event.message = msg
+
+        asyncio.run(handler(event))
+
+        kind, frame = listener._notify_update.await_args.args
+        assert kind == "edit"
+        assert frame["new_text"] == "first\nsecond"
+        assert "entities" not in frame
+        webhook = listener._fire_event_webhook.await_args.kwargs
+        assert webhook["new_text"] == webhook["text"] == "first\nsecond"
 
     def test_on_message_edited_handles_none_text(self, listener_with_handlers):
         """Test edit handler treats None text as empty string."""

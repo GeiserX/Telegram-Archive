@@ -3194,6 +3194,7 @@ class DatabaseAdapter:
         rich_message: dict | None = None,
         source: str | None = None,
         media_changed: bool = False,
+        text_may_be_truncated: bool = False,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
@@ -3226,6 +3227,13 @@ class DatabaseAdapter:
         file (``reconcile_media_row`` kept the old one): it is an edit even when
         the caption stayed the same, so it moves ``edit_date`` like a
         formatting-only edit does.
+
+        ``text_may_be_truncated`` says ``new_text`` was rendered from a Rich
+        Text Editor tree Telegram delivered cut short (``part=True``) and that
+        could not be completed. When the archived text starts with it, it is
+        that text cut short: the archive keeps its text and formatting, and
+        only ``media_changed`` can still make it an edit. Any other text is an
+        edit as usual.
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
@@ -3233,6 +3241,8 @@ class DatabaseAdapter:
             if message is None:
                 logger.debug("Edit no-op: message not found in archive")
                 return "not_found", None
+            if text_may_be_truncated and (message.text or "").startswith(new_text or ""):
+                new_text, update_entities = message.text, False
 
             archived_entities, archived_rich_message = _formatting_state(message.raw_data)
             entities_changed, rich_changed = (

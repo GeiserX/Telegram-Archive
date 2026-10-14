@@ -100,6 +100,7 @@ from .message_utils import (
     place_copy,
     replace_short_file_or_keep_beside,
     resolve_shared_file_path,
+    rich_message_of,
     sender_display_name,
     service_action_type,
     service_message_text,
@@ -655,6 +656,47 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
             # Reconnect after the backoff and immediately before the next
             # attempt, mirroring call_with_flood_retry (#265).
             await _reconnect_before_retry(client, "iter_messages")
+
+
+async def complete_rich_message(client, message) -> bool:
+    """Swap the whole block tree into a Rich Text Editor message that arrived truncated.
+
+    Telegram ships a long Rich Text Editor message with a partial tree marked
+    ``part=True``; ``messages.getRichMessage`` returns all of it. The fetched
+    tree replaces ``message.rich_message`` in place, so every writer renders
+    the whole text, but only when it is the same message (id), at the same
+    edit (``edit_date``), complete, and starts with the text that arrived (the
+    date has one-second resolution). Never raises for a Telegram message: on
+    any failure the partial tree stays, which still beats none.
+
+    Returns False only when a partial tree stays partial.
+    """
+    rich = rich_message_of(message)
+    if rich is None or getattr(rich, "part", None) is not True:
+        return True
+    from telethon.tl.functions.messages import GetRichMessageRequest
+
+    try:
+        result = await call_with_flood_retry(
+            client, GetRichMessageRequest(peer=message.peer_id, id=message.id), non_retryable=lambda _exc: True
+        )
+    except Exception as e:
+        # Type only: an RPC error can name the peer.
+        logger.warning(f"Could not fetch the rest of a partial rich message: {type(e).__name__}")
+        return False
+    arrived = message_plain_text(message)
+    for fetched in getattr(result, "messages", None) or []:
+        whole = rich_message_of(fetched)
+        if (
+            getattr(fetched, "id", None) == message.id
+            and getattr(fetched, "edit_date", None) == getattr(message, "edit_date", None)
+            and whole is not None
+            and getattr(whole, "part", None) is not True
+            and message_plain_text(fetched).startswith(arrived)
+        ):
+            message.rich_message = whole
+            return True
+    return False
 
 
 def _failed_media_row(
@@ -3953,6 +3995,8 @@ class TelegramBackup:
             message: Message object from Telegram
             chat_id: Chat identifier
         """
+        await complete_rich_message(self.client, message)
+
         # Scheduled sweeps snapshot only sender entities already attached by
         # Telethon; resolving a missing sender here would add one API request per
         # message and create avoidable flood risk on large histories.
@@ -4669,6 +4713,7 @@ class TelegramBackup:
         (``_keep_replaced_media``): it moves ``edit_date`` even when the
         caption stayed the same, as the listener does.
         """
+        whole = await complete_rich_message(self.client, message)
         outcome, _ = await self.db.update_message_text(
             chat_id,
             message.id,
@@ -4681,6 +4726,7 @@ class TelegramBackup:
             rich_message=message_rich_payload(message),
             source=source,
             media_changed=media_changed,
+            text_may_be_truncated=not whole,
         )
         return outcome
 

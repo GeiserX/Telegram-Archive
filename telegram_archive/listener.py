@@ -83,7 +83,7 @@ from .message_utils import (
     utcnow_naive,
 )
 from .realtime import NotificationType, RealtimeNotifier
-from .telegram_backup import absorb_media_floods, call_with_flood_retry
+from .telegram_backup import absorb_media_floods, call_with_flood_retry, complete_rich_message
 from .transcription import transcribe_media
 from .transcription_contract import is_transcribable
 from .web.media_utils import resolve_stored_media_path
@@ -1555,6 +1555,7 @@ class TelegramListener:
                 self._buffer_reaction_snapshot(chat_id, message)
 
                 self.stats["edits_received"] += 1
+                whole = await complete_rich_message(self.client, message)
                 new_text = message_plain_text(message)
                 edit_date = message.edit_date
                 edit_hide = message_edit_hide(message)
@@ -1583,6 +1584,7 @@ class TelegramListener:
                         rich_message=message_rich_payload(message),
                         source="listener",
                         media_changed=replaced_media_type is not None,
+                        text_may_be_truncated=not whole,
                     )
                     # The new file, beside the kept one, under the same rules as a
                     # new message's media (SKIP_MEDIA, size, type filters).
@@ -1631,6 +1633,13 @@ class TelegramListener:
                 self.stats["edits_applied"] += 1
                 logger.debug("📝 Edit applied")
 
+                # A tree still cut short whose text prefixes the archived one: the
+                # archive kept its text and formatting (only the media changed), so
+                # announce what is stored, and leave the viewer's formatting alone.
+                kept_text = not whole and prior is not None and (prior.get("text") or "").startswith(new_text or "")
+                if kept_text:
+                    new_text = prior["text"]
+
                 # Notify viewer of the update
                 edit_frame = {
                     "chat_id": chat_id,
@@ -1641,6 +1650,8 @@ class TelegramListener:
                     # The edit may have changed only the formatting.
                     "entities": entities,
                 }
+                if kept_text:
+                    del edit_frame["entities"]
                 # The edit replaced the photo or file: the frame carries the
                 # message's current media, in the new_message frame's nested
                 # shape, so an open chat swaps it in at once. No key: the
@@ -1831,6 +1842,7 @@ class TelegramListener:
                     await self.db.upsert_user(user_data)
                     sender_user = user_data
 
+                await complete_rich_message(self.client, message)
                 message_data = {
                     "id": message.id,
                     "chat_id": chat_id,

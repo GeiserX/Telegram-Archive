@@ -359,3 +359,102 @@ async def test_edit_back_to_plain_text_drops_the_rich_message_tree(adapter):
     raw = json.loads((await _row(adapter)).raw_data)
     assert "rich_message" not in raw
     assert raw["webpage"] == {"url": "https://keep.example"}
+
+
+# A Rich Text Editor tree Telegram delivered cut short (part=True) and that could
+# not be completed renders a prefix of the archived text: not an edit.
+WHOLE_TREE = {"blocks": [{"_": "PageBlockParagraph", "text": {"_": "TextPlain", "text": "first"}}] * 2}
+PARTIAL_TREE = {"blocks": [{"_": "PageBlockParagraph", "text": {"_": "TextPlain", "text": "first"}}], "part": True}
+
+
+async def _archive_whole_text(adapter_):
+    await adapter_.update_message_text(
+        CHAT_ID,
+        1,
+        "first\nfirst",
+        datetime(2026, 1, 2),
+        account_id=1,
+        entities=BOLD,
+        update_entities=True,
+        rich_message=WHOLE_TREE,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_text_that_prefixes_the_archive_is_not_an_edit(adapter):
+    """A reaction (a hidden edit) on a message whose tree arrives cut short again
+    must not replace the archived whole text, nor record a version."""
+    await _archive_whole_text(adapter)
+    versions_before = await adapter.get_message_versions(CHAT_ID, 1, account_id=1)
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID,
+        1,
+        "first",
+        datetime(2026, 1, 3),
+        account_id=1,
+        edit_hide=1,
+        entities=None,
+        update_entities=True,
+        rich_message=PARTIAL_TREE,
+        text_may_be_truncated=True,
+    )
+    assert outcome == "noop"
+    row = await _row(adapter)
+    assert row.text == "first\nfirst"
+    raw = json.loads(row.raw_data)
+    assert raw["rich_message"] == WHOLE_TREE and raw["entities"] == BOLD
+    assert await adapter.get_message_versions(CHAT_ID, 1, account_id=1) == versions_before
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_text_that_differs_is_still_an_edit(adapter):
+    await _archive_whole_text(adapter)
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID,
+        1,
+        "rewritten",
+        datetime(2026, 1, 3),
+        account_id=1,
+        entities=None,
+        update_entities=True,
+        rich_message=PARTIAL_TREE,
+        text_may_be_truncated=True,
+    )
+    assert outcome == "applied"
+    assert (await _row(adapter)).text == "rewritten"
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_text_with_replaced_media_moves_only_the_edit_date(adapter):
+    await _archive_whole_text(adapter)
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID,
+        1,
+        "first",
+        datetime(2026, 1, 3),
+        account_id=1,
+        entities=None,
+        update_entities=True,
+        rich_message=PARTIAL_TREE,
+        text_may_be_truncated=True,
+        media_changed=True,
+    )
+    assert outcome == "applied"
+    row = await _row(adapter)
+    assert row.text == "first\nfirst" and row.edit_date == datetime(2026, 1, 3)
+    assert json.loads(row.raw_data)["rich_message"] == WHOLE_TREE
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_text_of_a_message_not_archived_is_not_found(adapter):
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID,
+        2,
+        "first",
+        datetime(2026, 1, 3),
+        account_id=1,
+        update_entities=True,
+        rich_message=PARTIAL_TREE,
+        text_may_be_truncated=True,
+    )
+    assert outcome == "not_found"
