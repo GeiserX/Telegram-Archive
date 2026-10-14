@@ -688,8 +688,12 @@ async def complete_rich_message(client, message) -> bool:
     try:
         result = await client(GetRichMessageRequest(peer=message.peer_id, id=message.id))
     except (FloodWaitError, FloodPremiumWaitError) as e:
-        client._ta_rich_message_paused_until = time.monotonic() + e.seconds
-        logger.warning(f"Partial rich messages stay partial for {e.seconds}s after a FloodWait")
+        # Read again: a request in flight beside this one may have set a longer pause.
+        now = time.monotonic()
+        paused_until = getattr(client, "_ta_rich_message_paused_until", 0.0)
+        paused_until = max(paused_until if isinstance(paused_until, float) else 0.0, now + e.seconds)
+        client._ta_rich_message_paused_until = paused_until
+        logger.warning(f"Partial rich messages stay partial for {round(paused_until - now)}s after a FloodWait")
         return False
     except Exception as e:
         # Type only: an RPC error can name the peer.

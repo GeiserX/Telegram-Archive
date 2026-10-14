@@ -532,6 +532,32 @@ class TestCompleteRichMessage(unittest.TestCase):
             self.assertTrue(asyncio.run(complete_rich_message(client, self._partial_message())))
             self.assertEqual(client.call_count, 2)
 
+    def test_a_shorter_flood_wait_never_shortens_an_active_pause(self):
+        """Two requests in flight on one client: a shorter FloodWait that lands later
+        keeps the longer pause."""
+        clock = [1000.0]
+        waits = [FloodWaitError(request=None, capture=60), FloodWaitError(request=None, capture=5)]
+
+        async def answer(_request):
+            await asyncio.sleep(0)  # both requests are in flight before either fails
+            raise waits.pop(0)
+
+        client = AsyncMock(side_effect=answer)
+
+        async def both():
+            return await asyncio.gather(
+                complete_rich_message(client, self._partial_message()),
+                complete_rich_message(client, self._partial_message()),
+            )
+
+        with patch("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock[0])):
+            with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
+                self.assertEqual(asyncio.run(both()), [False, False])
+            self.assertEqual(["60s" in line for line in logs.output], [True, True])  # the pause in effect
+            clock[0] += 10
+            self.assertFalse(asyncio.run(complete_rich_message(client, self._partial_message())))
+        self.assertEqual(client.call_count, 2)  # still paused by the 60s wait
+
 
 if __name__ == "__main__":
     unittest.main()
