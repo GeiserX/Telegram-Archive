@@ -14,8 +14,9 @@ import sys
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from telethon.errors import FloodWaitError
 from telethon.tl.types import (
     Channel,
     ChatPhotoEmpty,
@@ -80,6 +81,7 @@ def _wire_message(rich: RichMessage | None, text: str = "") -> Message:
 
 
 def _partial(*blocks) -> RichMessage:
+    """A block tree Telegram delivered cut short."""
     return RichMessage(blocks=list(blocks), photos=[], documents=[], part=True)
 
 
@@ -377,21 +379,34 @@ class TestSweepStoresRichMessages(unittest.TestCase):
         self.assertEqual(result["raw_data"]["entities"], [])
 
     def _partial_message(self):
+        """A sweep message whose tree arrived cut short."""
         message = self._make_message(_partial(PageBlockParagraph(text=TextPlain("first"))))
         message.id = 7
         message.peer_id = PeerChannel(1234567890)
         return message
 
     def test_sweep_stores_the_whole_tree_of_a_partial_message(self):
+        """The sweep fetches the rest of a cut-short tree and stores the whole text."""
         self.backup.client = _fetching_client(_whole_message())
         message = self._partial_message()
         result = self._run(self.backup._process_message(message, CHAT_ID))
         self.assertEqual(result["text"], "first\nsecond")
         self.assertEqual(result["raw_data"]["entities"], [{"type": "bold", "offset": 6, "length": 6}])
         self.assertNotIn("part", result["raw_data"]["rich_message"])
+        self.assertFalse(result["text_may_be_truncated"])
         self.assertEqual(self.backup.client.call_args.args[0].peer, PeerChannel(1234567890))
 
+    def test_sweep_of_a_tree_still_partial_says_the_text_may_be_truncated(self):
+        """The fetch failed: the row says so, and the upsert keeps an archived text
+        that starts with this one."""
+        self.backup.client = _fetching_client()
+        self.backup.client.side_effect = ConnectionError("unreachable")
+        result = self._run(self.backup._process_message(self._partial_message(), CHAT_ID))
+        self.assertEqual(result["text"], "first")
+        self.assertTrue(result["text_may_be_truncated"])
+
     def test_backup_edit_applies_the_whole_tree(self):
+        """The backup's edit path fetches the rest and edits with the whole text."""
         self.backup.client = _fetching_client(_whole_message())
         self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
         self._run(self.backup._apply_edit(self._partial_message(), CHAT_ID, "sync", media_changed=False))
@@ -421,11 +436,13 @@ class TestCompleteRichMessage(unittest.TestCase):
     ``messages.getRichMessage`` returns the whole of it."""
 
     def _partial_message(self, **kwargs):
+        """A wire message whose tree arrived cut short."""
         fields = {"id": 7, "peer_id": PeerChannel(1234567890), "date": datetime(2026, 1, 1, tzinfo=UTC), "message": ""}
         fields.update(kwargs)
         return Message(rich_message=_partial(PageBlockParagraph(text=TextPlain("first"))), **fields)
 
     def test_partial_tree_is_replaced_by_the_whole_one(self):
+        """The fetched whole tree replaces the partial one in place."""
         from telethon.tl.functions.messages import GetRichMessageRequest
 
         message = self._partial_message()
@@ -442,6 +459,7 @@ class TestCompleteRichMessage(unittest.TestCase):
         self.assertEqual((request.peer, request.id), (PeerChannel(1234567890), 7))
 
     def test_a_tree_that_arrived_whole_asks_nothing(self):
+        """No request for a whole tree, no tree, or a message with wire text."""
         for message in (
             _wire_message(_rich(PageBlockParagraph(text=TextPlain("whole")))),
             _wire_message(None),
@@ -453,6 +471,7 @@ class TestCompleteRichMessage(unittest.TestCase):
                 client.assert_not_called()
 
     def test_a_failed_request_keeps_the_partial_tree(self):
+        """A failed request is not retried, keeps the partial tree, and logs its type only."""
         message = self._partial_message()
         partial = message.rich_message
         client = _fetching_client()
@@ -468,6 +487,7 @@ class TestCompleteRichMessage(unittest.TestCase):
         self.assertNotIn("first", logs.output[0])
 
     def test_only_the_same_message_at_the_same_edit_and_complete_is_taken(self):
+        """Another message, another edit, a tree still partial or another text is not taken."""
         cases = {
             "another message": _whole_message(id=8),
             "a newer edit": _whole_message(edit_date=datetime(2026, 1, 2, tzinfo=UTC)),
@@ -484,6 +504,33 @@ class TestCompleteRichMessage(unittest.TestCase):
                 partial = message.rich_message
                 self.assertFalse(asyncio.run(complete_rich_message(_fetching_client(fetched), message)))
                 self.assertIs(message.rich_message, partial)
+
+    def test_a_flood_wait_pauses_completion_for_as_long_as_telegram_asked(self):
+        """A FloodWait is not waited out: the partial tree stays, and that client asks
+        nothing more until the wait has passed."""
+        clock = [1000.0]
+        client = _fetching_client()
+        client.side_effect = [FloodWaitError(request=None, capture=30), SimpleNamespace(messages=[_whole_message()])]
+
+        with patch("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock[0])):
+            with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
+                self.assertFalse(asyncio.run(complete_rich_message(client, self._partial_message())))
+            self.assertEqual(client.call_count, 1)  # not retried
+            self.assertIn("30s", logs.output[0])
+            self.assertNotIn("first", logs.output[0])
+
+            clock[0] += 29
+            message = self._partial_message()
+            partial = message.rich_message
+            self.assertFalse(asyncio.run(complete_rich_message(client, message)))
+            self.assertIs(message.rich_message, partial)
+            self.assertEqual(client.call_count, 1)  # paused: nothing asked
+            other = _fetching_client(_whole_message())
+            self.assertTrue(asyncio.run(complete_rich_message(other, self._partial_message())))
+
+            clock[0] += 2
+            self.assertTrue(asyncio.run(complete_rich_message(client, self._partial_message())))
+            self.assertEqual(client.call_count, 2)
 
 
 if __name__ == "__main__":

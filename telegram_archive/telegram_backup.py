@@ -669,17 +669,28 @@ async def complete_rich_message(client, message) -> bool:
     date has one-second resolution). Never raises for a Telegram message: on
     any failure the partial tree stays, which still beats none.
 
+    Called directly, not through call_with_flood_retry: the rest of a tree is
+    not worth stalling a sweep message or a listener event through FloodWait
+    sleeps. A FloodWait pauses the fetch on that client (shared by the backup
+    and the listener) for as long as Telegram asked; meanwhile partial trees
+    stay partial without a request.
+
     Returns False only when a partial tree stays partial.
     """
     rich = rich_message_of(message)
     if rich is None or getattr(rich, "part", None) is not True:
         return True
+    paused_until = getattr(client, "_ta_rich_message_paused_until", 0.0)
+    if isinstance(paused_until, float) and time.monotonic() < paused_until:
+        return False  # isinstance: mock clients auto-create attributes
     from telethon.tl.functions.messages import GetRichMessageRequest
 
     try:
-        result = await call_with_flood_retry(
-            client, GetRichMessageRequest(peer=message.peer_id, id=message.id), non_retryable=lambda _exc: True
-        )
+        result = await client(GetRichMessageRequest(peer=message.peer_id, id=message.id))
+    except (FloodWaitError, FloodPremiumWaitError) as e:
+        client._ta_rich_message_paused_until = time.monotonic() + e.seconds
+        logger.warning(f"Partial rich messages stay partial for {e.seconds}s after a FloodWait")
+        return False
     except Exception as e:
         # Type only: an RPC error can name the peer.
         logger.warning(f"Could not fetch the rest of a partial rich message: {type(e).__name__}")
@@ -3995,7 +4006,7 @@ class TelegramBackup:
             message: Message object from Telegram
             chat_id: Chat identifier
         """
-        await complete_rich_message(self.client, message)
+        whole = await complete_rich_message(self.client, message)
 
         # Scheduled sweeps snapshot only sender entities already attached by
         # Telethon; resolving a missing sender here would add one API request per
@@ -4032,6 +4043,8 @@ class TelegramBackup:
             "keeps_older_text": True,
             # The path named on any version this read writes.
             "version_source": "backup",
+            # A tree still cut short: an archived text that starts with this one stays.
+            "text_may_be_truncated": not whole,
         }
 
         # Capture-time web preview (mf7): Telegram resolved it when the

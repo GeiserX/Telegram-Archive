@@ -607,8 +607,13 @@ class TestEventHandlers:
             "PageBlockParagraph",
         ]
 
-    def test_on_new_message_stores_the_whole_tree_of_a_partial_rich_message(self, listener_with_handlers, full_config):
-        """A long Rich Text Editor message arrives truncated (``part=True``); the listener fetches the rest."""
+    @pytest.mark.parametrize("fetch_fails", [False, True], ids=["fetched", "fetch failed"])
+    def test_on_new_message_stores_the_whole_tree_of_a_partial_rich_message(
+        self, listener_with_handlers, full_config, fetch_fails
+    ):
+        """A long Rich Text Editor message arrives truncated (``part=True``); the listener fetches the rest.
+        When the fetch fails, the row says its text may be truncated, so the upsert
+        keeps an archived text that starts with it."""
         listener, handlers = listener_with_handlers
         handler = handlers[events.NewMessage]
 
@@ -633,6 +638,8 @@ class TestEventHandlers:
             rich_message=whole,
         )
         listener.client = AsyncMock(return_value=SimpleNamespace(messages=[fetched]))
+        if fetch_fails:
+            listener.client.side_effect = ConnectionError("unreachable")
 
         event = MagicMock()
         event.chat_id = -1001234567890
@@ -667,10 +674,14 @@ class TestEventHandlers:
         asyncio.run(handler(event))
 
         saved = listener.db.insert_message.call_args[0][0]
+        assert listener.client.call_args.args[0].peer == PeerChannel(1234567890)
+        if fetch_fails:
+            assert saved["text"] == "first" and saved["text_may_be_truncated"] is True
+            return
         assert saved["text"] == "first\nsecond"
         assert saved["raw_data"]["entities"] == [{"type": "bold", "offset": 6, "length": 6}]
         assert "part" not in saved["raw_data"]["rich_message"]
-        assert listener.client.call_args.args[0].peer == PeerChannel(1234567890)
+        assert saved["text_may_be_truncated"] is False
 
     def test_on_new_message_adds_untracked_chat_to_tracking(self, listener_with_handlers, full_config):
         """Test new message from untracked-but-included chat gets added to tracking.

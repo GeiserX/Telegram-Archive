@@ -1842,7 +1842,7 @@ class TelegramListener:
                     await self.db.upsert_user(user_data)
                     sender_user = user_data
 
-                await complete_rich_message(self.client, message)
+                whole = await complete_rich_message(self.client, message)
                 message_data = {
                     "id": message.id,
                     "chat_id": chat_id,
@@ -1860,6 +1860,8 @@ class TelegramListener:
                     "is_outgoing": 1 if message.out else 0,
                     # The path named on any version this read writes.
                     "version_source": "listener",
+                    # A tree still cut short: an archived text that starts with this one stays.
+                    "text_may_be_truncated": not whole,
                 }
 
                 # Capture grouped_id for album detection (multiple photos/videos sent together)
