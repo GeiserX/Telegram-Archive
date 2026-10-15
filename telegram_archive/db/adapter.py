@@ -814,6 +814,32 @@ def _with_formatting_of(archived_raw_data: Any, incoming_raw_data: str) -> str:
     return json.dumps(merged) if merged else "{}"
 
 
+def _without_text_cut_short(row: Any, message_data: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    """``values`` with ``row``'s text and formatting, when the read's text is that text cut short.
+
+    A Rich Text Editor tree Telegram delivered cut short (``part=True``) and
+    that could not be completed renders a prefix of the message's text; the
+    writer says so with ``text_may_be_truncated``. When the archived text
+    starts with it, the read keeps the archived text and formatting, as
+    ``update_message_text`` does: its formatting keys become the archived
+    ones, and a key the archive lacks is not filled from the partial tree.
+    Only a replaced media can still make it an edit. Any other text, and a
+    read without the flag, go through the upsert rules as usual.
+    """
+    if not message_data.get("text_may_be_truncated"):
+        return values
+    if not (row.text or "").startswith(values.get("text") or ""):
+        return values
+    archived = _raw_data_dict(row.raw_data) or {}
+    raw = dict(_raw_data_dict(values.get("raw_data")) or {})
+    for key in _FORMATTING_KEYS:
+        if key in archived:
+            raw[key] = archived[key]
+        else:
+            raw.pop(key, None)
+    return {**values, "text": row.text, "raw_data": json.dumps(raw) if raw else "{}"}
+
+
 def _keep_archived_payloads(archived_raw_data: Any, incoming_raw_data: str, *, incoming_wins: bool) -> str:
     """``incoming_raw_data`` with every media payload the archive holds kept.
 
@@ -1704,6 +1730,7 @@ class DatabaseAdapter:
         if snapshot is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
+        snapshot_values = _without_text_cut_short(snapshot, message_data, values)
         source = message_data.get("version_source")
         # A poll or link preview in another state than the newest kept adds a
         # message_snapshots row; only reads from Telegram count (an import
@@ -1717,8 +1744,8 @@ class DatabaseAdapter:
             if source not in _TELEGRAM_READ_SOURCES:
                 snapshot_rows = []
         if (
-            not self._pending_update_values(snapshot, message_data, values)
-            and not self._older_read_text_to_keep(snapshot, message_data, values)
+            not self._pending_update_values(snapshot, message_data, snapshot_values)
+            and not self._older_read_text_to_keep(snapshot, message_data, snapshot_values)
             and not snapshot_rows
             and not snapshot_fills
         ):
@@ -1728,6 +1755,8 @@ class DatabaseAdapter:
         if existing is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
+        # Against the locked row: another writer may have changed its text since the snapshot.
+        values = _without_text_cut_short(existing, message_data, values)
         if observed:
             # Decided again under the row lock: another writer may have added a state.
             newest = await self._newest_snapshot_states(session, existing.account_id, existing.chat_id, existing.id)
@@ -3194,6 +3223,7 @@ class DatabaseAdapter:
         rich_message: dict | None = None,
         source: str | None = None,
         media_changed: bool = False,
+        text_may_be_truncated: bool = False,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
@@ -3226,6 +3256,13 @@ class DatabaseAdapter:
         file (``reconcile_media_row`` kept the old one): it is an edit even when
         the caption stayed the same, so it moves ``edit_date`` like a
         formatting-only edit does.
+
+        ``text_may_be_truncated`` says ``new_text`` was rendered from a Rich
+        Text Editor tree Telegram delivered cut short (``part=True``) and that
+        could not be completed. When the archived text starts with it, it is
+        that text cut short: the archive keeps its text and formatting, and
+        only ``media_changed`` can still make it an edit. Any other text is an
+        edit as usual.
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
@@ -3233,6 +3270,8 @@ class DatabaseAdapter:
             if message is None:
                 logger.debug("Edit no-op: message not found in archive")
                 return "not_found", None
+            if text_may_be_truncated and (message.text or "").startswith(new_text or ""):
+                new_text, update_entities = message.text, False
 
             archived_entities, archived_rich_message = _formatting_state(message.raw_data)
             entities_changed, rich_changed = (

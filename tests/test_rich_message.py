@@ -13,8 +13,10 @@ import os
 import sys
 import unittest
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from telethon.errors import FloodWaitError
 from telethon.tl.types import (
     Channel,
     ChatPhotoEmpty,
@@ -39,6 +41,7 @@ from telethon.tl.types import (
     PageListOrderedItemText,
     PageTableCell,
     PageTableRow,
+    PeerChannel,
     PeerUser,
     RichMessage,
     TextBold,
@@ -64,7 +67,7 @@ from telegram_archive.message_utils import (  # noqa: E402
     rich_message_of,
     rich_message_payload,
 )
-from telegram_archive.telegram_backup import TelegramBackup  # noqa: E402
+from telegram_archive.telegram_backup import TelegramBackup, complete_rich_message  # noqa: E402
 
 CHAT_ID = -1001234567890
 
@@ -75,6 +78,24 @@ def _rich(*blocks) -> RichMessage:
 
 def _wire_message(rich: RichMessage | None, text: str = "") -> Message:
     return Message(id=7, peer_id=PeerUser(1), date=datetime(2026, 1, 1, tzinfo=UTC), message=text, rich_message=rich)
+
+
+def _partial(*blocks) -> RichMessage:
+    """A block tree Telegram delivered cut short."""
+    return RichMessage(blocks=list(blocks), photos=[], documents=[], part=True)
+
+
+def _whole_message(**kwargs) -> Message:
+    """The message as messages.getRichMessage returns it: the whole tree, part unset."""
+    whole = _rich(PageBlockParagraph(text=TextPlain("first")), PageBlockParagraph(text=TextBold(TextPlain("second"))))
+    fields = {"id": 7, "peer_id": PeerChannel(1234567890), "date": datetime(2026, 1, 1, tzinfo=UTC), "message": ""}
+    fields.update(kwargs)
+    return Message(rich_message=fields.pop("rich_message", whole), **fields)
+
+
+def _fetching_client(*answer):
+    """A client whose messages.getRichMessage answers with ``answer``."""
+    return AsyncMock(return_value=SimpleNamespace(messages=list(answer)))
 
 
 class TestRenderRichMessage(unittest.TestCase):
@@ -356,6 +377,186 @@ class TestSweepStoresRichMessages(unittest.TestCase):
         self.assertNotIn("rich_message", result["raw_data"])
         # 8.1B (9.0): "no formatting" is stored as an empty list.
         self.assertEqual(result["raw_data"]["entities"], [])
+
+    def _partial_message(self):
+        """A sweep message whose tree arrived cut short."""
+        message = self._make_message(_partial(PageBlockParagraph(text=TextPlain("first"))))
+        message.id = 7
+        message.peer_id = PeerChannel(1234567890)
+        return message
+
+    def test_sweep_stores_the_whole_tree_of_a_partial_message(self):
+        """The sweep fetches the rest of a cut-short tree and stores the whole text."""
+        self.backup.client = _fetching_client(_whole_message())
+        message = self._partial_message()
+        result = self._run(self.backup._process_message(message, CHAT_ID))
+        self.assertEqual(result["text"], "first\nsecond")
+        self.assertEqual(result["raw_data"]["entities"], [{"type": "bold", "offset": 6, "length": 6}])
+        self.assertNotIn("part", result["raw_data"]["rich_message"])
+        self.assertFalse(result["text_may_be_truncated"])
+        self.assertEqual(self.backup.client.call_args.args[0].peer, PeerChannel(1234567890))
+
+    def test_sweep_of_a_tree_still_partial_says_the_text_may_be_truncated(self):
+        """The fetch failed: the row says so, and the upsert keeps an archived text
+        that starts with this one."""
+        self.backup.client = _fetching_client()
+        self.backup.client.side_effect = ConnectionError("unreachable")
+        result = self._run(self.backup._process_message(self._partial_message(), CHAT_ID))
+        self.assertEqual(result["text"], "first")
+        self.assertTrue(result["text_may_be_truncated"])
+
+    def test_backup_edit_applies_the_whole_tree(self):
+        """The backup's edit path fetches the rest and edits with the whole text."""
+        self.backup.client = _fetching_client(_whole_message())
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
+        self._run(self.backup._apply_edit(self._partial_message(), CHAT_ID, "sync", media_changed=False))
+        args = self.backup.db.update_message_text.call_args
+        self.assertEqual(args.args[2], "first\nsecond")
+        self.assertNotIn("part", args.kwargs["rich_message"])
+        self.assertFalse(args.kwargs["text_may_be_truncated"])
+
+    def test_backup_edit_of_a_tree_still_partial_says_the_text_may_be_truncated(self):
+        """The fetch failed: the adapter decides (a prefix of the archived text is
+        not an edit), and a replaced photo or file still moves the edit date."""
+        self.backup.client = _fetching_client()
+        self.backup.client.side_effect = ConnectionError("unreachable")
+        self.backup.db.update_message_text = AsyncMock(return_value=("noop", None))
+        message = self._partial_message()
+        message.edit_hide = True
+        outcome = self._run(self.backup._apply_edit(message, CHAT_ID, "sync", media_changed=True))
+        self.assertEqual(outcome, "noop")
+        args = self.backup.db.update_message_text.call_args
+        self.assertEqual(args.args[2], "first")
+        self.assertTrue(args.kwargs["text_may_be_truncated"])
+        self.assertTrue(args.kwargs["media_changed"])
+
+
+class TestCompleteRichMessage(unittest.TestCase):
+    """A long Rich Text Editor message arrives with a truncated tree (``part=True``);
+    ``messages.getRichMessage`` returns the whole of it."""
+
+    def _partial_message(self, **kwargs):
+        """A wire message whose tree arrived cut short."""
+        fields = {"id": 7, "peer_id": PeerChannel(1234567890), "date": datetime(2026, 1, 1, tzinfo=UTC), "message": ""}
+        fields.update(kwargs)
+        return Message(rich_message=_partial(PageBlockParagraph(text=TextPlain("first"))), **fields)
+
+    def test_partial_tree_is_replaced_by_the_whole_one(self):
+        """The fetched whole tree replaces the partial one in place."""
+        from telethon.tl.functions.messages import GetRichMessageRequest
+
+        message = self._partial_message()
+        fetched = _whole_message()
+        client = _fetching_client(fetched)
+
+        self.assertTrue(asyncio.run(complete_rich_message(client, message)))
+
+        self.assertIs(message.rich_message, fetched.rich_message)
+        self.assertEqual(message_plain_text(message), "first\nsecond")
+        self.assertEqual(message_entities(message), [{"type": "bold", "offset": 6, "length": 6}])
+        request = client.call_args.args[0]
+        self.assertIsInstance(request, GetRichMessageRequest)
+        self.assertEqual((request.peer, request.id), (PeerChannel(1234567890), 7))
+
+    def test_a_tree_that_arrived_whole_asks_nothing(self):
+        """No request for a whole tree, no tree, or a message with wire text."""
+        for message in (
+            _wire_message(_rich(PageBlockParagraph(text=TextPlain("whole")))),
+            _wire_message(None),
+            _wire_message(_partial(PageBlockParagraph(text=TextPlain("x"))), text="wire text wins"),
+        ):
+            with self.subTest(message=message.message or message.rich_message):
+                client = _fetching_client()
+                self.assertTrue(asyncio.run(complete_rich_message(client, message)))
+                client.assert_not_called()
+
+    def test_a_failed_request_keeps_the_partial_tree(self):
+        """A failed request is not retried, keeps the partial tree, and logs its type only."""
+        message = self._partial_message()
+        partial = message.rich_message
+        client = _fetching_client()
+        client.side_effect = ConnectionError("unreachable")
+
+        with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
+            self.assertFalse(asyncio.run(complete_rich_message(client, message)))
+
+        self.assertIs(message.rich_message, partial)
+        self.assertEqual(client.call_count, 1)  # not retried: the partial tree is kept instead
+        self.assertIn("ConnectionError", logs.output[0])
+        self.assertNotIn("unreachable", logs.output[0])
+        self.assertNotIn("first", logs.output[0])
+
+    def test_only_the_same_message_at_the_same_edit_and_complete_is_taken(self):
+        """Another message, another edit, a tree still partial or another text is not taken."""
+        cases = {
+            "another message": _whole_message(id=8),
+            "a newer edit": _whole_message(edit_date=datetime(2026, 1, 2, tzinfo=UTC)),
+            "still partial": _whole_message(rich_message=_partial(PageBlockParagraph(text=TextPlain("first")))),
+            "another text (same-second edit)": _whole_message(
+                rich_message=_rich(
+                    PageBlockParagraph(text=TextPlain("rewritten")), PageBlockParagraph(text=TextPlain("x"))
+                )
+            ),
+        }
+        for name, fetched in cases.items():
+            with self.subTest(name):
+                message = self._partial_message()
+                partial = message.rich_message
+                self.assertFalse(asyncio.run(complete_rich_message(_fetching_client(fetched), message)))
+                self.assertIs(message.rich_message, partial)
+
+    def test_a_flood_wait_pauses_completion_for_as_long_as_telegram_asked(self):
+        """A FloodWait is not waited out: the partial tree stays, and that client asks
+        nothing more until the wait has passed."""
+        clock = [1000.0]
+        client = _fetching_client()
+        client.side_effect = [FloodWaitError(request=None, capture=30), SimpleNamespace(messages=[_whole_message()])]
+
+        with patch("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock[0])):
+            with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
+                self.assertFalse(asyncio.run(complete_rich_message(client, self._partial_message())))
+            self.assertEqual(client.call_count, 1)  # not retried
+            self.assertIn("30s", logs.output[0])
+            self.assertNotIn("first", logs.output[0])
+
+            clock[0] += 29
+            message = self._partial_message()
+            partial = message.rich_message
+            self.assertFalse(asyncio.run(complete_rich_message(client, message)))
+            self.assertIs(message.rich_message, partial)
+            self.assertEqual(client.call_count, 1)  # paused: nothing asked
+            other = _fetching_client(_whole_message())
+            self.assertTrue(asyncio.run(complete_rich_message(other, self._partial_message())))
+
+            clock[0] += 2
+            self.assertTrue(asyncio.run(complete_rich_message(client, self._partial_message())))
+            self.assertEqual(client.call_count, 2)
+
+    def test_a_shorter_flood_wait_never_shortens_an_active_pause(self):
+        """Two requests in flight on one client: a shorter FloodWait that lands later
+        keeps the longer pause."""
+        clock = [1000.0]
+        waits = [FloodWaitError(request=None, capture=60), FloodWaitError(request=None, capture=5)]
+
+        async def answer(_request):
+            await asyncio.sleep(0)  # both requests are in flight before either fails
+            raise waits.pop(0)
+
+        client = AsyncMock(side_effect=answer)
+
+        async def both():
+            return await asyncio.gather(
+                complete_rich_message(client, self._partial_message()),
+                complete_rich_message(client, self._partial_message()),
+            )
+
+        with patch("telegram_archive.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock[0])):
+            with self.assertLogs("telegram_archive.telegram_backup", level="WARNING") as logs:
+                self.assertEqual(asyncio.run(both()), [False, False])
+            self.assertEqual(["60s" in line for line in logs.output], [True, True])  # the pause in effect
+            clock[0] += 10
+            self.assertFalse(asyncio.run(complete_rich_message(client, self._partial_message())))
+        self.assertEqual(client.call_count, 2)  # still paused by the 60s wait
 
 
 if __name__ == "__main__":

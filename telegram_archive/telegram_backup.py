@@ -100,6 +100,7 @@ from .message_utils import (
     place_copy,
     replace_short_file_or_keep_beside,
     resolve_shared_file_path,
+    rich_message_of,
     sender_display_name,
     service_action_type,
     service_message_text,
@@ -655,6 +656,62 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
             # Reconnect after the backoff and immediately before the next
             # attempt, mirroring call_with_flood_retry (#265).
             await _reconnect_before_retry(client, "iter_messages")
+
+
+async def complete_rich_message(client, message) -> bool:
+    """Swap the whole block tree into a Rich Text Editor message that arrived truncated.
+
+    Telegram ships a long Rich Text Editor message with a partial tree marked
+    ``part=True``; ``messages.getRichMessage`` returns all of it. The fetched
+    tree replaces ``message.rich_message`` in place, so every writer renders
+    the whole text, but only when it is the same message (id), at the same
+    edit (``edit_date``), complete, and starts with the text that arrived (the
+    date has one-second resolution). Never raises for a Telegram message: on
+    any failure the partial tree stays, which still beats none.
+
+    Called directly, not through call_with_flood_retry: the rest of a tree is
+    not worth stalling a sweep message or a listener event through FloodWait
+    sleeps. A FloodWait pauses the fetch on that client (shared by the backup
+    and the listener) for as long as Telegram asked; meanwhile partial trees
+    stay partial without a request.
+
+    Returns False only when a partial tree stays partial.
+    """
+    rich = rich_message_of(message)
+    if rich is None or getattr(rich, "part", None) is not True:
+        return True
+    paused_until = getattr(client, "_ta_rich_message_paused_until", 0.0)
+    if isinstance(paused_until, float) and time.monotonic() < paused_until:
+        return False  # isinstance: mock clients auto-create attributes
+    from telethon.tl.functions.messages import GetRichMessageRequest
+
+    try:
+        result = await client(GetRichMessageRequest(peer=message.peer_id, id=message.id))
+    except (FloodWaitError, FloodPremiumWaitError) as e:
+        # Read again: a request in flight beside this one may have set a longer pause.
+        now = time.monotonic()
+        paused_until = getattr(client, "_ta_rich_message_paused_until", 0.0)
+        paused_until = max(paused_until if isinstance(paused_until, float) else 0.0, now + e.seconds)
+        client._ta_rich_message_paused_until = paused_until
+        logger.warning(f"Partial rich messages stay partial for {round(paused_until - now)}s after a FloodWait")
+        return False
+    except Exception as e:
+        # Type only: an RPC error can name the peer.
+        logger.warning(f"Could not fetch the rest of a partial rich message: {type(e).__name__}")
+        return False
+    arrived = message_plain_text(message)
+    for fetched in getattr(result, "messages", None) or []:
+        whole = rich_message_of(fetched)
+        if (
+            getattr(fetched, "id", None) == message.id
+            and getattr(fetched, "edit_date", None) == getattr(message, "edit_date", None)
+            and whole is not None
+            and getattr(whole, "part", None) is not True
+            and message_plain_text(fetched).startswith(arrived)
+        ):
+            message.rich_message = whole
+            return True
+    return False
 
 
 def _failed_media_row(
@@ -3953,6 +4010,8 @@ class TelegramBackup:
             message: Message object from Telegram
             chat_id: Chat identifier
         """
+        whole = await complete_rich_message(self.client, message)
+
         # Scheduled sweeps snapshot only sender entities already attached by
         # Telethon; resolving a missing sender here would add one API request per
         # message and create avoidable flood risk on large histories.
@@ -3988,6 +4047,8 @@ class TelegramBackup:
             "keeps_older_text": True,
             # The path named on any version this read writes.
             "version_source": "backup",
+            # A tree still cut short: an archived text that starts with this one stays.
+            "text_may_be_truncated": not whole,
         }
 
         # Capture-time web preview (mf7): Telegram resolved it when the
@@ -4669,6 +4730,7 @@ class TelegramBackup:
         (``_keep_replaced_media``): it moves ``edit_date`` even when the
         caption stayed the same, as the listener does.
         """
+        whole = await complete_rich_message(self.client, message)
         outcome, _ = await self.db.update_message_text(
             chat_id,
             message.id,
@@ -4681,6 +4743,7 @@ class TelegramBackup:
             rich_message=message_rich_payload(message),
             source=source,
             media_changed=media_changed,
+            text_may_be_truncated=not whole,
         )
         return outcome
 
