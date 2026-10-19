@@ -469,7 +469,8 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert "formatDateFull(infoPanelMessage.date)" in aside and "formatTime(infoPanelMessage.date)" in aside
     assert "selectedMessage.date" not in aside, "raw timestamps never reach the panel"
     assert 'v-if="canOpenMedia.file' in aside and 'v-if="canOpenMedia.path' in aside
-    assert aside.count('@error="markPreviewFailed(mediaMsg.id)"') == 2, "a broken preview gives way to the icon"
+    assert aside.count('@error="markPreviewFailed(mediaMsg.id)"') == 1, "a broken picture preview gives way to the icon"
+    assert aside.count('@error="failVideoStill(mediaMsg)"') == 1, "a broken video still gives way to the icon"
     assert 'v-if="showArchivePath && mediaMsg.media.file_path"' in aside, "the disk path is shown to the master only"
     assert "toggleMessageVersions(infoPanelMessage)" in aside, "the bubble's own versions toggle"
     assert "openForwardOrigin(infoPanelMessage)" in aside and "getForwardName(infoPanelMessage)" in aside
