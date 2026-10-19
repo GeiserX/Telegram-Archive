@@ -6,6 +6,14 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.3.4] - 2026-10-19
+
+Two fixes: the viewer no longer stalls in a chat full of large videos, and a long message written with Telegram's rich text editor is stored whole. No migration. Docker deployments only need the new pins.
+
+### Fixed
+- **A chat with many large videos loads its photos and older messages again.** Every video in the chat was drawn as a player that started fetching its file as soon as the chat opened. Over plain HTTP a browser allows about six connections to one server, the videos held all of them, and the chat's photos and the request for older messages waited behind them for good, so photos stayed blank and scrolling up loaded nothing. A video in the chat, in an album and in the info panel is now its thumbnail, and nothing fetches the file until you open it. A video with no thumbnail shows its box and the play mark, and a video whose file is gone from the disk still says so. Video thumbnails are now made for files over 200 MB too; they were refused before, which is why some large videos had none in the shared media grid either. (#578, #579)
+- **A long message written with the rich text editor is stored whole.** Telegram delivers such a message with its text cut short and a flag saying more exists. The backup and the listener now fetch the rest before storing it, and when that fetch fails an archived complete text is never replaced by the shorter one. (#577)
+
 ## [9.3.3] - 2026-10-12
 
 Two fixes from a contributor. Migration 041 runs on start; on a database made by a release it does nothing. Docker deployments only need the new pins.
