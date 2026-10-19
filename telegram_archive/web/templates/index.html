@@ -8237,11 +8237,13 @@
                                                             loading="lazy"
                                                             class="w-full h-full object-cover"
                                                             @error="handleImageError($event, albumMsg)">
-                                                        <video v-else-if="albumMsg.media?.type === 'video'" :key="getMediaUrl(albumMsg)"
+                                                        <!-- A video is its still (videoStillUrl), never a <video>. -->
+                                                        <img v-else-if="albumMsg.media?.type === 'video' && !videoStillFailed(albumMsg)" :key="videoStillUrl(albumMsg)"
+                                                            :src="videoStillUrl(albumMsg)" alt=""
+                                                            loading="lazy"
                                                             class="w-full h-full object-cover"
-                                                            preload="metadata">
-                                                            <source :src="getMediaUrl(albumMsg)" type="video/mp4">
-                                                        </video>
+                                                            @error="failVideoStill(albumMsg)">
+                                                        <div v-else-if="albumMsg.media?.type === 'video'" class="w-full h-full bg-tg-n700"></div>
                                                         <!-- Video indicator overlay -->
                                                         <div v-if="albumMsg.media?.type === 'video'"
                                                             class="absolute inset-0 flex items-center justify-center bg-tg-scrim/20">
@@ -8502,14 +8504,13 @@
                                                 <!-- A clip that fails to load flags its row (handleMediaError)
                                                      and the shared placeholder above takes its place. -->
                                                 <template v-if="!msg.mediaLoadFailed">
-                                                    <!-- A <source> that fails fires its error on itself, not
-                                                         on the <video>: both flag the row. -->
-                                                    <video :key="getMediaUrl(msg)" preload="metadata"
-                                                        class="pointer-events-none"
-                                                        @loadedmetadata="noteNaturalSize(msg, $event.target.videoWidth, $event.target.videoHeight)"
-                                                        @error="handleMediaError($event, msg)">
-                                                        <source :src="getMediaUrl(msg)" type="video/mp4" @error="handleMediaError($event, msg)">
-                                                    </video>
+                                                    <!-- The clip's still, never a <video> (videoStillUrl); the
+                                                         lightbox plays the file. Without a still the box keeps
+                                                         its tint and the play mark. -->
+                                                    <img v-if="!videoStillFailed(msg)" :key="videoStillUrl(msg)" :src="videoStillUrl(msg)" alt=""
+                                                        loading="lazy" class="pointer-events-none"
+                                                        @load="noteNaturalSize(msg, $event.target.naturalWidth, $event.target.naturalHeight)"
+                                                        @error="failVideoStill(msg)">
                                                     <!-- Play overlay -->
                                                     <div class="absolute inset-0 flex items-center justify-center bg-tg-scrim/20 group-hover:bg-tg-scrim/40 transition rounded-lg">
                                                         <div class="w-14 h-14 bg-tg-on-scrim/90 rounded-full flex items-center justify-center shadow-lg">
@@ -9246,8 +9247,8 @@
                                     :aria-label="getMediaUrl(mediaMsg) ? 'Open ' + (getMediaDisplayName(mediaMsg.media) || 'file') : 'File not available'">
                                     <img v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg) && !previewHidden(mediaMsg.id)" :src="previewSrc(mediaMsg)" alt=""
                                         class="w-full h-full object-cover" loading="lazy" @error="markPreviewFailed(mediaMsg.id)">
-                                    <video v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg) && !previewHidden(mediaMsg.id)" :src="getMediaUrl(mediaMsg)"
-                                        class="w-full h-full object-cover" preload="metadata" muted playsinline aria-hidden="true" @error="markPreviewFailed(mediaMsg.id)"></video>
+                                    <img v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg) && !videoStillFailed(mediaMsg)" :src="videoStillUrl(mediaMsg, 200)" alt=""
+                                        class="w-full h-full object-cover" loading="lazy" @error="failVideoStill(mediaMsg)">
                                     <svg v-else class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
                                 </button>
                                 <div class="min-w-0 flex-1">
@@ -18420,6 +18421,30 @@
                 // A row with no stored size learns it from the file once it loads,
                 // and its box takes the real shape. Only then does the chat move,
                 // and only once.
+                // A video in the chat and the info panel is a still from the thumbnail
+                // lane, never a <video>: a <video> requests its file as soon as it is
+                // drawn, and over HTTP/1.1 a chat of large clips held every connection
+                // the browser allows one host, so photos and older messages never
+                // loaded (#578). The lightbox plays the file. A still the server
+                // cannot make leaves the tinted box and the play mark; one byte of the
+                // file then tells whether the file itself is gone from the disk, and a
+                // gone file takes the Missing placeholder, as a failed <video> did.
+                const failedVideoStills = ref(new Set())
+                const videoStillUrl = (msg, size = 400) => getMediaUrl(msg).replace(/^\/media\//, `/media/thumb/${size}/`)
+                const videoStillFailed = (msg) => failedVideoStills.value.has(getMediaUrl(msg))
+                const failVideoStill = async (msg) => {
+                    const url = getMediaUrl(msg)
+                    if (!url || failedVideoStills.value.has(url)) return
+                    // Replaced, not mutated: a Set mutated in place is not a reactive read.
+                    failedVideoStills.value = new Set([...failedVideoStills.value, url])
+                    try {
+                        const res = await fetch(url, { headers: { Range: 'bytes=0-0' } })
+                        await res.body?.cancel()
+                        if (res.status === 404) msg.mediaLoadFailed = true
+                    } catch (e) {
+                        // Offline or aborted: the still stays a play mark.
+                    }
+                }
                 const noteNaturalSize = (msg, width, height) => {
                     const media = msg.media
                     if (!media || (Number(media.width) > 0 && Number(media.height) > 0)) return
@@ -20777,6 +20802,9 @@
                     mediaFrameCompact,
                     bubbleMediaStyle,
                     noteNaturalSize,
+                    videoStillUrl,
+                    videoStillFailed,
+                    failVideoStill,
                     bubbleRoomProbe,
                     mediaMissingReason,
                     mediaMissingWords,

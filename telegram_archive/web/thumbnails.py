@@ -167,9 +167,13 @@ def _check_ffmpeg() -> bool:
 
 def _generate_video_sync(source: Path, dest: Path, size: int) -> bool:
     """Extract a frame from video and create thumbnail — blocking."""
+    # No byte gate here, unlike the image lane: ffmpeg seeks with -ss before
+    # -i, so it reads the index and the frames around the seek point, never
+    # the whole file (a 256 MB clip with its index at the end took 0.07 s,
+    # the same as a 60 MB one). The old gate
+    # at 200 MB answered 404 for every larger video (#578). -max_pixels bounds
+    # the decode and the timeout bounds the run.
     try:
-        if source.stat().st_size > _MAX_SOURCE_BYTES * 4:
-            return False
         if not _check_ffmpeg():
             logger.debug("ffmpeg not available for video thumbnails")
             return False

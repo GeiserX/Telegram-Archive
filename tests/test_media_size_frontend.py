@@ -482,12 +482,14 @@ class TestMediaFrameTemplate(unittest.TestCase):
         self.assertNotIn("max-height: 320px;", HTML)
 
     def test_a_file_without_a_size_reports_its_own(self) -> None:
+        # A photo, an image sent as a file and a video's still (#578) report the
+        # picture's size; a GIF reports its clip's.
         self.assertEqual(
-            HTML.count('@load="noteNaturalSize(msg, $event.target.naturalWidth, $event.target.naturalHeight)"'), 2
+            HTML.count('@load="noteNaturalSize(msg, $event.target.naturalWidth, $event.target.naturalHeight)"'), 3
         )
         self.assertEqual(
             HTML.count('@loadedmetadata="noteNaturalSize(msg, $event.target.videoWidth, $event.target.videoHeight)"'),
-            2,
+            1,
         )
 
     def test_the_bubble_carries_the_picture_width(self) -> None:

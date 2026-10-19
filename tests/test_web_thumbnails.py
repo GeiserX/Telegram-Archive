@@ -1,6 +1,9 @@
 """Tests for thumbnail generation (telegram_archive/web/thumbnails.py)."""
 
 import asyncio
+import shutil
+import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -21,6 +24,34 @@ from telegram_archive.web.thumbnails import (
     _thumb_path,
     ensure_thumbnail,
 )
+
+
+def _moov_last_clip(path: Path, pad: int) -> None:
+    """Write a real H.264 clip laid out ftyp, mdat, moov, its mdat grown by
+    ``pad`` bytes of hole after the samples. The samples keep their offsets, so
+    the clip still plays, and the file is ``pad`` bytes larger without using
+    the disk."""
+    small = path.with_suffix(".small.mp4")
+    build = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=64x64:rate=10", str(small)],
+        capture_output=True,
+        timeout=30,
+    )
+    assert build.returncode == 0, build.stderr.decode()[-300:]
+    data = small.read_bytes()
+    boxes, at = [], 0
+    while at < len(data):
+        size, kind = struct.unpack(">I4s", data[at : at + 8])
+        boxes.append((kind, data[at : at + size]))
+        at += size
+    assert [k for k, _ in boxes][-2:] == [b"mdat", b"moov"], [k for k, _ in boxes]
+    with path.open("wb") as out:
+        for kind, box in boxes:
+            if kind == b"mdat":
+                out.write(struct.pack(">I4s", len(box) + pad, b"mdat") + box[8:])
+                out.seek(pad, 1)
+            else:
+                out.write(box)
 
 
 class TestIsImage(unittest.TestCase):
@@ -126,14 +157,18 @@ class TestCheckFfmpeg(unittest.TestCase):
 class TestGenerateVideoSync(unittest.TestCase):
     """Test _generate_video_sync."""
 
-    def test_returns_false_when_source_too_large(self):
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as src:
-            source = Path(src.name)
-            dest = Path(tempfile.mkdtemp()) / "out.webp"
-            with patch.object(Path, "stat") as mock_stat:
-                mock_stat.return_value = MagicMock(st_size=_MAX_SOURCE_BYTES * 4 + 1)
-                result = _generate_video_sync(source, dest, 200)
-            self.assertFalse(result)
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    def test_large_clip_with_index_at_end_gets_a_still(self):
+        """A 300 MB clip whose index (moov) sits after its data, as Telegram
+        delivers them, still gets a thumbnail. A byte gate at 200 MB answered
+        404 for these, so the chat drew no still for any large video (#578)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "clip.mp4"
+            _moov_last_clip(source, pad=300 * 1024 * 1024)
+            self.assertGreater(source.stat().st_size, 300 * 1024 * 1024)
+            dest = Path(tmpdir) / "out.webp"
+            self.assertTrue(_generate_video_sync(source, dest, 200))
+            self.assertTrue(dest.exists())
 
     @patch("telegram_archive.web.thumbnails._check_ffmpeg", return_value=False)
     def test_returns_false_when_ffmpeg_missing(self, _mock):

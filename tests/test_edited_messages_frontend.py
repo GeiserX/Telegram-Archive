@@ -553,13 +553,16 @@ handle({json.dumps(frame)})
         a GIF's src only once. Keyed by the URL (the replacement adds ?v=), the new
         clip gets a new element."""
         videos = [chunk.split(">", 1)[0] for chunk in HTML.split("<video")[1:]]
-        # A <video :src> (the info panel, the lightbox) reloads when its src changes;
-        # the bubble's five (an album tile, a GIF, a round video, a video and a
-        # video sticker) load through a <source> or data-src and need the key.
+        # A <video :src> (the lightbox) reloads when its src changes; the bubble's
+        # three (a GIF, a round video and a video sticker) load through data-src
+        # and need the key. A video and an album's video are a still (#578),
+        # keyed by the still's URL, which carries the same ?v=.
         bubble = [tag for tag in videos if "getMediaUrl(" in tag and ':src="' not in tag]
-        self.assertEqual(len(bubble), 5, bubble)
+        self.assertEqual(len(bubble), 3, bubble)
         for tag in bubble:
             self.assertRegex(tag, r':key="getMediaUrl\((msg|albumMsg)\)"', tag)
+        self.assertIn(':key="videoStillUrl(msg)" :src="videoStillUrl(msg)"', HTML)
+        self.assertIn(':key="videoStillUrl(albumMsg)"', HTML)
 
     def test_a_pinned_row_takes_the_edit_too(self) -> None:
         """The pinned-only list holds its own copy of the row, which no refresh of

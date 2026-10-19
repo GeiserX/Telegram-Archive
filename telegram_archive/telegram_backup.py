@@ -248,7 +248,7 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         if not is_image and not is_video:
             return
 
-        # Videos gate bytes inside _generate_video_sync (at 4x this limit).
+        # Videos have no byte gate: _generate_video_sync reads only what it seeks to.
         if is_image and source.stat().st_size > _MAX_SOURCE_BYTES:
             return
 
@@ -264,8 +264,8 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
             return
 
         if is_video:
-            # The whole guard stack — ffmpeg availability, the 4x byte gate,
-            # -max_pixels, the atomic temp+replace save — lives inside
+            # The whole guard stack — ffmpeg availability, -max_pixels,
+            # the atomic temp+replace save — lives inside
             # _generate_video_sync. A False here costs nothing: the request
             # path (with its failure cache) remains the fallback, exactly as
             # for images. This runs in the backup's to_thread lane, so the
