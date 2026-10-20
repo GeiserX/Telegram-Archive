@@ -29,9 +29,12 @@ WORKDIR /app
 # Without it the slim image falls back to python's small built-in table and
 # DOWNLOAD_DOCUMENT_MIME_TYPES silently loses its filename-extension fallback
 # for types that table does not carry (application/rtf among them).
+# The ca-certificates upgrade: the base image's 20250419 still trusts the
+# compromised eMudhra intermediates; trixie-security distrusts them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     media-types \
+    && apt-get install -y --only-upgrade ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # The venv moves between stages verbatim: both are the same base image, so

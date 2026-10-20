@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.3.6] - 2026-10-21
+
+A security update: the images stop trusting eight leaked certificate authorities. No migration, nothing else changes. Docker deployments only need the new pins.
+
+### Security
+- **The images no longer trust the eight eMudhra (emSign) intermediates whose private keys leaked in October 2026.** With those keys anyone could mint a certificate for any HTTPS endpoint the archiver or viewer calls, and the images accepted it: revocation is not checked outside browsers. certifi goes to 2026.10.19, which httpx reads, and both images upgrade the system `ca-certificates` to the trixie-security release that distrusts them, which aiohttp and the rest of Python's TLS read.
+
 ## [9.3.5] - 2026-10-20
 
 A security update for aiohttp and five dependency updates. No migration, nothing else changes. Docker deployments only need the new pins.
