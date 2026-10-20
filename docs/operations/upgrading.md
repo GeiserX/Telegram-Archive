@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.3.4
+        image: drumsergio/telegram-archive:9.3.5
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.3.4
+        image: drumsergio/telegram-archive-viewer:9.3.5
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.3.4`, `v9.3.4` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.3.5`, `v9.3.5` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -76,6 +76,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 | Release | What to do |
 |---------|------------|
 | 9.3.4 | Nothing. |
+| 9.3.5 | Nothing. |
 | 9.3.3 | Nothing. Migration 041 runs on start and adds the `media_transcripts` columns a `:dev` image from 2026-09-26 created without; a table that has them is left alone. |
 | 9.3.2 | Nothing. |
 | 9.3.1 | Nothing. |
