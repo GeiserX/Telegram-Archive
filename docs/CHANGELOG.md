@@ -6,6 +6,16 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.3.5] - 2026-10-20
+
+A security update for aiohttp and five dependency updates. No migration, nothing else changes. Docker deployments only need the new pins.
+
+### Security
+- **aiohttp is 3.14.4, which closes GHSA-2g87-pp6c-29x5.** The advisory covers aiohttp 3.14.3 and older: several inputs could make it use memory or CPU without bound. aiohttp comes in through pywebpush, which sends the viewer's push notifications, and the real-time notifier uses it too. (#582)
+
+### Changed
+- FastAPI 0.143.3, ijson 3.6.0, py-vapid 1.9.6, and the development tools ruff 0.17.1 and pre-commit 4.7.0. (#581)
+
 ## [9.3.4] - 2026-10-19
 
 Two fixes: the viewer no longer stalls in a chat full of large videos, and a long message written with Telegram's rich text editor is stored whole. No migration. Docker deployments only need the new pins.
