@@ -42,6 +42,7 @@ from telethon.tl.types import (
 )
 from telethon.utils import get_peer_id
 
+from . import LOGIN_DOCS_URL
 from .avatar_utils import avatar_photo_id, get_avatar_paths
 from .config import AccountConfig, Config
 from .custom_emoji import CUSTOM_EMOJI_MAX_ATTEMPTS, CUSTOM_EMOJI_MAX_PER_RUN, fetch_custom_emoji
@@ -1101,9 +1102,13 @@ class TelegramBackup:
             # Check authorization status
             if not await self.client.is_user_authorized():
                 logger.error("❌ Session not authorized!")
-                logger.error("Please run the authentication setup first:")
-                logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
-                logger.error("  Local:  python -m telegram_archive.setup_auth")
+                logger.error("Log in to Telegram once before the archiver can run:")
+                logger.error("  Compose:  ./init_auth.sh (Linux/Mac) or init_auth.bat (Windows)")
+                logger.error("  Any other Docker host, Unraid included: run the image once with")
+                logger.error("    -it, the same env and the same volumes, and the command")
+                logger.error("    python -m telegram_archive auth")
+                logger.error("  pip install:  telegram-archive auth")
+                logger.error("  %s", LOGIN_DOCS_URL)
                 raise RuntimeError("Session not authorized. Please run authentication setup.")
 
             # No get_me() here: authorization is already proven by the check above,

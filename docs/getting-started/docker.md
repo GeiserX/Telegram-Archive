@@ -2,6 +2,8 @@
 
 This page takes you from an empty Docker host to a running backup and a viewer you can sign in to. It also explains what the stock `docker-compose.yml` does.
 
+On Unraid, install both containers from Community Applications instead; [Run on Unraid](unraid.md) is that path.
+
 ## Before you start
 
 You need:

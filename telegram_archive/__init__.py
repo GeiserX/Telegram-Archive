@@ -20,6 +20,10 @@ import importlib
 
 __version__ = "9.3.5"
 
+# Where an operator is sent when the session is not authorized. One copy, because
+# the message is printed from several modules.
+LOGIN_DOCS_URL = "https://geiserx.github.io/Telegram-Archive/getting-started/telegram-login/"
+
 __all__ = ["Config", "TelegramBackup", "run_backup", "__version__"]
 
 _LAZY_EXPORTS = {

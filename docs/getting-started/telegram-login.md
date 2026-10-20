@@ -38,7 +38,7 @@ To back up several accounts, declare them with the `TG_ACCOUNT_<N>_*` variables 
 
     [Install from PyPI](pip.md) explains how the command finds your `.env` file.
 
-`python -m telegram_archive.setup_auth` runs the same login. The `Session not authorized` error names this form.
+`python -m telegram_archive.setup_auth` runs the same login. On Unraid, run the image once by hand instead; [Run on Unraid](unraid.md) has the command.
 
 Telegram sends a code to your Telegram app. The command asks for it:
 

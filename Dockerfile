@@ -75,5 +75,9 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=300s --retries=3 \
 # Entrypoint runs migrations, then hands off to CMD
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 
-# Default: show help (requires explicit command)
-CMD ["python", "-m", "telegram_archive"]
+# Default: run the scheduler. A deployment that starts this image with no
+# command of its own (Unraid's Community Applications, `docker run <image>`,
+# a bare Kubernetes pod spec) means "archive my chats", and printing the CLI
+# help made such a container exit immediately for no visible reason (#584).
+# Help is still one flag away: `python -m telegram_archive --help`.
+CMD ["python", "-m", "telegram_archive", "schedule"]

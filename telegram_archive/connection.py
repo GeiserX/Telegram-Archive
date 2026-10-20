@@ -23,6 +23,7 @@ import sqlite3
 from telethon import TelegramClient
 from telethon.errors import FloodPremiumWaitError, FloodWaitError
 
+from . import LOGIN_DOCS_URL
 from .config import AccountConfig, Config
 
 logger = logging.getLogger(__name__)
@@ -290,10 +291,14 @@ class TelegramConnection:
             if restored:
                 logger.info("Session restored. Will retry on next scheduler cycle.")
             logger.error("❌ Session not authorized!")
-            logger.error("Please run the authentication setup first:")
-            logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
-            logger.error("  Local:  python -m telegram_archive.setup_auth")
-            logger.error("  Non-interactive: python scripts/auth_noninteractive.py send")
+            logger.error("Log in to Telegram once before the archiver can run:")
+            logger.error("  Compose:  ./init_auth.sh (Linux/Mac) or init_auth.bat (Windows)")
+            logger.error("  Any other Docker host, Unraid included: run the image once with")
+            logger.error("    -it, the same env and the same volumes, and the command")
+            logger.error("    python -m telegram_archive auth")
+            logger.error("  pip install:  telegram-archive auth")
+            logger.error("  No terminal:  python scripts/auth_noninteractive.py send")
+            logger.error("  %s", LOGIN_DOCS_URL)
             raise RuntimeError("Session not authorized. Please run authentication setup.")
 
         self._me = await _call_with_flood_retry(self._client.get_me)
