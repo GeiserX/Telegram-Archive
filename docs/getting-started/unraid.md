@@ -40,9 +40,11 @@ docker run -it --rm \
   -e TELEGRAM_API_ID=12345678 \
   -e TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef \
   -e TELEGRAM_PHONE=+15550100000 \
-  drumsergio/telegram-archive:<the tag the container runs> \
+  drumsergio/telegram-archive:latest \
   python -m telegram_archive auth
 ```
+
+`latest` is the tag the Community Applications template installs. If you changed it, use the tag the container's **Repository** field shows, so the login runs on the same image.
 
 Enter the code it asks for, and your two-step verification password if the account has one. The session file lands in the `session` folder and every later start reuses it. The [login page](telegram-login.md) shows what the prompts look like and what to do when the code never arrives.
 
@@ -52,7 +54,7 @@ Start the container from the Docker tab. Its log should show the migrations runn
 
 ## 5. Install the viewer
 
-Install `Telegram Archive Viewer` and point **Backups** at the same `/mnt/user/appdata/telegram-archive/backups` folder. The database file sits there, and SQLite writes a journal beside it, so the viewer needs that mount read-write even though it never changes a message. Open it on the port you chose; set a username and password if the server is reachable by anyone else.
+Install `Telegram Archive Viewer` and point **Backups** at the same `/mnt/user/appdata/telegram-archive/backups` folder. The database file sits there, and SQLite writes a journal beside it, so the viewer needs that mount read-write even though it never changes a message. Open it on the port you chose. Set **Username** and **Password**: without them the viewer has no login, and anything on your network can read the whole archive.
 
 ## When something goes wrong
 
