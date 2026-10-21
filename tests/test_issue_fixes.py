@@ -330,3 +330,37 @@ class TestDockerfileAssumptions(unittest.TestCase):
         # Python will not write .pyc files. The actual enforcement is in the Dockerfile.
         # We verify the mechanism exists.
         self.assertTrue(hasattr(sys, "dont_write_bytecode"))
+
+
+# ============================================================
+# Issue #584: the image's default command
+# ============================================================
+
+
+class TestDockerDefaultCommand(unittest.TestCase):
+    """A container started with no command of its own must archive, not print help.
+
+    Unraid's Community Applications template passes no command, so the old
+    default (`python -m telegram_archive`, which prints the CLI help) started a
+    container that exited at once with nothing that looked like an error.
+    """
+
+    def _default_cmd(self):
+        import json
+        import pathlib
+
+        dockerfile = pathlib.Path(__file__).parent.parent / "Dockerfile"
+        cmd_lines = [line for line in dockerfile.read_text(encoding="utf-8").splitlines() if line.startswith("CMD ")]
+        # HEALTHCHECK's own CMD is indented, so only the image default matches.
+        self.assertEqual(len(cmd_lines), 1, "Dockerfile must declare exactly one default CMD")
+        return json.loads(cmd_lines[0].removeprefix("CMD "))
+
+    def test_default_command_runs_the_scheduler(self):
+        self.assertEqual(self._default_cmd(), ["python", "-m", "telegram_archive", "schedule"])
+
+    def test_default_command_is_a_subcommand_the_cli_still_has(self):
+        """Renaming or dropping the subcommand must fail here, not in a user's log."""
+        from telegram_archive.__main__ import create_parser
+
+        args = create_parser().parse_args(self._default_cmd()[3:])
+        self.assertEqual(args.command, "schedule")

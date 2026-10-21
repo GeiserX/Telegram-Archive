@@ -6,6 +6,20 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.3.7] - 2026-10-21
+
+The backup image now archives when it is started with no command, which is how Unraid starts it. No migration. Docker deployments only need the new pins.
+
+### Fixed
+- **The backup image started with no command of its own now archives instead of printing its help.** Unraid's Community Applications template, and any `docker run drumsergio/telegram-archive` without a command, started the container, printed the CLI help and exited, which looked like a crash with no error. The image's default command is `schedule`, the same one `docker-compose.yml` has always passed. `python -m telegram_archive --help` still prints the help. (#584)
+- **The `Session not authorized` error names a login command every deployment can run.** It pointed at `init_auth.sh` and `init_auth.bat`, which only exist in a checkout of this repository, so an operator who installed from Community Applications or from PyPI was told to run a file they do not have. It now lists the compose, plain Docker and pip forms, and links the login page. (#584)
+
+### Added
+- **[Run on Unraid](getting-started/unraid.md)**, a page for installing both containers from Community Applications: the folder ownership the image needs, the one-off login, and what the common failures mean. (#584)
+
+### Changed
+- Pillow 13.0.0. (#587)
+
 ## [9.3.6] - 2026-10-21
 
 A security update: the images stop trusting eight leaked certificate authorities. No migration, nothing else changes. Docker deployments only need the new pins.

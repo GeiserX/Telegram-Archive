@@ -154,6 +154,7 @@ nav:
   - Home: index.md
   - Get started:
       - Run with Docker: getting-started/docker.md
+      - Run on Unraid: getting-started/unraid.md
       - Log in to Telegram: getting-started/telegram-login.md
       - Your first backup: getting-started/first-backup.md
       - Install from PyPI: getting-started/pip.md
