@@ -58,7 +58,7 @@ Install `Telegram Archive Viewer` and point **Backups** at the same `/mnt/user/a
 
 ## When something goes wrong
 
-**The container prints the "GETTING STARTED" help and stops.** It was started with no command. Images up to 9.3.5 printed the CLI help in that case, and a template without a command left a container that exited on every start. Later images run the scheduler by default. On an older image, set **Post Arguments** to `python -m telegram_archive schedule` in the container's template.
+**The container prints the "GETTING STARTED" help and stops.** It was started with no command. Images up to 9.3.6 printed the CLI help in that case, and a template without a command left a container that exited on every start. Later images run the scheduler by default. On an older image, set **Post Arguments** to `python -m telegram_archive schedule` in the container's template.
 
 **`Session not authorized`, over and over.** Step 3 has not been done, or it wrote the session somewhere else. The paths in the `docker run` command above must be exactly the paths in the template.
 

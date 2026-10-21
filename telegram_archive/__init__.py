@@ -18,7 +18,7 @@ The names load on first use. The viewer image installs no telethon, and
 
 import importlib
 
-__version__ = "9.3.6"
+__version__ = "9.3.7"
 
 # Where an operator is sent when the session is not authorized. One copy, because
 # the message is printed from several modules.
