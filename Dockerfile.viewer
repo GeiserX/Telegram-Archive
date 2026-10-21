@@ -3,10 +3,13 @@ FROM python:3.14-slim
 # Set working directory
 WORKDIR /app
 
-# Install system libraries for Pillow + ffmpeg for video thumbnail extraction
+# Install system libraries for Pillow + ffmpeg for video thumbnail extraction,
+# and upgrade ca-certificates: the base image's 20250419 still trusts the
+# compromised eMudhra intermediates; trixie-security distrusts them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo libwebp7 libwebpmux3 zlib1g \
     ffmpeg \
+    && apt-get install -y --only-upgrade ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast, reproducible dependency installation
