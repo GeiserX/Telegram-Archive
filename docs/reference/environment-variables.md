@@ -304,6 +304,15 @@ The stock compose passes every variable in this table to the viewer except `MAX_
 | <span id="auth_proxy_header"></span>`AUTH_PROXY_HEADER` | empty | viewer | Request header that carries the user name from a trusted reverse proxy. Setting it turns proxy login on. The proxy must strip that header from client requests. |
 | <span id="auth_proxy_admin_users"></span>`AUTH_PROXY_ADMIN_USERS` | empty | viewer | Comma-separated proxy user names, matched exactly, that get the master role. |
 | <span id="auth_proxy_default_access"></span>`AUTH_PROXY_DEFAULT_ACCESS` | `none` | viewer | `all` gives new proxy users every chat. Any other value gives them none until an admin grants access. |
+| <span id="oidc_issuer"></span>`OIDC_ISSUER` | empty | viewer | OpenID Connect issuer URL, `https` only. Single sign-on is on when this, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` and `OIDC_REDIRECT_URI` are all set, and password login is on too. See [Single sign-on](../viewer/access.md#single-sign-on-with-openid-connect). |
+| <span id="oidc_client_id"></span>`OIDC_CLIENT_ID` | empty | viewer | Client id registered for the viewer at the provider. |
+| <span id="oidc_client_secret"></span>`OIDC_CLIENT_SECRET` | empty | viewer | Client secret for that client. Also signs the short-lived login state cookie. |
+| <span id="oidc_redirect_uri"></span>`OIDC_REDIRECT_URI` | empty | viewer | Public callback, `https://<viewer host>/api/oidc/callback`, registered exactly at the provider. |
+| <span id="oidc_scopes"></span>`OIDC_SCOPES` | `openid email profile` | viewer | Scopes requested at sign-in. |
+| <span id="oidc_username_claim"></span>`OIDC_USERNAME_CLAIM` | `email` | viewer | ID-token claim that names the user, matched lowercase. Pick one users cannot edit; on Microsoft Entra ID use `oid`. |
+| <span id="oidc_admin_users"></span>`OIDC_ADMIN_USERS` | empty | viewer | Comma-separated claim values that get the master role. |
+| <span id="oidc_user_map"></span>`OIDC_USER_MAP` | empty | viewer | Comma-separated `claim-value=account` pairs that sign a person in as that account. Pointing one at `VIEWER_USERNAME` gives the master role. |
+| <span id="oidc_default_access"></span>`OIDC_DEFAULT_ACCESS` | `none` | viewer | `all` gives new single sign-on users every chat. Any other value gives them none until an admin grants access. |
 | <span id="trust_proxy_headers"></span>`TRUST_PROXY_HEADERS` | `false` | viewer | Take the client address for the login rate limit, the audit log, and the transcript ask limit in an open viewer from `X-Forwarded-For`, then `X-Real-IP`. Only the word `true` turns it on. |
 | <span id="secure_cookies"></span>`SECURE_COOKIES` | empty, detected | viewer | `true` or `false` forces the cookie's Secure flag. Any other value sets it when the request arrived over https or carries `X-Forwarded-Proto: https`, whatever `TRUST_PROXY_HEADERS` says. |
 | <span id="cors_origins"></span>`CORS_ORIGINS` | `*` | viewer | Comma-separated allowed origins. With `*`, credentials are not allowed. Also the list of origins allowed to open a cross-origin WebSocket, where `*` matches nothing. |

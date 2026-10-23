@@ -6602,6 +6602,10 @@
                         class="w-full bg-tg-accent-strong text-tg-on-accent hover:bg-tg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition">
                         Sign in
                     </button>
+                    <a v-if="oidcEnabled" href="/api/oidc/login"
+                        class="block w-full text-center bg-tg-field text-tg-ink hover:bg-tg-field-border rounded-xl py-3 font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
+                        Sign in with single sign-on
+                    </a>
                 </form>
             </div>
         </div>
@@ -10483,6 +10487,7 @@
                 const loadNewerSentinel = ref(null)
                 const isAuthenticated = ref(false)
                 const authRequired = ref(false)
+                const oidcEnabled = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
@@ -13189,10 +13194,31 @@
                         if (res.ok) {
                             const data = await res.json()
                             authRequired.value = !!data.auth_required
+                            oidcEnabled.value = !!data.oidc_enabled
                             isAuthenticated.value = !!data.authenticated
                             userRole.value = data.role || ''
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
+
+                            // A failed single sign-on lands back here with a fixed code; show it once.
+                            const ssoParams = new URLSearchParams(window.location.search)
+                            const ssoError = ssoParams.get('sso_error')
+                            if (ssoError) {
+                                ssoParams.delete('sso_error')
+                                const rest = ssoParams.toString()
+                                history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash)
+                                if (!isAuthenticated.value && authRequired.value) {
+                                    loginError.value = {
+                                        cancelled: 'Single sign-on was not completed.',
+                                        expired: 'Single sign-on session expired, please try again.',
+                                        invalid_token: 'The single sign-on provider returned an unusable answer.',
+                                        refused: 'This account is not allowed to sign in here.',
+                                        disabled: 'This account is disabled.',
+                                        rate_limited: 'Too many attempts. Try again later.',
+                                        provider_unavailable: 'The single sign-on provider is unavailable, try again shortly.',
+                                    }[ssoError] || 'Single sign-on failed.'
+                                }
+                            }
 
                             // Auto-login via token URL. Prefer #token= so bearer-equivalent
                             // share tokens are not sent to servers/proxies in request logs.
@@ -21041,6 +21067,7 @@
                     // Auth
                     isAuthenticated,
                     authRequired,
+                    oidcEnabled,
                     authCheckFailed,
                     loadingAuth,
                     loginForm,

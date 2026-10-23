@@ -30,7 +30,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.datastructures import Headers
@@ -68,6 +75,7 @@ from ..transcription_contract import (
     verify_webhook,
     webhook_key,
 )
+from . import oidc
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -836,6 +844,10 @@ AUTH_PROXY_ADMIN_USERS = {u.strip() for u in os.getenv("AUTH_PROXY_ADMIN_USERS",
 AUTH_PROXY_DEFAULT_ACCESS = os.getenv("AUTH_PROXY_DEFAULT_ACCESS", "none").strip().lower()
 _PROXY_AUTH_ENABLED = bool(AUTH_PROXY_HEADER)
 
+# OpenID Connect single sign-on. Signs the user in by minting the same session
+# cookie a password login does, so it needs VIEWER_USERNAME/VIEWER_PASSWORD set.
+OIDC_CONFIG = oidc.OIDCConfig.from_env()
+
 AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
 AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
 _MAX_SESSIONS_PER_USER = 10
@@ -859,6 +871,15 @@ else:
     logger.error(
         "Viewer authentication is not configured. Set VIEWER_USERNAME/VIEWER_PASSWORD or ALLOW_ANONYMOUS_VIEWER=true"
     )
+
+_OIDC_REQUIRED_VARS = ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URI")
+if OIDC_CONFIG and AUTH_ENABLED:
+    logger.info(f"OpenID Connect single sign-on is ENABLED (Issuer: {OIDC_CONFIG.issuer})")
+elif OIDC_CONFIG:
+    logger.warning("OIDC_* is set but single sign-on is OFF: it needs VIEWER_USERNAME and VIEWER_PASSWORD")
+elif any(k.startswith("OIDC_") and v.strip() for k, v in os.environ.items()):
+    _missing = [k for k in _OIDC_REQUIRED_VARS if not os.getenv(k, "").strip()]
+    logger.warning(f"OIDC_* is set but incomplete, single sign-on is OFF; missing: {', '.join(_missing)}")
 
 
 @dataclass
@@ -1303,6 +1324,8 @@ def _configured_principals() -> set[str]:
     names = {VIEWER_USERNAME, *AUTH_PROXY_ADMIN_USERS}
     if ALLOW_ANONYMOUS_VIEWER:
         names.add("anonymous")
+    if OIDC_CONFIG:
+        names.update(OIDC_CONFIG.admin_users)
     return {name for name in names if name}
 
 
@@ -1423,14 +1446,24 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
     return session
 
 
-async def _resolve_proxy_user(proxy_username: str) -> UserContext:
+async def _resolve_proxy_user(
+    proxy_username: str,
+    admin_users: Iterable[str] | None = None,
+    default_access: str | None = None,
+    created_by: str = "proxy-auth",
+) -> UserContext:
     """Resolve a trusted proxy-authenticated user to a UserContext.
 
     Admin users (in AUTH_PROXY_ADMIN_USERS) get master role with full access.
     Other users are auto-created as viewer accounts with access determined by
     AUTH_PROXY_DEFAULT_ACCESS (none = no chats until admin grants, all = full access).
+    OIDC logins pass their own admin list, default access and created_by.
     """
-    if proxy_username in AUTH_PROXY_ADMIN_USERS:
+    if admin_users is None:
+        admin_users = AUTH_PROXY_ADMIN_USERS
+    if default_access is None:
+        default_access = AUTH_PROXY_DEFAULT_ACCESS
+    if proxy_username in admin_users:
         return UserContext(username=proxy_username, role="master")
 
     # Look up or auto-create viewer account
@@ -1452,7 +1485,7 @@ async def _resolve_proxy_user(proxy_username: str) -> UserContext:
         # allowed_chat_refs; allowed_chat_ids carries the matching rollback
         # tombstone ("[]" = nothing under 7.x too, never fail-open NULL).
         refs_json = None  # None = all chats
-        if AUTH_PROXY_DEFAULT_ACCESS != "all":
+        if default_access != "all":
             refs_json = "[]"  # Empty = no chats until admin grants access
         await db.create_viewer_account(
             username=proxy_username,
@@ -1460,12 +1493,12 @@ async def _resolve_proxy_user(proxy_username: str) -> UserContext:
             salt="proxy-auth",
             allowed_chat_ids=refs_json,
             allowed_chat_refs=refs_json,
-            created_by="proxy-auth",
+            created_by=created_by,
             is_active=1,
         )
-        logger.info(f"Auto-created proxy-authenticated viewer account: {proxy_username}")
+        logger.info(f"Auto-created {created_by} viewer account")
 
-        refs_set: set[str] | None = None if AUTH_PROXY_DEFAULT_ACCESS == "all" else set()
+        refs_set: set[str] | None = None if default_access == "all" else set()
         return UserContext(username=proxy_username, role="viewer", allowed_chat_refs=refs_set)
 
     # No DB — proxy admin users are the only ones that work without DB
@@ -2715,18 +2748,19 @@ async def check_auth(request: Request, auth_cookie: str | None = Cookie(default=
     if not AUTH_ENABLED:
         return {"authenticated": False, "auth_required": True}
 
+    signed_out = {"authenticated": False, "auth_required": True, "oidc_enabled": _oidc_active()}
     if not auth_cookie:
-        return {"authenticated": False, "auth_required": True}
+        return signed_out
 
     session = await _resolve_session(auth_cookie)
     if not session:
-        return {"authenticated": False, "auth_required": True}
+        return signed_out
     if time.time() - session.created_at > AUTH_SESSION_SECONDS:
         # Same rule as _resolve_user_context: whoever expires the session owns
         # closing the sockets it admitted.
         _sessions.pop(auth_cookie, None)
         await ws_manager.close_for(session_keys=(auth_cookie,))
-        return {"authenticated": False, "auth_required": True}
+        return signed_out
 
     return {
         "authenticated": True,
@@ -2860,6 +2894,176 @@ async def login(request: Request):
     except Exception:
         logger.warning(f"Failed to write audit log for failed login: {username}")
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+def _oidc_active() -> bool:
+    return OIDC_CONFIG is not None and AUTH_ENABLED
+
+
+async def _resolve_oidc_user(cfg: oidc.OIDCConfig, identity: str) -> UserContext:
+    """Map a verified OIDC identity onto a viewer account.
+
+    Master only for an identity in OIDC_ADMIN_USERS or one OIDC_USER_MAP points
+    at VIEWER_USERNAME. An unmapped identity may only reach an account OIDC
+    itself created: it can never adopt a password account, the master's name,
+    a proxy admin or "anonymous" just by spelling it. Only an operator-written
+    OIDC_USER_MAP entry attaches a person to an existing account.
+    """
+    mapped = cfg.user_map.get(identity)
+    if mapped is not None and mapped.lower() == VIEWER_USERNAME.lower():
+        # Keep the configured spelling so push liveness (_configured_principals) recognises the session.
+        return UserContext(username=VIEWER_USERNAME, role="master")
+    if identity in cfg.admin_users:
+        return UserContext(username=identity, role="master")
+
+    name = mapped or identity
+    if mapped is None:
+        # OIDC_USER_MAP targets belong to the mapped person: an unmapped identity
+        # spelling one would otherwise share (or squat) that account.
+        reserved = {
+            VIEWER_USERNAME.lower(),
+            "anonymous",
+            *(u.lower() for u in AUTH_PROXY_ADMIN_USERS),
+            *(v.lower() for v in cfg.user_map.values()),
+        }
+        if name.lower() in reserved:
+            raise HTTPException(status_code=403, detail="This identity is not allowed to sign in")
+        if db:
+            existing = await db.get_viewer_by_username(name)
+            # created_by alone is not proof: a master named "oidc" stamps its
+            # password accounts the same way, and a password can be set later.
+            if existing and (existing.get("created_by") != "oidc" or existing.get("password_hash")):
+                raise HTTPException(status_code=403, detail="This identity is not allowed to sign in")
+    return await _resolve_proxy_user(name, admin_users=(), default_access=cfg.default_access, created_by="oidc")
+
+
+def _sso_error_redirect(code: str) -> RedirectResponse:
+    """Send a failed SSO navigation back to the login form with a fixed error code, never provider text."""
+    response = RedirectResponse(f"/?sso_error={code}", status_code=302)
+    response.delete_cookie(oidc.STATE_COOKIE_NAME, path="/api/oidc")
+    return response
+
+
+@app.get("/api/oidc/login")
+async def oidc_login(request: Request):
+    """Start single sign-on: redirect to the provider with a signed state cookie."""
+    if not _oidc_active():
+        raise HTTPException(status_code=404, detail="Single sign-on is not configured")
+    client_ip = _get_client_ip(request)
+    if not _check_rate_limit(client_ip):
+        return _sso_error_redirect("rate_limited")
+
+    try:
+        meta = await oidc.discover(OIDC_CONFIG)
+    except oidc.OIDCError as e:
+        # Counted only on failure, so a shared address is never locked out by healthy SSO starts.
+        _record_login_attempt(client_ip)
+        logger.warning(f"OIDC discovery failed: {e}")
+        return _sso_error_redirect("provider_unavailable")
+
+    login_state = oidc.new_login_state()
+    response = RedirectResponse(oidc.authorize_url(meta, OIDC_CONFIG, login_state), status_code=302)
+    response.set_cookie(
+        key=oidc.STATE_COOKIE_NAME,
+        value=oidc.sign_state(
+            OIDC_CONFIG.client_secret, login_state["state"], login_state["nonce"], login_state["verifier"]
+        ),
+        httponly=True,
+        secure=_get_secure_cookies(request),
+        samesite="lax",
+        max_age=oidc.STATE_TTL_SECONDS,
+        path="/api/oidc",
+    )
+    return response
+
+
+@app.get("/api/oidc/callback")
+async def oidc_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    state_cookie: str | None = Cookie(default=None, alias=oidc.STATE_COOKIE_NAME),
+):
+    """Finish single sign-on: check state, trade the code, then start a normal viewer session."""
+    if not _oidc_active():
+        raise HTTPException(status_code=404, detail="Single sign-on is not configured")
+    client_ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:500]
+    if not _check_rate_limit(client_ip):
+        return _sso_error_redirect("rate_limited")
+
+    async def _refuse(code: str, who: str = "(oidc)") -> RedirectResponse:
+        _record_login_attempt(client_ip)
+        try:
+            if db:
+                await db.create_audit_log(
+                    username=who,
+                    role="unknown",
+                    action="login_failed",
+                    endpoint="/api/oidc/callback",
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+        except Exception:
+            logger.warning("Failed to write audit log for failed OIDC login")
+        return _sso_error_redirect(code)
+
+    if error:
+        return await _refuse("cancelled")
+
+    pending = oidc.verify_state(OIDC_CONFIG.client_secret, state_cookie)
+    if not pending or not code or not state or not secrets.compare_digest(state.encode(), pending["state"].encode()):
+        return await _refuse("expired")
+
+    try:
+        meta = await oidc.discover(OIDC_CONFIG)
+        id_token = await oidc.exchange_code(meta, OIDC_CONFIG, code, pending["verifier"])
+        claims = oidc.validate_id_token(id_token, OIDC_CONFIG.issuer, OIDC_CONFIG, pending["nonce"])
+        identity = oidc.identity_from_claims(claims, OIDC_CONFIG)
+    except oidc.OIDCError as e:
+        logger.warning(f"OIDC login failed from {client_ip}: {e}")
+        return await _refuse("invalid_token")
+
+    try:
+        user = await _resolve_oidc_user(OIDC_CONFIG, identity)
+    except HTTPException as e:
+        logger.warning("OIDC login refused for a configured identity")
+        return await _refuse("disabled" if e.detail == "Account disabled" else "refused", identity)
+    # Same rule as the password login: a viewer-only route never mints a master session.
+    if user.role == "master" and request.headers.get("x-viewer-only", "").lower() == "true":
+        return await _refuse("refused", identity)
+
+    token = await _create_session(
+        user.username,
+        user.role,
+        allowed_accounts=user.allowed_accounts,
+        allowed_chat_refs=user.allowed_chat_refs,
+        no_download=user.no_download,
+    )
+    response = RedirectResponse("/", status_code=302)
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=_get_secure_cookies(request),
+        samesite="lax",
+        max_age=AUTH_SESSION_SECONDS,
+    )
+    response.delete_cookie(oidc.STATE_COOKIE_NAME, path="/api/oidc")
+    try:
+        if db:
+            await db.create_audit_log(
+                username=user.username,
+                role=user.role,
+                action="login_success",
+                endpoint="/api/oidc/callback",
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+    except Exception:
+        logger.warning("Failed to write audit log for OIDC login")
+    return response
 
 
 # Sent when this browser's session ends, so the copies of archive files it
