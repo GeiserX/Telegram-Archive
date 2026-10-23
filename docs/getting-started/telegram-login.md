@@ -52,8 +52,7 @@ If two-step verification is on for the account, it then asks:
 Enter your 2FA password:
 ```
 
-!!! warning "The password is visible"
-    The 2FA password is shown on screen as you type it. Run the login where nobody can watch your screen.
+The password is not shown on screen as you type it.
 
 After the login, the command compares the account's phone number with the one you configured. It compares digits only and drops a leading `00`, so `+34...` and `0034...` match. If the numbers differ, the login fails. Delete the session file and run the login again, or fix how the number is written in `.env`.
 
@@ -88,8 +87,8 @@ If you already started the normal login and no code came, type `qr` at the `Ente
 
 The command prints a QR code in the terminal and a `tg://login` link under it. On the phone or desktop app that is logged in, open Settings > Devices > Link Desktop Device and scan the code. If the terminal draws the code badly, open the link on that phone instead.
 
-- Each code is valid for about 30 seconds. The command prints a new one by itself when it expires, and gives up after ten.
-- With two-step verification on, it then asks for the password. On this path the password is not shown as you type.
+- Each code is valid for about 30 seconds. The command prints a new one by itself when it expires, and gives up after ten. A scan of the last code just before it expires still logs you in.
+- With two-step verification on, it then asks for the password, which is not shown as you type.
 - The phone number check still runs. Any logged-in account can scan the code, so scan it from the account you configured. If another account scans it, the login fails and that account's login is discarded, so the next run shows a fresh QR code.
 - With several accounts, it shows one QR code for each account that still needs a login. Scan each one from the app that holds that account.
 - The command waits for the scan while it runs, so it cannot be split into two steps like the [script below](#log-in-without-a-terminal).
