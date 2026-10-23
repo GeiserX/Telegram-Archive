@@ -6,10 +6,15 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.4.1] - 2026-10-23
+
+Fixes from a second review of the single sign-on and QR login added in 9.4.0. No migration. Docker deployments only need the new pins. If you sign in through OpenID Connect, register the viewer's root URL as a post-logout redirect URI at your provider.
+
 ### Fixed
 - **Taking someone out of `OIDC_ADMIN_USERS` now takes away their master role.** A master session kept its role after a restart, so a removed admin stayed admin until the session expired (30 days by default). A master session whose name is no longer `VIEWER_USERNAME` or in `OIDC_ADMIN_USERS` now ends on its next request. The same applies to sessions of an old `VIEWER_USERNAME` after renaming it. (#588)
 - **Single sign-on works with providers that expect the client secret as HTTP Basic.** The token request sent the secret only in the form body, so Authelia, Zitadel and other providers set to `client_secret_basic` answered 401 on every login. The viewer now uses Basic unless the provider lists only `client_secret_post`, and a failed token request logs the HTTP status. (#588)
 - **Signing out of a single sign-on session also signs out of the provider** when it advertises an `end_session_endpoint`. Before, on a shared browser, the next person to click single sign-on was signed straight in as the previous one. Register the viewer's root as a post-logout redirect URI at the provider. (#588)
+- **Signing out after a password login no longer goes to the provider.** An SSO session that expired without a logout left a marker cookie behind, so a later password session's logout was sent to the provider's sign-out page. Password and share-link logins now clear it. (#588)
 - **A single sign-on identity can no longer take a `token:` name**, the names share-link sessions use. Such a name could end a share link's sessions. (#588)
 - **Single sign-on failures always return to the login page.** A database error while looking up the account, or an ID token with a huge `exp` number, answered a raw 500 with no audit entry. (#588)
 - **The 2FA password is hidden on the code login too**, not only with `--qr`. (#590)
