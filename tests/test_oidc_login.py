@@ -220,7 +220,7 @@ def test_unverified_email_in_any_spelling_rejected(value):
     assert oidc.identity_from_claims({"email": "a@b.c", "email_verified": "true"}, CFG) == "a@b.c"
 
 
-@pytest.mark.parametrize("exp", ["nan", "inf", None, "soon"])
+@pytest.mark.parametrize("exp", ["nan", "inf", None, "soon", 10**400])
 def test_non_finite_expiry_rejected(exp):
     with pytest.raises(oidc.OIDCError):
         oidc.validate_id_token(_jwt(_claims(exp=exp)), CFG.issuer, CFG, "n1")
@@ -518,8 +518,12 @@ def test_exchange_code_posts_the_full_form():
         )
         return _Resp(json.dumps({"id_token": "a.b.c"}).encode())
 
+    meta = {
+        "token_endpoint": "https://idp.example/token",
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+    }
     with patch.object(oidc._opener, "open", fake_open):
-        token = asyncio.run(oidc.exchange_code({"token_endpoint": "https://idp.example/token"}, CFG, "code-1", "ver-1"))
+        token = asyncio.run(oidc.exchange_code(meta, CFG, "code-1", "ver-1"))
     assert token == "a.b.c"
     assert seen["method"] == "POST" and seen["ctype"] == "application/x-www-form-urlencoded"
     assert seen["form"] == {
@@ -605,3 +609,250 @@ def test_discovery_is_cached_single_flight_and_fails_fast():
     finally:
         oidc._discovery_cache.clear()
         oidc._discovery_failed_at.clear()
+
+
+# --- 9.4.0 review follow-ups ---------------------------------------------------
+
+
+def _token_request(meta, cfg=CFG):
+    """The token request exchange_code sends for ``meta``: (Authorization header, parsed form)."""
+    import asyncio
+    from urllib.parse import parse_qs
+
+    seen = {}
+
+    def fake_open(request, timeout):
+        seen.update(auth=request.get_header("Authorization"), form=parse_qs(request.data.decode()))
+        return _Resp(json.dumps({"id_token": "a.b.c"}).encode())
+
+    with patch.object(oidc._opener, "open", fake_open):
+        asyncio.run(oidc.exchange_code({"token_endpoint": "https://idp.example/token", **meta}, cfg, "c", "v"))
+    return seen["auth"], seen["form"]
+
+
+@pytest.mark.parametrize(
+    "methods",
+    [None, [], ["client_secret_basic"], ["client_secret_post", "client_secret_basic"], ["private_key_jwt"]],
+)
+def test_exchange_code_uses_http_basic_by_default(methods):
+    meta = {} if methods is None else {"token_endpoint_auth_methods_supported": methods}
+    cfg = oidc.OIDCConfig(CFG.issuer, "client 1:x", "s3cret/+&", CFG.redirect_uri)
+    auth, form = _token_request(meta, cfg)
+    # RFC 6749 2.3.1: each part form-urlencoded, then joined with ":".
+    assert auth == "Basic " + base64.b64encode(b"client+1%3Ax:s3cret%2F%2B%26").decode()
+    assert "client_secret" not in form and "client_id" not in form
+
+
+def test_exchange_code_posts_the_secret_when_only_post_is_offered():
+    auth, form = _token_request({"token_endpoint_auth_methods_supported": ["client_secret_post"]})
+    assert auth is None
+    assert form["client_id"] == [CFG.client_id] and form["client_secret"] == [CFG.client_secret]
+
+
+def test_token_endpoint_error_names_the_status():
+    import io
+    import urllib.error
+    import urllib.request
+
+    def refuse(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b'{"error":"x"}'))
+
+    with patch.object(oidc._opener, "open", refuse), pytest.raises(oidc.OIDCError, match="HTTP 401"):
+        oidc._http_json(urllib.request.Request("https://idp.example/token"))
+
+
+def test_discovery_rejects_an_incomplete_document():
+    import asyncio
+
+    with (
+        patch.object(oidc, "_http_json", lambda r: {"issuer": CFG.issuer, "token_endpoint": "https://i/t"}),
+        pytest.raises(oidc.OIDCError, match="incomplete"),
+    ):
+        asyncio.run(oidc._fetch_discovery(CFG))
+
+
+def test_concurrent_cold_discoveries_share_one_fetch():
+    import asyncio
+    import time as _time
+    from unittest.mock import MagicMock
+
+    good = {"issuer": CFG.issuer, "authorization_endpoint": "https://i/a", "token_endpoint": "https://i/t"}
+
+    def slow_ok(request):
+        _time.sleep(0.2)
+        return good
+
+    oidc._discovery_cache.clear()
+    oidc._discovery_failed_at.clear()
+    try:
+        fetch = MagicMock(side_effect=slow_ok)
+
+        async def many():
+            return await asyncio.gather(*(oidc.discover(CFG) for _ in range(8)))
+
+        with patch.object(oidc, "_http_json", fetch):
+            assert asyncio.run(many()) == [good] * 8
+        assert fetch.call_count == 1
+    finally:
+        oidc._discovery_cache.clear()
+        oidc._discovery_failed_at.clear()
+
+
+def test_sso_is_off_without_password_auth(client):
+    """OIDC_* on an anonymous or unconfigured viewer must not serve SSO at all."""
+    tc, m, _ = client
+    with patch.object(m, "AUTH_ENABLED", False):
+        assert tc.get("/api/oidc/login").status_code == 404
+        assert tc.get("/api/oidc/callback", params={"code": "c", "state": "x"}).status_code == 404
+    assert not m._sessions
+
+
+def test_callback_is_404_without_config(client):
+    tc, m, _ = client
+    with patch.object(m, "OIDC_CONFIG", None):
+        assert tc.get("/api/oidc/callback", params={"code": "c", "state": "x"}).status_code == 404
+    assert not m._sessions
+
+
+def test_no_database_refuses_a_viewer_identity(client):
+    tc, m, _ = client
+    state, nonce = _begin(tc)
+    with patch.object(m, "db", None):
+        resp = _finish(tc, state, nonce, "new@example.com")
+    assert resp.headers["location"] == "/?sso_error=refused"
+    assert not m._sessions
+
+
+def test_default_access_all_grants_every_chat(client):
+    tc, m, db = client
+    cfg = oidc.OIDCConfig(**{**CFG.__dict__, "default_access": "all"})
+    with patch.object(m, "OIDC_CONFIG", cfg):
+        state, nonce = _begin(tc)
+        _finish(tc, state, nonce, "new@example.com")
+    (session,) = m._sessions.values()
+    assert session.role == "viewer" and session.allowed_chat_refs is None
+    assert db.create_viewer_account.await_args.kwargs["allowed_chat_refs"] is None
+
+
+def test_broken_audit_log_never_breaks_sso(client):
+    tc, m, db = client
+    db.create_audit_log = AsyncMock(side_effect=Exception("audit table gone"))
+    state, nonce = _begin(tc)
+    resp = _finish(tc, state, nonce, "admin@example.com")
+    assert resp.status_code == 302 and resp.headers["location"] == "/"
+    assert m.AUTH_COOKIE_NAME in resp.cookies
+    resp = tc.get("/api/oidc/callback", params={"code": "c", "state": "forged"})
+    assert resp.headers["location"] == "/?sso_error=expired"
+
+
+def test_database_error_resolving_the_account_redirects(client):
+    tc, m, db = client
+    db.get_viewer_by_username = AsyncMock(side_effect=OSError("database restarting"))
+    state, nonce = _begin(tc)
+    resp = _finish(tc, state, nonce, "new@example.com")
+    assert resp.status_code == 302 and resp.headers["location"] == "/?sso_error=unavailable"
+    assert not m._sessions
+    assert db.create_audit_log.await_args.kwargs["action"] == "login_failed"
+
+
+@pytest.mark.parametrize("identity", ["token:family", "Token:Family"])
+def test_unmapped_identity_in_the_share_token_namespace_is_refused(identity):
+    import telegram_archive.web.main as m
+
+    with pytest.raises(m.HTTPException) as exc:
+        _resolve(PREF, identity.lower())
+    assert exc.value.status_code == 403
+
+
+def test_removed_oidc_admin_loses_the_master_session(client):
+    tc, m, db = client
+    state, nonce = _begin(tc)
+    _finish(tc, state, nonce, "admin@example.com")
+    (token,) = m._sessions
+    assert tc.get("/api/auth/check").json()["role"] == "master"
+
+    demoted = oidc.OIDCConfig(**{**CFG.__dict__, "admin_users": frozenset()})
+    with patch.object(m, "OIDC_CONFIG", demoted):
+        assert tc.get("/api/auth/check").json()["authenticated"] is False
+        assert tc.get("/api/admin/viewers").status_code == 401
+    assert token not in m._sessions
+    db.delete_session.assert_any_await(token)
+
+
+def test_restored_master_row_of_a_removed_admin_is_not_master():
+    """After a restart the session comes back from its row; the current config decides."""
+    import asyncio
+
+    import telegram_archive.web.main as m
+
+    now = time.time()
+    row = {"username": "gone@example.com", "role": "master", "created_at": now, "last_accessed": now}
+    db = AsyncMock()
+    db.get_session = AsyncMock(return_value=row)
+    with patch.object(m, "db", db), patch.object(m, "OIDC_CONFIG", CFG), patch.object(m, "VIEWER_USERNAME", "hyper"):
+        m._sessions.clear()
+        assert asyncio.run(m._resolve_session("tok-1")) is None
+        assert "tok-1" not in m._sessions
+        db.get_session = AsyncMock(return_value={**row, "username": "admin@example.com"})
+        assert asyncio.run(m._resolve_session("tok-2")).role == "master"
+        db.get_session = AsyncMock(return_value={**row, "username": "hyper"})
+        assert asyncio.run(m._resolve_session("tok-3")).role == "master"
+        m._sessions.clear()
+
+
+def test_end_session_url_returns_to_the_viewer_root():
+    from urllib.parse import parse_qs, urlparse
+
+    assert oidc.end_session_url({}, CFG) is None
+    assert oidc.end_session_url({"end_session_endpoint": "http://idp.example/logout"}, CFG) is None
+    url = oidc.end_session_url({"end_session_endpoint": "https://idp.example/logout?x=1"}, CFG)
+    parsed = urlparse(url)
+    assert (parsed.netloc, parsed.path) == ("idp.example", "/logout")
+    assert parse_qs(parsed.query) == {
+        "x": ["1"],
+        "client_id": [CFG.client_id],
+        "post_logout_redirect_uri": ["https://viewer.example/"],
+    }
+    sub = oidc.OIDCConfig(CFG.issuer, "c", "s", "https://viewer.example/archive/api/oidc/callback")
+    url = oidc.end_session_url({"end_session_endpoint": "https://idp.example/logout"}, sub)
+    assert parse_qs(urlparse(url).query)["post_logout_redirect_uri"] == ["https://viewer.example/archive/"]
+
+
+LOGOUT_META = {
+    "issuer": CFG.issuer,
+    "authorization_endpoint": "https://idp.example/authorize",
+    "token_endpoint": "https://idp.example/token",
+    "end_session_endpoint": "https://idp.example/logout",
+}
+
+
+def test_sso_logout_also_ends_the_provider_session(client):
+    tc, m, db = client
+    with patch.object(oidc, "discover", AsyncMock(return_value=LOGOUT_META)):
+        state, nonce = _begin(tc)
+        _finish(tc, state, nonce, "new@example.com")
+        (token,) = m._sessions
+        resp = tc.post("/api/logout")
+    assert resp.json()["logout_url"].startswith("https://idp.example/logout?client_id=client-1")
+    # The local teardown is unchanged.
+    assert not m._sessions
+    db.delete_session.assert_any_await(token)
+    assert db.create_audit_log.await_args.kwargs["action"] == "logout"
+
+
+def test_logout_without_end_session_endpoint_stays_local(client):
+    tc, m, _ = client
+    state, nonce = _begin(tc)
+    _finish(tc, state, nonce, "new@example.com")
+    resp = tc.post("/api/logout")
+    assert resp.json() == {"success": True}
+    assert not m._sessions
+
+
+def test_password_logout_never_redirects_to_the_provider(client):
+    tc, m, _ = client
+    with patch.object(oidc, "discover", AsyncMock(return_value=LOGOUT_META)):
+        assert tc.post("/api/login", json={"username": "hyper", "password": "pw"}).status_code == 200
+        resp = tc.post("/api/logout")
+    assert resp.json() == {"success": True}
+    assert not m._sessions

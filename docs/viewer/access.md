@@ -265,17 +265,19 @@ With the four required variables set, the login page shows **Sign in with single
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `OIDC_ISSUER` | unset | Issuer URL. The viewer reads `/.well-known/openid-configuration` under it. Must be `https`. |
-| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | unset | The client registered for the viewer. |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | unset | The client registered for the viewer. They are sent to the token endpoint as HTTP Basic (`client_secret_basic`), or in the request body when the provider's discovery document lists `client_secret_post` and not basic. |
 | `OIDC_REDIRECT_URI` | unset | The public callback, `https://<viewer host>/api/oidc/callback`. Register exactly this at the provider. |
 | `OIDC_SCOPES` | `openid email profile` | Scopes requested. |
 | `OIDC_USERNAME_CLAIM` | `email` | ID-token claim that names the user. Matched lowercase. |
-| `OIDC_ADMIN_USERS` | unset | Comma-separated claim values that get the master role. The session is named after the claim value. |
+| `OIDC_ADMIN_USERS` | unset | Comma-separated claim values that get the master role. The session is named after the claim value. Taking a value out and restarting ends that identity's master sessions on their next request. |
 | `OIDC_USER_MAP` | unset | Comma-separated `claim-value=account` pairs that sign a person in as the named account, created on first sign-in when it does not exist yet. The account name is matched exactly, same case as the account. Pointing one at `VIEWER_USERNAME` gives the master role, and the session is then named `VIEWER_USERNAME`. |
 | `OIDC_DEFAULT_ACCESS` | `none` | Like `AUTH_PROXY_DEFAULT_ACCESS`, for any identity the provider lets through that has no account yet. |
 
-An identity that is not an admin and not mapped gets a viewer account on first sign-in, named after the claim value. An unmapped identity that spells the master's name, a proxy admin, `anonymous`, an `OIDC_USER_MAP` target or a password account is refused, so a provider that lets users choose their own `preferred_username` cannot hand out the master role or someone else's account. A disabled account gets HTTP 403. A failed sign-in returns to the login page with a short message.
+An identity that is not an admin and not mapped gets a viewer account on first sign-in, named after the claim value. An unmapped identity that spells the master's name, a proxy admin, `anonymous`, an `OIDC_USER_MAP` target, a password account or a name starting with `token:` (the names share-link sessions use) is refused, so a provider that lets users choose their own `preferred_username` cannot hand out the master role or someone else's account. A disabled account gets HTTP 403. A failed sign-in returns to the login page with a short message.
 
 The `X-Viewer-Only: true` rule applies here too: a single sign-on that would give the master role through such a request is refused.
+
+**Sign out** ends the viewer session as before. When the provider's discovery document has an `end_session_endpoint`, the browser then goes there to end the provider's session too, with `client_id` and a `post_logout_redirect_uri` of the viewer's root (`OIDC_REDIRECT_URI` without `/api/oidc/callback`, for example `https://viewer.example/`). Register that address as a post-logout redirect URI at the provider, or the provider shows its own error page after sign-out. Without an `end_session_endpoint` the provider's session stays open, and on a shared browser the next **Sign in with single sign-on** signs the same person straight back in.
 
 With the `email` claim, an address is refused only when the provider sends `email_verified` as false. A token with no `email_verified` claim is accepted, because some providers, Cloudflare Access among them, never send it. Authentik's default email scope sends `email_verified: false`, so add Authentik's documented custom scope mapping that sets it true, or every login is refused.
 

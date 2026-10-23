@@ -13216,6 +13216,7 @@
                                         disabled: 'This account is disabled.',
                                         rate_limited: 'Too many attempts. Try again later.',
                                         provider_unavailable: 'The single sign-on provider is unavailable, try again shortly.',
+                                        unavailable: 'Sign-in is unavailable right now, try again shortly.',
                                     }[ssoError] || 'Single sign-on failed.'
                                 }
                             }
@@ -14910,9 +14911,17 @@
                         await unsubscribeFromPush()
                     } catch (e) { /* ignore */ }
                     localStorage.removeItem('push_enabled')
+                    let providerLogoutUrl = null
                     try {
-                        await fetch('/api/logout', { method: 'POST', credentials: 'include' })
+                        const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' })
+                        providerLogoutUrl = (await res.json()).logout_url || null
                     } catch (e) { /* ignore */ }
+                    if (providerLogoutUrl) {
+                        // A single sign-on session: end the provider's session too, which then
+                        // sends the browser back to the viewer's sign-in page.
+                        window.location.assign(providerLogoutUrl)
+                        return
+                    }
                     // Reloads the page: see the isAuthenticated watch.
                     isAuthenticated.value = false
                     userRole.value = ''

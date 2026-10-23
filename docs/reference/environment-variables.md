@@ -310,7 +310,7 @@ The stock compose passes every variable in this table to the viewer except `MAX_
 | <span id="oidc_redirect_uri"></span>`OIDC_REDIRECT_URI` | empty | viewer | Public callback, `https://<viewer host>/api/oidc/callback`, registered exactly at the provider. |
 | <span id="oidc_scopes"></span>`OIDC_SCOPES` | `openid email profile` | viewer | Scopes requested at sign-in. |
 | <span id="oidc_username_claim"></span>`OIDC_USERNAME_CLAIM` | `email` | viewer | ID-token claim that names the user, matched lowercase. Pick one users cannot edit; on Microsoft Entra ID use `oid`. |
-| <span id="oidc_admin_users"></span>`OIDC_ADMIN_USERS` | empty | viewer | Comma-separated claim values that get the master role. |
+| <span id="oidc_admin_users"></span>`OIDC_ADMIN_USERS` | empty | viewer | Comma-separated claim values that get the master role. Removing one and restarting ends that identity's master sessions. |
 | <span id="oidc_user_map"></span>`OIDC_USER_MAP` | empty | viewer | Comma-separated `claim-value=account` pairs that sign a person in as that account. Pointing one at `VIEWER_USERNAME` gives the master role. |
 | <span id="oidc_default_access"></span>`OIDC_DEFAULT_ACCESS` | `none` | viewer | `all` gives new single sign-on users every chat. Any other value gives them none until an admin grants access. |
 | <span id="trust_proxy_headers"></span>`TRUST_PROXY_HEADERS` | `false` | viewer | Take the client address for the login rate limit, the audit log, and the transcript ask limit in an open viewer from `X-Forwarded-For`, then `X-Real-IP`. Only the word `true` turns it on. |

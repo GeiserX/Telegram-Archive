@@ -1412,11 +1412,39 @@ async def _revalidate_all_cached_sessions() -> None:
         logger.info(f"Dropped {len(gone)} cached sessions whose database rows are gone")
 
 
+def _is_configured_master(username: str) -> bool:
+    """Whether the current config still makes ``username`` a master: the env master or an OIDC admin."""
+    if username == VIEWER_USERNAME:
+        return True
+    return OIDC_CONFIG is not None and username in OIDC_CONFIG.admin_users
+
+
+async def _end_unconfigured_master(auth_cookie: str, session: SessionData | None) -> SessionData | None:
+    """The session, or None after ending it when it is a master session the config no longer backs.
+
+    A master session is stored with its role, so taking an identity out of
+    OIDC_ADMIN_USERS (or renaming VIEWER_USERNAME) would otherwise leave its
+    browsers master until the session expires. Proxy admins need no such
+    check: their header is resolved again on every request.
+    """
+    if session is None or session.role != "master" or _is_configured_master(session.username):
+        return session
+    _sessions.pop(auth_cookie, None)
+    if db:
+        try:
+            await db.delete_session(auth_cookie)
+        except Exception:
+            pass
+    await ws_manager.close_for(session_keys=(auth_cookie,))
+    logger.info("Ended a master session whose identity is no longer configured as an admin")
+    return None
+
+
 async def _resolve_session(auth_cookie: str) -> SessionData | None:
     """Look up session from in-memory cache, falling back to DB if needed."""
     session = _sessions.get(auth_cookie)
     if session:
-        return await _revalidate_cached_session(auth_cookie, session)
+        return await _end_unconfigured_master(auth_cookie, await _revalidate_cached_session(auth_cookie, session))
 
     if not db:
         return None
@@ -1443,7 +1471,7 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
         last_accessed=row["last_accessed"],
     )
     _sessions[auth_cookie] = session
-    return session
+    return await _end_unconfigured_master(auth_cookie, session)
 
 
 async def _resolve_proxy_user(
@@ -2896,6 +2924,10 @@ async def login(request: Request):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
+# Marks a browser whose session came from single sign-on; read only by /api/logout.
+OIDC_SESSION_COOKIE_NAME = "oidc_session"
+
+
 def _oidc_active() -> bool:
     return OIDC_CONFIG is not None and AUTH_ENABLED
 
@@ -2926,7 +2958,9 @@ async def _resolve_oidc_user(cfg: oidc.OIDCConfig, identity: str) -> UserContext
             *(u.lower() for u in AUTH_PROXY_ADMIN_USERS),
             *(v.lower() for v in cfg.user_map.values()),
         }
-        if name.lower() in reserved:
+        # "token:" names belong to share-link sessions, which are evicted,
+        # ended and push-checked by that name.
+        if name.lower() in reserved or name.lower().startswith("token:"):
             raise HTTPException(status_code=403, detail="This identity is not allowed to sign in")
         if db:
             existing = await db.get_viewer_by_username(name)
@@ -3030,6 +3064,11 @@ async def oidc_callback(
     except HTTPException as e:
         logger.warning("OIDC login refused for a configured identity")
         return await _refuse("disabled" if e.detail == "Account disabled" else "refused", identity)
+    except Exception as e:
+        # A database outage or a race between two first logins: back to the
+        # login form like every other SSO failure, never a raw 500.
+        logger.warning(f"OIDC login failed while resolving the account ({type(e).__name__})")
+        return await _refuse("unavailable", identity)
     # Same rule as the password login: a viewer-only route never mints a master session.
     if user.role == "master" and request.headers.get("x-viewer-only", "").lower() == "true":
         return await _refuse("refused", identity)
@@ -3049,6 +3088,17 @@ async def oidc_callback(
         secure=_get_secure_cookies(request),
         samesite="lax",
         max_age=AUTH_SESSION_SECONDS,
+    )
+    # Marks this browser's session as single sign-on, so logout knows to end
+    # the provider's session too. It carries nothing secret.
+    response.set_cookie(
+        key=OIDC_SESSION_COOKIE_NAME,
+        value="1",
+        httponly=True,
+        secure=_get_secure_cookies(request),
+        samesite="lax",
+        max_age=AUTH_SESSION_SECONDS,
+        path="/api/logout",
     )
     response.delete_cookie(oidc.STATE_COOKIE_NAME, path="/api/oidc")
     try:
@@ -3076,16 +3126,31 @@ async def oidc_callback(
 LOGOUT_CLEAR_SITE_DATA = '"cache"'
 
 
+async def _provider_logout_url() -> str | None:
+    """Where to send the browser to end the provider's session, or None."""
+    if not _oidc_active():
+        return None
+    try:
+        meta = await oidc.discover(OIDC_CONFIG)
+    except oidc.OIDCError as e:
+        logger.warning(f"OIDC discovery failed at logout: {e}")
+        return None
+    return oidc.end_session_url(meta, OIDC_CONFIG)
+
+
 @app.post("/api/logout")
 async def logout(
     request: Request,
     auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
+    oidc_session: str | None = Cookie(default=None, alias=OIDC_SESSION_COOKIE_NAME),
 ):
     """Invalidate current session and clear cookie.
 
     Logout revokes the BROWSER's channels, not the account's: this session's
     sockets are closed and this user's push subscriptions are deleted, while
-    the user's other sessions stay live.
+    the user's other sessions stay live. A single sign-on session also gets
+    the provider's logout URL back, so the next SSO click asks for credentials
+    again instead of signing the same person straight back in.
     """
     if auth_cookie:
         session = _sessions.pop(auth_cookie, None)
@@ -3111,8 +3176,13 @@ async def logout(
         if session:
             await _purge_push_subscriptions(session.username)
 
-    response = JSONResponse({"success": True})
+    body: dict[str, object] = {"success": True}
+    if auth_cookie and oidc_session and (logout_url := await _provider_logout_url()):
+        body["logout_url"] = logout_url
+    response = JSONResponse(body)
     response.delete_cookie(AUTH_COOKIE_NAME)
+    if oidc_session:
+        response.delete_cookie(OIDC_SESSION_COOKIE_NAME, path="/api/logout")
     if auth_cookie:
         # Only a logout that carried a session cookie empties the cache. The
         # cookie is SameSite=Lax, so another site's POST arrives without it
