@@ -82,7 +82,7 @@ Both containers run as uid 1000 and write the session, database and media under 
 docker compose run --rm telegram-backup python -m telegram_archive auth
 ```
 
-The login code arrives in your Telegram app. If it never does, run the same command with `--qr` and scan the code from your phone. See [The code never arrives](telegram-login.md#the-code-never-arrives). If the account has two-step verification, the command then asks for that password. It echoes the password on screen as you type, so run it where nobody can see. The session is saved under `data/session`. Treat that file like a password: it gives full access to your account. Everything else about login is in [Log in to Telegram](telegram-login.md).
+The login code arrives in your Telegram app. If it never does, run the same command with `--qr` and scan the code from your phone. See [The code never arrives](telegram-login.md#the-code-never-arrives). If the account has two-step verification, the command then asks for that password. With the code login it shows the password on screen as you type, so run it where nobody can see; with `--qr` it does not show it. The session is saved under `data/session`. Treat that file like a password: it gives full access to your account. Everything else about login is in [Log in to Telegram](telegram-login.md).
 
 ### 5. Start both containers
 

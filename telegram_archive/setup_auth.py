@@ -9,6 +9,7 @@ import logging
 import os
 import sqlite3
 import sys
+from datetime import UTC, datetime
 
 import qrcode
 from telethon import TelegramClient
@@ -17,6 +18,16 @@ from telethon.errors import SessionPasswordNeededError
 # Each QR login token lives about 30 seconds, so this waits about 5 minutes
 # for the scan before giving up.
 QR_LOGIN_MAX_TOKENS = 10
+
+# Seconds to keep waiting past a token's expiry. A scan confirmed in the
+# token's last moment still reaches wait(), which then handles the success,
+# DC migration and 2FA replies itself. It also keeps a local clock that runs
+# ahead from timing out at once and burning every token.
+QR_LOGIN_GRACE_SECONDS = 5
+
+
+class QRLoginExpiredError(Exception):
+    """Every QR token expired without a scan: an expected outcome, not a crash."""
 
 
 def _print_permission_error_help():
@@ -107,12 +118,15 @@ async def _qr_login(client) -> None:
 
     qr = await client.qr_login()
     for attempt in range(QR_LOGIN_MAX_TOKENS):
-        if attempt:
-            await qr.recreate()
-        _print_qr(qr.url)
         try:
-            # With no timeout, wait() runs until this token expires.
-            await qr.wait()
+            # Inside the try: if the previous token was accepted just after
+            # the wait gave up, this request is the one that raises
+            # SessionPasswordNeededError on a 2FA account.
+            if attempt:
+                await qr.recreate()
+            _print_qr(qr.url)
+            left = (qr.expires - datetime.now(UTC)).total_seconds()
+            await qr.wait(timeout=max(left, 0) + QR_LOGIN_GRACE_SECONDS)
             return
         except TimeoutError:
             continue
@@ -122,10 +136,21 @@ async def _qr_login(client) -> None:
             await client.sign_in(password=password)
             logger.info("Authentication successful with 2FA!")
             return
-    raise TimeoutError(
+    raise QRLoginExpiredError(
         f"The QR code expired {QR_LOGIN_MAX_TOKENS} times without being scanned. "
         "Run the login again when the phone is ready."
     )
+
+
+async def _qr_login_or_report(client) -> bool:
+    """Run the QR login; on expiry log one plain line and disconnect."""
+    try:
+        await _qr_login(client)
+    except QRLoginExpiredError as e:
+        logger.error(str(e))
+        await client.disconnect()
+        return False
+    return True
 
 
 async def _authorize_account(config, account, phone_var: str, qr: bool = False) -> bool:
@@ -162,11 +187,15 @@ async def _authorize_account(config, account, phone_var: str, qr: bool = False) 
     logger.info("Connecting to Telegram...")
     await client.connect()
 
-    if not await client.is_user_authorized():
+    # Remember whether this run creates the login: a wrong-account login made
+    # here is revoked below, a session that was already on disk is not.
+    logged_in_now = not await client.is_user_authorized()
+    if logged_in_now:
         logger.info("Not authorized yet. Starting authentication process...")
 
         if qr:
-            await _qr_login(client)
+            if not await _qr_login_or_report(client):
+                return False
         else:
             # Send code request
             await client.send_code_request(account.phone)
@@ -180,7 +209,8 @@ async def _authorize_account(config, account, phone_var: str, qr: bool = False) 
             code = input("Enter verification code (or qr): ").strip()
 
             if code.lower() == "qr":
-                await _qr_login(client)
+                if not await _qr_login_or_report(client):
+                    return False
             else:
                 try:
                     # Sign in with code
@@ -222,6 +252,17 @@ async def _authorize_account(config, account, phone_var: str, qr: bool = False) 
         # would let main() announce a completed setup while the session
         # belongs to another account — the daemons check authorization but
         # never identity, so nothing downstream would catch it either.
+        if logged_in_now and await client.log_out():
+            # This run just logged in the wrong account (with QR, whichever
+            # app scanned). log_out() revokes that login on Telegram and
+            # deletes the session file, so the next run starts clean.
+            logger.error(
+                f"The account that logged in does not belong to {phone_var}, so "
+                "that login was discarded. Run the login again from the app "
+                f"logged in as {phone_var}, or correct {phone_var} if the number "
+                "is written in a different form."
+            )
+            return False
         logger.error(
             f"The authorized session does not belong to {phone_var}. "
             "Delete the session file and re-run this setup, or correct "

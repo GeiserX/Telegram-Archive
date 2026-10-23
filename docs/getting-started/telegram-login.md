@@ -90,7 +90,7 @@ The command prints a QR code in the terminal and a `tg://login` link under it. O
 
 - Each code is valid for about 30 seconds. The command prints a new one by itself when it expires, and gives up after ten.
 - With two-step verification on, it then asks for the password. On this path the password is not shown as you type.
-- The phone number check still runs. Any logged-in account can scan the code, so scan it from the account you configured, or the login fails.
+- The phone number check still runs. Any logged-in account can scan the code, so scan it from the account you configured. If another account scans it, the login fails and that account's login is discarded, so the next run shows a fresh QR code.
 - With several accounts, it shows one QR code for each account that still needs a login. Scan each one from the app that holds that account.
 - The command waits for the scan while it runs, so it cannot be split into two steps like the [script below](#log-in-without-a-terminal).
 

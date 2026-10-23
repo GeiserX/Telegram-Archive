@@ -46,7 +46,7 @@ docker run -it --rm \
 
 `latest` is the tag the Community Applications template installs. If you changed it, use the tag the container's **Repository** field shows, so the login runs on the same image.
 
-Enter the code it asks for, and your two-step verification password if the account has one. The session file lands in the `session` folder and every later start reuses it. The [login page](telegram-login.md) shows what the prompts look like and what to do when the code never arrives.
+Enter the code it asks for, and your two-step verification password if the account has one. If the code never arrives, type `qr` at the prompt, or run the same command with `--qr` after `auth`, and scan the QR code from your phone. The session file lands in the `session` folder and every later start reuses it. The [login page](telegram-login.md) shows what the prompts look like and what to do when the code never arrives.
 
 ## 4. Start it
 
