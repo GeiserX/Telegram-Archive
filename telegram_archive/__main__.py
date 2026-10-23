@@ -24,6 +24,7 @@ GETTING STARTED:
 
   1. First time setup (authenticate with Telegram):
      telegram-archive auth
+     telegram-archive auth --qr      # When the code never arrives
 
   2. Installed with pip? Create the database schema, and again after upgrades
      (the Docker image does this itself on start):
@@ -84,6 +85,11 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         "auth",
         help="Authenticate with Telegram (interactive)",
         description="Set up Telegram authentication. Creates a session file for future use.",
+    )
+    auth_parser.add_argument(
+        "--qr",
+        action="store_true",
+        help="Log in by scanning a QR code from a Telegram app that is already logged in, instead of typing a code",
     )
 
     # Backup command
@@ -520,7 +526,7 @@ def run_auth(args) -> int:
     """Run authentication setup."""
     from .setup_auth import main as auth_main
 
-    return auth_main()
+    return auth_main(qr=args.qr)
 
 
 def run_backup(args) -> int:

@@ -43,7 +43,7 @@ To back up several accounts, declare them with the `TG_ACCOUNT_<N>_*` variables 
 Telegram sends a code to your Telegram app. The command asks for it:
 
 ```text
-Enter verification code:
+Enter verification code (or qr):
 ```
 
 If two-step verification is on for the account, it then asks:
@@ -67,6 +67,40 @@ What else the command does:
 Before each command, the Docker image updates the database schema. It skips this step for `python -m telegram_archive auth` and `python -m src auth`, so the login starts at once.
 
 When it succeeds, the command tells you to run a `scheduler.py` file. That file does not exist. The real next step is `docker compose up -d`, or `telegram-archive --data-dir ./data schedule` for a native install.
+
+## Log in with a QR code
+
+A QR login needs no code. You scan a QR code from a Telegram app that is already logged in to the account.
+
+=== "Docker"
+
+    ```bash
+    docker compose run --rm telegram-backup python -m telegram_archive auth --qr
+    ```
+
+=== "Native"
+
+    ```bash
+    telegram-archive --data-dir ./data auth --qr
+    ```
+
+If you already started the normal login and no code came, type `qr` at the `Enter verification code (or qr):` prompt. It switches to the same QR login, so you do not have to start again.
+
+The command prints a QR code in the terminal and a `tg://login` link under it. On the phone or desktop app that is logged in, open Settings > Devices > Link Desktop Device and scan the code. If the terminal draws the code badly, open the link on that phone instead.
+
+- Each code is valid for about 30 seconds. The command prints a new one by itself when it expires, and gives up after ten.
+- With two-step verification on, it then asks for the password. On this path the password is not shown as you type.
+- The phone number check still runs. Any logged-in account can scan the code, so scan it from the account you configured. If another account scans it, the login fails and that account's login is discarded, so the next run shows a fresh QR code.
+- With several accounts, it shows one QR code for each account that still needs a login. Scan each one from the app that holds that account.
+- The command waits for the scan while it runs, so it cannot be split into two steps like the [script below](#log-in-without-a-terminal).
+
+## The code never arrives
+
+`SentCodeTypeApp` in the log means Telegram chose to send the code to your other logged-in Telegram apps, and it offers no SMS. Telegram stopped sending SMS login codes to third-party apps in February 2023.
+
+Since January 2026, Telegram sometimes delivers nothing at all to third-party clients. There is no error, and it can last hours or days. It happens with every Telegram library, not only this one. Tracking thread: https://github.com/LonamiWebs/Telethon/issues/4730
+
+Do not run the login again and again: Telegram limits how often you can ask for a code. Use the [QR login](#log-in-with-a-qr-code) instead.
 
 ## Helper scripts
 
@@ -106,6 +140,7 @@ Limits of this script:
 - Its own usage text names a compose service called `backup`. The service is `telegram-backup`.
 - It does not check that the phone number matches, unlike the `auth` command.
 - When the session file is already authorized, both `send` and `verify` print `Already authorized` and stop.
+- It has no QR mode. Use `python -m telegram_archive auth --qr` for that.
 - If two-step verification is on and you run `verify CODE` without the password, it exits with code 1 and asks you to re-run with the password.
 
 ## Session files

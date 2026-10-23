@@ -1,16 +1,27 @@
 """Tests for interactive authentication setup module."""
 
+import io
 import os
 import shutil
 import sqlite3
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telethon.errors import SessionPasswordNeededError
 
 from telegram_archive.config import Config, telegram_device_kwargs
-from telegram_archive.setup_auth import _print_permission_error_help, _same_phone_number, main, setup_authentication
+from telegram_archive.setup_auth import (
+    QR_LOGIN_GRACE_SECONDS,
+    QR_LOGIN_MAX_TOKENS,
+    _print_permission_error_help,
+    _print_qr,
+    _same_phone_number,
+    main,
+    setup_authentication,
+)
 
 
 class TestSamePhoneNumber(unittest.TestCase):
@@ -82,6 +93,8 @@ async def test_setup_fails_closed_when_the_session_belongs_to_another_account():
 
     assert result is False
     client.disconnect.assert_awaited()
+    # The session was on disk before this run; it is the operator's to remove.
+    client.log_out.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -539,6 +552,265 @@ class TestMain(unittest.TestCase):
 
         printed_text = " ".join(str(call) for call in mock_print.call_args_list)
         assert "Setup failed" in printed_text
+
+
+# --- #590: QR login when the verification code never arrives ---
+
+_QR_ENV = {
+    "TELEGRAM_API_ID": "12345",
+    "TELEGRAM_API_HASH": "abcdef",
+    "TELEGRAM_PHONE": "+1 555 0100",
+    "CHAT_TYPES": "private",
+}
+
+
+def _qr_client(me_phone: str = "15550100"):
+    """A client that is not authorized yet and offers a QR login."""
+    client = AsyncMock()
+    client.is_user_authorized = AsyncMock(return_value=False)
+    client.sign_in = AsyncMock()
+    client.get_me = AsyncMock(return_value=MagicMock(phone=me_phone))
+    qr = MagicMock(url="tg://login?token=test")
+    qr.expires = datetime.now(UTC) + timedelta(seconds=30)
+    qr.wait = AsyncMock(return_value=MagicMock(phone=me_phone))
+    qr.recreate = AsyncMock()
+    client.qr_login = AsyncMock(return_value=qr)
+    return client, qr
+
+
+async def _run_setup(client, qr_flag=True, input_value="12345"):
+    """Run setup_authentication with the given client; returns (result, input, print_qr) mocks."""
+    temp_dir = tempfile.mkdtemp()
+    try:
+        with (
+            patch.dict(os.environ, {**_QR_ENV, "BACKUP_PATH": temp_dir}, clear=True),
+            patch("telegram_archive.setup_auth.TelegramClient", return_value=client),
+            patch("builtins.input", return_value=input_value) as mock_input,
+            patch("builtins.print"),
+            patch("telegram_archive.setup_auth._print_qr") as mock_print_qr,
+        ):
+            result = await setup_authentication(qr=qr_flag)
+        return result, mock_input, mock_print_qr
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_qr_flag_skips_the_code_request():
+    client, qr = _qr_client()
+    result, mock_input, _ = await _run_setup(client)
+
+    assert result is True
+    client.qr_login.assert_awaited_once()
+    client.send_code_request.assert_not_awaited()
+    client.sign_in.assert_not_awaited()
+    mock_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_qr_login_recreates_an_expired_token():
+    client, qr = _qr_client()
+    qr.wait.side_effect = [TimeoutError(), MagicMock(phone="15550100")]
+    result, _, mock_print_qr = await _run_setup(client)
+
+    assert result is True
+    qr.recreate.assert_awaited_once()
+    assert mock_print_qr.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_qr_login_asks_for_the_2fa_password_without_echo():
+    client, qr = _qr_client()
+    qr.wait.side_effect = SessionPasswordNeededError(None)
+    with patch("telegram_archive.setup_auth.getpass.getpass", return_value="test@value/here") as mock_getpass:
+        result, mock_input, _ = await _run_setup(client)
+
+    assert result is True
+    mock_getpass.assert_called_once()
+    client.sign_in.assert_awaited_once_with(password="test@value/here")
+    mock_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_qr_login_gives_up_after_the_last_token_expires():
+    client, qr = _qr_client()
+    qr.wait.side_effect = TimeoutError()
+    result, _, mock_print_qr = await _run_setup(client)
+
+    assert result is False
+    # One QR per token; a fresh token is fetched before every QR but the first.
+    assert mock_print_qr.call_count == QR_LOGIN_MAX_TOKENS
+    assert qr.recreate.await_count == QR_LOGIN_MAX_TOKENS - 1
+
+
+@pytest.mark.asyncio
+async def test_qr_login_expiry_logs_one_line_without_a_traceback(caplog):
+    """Nobody scanning is an expected outcome, not a crash."""
+    client, qr = _qr_client()
+    qr.wait.side_effect = TimeoutError()
+    with caplog.at_level("ERROR"):
+        result, _, _ = await _run_setup(client)
+
+    assert result is False
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "expired" in errors[0].getMessage()
+    assert errors[0].exc_info is None
+    client.disconnect.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_qr_login_waits_past_the_token_expiry():
+    """A scan confirmed in the token's last moment must still be caught."""
+    client, qr = _qr_client()
+    result, _, _ = await _run_setup(client)
+
+    assert result is True
+    timeout = qr.wait.await_args.kwargs["timeout"]
+    assert timeout is not None
+    assert 30 < timeout <= 30 + QR_LOGIN_GRACE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_qr_login_never_waits_less_than_the_grace_on_a_fast_clock():
+    """A local clock ahead of Telegram's must not burn tokens with negative timeouts."""
+    client, qr = _qr_client()
+    qr.expires = datetime.now(UTC) - timedelta(seconds=60)
+    result, _, _ = await _run_setup(client)
+
+    assert result is True
+    assert qr.wait.await_args.kwargs["timeout"] == QR_LOGIN_GRACE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_qr_login_2fa_raised_by_the_next_token_request_asks_for_the_password():
+    """A scan accepted just after the wait gave up surfaces on recreate()."""
+    client, qr = _qr_client()
+    qr.wait.side_effect = TimeoutError()
+    qr.recreate.side_effect = SessionPasswordNeededError(None)
+    with patch("telegram_archive.setup_auth.getpass.getpass", return_value="test@value/here") as mock_getpass:
+        result, _, _ = await _run_setup(client)
+
+    assert result is True
+    mock_getpass.assert_called_once()
+    client.sign_in.assert_awaited_once_with(password="test@value/here")
+
+
+def _late_scan_qr(client, replies):
+    """A real QRLogin whose first wait() times out and whose next token request
+    answers with ``replies`` (the scan landed after the wait gave up)."""
+    from telethon.tl.custom.qrlogin import QRLogin
+    from telethon.tl.types import auth
+
+    qr = QRLogin(client, ignored_ids=[])
+    qr._resp = auth.LoginToken(expires=datetime.now(UTC) + timedelta(seconds=30), token=b"first")
+    client.side_effect = list(replies)
+    client._switch_dc = AsyncMock()
+    client._on_login = AsyncMock()
+    qr.wait = AsyncMock(side_effect=TimeoutError())
+    return qr
+
+
+@pytest.mark.asyncio
+async def test_qr_login_scan_seen_by_the_next_token_request_finishes_the_login():
+    """Without 2FA a late scan comes back from recreate() as LoginTokenSuccess."""
+    from telethon.tl.types import User, auth
+
+    from telegram_archive.setup_auth import _qr_login
+
+    user = User(id=1)
+    client = AsyncMock()
+    qr = _late_scan_qr(client, [auth.LoginTokenSuccess(authorization=auth.Authorization(user=user))])
+    client.qr_login = AsyncMock(return_value=qr)
+    with patch("telegram_archive.setup_auth._print_qr") as mock_print_qr:
+        await _qr_login(client)
+
+    client._on_login.assert_awaited_once_with(user)
+    client._switch_dc.assert_not_awaited()
+    assert mock_print_qr.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_qr_login_late_scan_on_another_dc_imports_the_token_there():
+    """A late scan for an account on another DC must be imported on that DC."""
+    from telethon.tl.functions.auth import ImportLoginTokenRequest
+    from telethon.tl.types import User, auth
+
+    from telegram_archive.setup_auth import _qr_login
+
+    user = User(id=1)
+    client = AsyncMock()
+    qr = _late_scan_qr(
+        client,
+        [
+            auth.LoginTokenMigrateTo(dc_id=4, token=b"x"),
+            auth.LoginTokenSuccess(authorization=auth.Authorization(user=user)),
+        ],
+    )
+    client.qr_login = AsyncMock(return_value=qr)
+    with patch("telegram_archive.setup_auth._print_qr") as mock_print_qr:
+        await _qr_login(client)
+
+    client._switch_dc.assert_awaited_once_with(4)
+    request = client.await_args_list[-1].args[0]
+    assert isinstance(request, ImportLoginTokenRequest)
+    assert request.token == b"x"
+    client._on_login.assert_awaited_once_with(user)
+    assert mock_print_qr.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_typing_qr_at_the_code_prompt_switches_to_qr_login():
+    client, qr = _qr_client()
+    result, _, _ = await _run_setup(client, qr_flag=False, input_value="qr")
+
+    assert result is True
+    client.send_code_request.assert_awaited_once_with("+1 555 0100")
+    client.qr_login.assert_awaited_once()
+    client.sign_in.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_qr_login_fails_closed_on_the_wrong_account():
+    """Any logged-in account can scan the code; the phone check must still catch it."""
+    client, qr = _qr_client(me_phone="15550199")
+    result, _, _ = await _run_setup(client)
+
+    assert result is False
+    # The wrong account's login is revoked and its session file deleted.
+    client.log_out.assert_awaited_once()
+    client.disconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wrong_account_falls_back_to_disconnect_when_log_out_fails():
+    client, qr = _qr_client(me_phone="15550199")
+    client.log_out.return_value = False
+    result, _, _ = await _run_setup(client)
+
+    assert result is False
+    client.log_out.assert_awaited_once()
+    client.disconnect.assert_awaited()
+
+
+def test_print_qr_writes_a_block_and_the_url():
+    out = io.StringIO()
+    with patch("sys.stdout", out):
+        _print_qr("tg://login?token=test")
+
+    text = out.getvalue()
+    assert "tg://login?token=test" in text
+    assert any(ch in text for ch in "\u2588\u2580\u2584")
+
+
+async def test_qr_login_failure_other_than_expiry_still_disconnects():
+    """A QR error that is not expiry must not leave the connection open."""
+    client, qr = _qr_client()
+    qr.wait.side_effect = ConnectionError("network dropped")
+    result, _, _ = await _run_setup(client)
+
+    assert result is False
+    client.disconnect.assert_awaited()
 
 
 if __name__ == "__main__":
