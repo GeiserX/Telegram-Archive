@@ -803,5 +803,15 @@ def test_print_qr_writes_a_block_and_the_url():
     assert any(ch in text for ch in "\u2588\u2580\u2584")
 
 
+async def test_qr_login_failure_other_than_expiry_still_disconnects():
+    """A QR error that is not expiry must not leave the connection open."""
+    client, qr = _qr_client()
+    qr.wait.side_effect = ConnectionError("network dropped")
+    result, _, _ = await _run_setup(client)
+
+    assert result is False
+    client.disconnect.assert_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

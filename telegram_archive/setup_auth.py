@@ -90,7 +90,9 @@ def _print_qr(url: str) -> None:
     terminal, hence ``isatty()``. Without a terminal the inverted plain block
     is printed, which is the right polarity on a dark background.
     """
-    qr = qrcode.QRCode(border=1)
+    # A 4-module quiet zone is what the QR spec asks for; phones fail to
+    # scan when terminal text sits right against the code.
+    qr = qrcode.QRCode(border=4)
     qr.add_data(url)
     qr.make()
     qr.print_ascii(tty=sys.stdout.isatty(), invert=True)
@@ -174,6 +176,11 @@ async def _qr_login_or_report(client) -> bool:
         logger.error(str(e))
         await client.disconnect()
         return False
+    except BaseException:
+        # Any other failure propagates to setup_authentication's handlers;
+        # close the connection first so it does not outlive the login.
+        await client.disconnect()
+        raise
     return True
 
 
