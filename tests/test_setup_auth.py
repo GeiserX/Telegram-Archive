@@ -16,6 +16,7 @@ from telegram_archive.config import Config, telegram_device_kwargs
 from telegram_archive.setup_auth import (
     QR_LOGIN_GRACE_SECONDS,
     QR_LOGIN_MAX_TOKENS,
+    QR_LOGIN_TOKEN_SECONDS,
     _print_permission_error_help,
     _print_qr,
     _same_phone_number,
@@ -281,12 +282,16 @@ async def test_setup_authentication_with_2fa_password():
         with (
             patch.dict(os.environ, env_vars, clear=True),
             patch("telegram_archive.setup_auth.TelegramClient", return_value=mock_client),
-            patch("builtins.input", side_effect=["12345", "my2fapassword"]),
+            patch("builtins.input", return_value="12345") as mock_input,
+            patch("telegram_archive.setup_auth.getpass.getpass", return_value="my2fapassword") as mock_getpass,
             patch("builtins.print"),
         ):
             result = await setup_authentication()
 
         assert result is True
+        # The code is typed visibly; the password goes through getpass, which does not echo.
+        mock_input.assert_called_once()
+        mock_getpass.assert_called_once()
         # First call: code sign-in (raises), second call: password sign-in
         assert mock_client.sign_in.await_count == 2
         mock_client.sign_in.assert_any_call(password="my2fapassword")
@@ -638,9 +643,10 @@ async def test_qr_login_gives_up_after_the_last_token_expires():
     result, _, mock_print_qr = await _run_setup(client)
 
     assert result is False
-    # One QR per token; a fresh token is fetched before every QR but the first.
+    # One QR per token; a fresh token is fetched before every QR but the first,
+    # plus once more after the last one to collect a scan that came late.
     assert mock_print_qr.call_count == QR_LOGIN_MAX_TOKENS
-    assert qr.recreate.await_count == QR_LOGIN_MAX_TOKENS - 1
+    assert qr.recreate.await_count == QR_LOGIN_MAX_TOKENS
 
 
 @pytest.mark.asyncio
@@ -666,20 +672,20 @@ async def test_qr_login_waits_past_the_token_expiry():
     result, _, _ = await _run_setup(client)
 
     assert result is True
-    timeout = qr.wait.await_args.kwargs["timeout"]
-    assert timeout is not None
-    assert 30 < timeout <= 30 + QR_LOGIN_GRACE_SECONDS
+    assert qr.wait.await_args.kwargs["timeout"] == QR_LOGIN_TOKEN_SECONDS + QR_LOGIN_GRACE_SECONDS
 
 
 @pytest.mark.asyncio
-async def test_qr_login_never_waits_less_than_the_grace_on_a_fast_clock():
-    """A local clock ahead of Telegram's must not burn tokens with negative timeouts."""
+@pytest.mark.parametrize("skew_seconds", [-60, 0, 60])
+async def test_qr_login_wait_does_not_depend_on_the_local_clock(skew_seconds):
+    """The expiry is Telegram's clock: a host clock off by a minute either way
+    must neither burn tokens in seconds nor keep an expired code on screen."""
     client, qr = _qr_client()
-    qr.expires = datetime.now(UTC) - timedelta(seconds=60)
+    qr.expires = datetime.now(UTC) + timedelta(seconds=30 + skew_seconds)
     result, _, _ = await _run_setup(client)
 
     assert result is True
-    assert qr.wait.await_args.kwargs["timeout"] == QR_LOGIN_GRACE_SECONDS
+    assert qr.wait.await_args.kwargs["timeout"] == QR_LOGIN_TOKEN_SECONDS + QR_LOGIN_GRACE_SECONDS
 
 
 @pytest.mark.asyncio
@@ -757,6 +763,42 @@ async def test_qr_login_late_scan_on_another_dc_imports_the_token_there():
     assert request.token == b"x"
     client._on_login.assert_awaited_once_with(user)
     assert mock_print_qr.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_qr_login_late_scan_of_the_last_token_finishes_the_login():
+    """A scan of the tenth token that lands after its wait is collected, not reported as expired."""
+    from telethon.tl.types import User, auth
+
+    from telegram_archive.setup_auth import _qr_login
+
+    user = User(id=1)
+    client = AsyncMock()
+    fresh = [
+        auth.LoginToken(expires=datetime.now(UTC) + timedelta(seconds=30), token=b"t%d" % i)
+        for i in range(QR_LOGIN_MAX_TOKENS - 1)
+    ]
+    qr = _late_scan_qr(client, [*fresh, auth.LoginTokenSuccess(authorization=auth.Authorization(user=user))])
+    client.qr_login = AsyncMock(return_value=qr)
+    with patch("telegram_archive.setup_auth._print_qr") as mock_print_qr:
+        await _qr_login(client)
+
+    client._on_login.assert_awaited_once_with(user)
+    assert mock_print_qr.call_count == QR_LOGIN_MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_qr_login_2fa_after_a_late_scan_of_the_last_token_asks_for_the_password():
+    client, qr = _qr_client()
+    qr.wait.side_effect = TimeoutError()
+    qr.recreate.side_effect = [None] * (QR_LOGIN_MAX_TOKENS - 1) + [SessionPasswordNeededError(None)]
+    with patch("telegram_archive.setup_auth.getpass.getpass", return_value="test@value/here") as mock_getpass:
+        result, _, mock_print_qr = await _run_setup(client)
+
+    assert result is True
+    assert mock_print_qr.call_count == QR_LOGIN_MAX_TOKENS
+    mock_getpass.assert_called_once()
+    client.sign_in.assert_awaited_once_with(password="test@value/here")
 
 
 @pytest.mark.asyncio

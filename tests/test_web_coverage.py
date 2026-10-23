@@ -1564,6 +1564,8 @@ class TestNotificationSettingsEdgeCases(_WebTestBase):
         """notification_settings returns enabled when session valid."""
         web_main.AUTH_ENABLED = True
         token = "notif-tok"
+        # A master session must belong to a configured master name.
+        self.enterContext(patch.object(web_main, "VIEWER_USERNAME", "u"))
         web_main._sessions[token] = web_main.SessionData(username="u", role="master", created_at=time.time())
         web_main.config.enable_notifications = True
         async with self._client() as client:

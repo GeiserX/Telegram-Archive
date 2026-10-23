@@ -1067,6 +1067,8 @@ class TestTokenHashingOffTheEventLoop(unittest.IsolatedAsyncioTestCase):
             hashed_on.append(threading.get_ident())
             return "feedface" * 8
 
+        # A master session must belong to a configured master name.
+        self.enterContext(patch.object(web_main, "VIEWER_USERNAME", "admin"))
         web_main._sessions["master-tok"] = web_main.SessionData(username="admin", role="master")
         loop_thread = threading.get_ident()
         with patch.object(web_main, "_hash_token", recording_hash):

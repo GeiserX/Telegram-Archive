@@ -9,7 +9,6 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import UTC, datetime
 
 import qrcode
 from telethon import TelegramClient
@@ -20,10 +19,14 @@ from telethon.tl import functions, types
 # for the scan before giving up.
 QR_LOGIN_MAX_TOKENS = 10
 
-# Seconds to keep waiting past a token's expiry. A scan confirmed in the
-# token's last moment still reaches wait(), which then handles the success,
-# DC migration and 2FA replies itself. It also keeps a local clock that runs
-# ahead from timing out at once and burning every token.
+# How long each token is shown. A fixed wait, not the token's expiry minus the
+# local time: the expiry is Telegram's clock, so a host clock that is off by
+# more than a few seconds would show every token too briefly or too long.
+QR_LOGIN_TOKEN_SECONDS = 30
+
+# Seconds to keep waiting past a token's expected expiry. A scan confirmed in
+# the token's last moment still reaches wait(), which then handles the
+# success, DC migration and 2FA replies itself.
 QR_LOGIN_GRACE_SECONDS = 5
 
 
@@ -141,7 +144,9 @@ async def _qr_login(client) -> None:
     print("=" * 60)
 
     qr = await client.qr_login()
-    for attempt in range(QR_LOGIN_MAX_TOKENS):
+    # One pass per token, plus a last one that only asks Telegram whether the
+    # final token was scanned after its wait gave up.
+    for attempt in range(QR_LOGIN_MAX_TOKENS + 1):
         try:
             # Inside the try: if the previous token was accepted just after
             # the wait gave up, this request is the one that raises
@@ -150,9 +155,10 @@ async def _qr_login(client) -> None:
                 await qr.recreate()
                 if await _finish_late_qr_login(client, qr._resp):
                     return
+            if attempt == QR_LOGIN_MAX_TOKENS:
+                break
             _print_qr(qr.url)
-            left = (qr.expires - datetime.now(UTC)).total_seconds()
-            await qr.wait(timeout=max(left, 0) + QR_LOGIN_GRACE_SECONDS)
+            await qr.wait(timeout=QR_LOGIN_TOKEN_SECONDS + QR_LOGIN_GRACE_SECONDS)
             return
         except TimeoutError:
             continue
@@ -251,7 +257,7 @@ async def _authorize_account(config, account, phone_var: str, qr: bool = False) 
                     # If code is wrong or 2FA is enabled
                     if "Two-steps verification" in str(e) or "password" in str(e).lower():
                         _print_2fa_header()
-                        password = input("Enter your 2FA password: ").strip()
+                        password = getpass.getpass("Enter your 2FA password: ")
                         await client.sign_in(password=password)
                         logger.info("Authentication successful with 2FA!")
                     else:

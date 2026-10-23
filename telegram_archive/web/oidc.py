@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 import weakref
 from dataclasses import dataclass, field
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode, urlsplit
 
 STATE_COOKIE_NAME = "oidc_state"
 STATE_TTL_SECONDS = 600
@@ -160,6 +160,11 @@ def _http_json(request: urllib.request.Request) -> dict:
     try:
         with _opener.open(request, timeout=_HTTP_TIMEOUT_SECONDS) as resp:  # noqa: S310 - scheme checked above
             body = json.loads(resp.read(1_000_000))
+    except urllib.error.HTTPError as e:
+        # The status is the operator's only clue (401 = wrong client
+        # credentials or auth method); the body may echo request data, so it is
+        # not repeated.
+        raise OIDCError(f"Single sign-on provider request failed (HTTP {e.code})") from e
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         raise OIDCError("Single sign-on provider request failed") from e
     if not isinstance(body, dict):
@@ -222,23 +227,35 @@ def authorize_url(meta: dict, cfg: OIDCConfig, login: dict[str, str]) -> str:
     return f"{meta['authorization_endpoint']}{sep}{query}"
 
 
+def _uses_basic_auth(meta: dict) -> bool:
+    """client_secret_basic unless the provider lists methods that leave out basic but include post.
+
+    OpenID Connect Discovery makes client_secret_basic the default when
+    token_endpoint_auth_methods_supported is absent.
+    """
+    methods = meta.get("token_endpoint_auth_methods_supported")
+    if not isinstance(methods, list) or not methods:
+        return True
+    return "client_secret_basic" in methods or "client_secret_post" not in methods
+
+
 async def exchange_code(meta: dict, cfg: OIDCConfig, code: str, verifier: str) -> str:
     """Trade the authorization code for the ID token."""
-    form = urlencode(
-        {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": cfg.redirect_uri,
-            "client_id": cfg.client_id,
-            "client_secret": cfg.client_secret,
-            "code_verifier": verifier,
-        }
-    ).encode()
-    request = urllib.request.Request(
-        meta["token_endpoint"],
-        data=form,
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-    )
+    fields = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": cfg.redirect_uri,
+        "code_verifier": verifier,
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
+    if _uses_basic_auth(meta):
+        # RFC 6749 2.3.1: id and secret are form-urlencoded before being joined.
+        pair = f"{quote_plus(cfg.client_id)}:{quote_plus(cfg.client_secret)}"
+        headers["Authorization"] = "Basic " + base64.b64encode(pair.encode()).decode()
+    else:
+        fields["client_id"] = cfg.client_id
+        fields["client_secret"] = cfg.client_secret
+    request = urllib.request.Request(meta["token_endpoint"], data=urlencode(fields).encode(), headers=headers)
     id_token = (await asyncio.to_thread(_http_json, request)).get("id_token")
     if not isinstance(id_token, str):
         raise OIDCError("Single sign-on provider returned no ID token")
@@ -267,7 +284,7 @@ def validate_id_token(
         raise OIDCError("ID token audience mismatch")
     try:
         exp = float(claims["exp"])
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, OverflowError) as e:
         raise OIDCError("ID token has no valid expiry") from e
     if not math.isfinite(exp):
         raise OIDCError("ID token has no valid expiry")
@@ -289,3 +306,21 @@ def identity_from_claims(claims: dict[str, object], cfg: OIDCConfig) -> str:
     if len(identity) > _MAX_IDENTITY_LENGTH or not identity.isprintable():
         raise OIDCError(f"ID token '{cfg.username_claim}' claim is not a usable username")
     return identity
+
+
+def end_session_url(meta: dict, cfg: OIDCConfig) -> str | None:
+    """The provider's logout URL that returns to the viewer, or None when it advertises none.
+
+    RP-Initiated Logout 1.0: the viewer keeps no ID token, so client_id
+    identifies it instead of id_token_hint. The way back is the viewer's root,
+    taken from OIDC_REDIRECT_URI.
+    """
+    endpoint = meta.get("end_session_endpoint")
+    if not isinstance(endpoint, str) or not endpoint.lower().startswith("https://"):
+        return None
+    parts = urlsplit(cfg.redirect_uri)
+    base = parts.path.removesuffix("/api/oidc/callback").rstrip("/")
+    back = f"{parts.scheme}://{parts.netloc}{base}/"
+    query = urlencode({"client_id": cfg.client_id, "post_logout_redirect_uri": back})
+    sep = "&" if "?" in endpoint else "?"
+    return f"{endpoint}{sep}{query}"

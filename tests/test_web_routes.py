@@ -233,6 +233,8 @@ class TestAuthCheckEndpoint(_WebTestBase):
         """auth check returns authenticated=True with valid session cookie."""
         web_main.AUTH_ENABLED = True
         token = "test-session-token-abc"
+        # A master session must belong to a configured master name.
+        self.enterContext(patch.object(web_main, "VIEWER_USERNAME", "admin"))
         web_main._sessions[token] = web_main.SessionData(username="admin", role="master", created_at=time.time())
         async with self._client() as client:
             resp = await client.get("/api/auth/check", cookies={"viewer_auth": token})
@@ -940,6 +942,8 @@ class TestStatsRefreshEndpoint(_WebTestBase):
         self.mock_db.calculate_and_store_statistics = AsyncMock(return_value={"chats": 5})
         web_main.AUTH_ENABLED = True
         token = "master-tok"
+        # A master session must belong to a configured master name.
+        self.enterContext(patch.object(web_main, "VIEWER_USERNAME", "admin"))
         web_main._sessions[token] = web_main.SessionData(username="admin", role="master")
         async with self._client() as client:
             resp = await client.post("/api/stats/refresh", cookies={"viewer_auth": token})
@@ -1001,6 +1005,8 @@ class TestChatStatsEndpoint(_WebTestBase):
         self.mock_db.get_chat_stats = AsyncMock(return_value={"messages": 5, "media": 1})
         web_main.AUTH_ENABLED = True
         master_token = "cs-master"
+        # A master session must belong to a configured master name.
+        self.enterContext(patch.object(web_main, "VIEWER_USERNAME", "admin"))
         web_main._sessions[master_token] = web_main.SessionData(username="admin", role="master")
         restricted_token = "cs-restricted"
         web_main._sessions[restricted_token] = web_main.SessionData(
@@ -2025,6 +2031,8 @@ class TestResolveSession(_WebTestBase):
 
     async def test_returns_in_memory_session(self):
         """_resolve_session returns session from memory cache."""
+        # A master session must belong to a configured master name.
+        self.enterContext(patch.object(web_main, "VIEWER_USERNAME", "u"))
         session = web_main.SessionData(username="u", role="master")
         web_main._sessions["tok"] = session
         result = await web_main._resolve_session("tok")
