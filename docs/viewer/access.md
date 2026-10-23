@@ -10,14 +10,16 @@ The viewer serves no archive data until you choose how people log in. You have t
 - `AUTH_PROXY_HEADER` for identity set by a trusted reverse proxy.
 - `ALLOW_ANONYMOUS_VIEWER=true` for an open, read-only viewer.
 
+Single sign-on with OpenID Connect is an extra way to sign in, not a fourth option: it only works when `VIEWER_USERNAME` and `VIEWER_PASSWORD` are set. See [Single sign-on with OpenID Connect](#single-sign-on-with-openid-connect).
+
 With none of them set, the container is up and healthy, the login page shows, and sign-in fails. Every data route answers HTTP 503 `Viewer authentication is not configured`.
 
 ## Roles
 
 | Role | Who gets it | What it can do |
 |------|-------------|----------------|
-| master | The `VIEWER_USERNAME` login, or a proxy user listed in `AUTH_PROXY_ADMIN_USERS` | Everything, including admin-only features |
-| viewer | A viewer account created by the master login, or a proxy user | Only the Telegram accounts and chats granted to it |
+| master | The `VIEWER_USERNAME` login, a proxy user listed in `AUTH_PROXY_ADMIN_USERS`, or an SSO identity listed in `OIDC_ADMIN_USERS` or mapped to `VIEWER_USERNAME` in `OIDC_USER_MAP` | Everything, including admin-only features |
+| viewer | A viewer account created by the master login, a proxy user, or an SSO identity that is not an admin | Only the Telegram accounts and chats granted to it |
 | token | A session opened with a share link | Only the chats of that token |
 | viewer, user name `anonymous` | Every visitor when `ALLOW_ANONYMOUS_VIEWER=true` | Read-only access to every chat in `DISPLAY_CHAT_IDS`. See [Anonymous mode](#anonymous-mode). |
 
@@ -267,11 +269,21 @@ With the four required variables set, the login page shows **Sign in with single
 | `OIDC_REDIRECT_URI` | unset | The public callback, `https://<viewer host>/api/oidc/callback`. Register exactly this at the provider. |
 | `OIDC_SCOPES` | `openid email profile` | Scopes requested. |
 | `OIDC_USERNAME_CLAIM` | `email` | ID-token claim that names the user. Matched lowercase. |
-| `OIDC_ADMIN_USERS` | unset | Comma-separated claim values that get the master role. |
-| `OIDC_USER_MAP` | unset | Comma-separated `claim-value=account` pairs that sign a person in as an existing account. Pointing one at `VIEWER_USERNAME` gives the master role. |
-| `OIDC_DEFAULT_ACCESS` | `none` | Like `AUTH_PROXY_DEFAULT_ACCESS`, for people the provider vouches for who have no account yet. |
+| `OIDC_ADMIN_USERS` | unset | Comma-separated claim values that get the master role. The session is named after the claim value. |
+| `OIDC_USER_MAP` | unset | Comma-separated `claim-value=account` pairs that sign a person in as the named account, created on first sign-in when it does not exist yet. The account name is matched exactly, same case as the account. Pointing one at `VIEWER_USERNAME` gives the master role, and the session is then named `VIEWER_USERNAME`. |
+| `OIDC_DEFAULT_ACCESS` | `none` | Like `AUTH_PROXY_DEFAULT_ACCESS`, for any identity the provider lets through that has no account yet. |
 
-An identity that is not an admin and not mapped gets a viewer account on first sign-in, named after the claim value. An unmapped identity that spells the master's name is refused, so a provider that lets users choose their own `preferred_username` cannot hand out the master role. A disabled account gets HTTP 403. With the `email` claim, an address the provider marks unverified is refused.
+An identity that is not an admin and not mapped gets a viewer account on first sign-in, named after the claim value. An unmapped identity that spells the master's name, a proxy admin, `anonymous`, an `OIDC_USER_MAP` target or a password account is refused, so a provider that lets users choose their own `preferred_username` cannot hand out the master role or someone else's account. A disabled account gets HTTP 403. A failed sign-in returns to the login page with a short message.
+
+The `X-Viewer-Only: true` rule applies here too: a single sign-on that would give the master role through such a request is refused.
+
+With the `email` claim, an address is refused only when the provider sends `email_verified` as false. A token with no `email_verified` claim is accepted, because some providers, Cloudflare Access among them, never send it. Authentik's default email scope sends `email_verified: false`, so add Authentik's documented custom scope mapping that sets it true, or every login is refused.
+
+!!! danger "Pick a claim users cannot edit"
+    `OIDC_ADMIN_USERS` and `OIDC_USER_MAP` are matched against whatever claim `OIDC_USERNAME_CLAIM` names, and the viewer trusts that value as the provider sends it. Choose a claim the provider keeps unique and that users and tenant admins cannot change. On Microsoft Entra ID set `OIDC_USERNAME_CLAIM=oid` (or `sub`): Entra's `email`, `preferred_username` and `upn` can be changed, and Entra sends no `email_verified`.
+
+!!! danger "The provider decides who may sign in"
+    The viewer does not keep its own list of who may sign in. Every identity the issuer authenticates gets an account, so the provider's access policy for this client is the only gate: an Authentik application policy, a Keycloak client role, a Cloudflare Access policy or a Google Workspace app set to Internal. With a public issuer such as `https://accounts.google.com` and `OIDC_DEFAULT_ACCESS=all`, anyone with an account at that provider can read every chat.
 
 The viewer reads the ID token straight from the provider's token endpoint over TLS and does not check its signature. It does check issuer, audience, expiry and the per-login nonce, and the login state travels in a signed, short-lived cookie.
 

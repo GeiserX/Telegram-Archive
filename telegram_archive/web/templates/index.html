@@ -13200,6 +13200,26 @@
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
 
+                            // A failed single sign-on lands back here with a fixed code; show it once.
+                            const ssoParams = new URLSearchParams(window.location.search)
+                            const ssoError = ssoParams.get('sso_error')
+                            if (ssoError) {
+                                ssoParams.delete('sso_error')
+                                const rest = ssoParams.toString()
+                                history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash)
+                                if (!isAuthenticated.value && authRequired.value) {
+                                    loginError.value = {
+                                        cancelled: 'Single sign-on was not completed.',
+                                        expired: 'Single sign-on session expired, please try again.',
+                                        invalid_token: 'The single sign-on provider returned an unusable answer.',
+                                        refused: 'This account is not allowed to sign in here.',
+                                        disabled: 'This account is disabled.',
+                                        rate_limited: 'Too many attempts. Try again later.',
+                                        provider_unavailable: 'The single sign-on provider is unavailable, try again shortly.',
+                                    }[ssoError] || 'Single sign-on failed.'
+                                }
+                            }
+
                             // Auto-login via token URL. Prefer #token= so bearer-equivalent
                             // share tokens are not sent to servers/proxies in request logs.
                             if (!isAuthenticated.value && authRequired.value) {

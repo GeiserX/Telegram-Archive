@@ -13,6 +13,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import math
 import os
@@ -20,12 +21,16 @@ import secrets
 import time
 import urllib.error
 import urllib.request
+import weakref
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
 
 STATE_COOKIE_NAME = "oidc_state"
 STATE_TTL_SECONDS = 600
 _DISCOVERY_TTL_SECONDS = 3600
+# After a failed discovery, logins fail fast for this long instead of each one
+# holding a worker thread while the provider is down.
+_DISCOVERY_RETRY_SECONDS = 30
 _HTTP_TIMEOUT_SECONDS = 10.0
 _CLOCK_SKEW_SECONDS = 60
 _MAX_IDENTITY_LENGTH = 254
@@ -128,6 +133,9 @@ def verify_state(secret: str, cookie: str | None, now: float | None = None) -> d
 
 
 _discovery_cache: dict[str, tuple[float, dict]] = {}
+_discovery_failed_at: dict[str, float] = {}
+# One lock per event loop: concurrent cold logins share a single fetch.
+_discovery_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -152,18 +160,41 @@ def _http_json(request: urllib.request.Request) -> dict:
     try:
         with _opener.open(request, timeout=_HTTP_TIMEOUT_SECONDS) as resp:  # noqa: S310 - scheme checked above
             body = json.loads(resp.read(1_000_000))
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         raise OIDCError("Single sign-on provider request failed") from e
     if not isinstance(body, dict):
         raise OIDCError("Single sign-on provider request failed")
     return body
 
 
-async def discover(cfg: OIDCConfig) -> dict:
-    """The provider's discovery document, cached for an hour."""
+def _cached_discovery(cfg: OIDCConfig) -> dict | None:
     cached = _discovery_cache.get(cfg.issuer)
     if cached and time.time() - cached[0] < _DISCOVERY_TTL_SECONDS:
         return cached[1]
+    if time.time() - _discovery_failed_at.get(cfg.issuer, 0.0) < _DISCOVERY_RETRY_SECONDS:
+        raise OIDCError("Single sign-on provider is unavailable, try again shortly")
+    return None
+
+
+async def discover(cfg: OIDCConfig) -> dict:
+    """The provider's discovery document, cached for an hour; a failure is remembered for 30 seconds."""
+    if (meta := _cached_discovery(cfg)) is not None:
+        return meta
+    lock = _discovery_locks.setdefault(asyncio.get_running_loop(), asyncio.Lock())
+    async with lock:
+        if (meta := _cached_discovery(cfg)) is not None:
+            return meta
+        try:
+            meta = await _fetch_discovery(cfg)
+        except OIDCError:
+            _discovery_failed_at[cfg.issuer] = time.time()
+            raise
+    _discovery_failed_at.pop(cfg.issuer, None)
+    _discovery_cache[cfg.issuer] = (time.time(), meta)
+    return meta
+
+
+async def _fetch_discovery(cfg: OIDCConfig) -> dict:
     meta = await asyncio.to_thread(_http_json, urllib.request.Request(f"{cfg.issuer}/.well-known/openid-configuration"))
     if not meta.get("authorization_endpoint") or not meta.get("token_endpoint"):
         raise OIDCError("Single sign-on provider returned an incomplete configuration")
@@ -171,7 +202,6 @@ async def discover(cfg: OIDCConfig) -> dict:
     _require_https(meta["token_endpoint"])
     if str(meta.get("issuer", "")).rstrip("/") != cfg.issuer.rstrip("/"):
         raise OIDCError("Single sign-on provider issuer does not match OIDC_ISSUER")
-    _discovery_cache[cfg.issuer] = (time.time(), meta)
     return meta
 
 
@@ -243,7 +273,7 @@ def validate_id_token(
         raise OIDCError("ID token has no valid expiry")
     if exp < (now or time.time()) - _CLOCK_SKEW_SECONDS:
         raise OIDCError("ID token expired")
-    if not isinstance(claims.get("nonce"), str) or not hmac.compare_digest(claims["nonce"], nonce):
+    if not isinstance(claims.get("nonce"), str) or not hmac.compare_digest(claims["nonce"].encode(), nonce.encode()):
         raise OIDCError("ID token nonce mismatch")
     return claims
 
