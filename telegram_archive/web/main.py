@@ -2861,6 +2861,9 @@ async def login(request: Request):
                     samesite="lax",
                     max_age=AUTH_SESSION_SECONDS,
                 )
+                # Not a single sign-on session: drop a marker an earlier SSO login left,
+                # or logout would send this user to the provider.
+                response.delete_cookie(OIDC_SESSION_COOKIE_NAME, path="/api/logout")
 
                 try:
                     await db.create_audit_log(
@@ -2890,6 +2893,9 @@ async def login(request: Request):
             samesite="lax",
             max_age=AUTH_SESSION_SECONDS,
         )
+        # Not a single sign-on session: drop a marker an earlier SSO login left,
+        # or logout would send this user to the provider.
+        response.delete_cookie(OIDC_SESSION_COOKIE_NAME, path="/api/logout")
 
         try:
             if db:
@@ -3260,6 +3266,9 @@ async def auth_via_token(request: Request):
         samesite="lax",
         max_age=AUTH_SESSION_SECONDS,
     )
+    # Not a single sign-on session: drop a marker an earlier SSO login left,
+    # or logout would send this user to the provider.
+    response.delete_cookie(OIDC_SESSION_COOKIE_NAME, path="/api/logout")
 
     await db.create_audit_log(
         username=f"token:{token_label}",

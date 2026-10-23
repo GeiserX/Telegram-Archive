@@ -849,6 +849,18 @@ def test_logout_without_end_session_endpoint_stays_local(client):
     assert not m._sessions
 
 
+def test_password_login_clears_a_stale_sso_marker(client):
+    """An SSO session that expired without logout must not make a later
+    password session's logout go to the provider."""
+    tc, _, _ = client
+    tc.cookies.set("oidc_session", "1", domain="testserver.local", path="/api/logout")
+    with patch.object(oidc, "discover", AsyncMock(return_value=LOGOUT_META)):
+        resp = tc.post("/api/login", json={"username": "hyper", "password": "pw"})
+        assert resp.status_code == 200
+        assert 'oidc_session=""' in resp.headers.get("set-cookie", "")
+        assert tc.post("/api/logout").json() == {"success": True}
+
+
 def test_password_logout_never_redirects_to_the_provider(client):
     tc, m, _ = client
     with patch.object(oidc, "discover", AsyncMock(return_value=LOGOUT_META)):

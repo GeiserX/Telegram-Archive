@@ -54,7 +54,7 @@ A successful login sets the cookie `viewer_auth`, which is `HttpOnly` and `SameS
 - Logging out ends that session and deletes every push subscription of that user. Other browsers of the same user subscribe again on their next load.
 
 !!! warning "Changing the master password does not log anyone out"
-    The viewer does not check existing sessions of the master login against `VIEWER_USERNAME` or `VIEWER_PASSWORD` again. After a change they stay valid until `AUTH_SESSION_DAYS` runs out, or until you [end every session](#end-every-session).
+    The viewer does not check existing sessions of the master login against `VIEWER_PASSWORD` again. After a password change they stay valid until `AUTH_SESSION_DAYS` runs out, or until you [end every session](#end-every-session). Renaming `VIEWER_USERNAME` does end the old name's master sessions, on their next request.
 
 Logins and share-token logins share one rate limit: 15 attempts per client IP in 300 seconds, then HTTP 429. Behind a reverse proxy every client can look like the same IP, so one client can use up the limit for all. [Exposing the viewer safely](exposing.md) shows how to fix this.
 
@@ -191,7 +191,7 @@ The shipped example publishes port 8001 on every interface. It has no database v
 ```yaml
 services:
   telegram-channel-viewer:
-    image: drumsergio/telegram-archive-viewer:9.4.0
+    image: drumsergio/telegram-archive-viewer:9.4.1
     container_name: telegram-channel-viewer
     restart: unless-stopped
     ports:
@@ -270,7 +270,7 @@ With the four required variables set, the login page shows **Sign in with single
 | `OIDC_SCOPES` | `openid email profile` | Scopes requested. |
 | `OIDC_USERNAME_CLAIM` | `email` | ID-token claim that names the user. Matched lowercase. |
 | `OIDC_ADMIN_USERS` | unset | Comma-separated claim values that get the master role. The session is named after the claim value. Taking a value out and restarting ends that identity's master sessions on their next request. |
-| `OIDC_USER_MAP` | unset | Comma-separated `claim-value=account` pairs that sign a person in as the named account, created on first sign-in when it does not exist yet. The account name is matched exactly, same case as the account. Pointing one at `VIEWER_USERNAME` gives the master role, and the session is then named `VIEWER_USERNAME`. |
+| `OIDC_USER_MAP` | unset | Comma-separated `claim-value=account` pairs that sign a person in as the named account, created on first sign-in when it does not exist yet. The account name is matched exactly, same case as the account. Pointing one at `VIEWER_USERNAME` gives the master role, and the session is then named `VIEWER_USERNAME`. Removing such an entry does not end that person's master session; [end every session](#end-every-session). |
 | `OIDC_DEFAULT_ACCESS` | `none` | Like `AUTH_PROXY_DEFAULT_ACCESS`, for any identity the provider lets through that has no account yet. |
 
 An identity that is not an admin and not mapped gets a viewer account on first sign-in, named after the claim value. An unmapped identity that spells the master's name, a proxy admin, `anonymous`, an `OIDC_USER_MAP` target, a password account or a name starting with `token:` (the names share-link sessions use) is refused, so a provider that lets users choose their own `preferred_username` cannot hand out the master role or someone else's account. A disabled account gets HTTP 403. A failed sign-in returns to the login page with a short message.
