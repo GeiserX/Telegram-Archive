@@ -696,6 +696,69 @@ async def test_qr_login_2fa_raised_by_the_next_token_request_asks_for_the_passwo
     client.sign_in.assert_awaited_once_with(password="test@value/here")
 
 
+def _late_scan_qr(client, replies):
+    """A real QRLogin whose first wait() times out and whose next token request
+    answers with ``replies`` (the scan landed after the wait gave up)."""
+    from telethon.tl.custom.qrlogin import QRLogin
+    from telethon.tl.types import auth
+
+    qr = QRLogin(client, ignored_ids=[])
+    qr._resp = auth.LoginToken(expires=datetime.now(UTC) + timedelta(seconds=30), token=b"first")
+    client.side_effect = list(replies)
+    client._switch_dc = AsyncMock()
+    client._on_login = AsyncMock()
+    qr.wait = AsyncMock(side_effect=TimeoutError())
+    return qr
+
+
+@pytest.mark.asyncio
+async def test_qr_login_scan_seen_by_the_next_token_request_finishes_the_login():
+    """Without 2FA a late scan comes back from recreate() as LoginTokenSuccess."""
+    from telethon.tl.types import User, auth
+
+    from telegram_archive.setup_auth import _qr_login
+
+    user = User(id=1)
+    client = AsyncMock()
+    qr = _late_scan_qr(client, [auth.LoginTokenSuccess(authorization=auth.Authorization(user=user))])
+    client.qr_login = AsyncMock(return_value=qr)
+    with patch("telegram_archive.setup_auth._print_qr") as mock_print_qr:
+        await _qr_login(client)
+
+    client._on_login.assert_awaited_once_with(user)
+    client._switch_dc.assert_not_awaited()
+    assert mock_print_qr.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_qr_login_late_scan_on_another_dc_imports_the_token_there():
+    """A late scan for an account on another DC must be imported on that DC."""
+    from telethon.tl.functions.auth import ImportLoginTokenRequest
+    from telethon.tl.types import User, auth
+
+    from telegram_archive.setup_auth import _qr_login
+
+    user = User(id=1)
+    client = AsyncMock()
+    qr = _late_scan_qr(
+        client,
+        [
+            auth.LoginTokenMigrateTo(dc_id=4, token=b"x"),
+            auth.LoginTokenSuccess(authorization=auth.Authorization(user=user)),
+        ],
+    )
+    client.qr_login = AsyncMock(return_value=qr)
+    with patch("telegram_archive.setup_auth._print_qr") as mock_print_qr:
+        await _qr_login(client)
+
+    client._switch_dc.assert_awaited_once_with(4)
+    request = client.await_args_list[-1].args[0]
+    assert isinstance(request, ImportLoginTokenRequest)
+    assert request.token == b"x"
+    client._on_login.assert_awaited_once_with(user)
+    assert mock_print_qr.call_count == 1
+
+
 @pytest.mark.asyncio
 async def test_typing_qr_at_the_code_prompt_switches_to_qr_login():
     client, qr = _qr_client()

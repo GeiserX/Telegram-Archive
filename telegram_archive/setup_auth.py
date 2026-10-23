@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 import qrcode
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
+from telethon.tl import functions, types
 
 # Each QR login token lives about 30 seconds, so this waits about 5 minutes
 # for the scan before giving up.
@@ -104,6 +105,27 @@ def _print_2fa_header() -> None:
     print("=" * 60)
 
 
+async def _finish_late_qr_login(client, resp) -> bool:
+    """Complete a login that a fresh token request reports; True when done.
+
+    When the previous token was scanned just after wait() gave up, the next
+    token request answers with the login itself instead of a new token.
+    recreate() stores that reply without looking at it, so this does what
+    QRLogin.wait() does with it: import the token on the account's DC when
+    Telegram says to migrate, then finish the login. A 2FA account raises
+    SessionPasswordNeededError here or in recreate(), and the caller asks for
+    the password.
+    """
+    if isinstance(resp, types.auth.LoginTokenMigrateTo):
+        await client._switch_dc(resp.dc_id)
+        resp = await client(functions.auth.ImportLoginTokenRequest(resp.token))
+    if isinstance(resp, types.auth.LoginTokenSuccess):
+        await client._on_login(resp.authorization.user)
+        logger.info("Authentication successful!")
+        return True
+    return False
+
+
 async def _qr_login(client) -> None:
     """Log the client in by QR scan; returns once Telegram reports the login.
 
@@ -124,6 +146,8 @@ async def _qr_login(client) -> None:
             # SessionPasswordNeededError on a 2FA account.
             if attempt:
                 await qr.recreate()
+                if await _finish_late_qr_login(client, qr._resp):
+                    return
             _print_qr(qr.url)
             left = (qr.expires - datetime.now(UTC)).total_seconds()
             await qr.wait(timeout=max(left, 0) + QR_LOGIN_GRACE_SECONDS)
