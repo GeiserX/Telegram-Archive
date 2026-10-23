@@ -308,3 +308,14 @@ def test_failed_callback_is_audited(client):
     resp = tc.get("/api/oidc/callback", params={"code": "c", "state": "forged"})
     assert resp.status_code == 400
     assert db.create_audit_log.await_args.kwargs["action"] == "login_failed"
+
+
+def test_mapped_master_session_uses_the_configured_spelling():
+    import asyncio
+
+    import telegram_archive.web.main as m
+
+    cfg = oidc.OIDCConfig(CFG.issuer, "c", "s", "https://x/cb", user_map={"boss@x.c": "Hyper"})
+    with patch.object(m, "VIEWER_USERNAME", "hyper"):
+        user = asyncio.run(m._resolve_oidc_user(cfg, "boss@x.c"))
+    assert (user.username, user.role) == ("hyper", "master")

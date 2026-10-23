@@ -1317,7 +1317,6 @@ def _configured_principals() -> set[str]:
         names.add("anonymous")
     if OIDC_CONFIG:
         names.update(OIDC_CONFIG.admin_users)
-        names.update(name for name in OIDC_CONFIG.user_map.values() if name == VIEWER_USERNAME)
     return {name for name in names if name}
 
 
@@ -1488,7 +1487,7 @@ async def _resolve_proxy_user(
             created_by=created_by,
             is_active=1,
         )
-        logger.info(f"Auto-created {created_by} viewer account: {proxy_username}")
+        logger.info(f"Auto-created {created_by} viewer account")
 
         refs_set: set[str] | None = None if default_access == "all" else set()
         return UserContext(username=proxy_username, role="viewer", allowed_chat_refs=refs_set)
@@ -2902,8 +2901,11 @@ async def _resolve_oidc_user(cfg: oidc.OIDCConfig, identity: str) -> UserContext
     OIDC_USER_MAP entry attaches a person to an existing account.
     """
     mapped = cfg.user_map.get(identity)
-    if identity in cfg.admin_users or (mapped is not None and mapped.lower() == VIEWER_USERNAME.lower()):
-        return UserContext(username=mapped or identity, role="master")
+    if mapped is not None and mapped.lower() == VIEWER_USERNAME.lower():
+        # Keep the configured spelling so push liveness (_configured_principals) recognises the session.
+        return UserContext(username=VIEWER_USERNAME, role="master")
+    if identity in cfg.admin_users:
+        return UserContext(username=identity, role="master")
 
     name = mapped or identity
     if mapped is None:
@@ -2998,7 +3000,7 @@ async def oidc_callback(
     try:
         user = await _resolve_oidc_user(OIDC_CONFIG, identity)
     except HTTPException as e:
-        logger.warning(f"OIDC login refused for {identity}")
+        logger.warning("OIDC login refused for a configured identity")
         raise await _refuse(e.status_code, e.detail, identity) from e
 
     token = await _create_session(
@@ -3029,7 +3031,7 @@ async def oidc_callback(
                 user_agent=user_agent,
             )
     except Exception:
-        logger.warning(f"Failed to write audit log for OIDC login: {user.username}")
+        logger.warning("Failed to write audit log for OIDC login")
     return response
 
 
