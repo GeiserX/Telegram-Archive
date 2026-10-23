@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.3.7
+        image: drumsergio/telegram-archive:9.4.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.3.7
+        image: drumsergio/telegram-archive-viewer:9.4.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.3.7`, `v9.3.7` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.4.0`, `v9.4.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.4.0 | Nothing. OpenID Connect sign-in is off until you set the `OIDC_*` variables, and the QR login is a new `auth --qr` flag. |
 | 9.3.7 | Nothing. Only a container that was started with no command changes: it now runs the archiver. |
 | 9.3.6 | Nothing. |
 | 9.3.5 | Nothing. |
