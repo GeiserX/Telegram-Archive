@@ -30,6 +30,12 @@ class TestCreateParser(unittest.TestCase):
         args = parser.parse_args(["auth"])
         self.assertEqual(args.command, "auth")
 
+    def test_parser_auth_accepts_qr_flag(self):
+        """#590: `auth --qr` sets qr; plain `auth` leaves it off."""
+        parser = create_parser()
+        self.assertIs(parser.parse_args(["auth", "--qr"]).qr, True)
+        self.assertIs(parser.parse_args(["auth"]).qr, False)
+
     def test_parser_has_backup_command(self):
         """Parser recognizes 'backup' subcommand."""
         parser = create_parser()
@@ -288,6 +294,19 @@ class TestRunAuth(unittest.TestCase):
             result = run_auth(MagicMock())
 
             mock_auth_main.assert_called_once()
+            self.assertEqual(result, 0)
+
+    def test_main_passes_qr_to_auth(self):
+        """#590: `telegram-archive auth --qr` reaches setup_auth.main as qr=True."""
+        from telegram_archive.__main__ import main
+
+        with (
+            patch.object(sys, "argv", ["telegram-archive", "auth", "--qr"]),
+            patch("telegram_archive.setup_auth.main", return_value=0) as mock_auth_main,
+        ):
+            result = main()
+
+            mock_auth_main.assert_called_once_with(qr=True)
             self.assertEqual(result, 0)
 
 

@@ -4,12 +4,19 @@ Run this script once to authenticate and save the session file.
 """
 
 import asyncio
+import getpass
 import logging
 import os
 import sqlite3
 import sys
 
+import qrcode
 from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
+
+# Each QR login token lives about 30 seconds, so this waits about 5 minutes
+# for the scan before giving up.
+QR_LOGIN_MAX_TOKENS = 10
 
 
 def _print_permission_error_help():
@@ -63,14 +70,73 @@ def _same_phone_number(left: str | None, right: str | None) -> bool:
     return _normalised_phone_digits(left) == _normalised_phone_digits(right)
 
 
-async def _authorize_account(config, account, phone_var: str) -> bool:
+def _print_qr(url: str) -> None:
+    """Draw ``url`` as a QR code on stdout, then the URL itself.
+
+    ``tty=True`` makes qrcode print fixed white-on-black ANSI colours, so the
+    code scans whatever the terminal theme; it raises when stdout is not a
+    terminal, hence ``isatty()``. Without a terminal the inverted plain block
+    is printed, which is the right polarity on a dark background.
+    """
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make()
+    qr.print_ascii(tty=sys.stdout.isatty(), invert=True)
+    # The URL is a one-shot login token that expires in about 30 seconds. It
+    # is the fallback for terminals that mangle the block characters.
+    print(f"\nOr open this link on the phone that is logged in: {url}")
+
+
+def _print_2fa_header() -> None:
+    print("\n" + "=" * 60)
+    print("Two-factor authentication is enabled on your account.")
+    print("=" * 60)
+
+
+async def _qr_login(client) -> None:
+    """Log the client in by QR scan; returns once Telegram reports the login.
+
+    Raises on failure so the caller's existing exception handling applies.
+    Nothing here logs the phone, the user or the token.
+    """
+    print("\n" + "=" * 60)
+    print("Scan this QR code with a Telegram app that is already logged in")
+    print("to this account: Settings > Devices > Link Desktop Device.")
+    print("The code refreshes by itself when it expires.")
+    print("=" * 60)
+
+    qr = await client.qr_login()
+    for attempt in range(QR_LOGIN_MAX_TOKENS):
+        if attempt:
+            await qr.recreate()
+        _print_qr(qr.url)
+        try:
+            # With no timeout, wait() runs until this token expires.
+            await qr.wait()
+            return
+        except TimeoutError:
+            continue
+        except SessionPasswordNeededError:
+            _print_2fa_header()
+            password = getpass.getpass("Enter your 2FA password: ")
+            await client.sign_in(password=password)
+            logger.info("Authentication successful with 2FA!")
+            return
+    raise TimeoutError(
+        f"The QR code expired {QR_LOGIN_MAX_TOKENS} times without being scanned. "
+        "Run the login again when the phone is ready."
+    )
+
+
+async def _authorize_account(config, account, phone_var: str, qr: bool = False) -> bool:
     """Interactively authorize one configured account; True once verified.
 
     The flow self-skips the interactive part when the account's session file is
     already authorized, so re-running the setup only prompts for accounts that
     still need a login. ``phone_var`` is the NAME of the variable the expected
     number came from (``TELEGRAM_PHONE`` or ``TG_ACCOUNT_<N>_PHONE_NUMBER``) —
-    messages name the variable, never its value.
+    messages name the variable, never its value. With ``qr`` the login is a QR
+    scan and no code is requested (#590).
     """
     # The phone number is deliberately not echoed. This flow looks
     # interactive, but it emits through setup_logging -> basicConfig ->
@@ -99,32 +165,37 @@ async def _authorize_account(config, account, phone_var: str) -> bool:
     if not await client.is_user_authorized():
         logger.info("Not authorized yet. Starting authentication process...")
 
-        # Send code request
-        await client.send_code_request(account.phone)
-        print("\n" + "=" * 60)
-        print("A verification code has been sent to your Telegram app.")
-        print("Please check your Telegram and enter the code below.")
-        print("=" * 60)
+        if qr:
+            await _qr_login(client)
+        else:
+            # Send code request
+            await client.send_code_request(account.phone)
+            print("\n" + "=" * 60)
+            print("A verification code has been sent to your Telegram app.")
+            print("Please check your Telegram and enter the code below.")
+            print("If no code arrives, type qr to log in with a QR code instead.")
+            print("=" * 60)
 
-        # Get code from user
-        code = input("Enter verification code: ").strip()
+            # Get code from user
+            code = input("Enter verification code (or qr): ").strip()
 
-        try:
-            # Sign in with code
-            await client.sign_in(account.phone, code)
-            logger.info("Authentication successful!")
-
-        except Exception as e:
-            # If code is wrong or 2FA is enabled
-            if "Two-steps verification" in str(e) or "password" in str(e).lower():
-                print("\n" + "=" * 60)
-                print("Two-factor authentication is enabled on your account.")
-                print("=" * 60)
-                password = input("Enter your 2FA password: ").strip()
-                await client.sign_in(password=password)
-                logger.info("Authentication successful with 2FA!")
+            if code.lower() == "qr":
+                await _qr_login(client)
             else:
-                raise
+                try:
+                    # Sign in with code
+                    await client.sign_in(account.phone, code)
+
+                except Exception as e:
+                    # If code is wrong or 2FA is enabled
+                    if "Two-steps verification" in str(e) or "password" in str(e).lower():
+                        _print_2fa_header()
+                        password = input("Enter your 2FA password: ").strip()
+                        await client.sign_in(password=password)
+                        logger.info("Authentication successful with 2FA!")
+                    else:
+                        raise
+        logger.info("Authentication successful!")
     else:
         logger.info("Already authorized!")
 
@@ -168,13 +239,14 @@ async def _authorize_account(config, account, phone_var: str) -> bool:
     return True
 
 
-async def setup_authentication():
+async def setup_authentication(qr: bool = False):
     """Interactive authentication setup, walking every configured account.
 
     A single (zero-config) account keeps the exact pre-8.0 flow. With indexed
     accounts each is authorized in turn — already-authorized sessions need no
     interaction — and a failure stops the walk so the operator can fix that
-    account and re-run (finished accounts then skip straight through).
+    account and re-run (finished accounts then skip straight through). With
+    ``qr`` every account still to log in shows its own QR code.
     """
     try:
         # Load configuration
@@ -202,7 +274,7 @@ async def setup_authentication():
                 phone_var = f"TG_ACCOUNT_{account.index}_PHONE_NUMBER"
             else:
                 phone_var = "TELEGRAM_PHONE"
-            if not await _authorize_account(config, account, phone_var):
+            if not await _authorize_account(config, account, phone_var, qr=qr):
                 return False
 
         return True
@@ -233,7 +305,7 @@ async def setup_authentication():
         return False
 
 
-def main():
+def main(qr: bool = False):
     """Main entry point."""
     print("\n" + "=" * 60)
     print("Telegram Backup - Authentication Setup")
@@ -242,11 +314,11 @@ def main():
     print("the session file for use with the backup automation.")
     print("\nMake sure you have:")
     print("  1. Created a .env file with your API credentials")
-    print("  2. Access to your Telegram account to receive verification code")
+    print("  2. A Telegram app logged in to the account, to receive the code or scan the QR")
     print("\n" + "=" * 60 + "\n")
 
     # Run authentication
-    success = asyncio.run(setup_authentication())
+    success = asyncio.run(setup_authentication(qr=qr))
 
     if success:
         print("\n✓ Setup completed successfully!")

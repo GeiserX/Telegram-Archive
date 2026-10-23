@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **Log in with a QR code when the verification code never arrives.** `telegram-archive auth --qr` shows a QR code in the terminal; scan it from a Telegram app that is already logged in (Settings > Devices > Link Desktop Device) and no code is needed. Typing `qr` at the code prompt does the same. Telegram sometimes never delivers the login code to third-party apps, and it stopped sending SMS codes to them in 2023, so this was the only way in for some accounts. Two-step verification and the phone number check work as before; the 2FA password is not echoed on this path. Adds the `qrcode` package. (#590)
+
 ## [9.3.7] - 2026-10-21
 
 The backup image now archives when it is started with no command, which is how Unraid starts it. No migration. Docker deployments only need the new pins.

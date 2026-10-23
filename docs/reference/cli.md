@@ -52,12 +52,14 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 ## auth { #auth }
 
 ```text
-telegram-archive [--data-dir PATH] auth
+telegram-archive [--data-dir PATH] auth [--qr]
 ```
 
-Takes no flags.
+| Flag | What it does |
+|------|--------------|
+| `--qr` | Asks for no code. It prints a QR code to scan from a Telegram app that is already logged in, under Settings > Devices > Link Desktop Device. A new code replaces the old one about every 30 seconds, and the command gives up after ten. When two-step verification is on, it asks for the password without showing it. The phone number check and the exit codes are the same as without the flag. |
 
-Logs in to Telegram interactively and saves the session file. It walks every configured account in turn and skips accounts whose session is already authorized. For each login it prompts `Enter verification code: `. When two-step verification is on, it also prompts `Enter your 2FA password: `. It then checks that the logged-in phone number matches the configured one and fails if they differ. A failure stops the walk, so the accounts after it are not tried. Fix that account and run `auth` again. It does not touch the database. See [Log in to Telegram](../getting-started/telegram-login.md).
+Logs in to Telegram interactively and saves the session file. It walks every configured account in turn and skips accounts whose session is already authorized. For each login it prompts `Enter verification code (or qr): `. Typing `qr` there switches to the QR login. When two-step verification is on, it also prompts `Enter your 2FA password: `. It then checks that the logged-in phone number matches the configured one and fails if they differ. A failure stops the walk, so the accounts after it are not tried. Fix that account and run `auth` again. It does not touch the database. See [Log in to Telegram](../getting-started/telegram-login.md) and [The code never arrives](../getting-started/telegram-login.md#the-code-never-arrives).
 
 It prints progress lines, then a blank line and one of two endings. On success it prints `✓ Setup completed successfully!` followed by a short "Next steps" block. On failure it prints `✗ Setup failed. Please check the errors above.` On a permission error it prints how to give the container's user, uid 1000, write access to the data directory.
 

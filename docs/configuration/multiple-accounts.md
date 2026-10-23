@@ -70,7 +70,7 @@ Account 1 follows the same chain as single-account mode, so an existing install 
     TG_ACCOUNT_2_LABEL=Work
     ```
 
-4. Log in. The login checks every account and skips any account that is already logged in. It asks only for the new account's code, then its two-step password if the account has one. It fails if the account that logs in does not own the configured phone number.
+4. Log in. The login checks every account and skips any account that is already logged in. It asks only for the new account's code, then its two-step password if the account has one. It fails if the account that logs in does not own the configured phone number. With `--qr` it shows one QR code for each account still to log in.
 
     ```bash
     docker compose run --rm telegram-backup python -m telegram_archive auth

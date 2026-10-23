@@ -47,6 +47,7 @@ dependencies = [
     "py-vapid>=1.9.4",
     "cryptography>=50.0.0",
     "Pillow>=12.3.0",
+    "qrcode>=8.2",
 ]
 
 [project.optional-dependencies]
