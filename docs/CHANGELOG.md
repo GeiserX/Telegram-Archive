@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+
+- **OpenID Connect single sign-on.** Set `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` and `OIDC_REDIRECT_URI` and the login page offers a single sign-on button. See [Single sign-on with OpenID Connect](viewer/access.md#single-sign-on-with-openid-connect).
+
 ## [9.3.7] - 2026-10-21
 
 The backup image now archives when it is started with no command, which is how Unraid starts it. No migration. Docker deployments only need the new pins.

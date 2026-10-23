@@ -256,6 +256,25 @@ A request without the header falls back to the session cookie, so password login
 !!! danger "The proxy must own the header"
     The viewer trusts the header as given. Anyone who can send it straight to the viewer can log in as any user, including an admin. The proxy must strip or overwrite that header on every request, and the viewer must not be reachable around the proxy. See [Exposing the viewer safely](exposing.md).
 
+## Single sign-on with OpenID Connect
+
+With the four required variables set, the login page shows **Sign in with single sign-on**. It runs the authorization code flow with PKCE against your provider (Cloudflare Access, Authentik, Keycloak and others), then opens the same session a password login does. Password login keeps working beside it, and it needs `VIEWER_USERNAME` and `VIEWER_PASSWORD` set, because the session is the same one.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `OIDC_ISSUER` | unset | Issuer URL. The viewer reads `/.well-known/openid-configuration` under it. Must be `https`. |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | unset | The client registered for the viewer. |
+| `OIDC_REDIRECT_URI` | unset | The public callback, `https://<viewer host>/api/oidc/callback`. Register exactly this at the provider. |
+| `OIDC_SCOPES` | `openid email profile` | Scopes requested. |
+| `OIDC_USERNAME_CLAIM` | `email` | ID-token claim that names the user. Matched lowercase. |
+| `OIDC_ADMIN_USERS` | unset | Comma-separated claim values that get the master role. |
+| `OIDC_USER_MAP` | unset | Comma-separated `claim-value=account` pairs that sign a person in as an existing account. Pointing one at `VIEWER_USERNAME` gives the master role. |
+| `OIDC_DEFAULT_ACCESS` | `none` | Like `AUTH_PROXY_DEFAULT_ACCESS`, for people the provider vouches for who have no account yet. |
+
+An identity that is not an admin and not mapped gets a viewer account on first sign-in, named after the claim value. An unmapped identity that spells the master's name is refused, so a provider that lets users choose their own `preferred_username` cannot hand out the master role. A disabled account gets HTTP 403. With the `email` claim, an address the provider marks unverified is refused.
+
+The viewer reads the ID token straight from the provider's token endpoint over TLS and does not check its signature. It does check issuer, audience, expiry and the per-login nonce, and the login state travels in a signed, short-lived cookie.
+
 ## The audit log
 
 The viewer records these events in the database:

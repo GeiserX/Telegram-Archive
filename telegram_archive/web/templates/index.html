@@ -6602,6 +6602,10 @@
                         class="w-full bg-tg-accent-strong text-tg-on-accent hover:bg-tg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition">
                         Sign in
                     </button>
+                    <a v-if="oidcEnabled" href="/api/oidc/login"
+                        class="block w-full text-center bg-tg-field text-tg-ink hover:bg-tg-field-border rounded-xl py-3 font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
+                        Sign in with single sign-on
+                    </a>
                 </form>
             </div>
         </div>
@@ -10483,6 +10487,7 @@
                 const loadNewerSentinel = ref(null)
                 const isAuthenticated = ref(false)
                 const authRequired = ref(false)
+                const oidcEnabled = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
@@ -13189,6 +13194,7 @@
                         if (res.ok) {
                             const data = await res.json()
                             authRequired.value = !!data.auth_required
+                            oidcEnabled.value = !!data.oidc_enabled
                             isAuthenticated.value = !!data.authenticated
                             userRole.value = data.role || ''
                             currentUsername.value = data.username || ''
@@ -21041,6 +21047,7 @@
                     // Auth
                     isAuthenticated,
                     authRequired,
+                    oidcEnabled,
                     authCheckFailed,
                     loadingAuth,
                     loginForm,
