@@ -57,7 +57,7 @@ dev = [
     "pytest>=9.0",
     "pytest-asyncio>=0.26.0",
     "pytest-cov>=7.1.0",
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "pre-commit>=4.5.1",
 ]
 
