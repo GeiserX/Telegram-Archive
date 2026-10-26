@@ -6,8 +6,15 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.4.2] - 2026-10-26
+
+Live updates work again on SQLite, plus dependency updates. No migration. Docker deployments only need the new pins.
+
 ### Fixed
 - **Open viewer tabs update live again on SQLite.** The backup's push to the viewer sent dates through plain `json.dumps`, which cannot write a `datetime`, so every push that carried one (new and edited messages among them) failed with "Object of type datetime is not JSON serializable" and showed only after a refresh. The push now writes dates as ISO text, the same as the PostgreSQL path. Capture was never affected. Thanks to @jcugat for the report and the fix. (#593)
+
+### Changed
+- FastAPI 0.161.1, Alembic 1.20.1, and the development tool ruff 0.17.2, which the pre-commit hook now runs too. (#595)
 
 ## [9.4.1] - 2026-10-23
 
