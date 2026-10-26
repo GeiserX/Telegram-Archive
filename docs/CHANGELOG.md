@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+- **Open viewer tabs update live again on SQLite.** The backup's push to the viewer sent dates through plain `json.dumps`, which cannot write a `datetime`, so every push that carried one (new and edited messages among them) failed with "Object of type datetime is not JSON serializable" and showed only after a refresh. The push now writes dates as ISO text, the same as the PostgreSQL path. Capture was never affected. Thanks to @jcugat for the report and the fix. (#593)
+
 ## [9.4.1] - 2026-10-23
 
 Fixes from a second review of the single sign-on and QR login added in 9.4.0. No migration. Docker deployments only need the new pins. If you sign in through OpenID Connect, register the viewer's root URL as a post-logout redirect URI at your provider.

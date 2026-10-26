@@ -314,7 +314,10 @@ class RealtimeNotifier:
         if not self._http_endpoint:
             return
 
-        headers: dict[str, str] = {}
+        # Serialize here, like the PostgreSQL path: the clients' own ``json=``
+        # uses plain json.dumps, which raises on the payload's datetimes.
+        body = json.dumps(payload, default=_json_serializer)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         push_secret = self._push_secret or os.getenv("INTERNAL_PUSH_SECRET")
         if push_secret:
             headers["Authorization"] = f"Bearer {push_secret}"
@@ -325,7 +328,7 @@ class RealtimeNotifier:
             async with (
                 aiohttp.ClientSession() as session,
                 session.post(
-                    self._http_endpoint, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+                    self._http_endpoint, data=body, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
                 ) as response,
             ):
                 if response.status != 200:
@@ -337,7 +340,7 @@ class RealtimeNotifier:
                 import httpx
 
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(self._http_endpoint, json=payload, headers=headers, timeout=5)
+                    response = await client.post(self._http_endpoint, content=body, headers=headers, timeout=5)
                 if response.status_code != 200:
                     self._http_push_failed(f"HTTP notification returned {response.status_code}")
                     return

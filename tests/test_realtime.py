@@ -1354,3 +1354,71 @@ class TestNotifyHttpWarnsOnce:
         warnings = self._warnings(caplog)
         assert len(warnings) == 2
         assert "returned 500" in warnings[1].getMessage()
+
+
+class TestNotifyHttpSerializesDatetimes:
+    """The SQLite push carries datetimes; plain ``json=`` raised on them (#593)."""
+
+    PAYLOAD = {"type": "new_message", "data": {"date": datetime(2026, 10, 26, 16, 37, 11)}}
+
+    async def test_httpx_path_sends_datetimes_as_iso_json(self):
+        import builtins
+
+        import httpx
+
+        notifier = RealtimeNotifier()
+        notifier._http_endpoint = "http://viewer:8000/internal/push"
+        seen = {}
+
+        def handler(request):
+            seen["content_type"] = request.headers.get("content-type")
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200)
+
+        real_client = httpx.AsyncClient
+        real_import = builtins.__import__
+
+        def no_aiohttp(name, *args, **kwargs):
+            if name == "aiohttp":
+                raise ImportError("no aiohttp")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("builtins.__import__", side_effect=no_aiohttp),
+            patch("httpx.AsyncClient", lambda: real_client(transport=httpx.MockTransport(handler))),
+        ):
+            await notifier._notify_http(self.PAYLOAD)
+
+        assert seen["content_type"] == "application/json"
+        assert seen["body"] == {"type": "new_message", "data": {"date": "2026-10-26T16:37:11"}}
+        assert notifier._http_failure_warned is False
+
+    async def test_aiohttp_path_sends_datetimes_as_iso_json(self):
+        from aiohttp import web
+
+        seen = {}
+
+        async def push(request):
+            seen["content_type"] = request.headers.get("Content-Type")
+            seen["body"] = await request.json()
+            return web.Response()
+
+        app = web.Application()
+        app.router.add_post("/internal/push", push)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        try:
+            port = site._server.sockets[0].getsockname()[1]
+            notifier = RealtimeNotifier()
+            notifier._http_endpoint = f"http://127.0.0.1:{port}/internal/push"
+            with patch.dict(os.environ, {}, clear=True):
+                await notifier._notify_http(self.PAYLOAD)
+        finally:
+            await runner.cleanup()
+
+        assert seen["content_type"] == "application/json"
+        assert seen["body"] == {"type": "new_message", "data": {"date": "2026-10-26T16:37:11"}}
+        assert notifier._http_failure_warned is False
