@@ -1395,27 +1395,30 @@ class TestNotifyHttpSerializesDatetimes:
         assert notifier._http_failure_warned is False
 
     async def test_aiohttp_path_sends_datetimes_as_iso_json(self):
-        notifier = RealtimeNotifier()
-        notifier._http_endpoint = "http://viewer:8000/internal/push"
+        from aiohttp import web
 
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_post_cm = AsyncMock()
-        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_post_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_session = MagicMock()
-        mock_session.post = MagicMock(return_value=mock_post_cm)
-        mock_session_cm = AsyncMock()
-        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_aiohttp = MagicMock()
-        mock_aiohttp.ClientSession.return_value = mock_session_cm
+        seen = {}
 
-        with patch.dict(os.environ, {}, clear=True), patch.dict("sys.modules", {"aiohttp": mock_aiohttp}):
-            await notifier._notify_http(self.PAYLOAD)
+        async def push(request):
+            seen["content_type"] = request.headers.get("Content-Type")
+            seen["body"] = await request.json()
+            return web.Response()
 
-        kwargs = mock_session.post.call_args.kwargs
-        assert "json" not in kwargs
-        assert kwargs["headers"]["Content-Type"] == "application/json"
-        assert json.loads(kwargs["data"])["data"]["date"] == "2026-10-26T16:37:11"
+        app = web.Application()
+        app.router.add_post("/internal/push", push)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        try:
+            port = site._server.sockets[0].getsockname()[1]
+            notifier = RealtimeNotifier()
+            notifier._http_endpoint = f"http://127.0.0.1:{port}/internal/push"
+            with patch.dict(os.environ, {}, clear=True):
+                await notifier._notify_http(self.PAYLOAD)
+        finally:
+            await runner.cleanup()
+
+        assert seen["content_type"] == "application/json"
+        assert seen["body"] == {"type": "new_message", "data": {"date": "2026-10-26T16:37:11"}}
         assert notifier._http_failure_warned is False

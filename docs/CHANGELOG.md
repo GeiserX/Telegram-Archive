@@ -7,7 +7,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ## [Unreleased]
 
 ### Fixed
-- **Open viewer tabs update live again on SQLite.** The backup's push to the viewer sent the message's dates through plain `json.dumps`, which cannot write a `datetime`, so every push failed with "Object of type datetime is not JSON serializable" and new messages showed only after a refresh. The push now writes dates as ISO text, the same as the PostgreSQL path. Capture was never affected. Thanks to @jcugat for the report and the fix. (#593)
+- **Open viewer tabs update live again on SQLite.** The backup's push to the viewer sent dates through plain `json.dumps`, which cannot write a `datetime`, so every push that carried one (new and edited messages among them) failed with "Object of type datetime is not JSON serializable" and showed only after a refresh. The push now writes dates as ISO text, the same as the PostgreSQL path. Capture was never affected. Thanks to @jcugat for the report and the fix. (#593)
 
 ## [9.4.1] - 2026-10-23
 
