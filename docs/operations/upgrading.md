@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.4.2
+        image: drumsergio/telegram-archive:9.5.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.4.2
+        image: drumsergio/telegram-archive-viewer:9.5.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.4.2`, `v9.4.2` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.5.0`, `v9.5.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.5.0 | Nothing to change. Migration 042 runs on the first start and adds six timestamp indexes (two of them on `messages`), so on a large archive that start takes longer than usual; let it finish. |
 | 9.4.2 | Nothing. |
 | 9.4.1 | Nothing, unless you sign in through OpenID Connect: register the viewer's root URL as a post-logout redirect URI at the provider, and note that changing `VIEWER_USERNAME` or removing an `OIDC_ADMIN_USERS` entry now ends that name's master sessions. |
 | 9.4.0 | Nothing. OpenID Connect sign-in is off until you set the `OIDC_*` variables, and the QR login is a new `auth --qr` flag. |
