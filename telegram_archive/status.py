@@ -20,8 +20,9 @@ if TYPE_CHECKING:
     from .config import Config
     from .db.adapter import DatabaseAdapter
 
-# A running backup stamps ``listener_heartbeat`` every 30 seconds for each
-# account whose listener runs (scheduler.py ``_heartbeat_loop``). A listener
+# A running listener stamps ``listener_heartbeat`` every 30 seconds for its
+# account (listener.py ``_heartbeat_loop``), in the backup process or in the
+# standalone listener alike. A listener
 # counts as running only while that stamp is this fresh: the start flag
 # ``listener_active_since`` is cleared on a clean stop only, so a killed
 # container, an out-of-memory kill or a power cut leaves it set. Three missed
@@ -52,13 +53,19 @@ async def collect_status(db: DatabaseAdapter, config: Config) -> dict[str, Any]:
 
 
 async def listener_states(db: DatabaseAdapter, account_ids: list[int] | None = None) -> list[dict[str, Any]]:
-    """Each account's listener: running or not, and since when it last started.
+    """Each account's listener: running or not, since when, and what it last saw.
 
     The one rule for the viewer's sidebar (``/api/stats``) and for Archive
     status and ``telegram-archive status`` (``collect_status``), so the two
     cannot disagree. ``active_since`` is kept on a row that is not active: a
     start time with no fresh heartbeat is a listener that stopped without
     shutting down.
+
+    ``last_update_at`` is when the listener last handled a Telegram update,
+    written with the heartbeat, so it can lag by up to 30 seconds.
+    ``deletions_blocked`` counts the deletions the rate limiter refused since
+    the listener last started, and ``last_rate_limit_at`` is when it last
+    tripped (kept across restarts). Each is None until the listener wrote it.
     """
     if account_ids is None:
         try:
@@ -71,11 +78,17 @@ async def listener_states(db: DatabaseAdapter, account_ids: list[int] | None = N
     for account_id in account_ids:
         since = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
         heartbeat = await db.get_metadata(account_metadata_key("listener_heartbeat", account_id))
+        last_update = await db.get_metadata(account_metadata_key("listener_last_update", account_id))
+        blocked = await db.get_metadata(account_metadata_key("listener_deletions_blocked", account_id))
+        last_rate_limit = await db.get_metadata(account_metadata_key("listener_last_rate_limit", account_id))
         states.append(
             {
                 "account_id": account_id,
                 "active": listener_is_running(since, heartbeat, now),
                 "active_since": since or None,
+                "last_update_at": last_update or None,
+                "deletions_blocked": int(blocked) if blocked and blocked.isdigit() else None,
+                "last_rate_limit_at": last_rate_limit or None,
             }
         )
     return states
@@ -137,8 +150,8 @@ def health_problems(
       the next tick fires skips that tick;
     - a listener is not running: ``listener_accounts`` is how many accounts
       should have one (the configured accounts when ENABLE_LISTENER is on, 0
-      when it is off), and fewer are active. A listener is active while the
-      backup stamps its heartbeat (``listener_is_running``), so a stopped
+      when it is off), and fewer are active. A listener is active while it
+      stamps its heartbeat (``listener_is_running``), so a stopped
       listener, a stopped backup process and a killed container all read as
       not running within about three minutes. With the listener on, the
       scheduled pass runs once a day, so the schedule check alone would take

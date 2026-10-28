@@ -215,7 +215,7 @@ The archive is unhealthy when one of these holds:
 - No backup run has ever started.
 - The last run did not finish. It is not running, and the statistics a run writes after its message sweep are older than its start.
 - `SCHEDULE` has fired twice since the last run started. One missed tick is allowed, because a tick that arrives while a run is still going is skipped. A run still going after two ticks counts as missed, so the first backup of a large archive reads `UNHEALTHY` until it completes.
-- `ENABLE_LISTENER` is on and fewer listeners are running than accounts are configured. A listener counts as running while the backup stamps its heartbeat, every 30 seconds, so a stopped listener, a stopped backup and a killed container all show here within about three minutes. With the daily default schedule, the schedule check alone would take about two days. The account is named when the database holds no account beyond the configured ones; otherwise the count is given.
+- `ENABLE_LISTENER` is on and fewer listeners are running than accounts are configured. A listener counts as running while the listener stamps its heartbeat, every 30 seconds, so a stopped listener, a stopped backup and a killed container all show here within about three minutes. With the daily default schedule, the schedule check alone would take about two days. The account is named when the database holds no account beyond the configured ones; otherwise the count is given.
 
 The schedule check uses the local time of the command, as the scheduler does. Run it with the same `TZ` as the backup service. Inside the backup container this is already the case.
 
@@ -227,6 +227,13 @@ A database that does not exist yet is created empty and reads as `no backup has 
     A run writes its statistics after the message sweep and before the media retries, media verification, transcription and gap-fill. The command does not report a failure in those later steps. Read the logs for them.
 
     The viewer also recalculates the statistics: on its first start when nothing is cached yet, in its daily job, and on a `POST /api/stats/refresh` call from the master login. A recalculation after a failed run hides that failure until the next run starts. With several Telegram accounts, the start time and the statistics are shared. An account that failed before another one completed is not reported. The logs name the failed account.
+
+With `--json`, each entry of `listeners` also carries these fields. See [Checking that it runs](../configuration/listener.md#checking-that-it-runs) for how to alert on them.
+
+- `last_update_at`: when the listener last handled any Telegram update for the account, UTC.
+- `deletions_blocked`: deletions the rate limiter refused since the listener last started.
+- `last_rate_limit_at`: when the rate limiter last tripped for the account, UTC.
+- `active_since`: when the listener started, in the backup's local time with no UTC offset.
 
 By default it prints:
 

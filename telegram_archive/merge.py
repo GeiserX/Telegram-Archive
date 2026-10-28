@@ -95,9 +95,10 @@ SURROGATE_ID_TABLES: tuple[sa.Table, ...] = tuple(table for table, drop_id in AC
 SQLITE_BUSY_TIMEOUT = 60
 
 # Per-account metadata keys (``account_metadata_key``): account 1 uses the bare
-# key, every other account the ``_account_<id>`` suffix. ``listener_active_since``
-# and ``listener_heartbeat`` are left out: they describe a process of the source
-# install, not the archive.
+# key, every other account the ``_account_<id>`` suffix. ``listener_active_since``,
+# ``listener_heartbeat`` and the listener state (``listener_last_update``,
+# ``listener_deletions_blocked``, ``listener_last_rate_limit``) are left out: they
+# describe a process of the source install, not the archive.
 ACCOUNT_METADATA_KEY = re.compile(
     r"^(?P<base>followed_migrations|whitelist_unresolved_ids|reaction_resweep_cycle_done|import_progress"
     r"|message_failures_-?\d+)(?:_account_(?P<account>\d+))?$"
