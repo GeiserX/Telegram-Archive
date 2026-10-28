@@ -191,6 +191,8 @@ class MassOperationProtector:
             "rate_limits_triggered": 0,
             "chats_rate_limited": set(),
         }
+        # When the limiter last tripped (UTC), for the status payload.
+        self.last_trip_at: datetime | None = None
 
     def start(self):
         """Start the protector."""
@@ -246,6 +248,10 @@ class MassOperationProtector:
         blocked, reason = self.is_blocked(chat_id)
         if blocked:
             self.stats["operations_blocked"] += 1
+            # Count it against the chat's block too, or the shutdown summary
+            # reports only the deletion that tripped the limit.
+            blocked_until, block_reason, blocked_count = self._blocked[chat_id]
+            self._blocked[chat_id] = (blocked_until, block_reason, blocked_count + 1)
             return False, f"RATE LIMITED: {reason}"
 
         # Record this operation
@@ -264,6 +270,7 @@ class MassOperationProtector:
             self.stats["rate_limits_triggered"] += 1
             self.stats["operations_blocked"] += 1
             self.stats["chats_rate_limited"].add(chat_id)
+            self.last_trip_at = datetime.now(UTC)
 
             logger.warning("=" * 70)
             logger.warning("🛡️ RATE LIMIT TRIGGERED")
@@ -386,6 +393,11 @@ class TelegramListener:
 
         # Stamps listener_heartbeat while run() runs (see _heartbeat_loop).
         self._heartbeat_task: asyncio.Task | None = None
+        # When any handler last ran (UTC). Kept in memory and written with the
+        # heartbeat, so a busy chat costs no extra database write.
+        self._last_update_at: datetime | None = None
+        # The listener state values last written by _write_listener_state.
+        self._written_state: dict[str, str] = {}
 
         # Fetches the files of new custom emoji while run() runs (_custom_emoji_loop).
         self._custom_emoji_task: asyncio.Task | None = None
@@ -1512,6 +1524,21 @@ class TelegramListener:
             self.stats["snapshots_kept"] += len(written)
             logger.debug("🗳️ Kept a later state (%s)", ", ".join(written))
 
+    def _log_blocked_deletions(self, message_ids: list[int]) -> None:
+        """One WARNING per deletion event the rate limiter refused, with the message ids.
+
+        Ids only: the chat id stays out of the log (Logging Rules). The archive
+        keeps these messages as they were; only a deletion sweep records them.
+        """
+        if self.config.sync_deletions_edits is True:
+            recovery = "SYNC_DELETIONS_EDITS is on, so the next backup records them"
+        else:
+            recovery = "SYNC_DELETIONS_EDITS is off, so they stay unrecorded; enable it for a backup run to record them"
+        logger.warning(
+            f"🛡️ Rate limiter blocked {len(message_ids)} deletion(s), not applied, message ids: "
+            f"{', '.join(str(message_id) for message_id in message_ids)}. {recovery}"
+        )
+
     def _register_handlers(self) -> None:
         """Register Telethon event handlers."""
 
@@ -1526,6 +1553,7 @@ class TelegramListener:
             edit event must not use up a budget that would then drop real
             text edits.
             """
+            self._last_update_at = datetime.now(UTC)
             # Check if edits are enabled
             if not self.config.listen_edits:
                 return
@@ -1685,6 +1713,7 @@ class TelegramListener:
             Rate-limited: if too many deletions occur in a short time,
             further deletions are blocked to protect the backup.
             """
+            self._last_update_at = datetime.now(UTC)
             # Check if deletions are enabled (DEFAULT: FALSE; opt-in mirror mode)
             if not self.config.listen_deletions:
                 if event.deleted_ids:
@@ -1692,6 +1721,8 @@ class TelegramListener:
                     logger.debug(f"⏭️ Deletion skipped (LISTEN_DELETIONS=false): {len(event.deleted_ids)} messages")
                 return
 
+            # Ids the rate limiter refused in this event, logged together below.
+            blocked_ids: list[int] = []
             try:
                 # Note: event.chat_id might be None for some deletion events
                 chat_id = event.chat_id
@@ -1722,6 +1753,7 @@ class TelegramListener:
                             allowed, reason = self._protector.check_operation(resolved, "deletion")
                             if not allowed:
                                 self.stats["operations_discarded"] += 1
+                                blocked_ids.append(msg_id)
                                 continue
 
                             await self._apply_message_deletion(resolved, msg_id)
@@ -1739,6 +1771,7 @@ class TelegramListener:
 
                     if not allowed:
                         self.stats["operations_discarded"] += 1
+                        blocked_ids.append(msg_id)
                         continue
 
                     # Apply the deletion immediately
@@ -1748,6 +1781,9 @@ class TelegramListener:
             except Exception as e:
                 self.stats["errors"] += 1
                 logger.error(f"Error processing deletion event: {e}", exc_info=True)
+            finally:
+                if blocked_ids:
+                    self._log_blocked_deletions(blocked_ids)
 
         async def on_new_message(event: events.NewMessage.Event, *, backfill: bool = False) -> bool:
             """
@@ -1768,6 +1804,7 @@ class TelegramListener:
             Returns True when the message row was written (Telethon ignores it;
             the edit handler counts with it).
             """
+            self._last_update_at = datetime.now(UTC)
             stored = False
             try:
                 chat_id = self._get_marked_id(event.chat_id)
@@ -1968,6 +2005,7 @@ class TelegramListener:
 
             Only active if LISTEN_CHAT_ACTIONS is enabled.
             """
+            self._last_update_at = datetime.now(UTC)
             if not self.config.listen_chat_actions:
                 return
 
@@ -2132,6 +2170,7 @@ class TelegramListener:
             This catches when messages are pinned or unpinned in real-time
             and updates the is_pinned field in the database.
             """
+            self._last_update_at = datetime.now(UTC)
             try:
                 # Get chat ID based on the update type
                 if isinstance(event, UpdatePinnedChannelMessages):
@@ -2188,6 +2227,7 @@ class TelegramListener:
             debounce buffer and reconcile the latest snapshot; the scheduled sweep
             remains the backstop. PII: never log chat/message/user ids or emoji.
             """
+            self._last_update_at = datetime.now(UTC)
             if not self.config.listen_reactions:
                 return
             try:
@@ -2228,6 +2268,7 @@ class TelegramListener:
             differs from the newest kept. A poll's closing reaches
             on_message_edited as well. PII: never log ids, questions or answers.
             """
+            self._last_update_at = datetime.now(UTC)
             if not self.config.listen_edits:
                 return
             try:
@@ -2284,17 +2325,43 @@ class TelegramListener:
         ``listener_active_since`` is cleared on a clean stop only, so without
         the stamp a killed container or a power cut read as a running listener.
         Owned by the listener, so the scheduler and the standalone mode both
-        keep it. One small write every 30 seconds, no content.
+        keep it. One small write every 30 seconds, no content, plus the
+        listener state of ``_write_listener_state`` when it changed.
         """
-        key = account_metadata_key("listener_heartbeat", self.account_id)
         while True:
+            await self._write_listener_state(heartbeat=True)
+            await asyncio.sleep(LISTENER_HEARTBEAT_SECONDS)
+
+    async def _write_listener_state(self, *, heartbeat: bool) -> None:
+        """Write the heartbeat and whatever listener state changed since the last write.
+
+        ``listener_last_update`` is when a handler last ran, ``listener_deletions_blocked``
+        how many deletions the rate limiter refused since this listener started,
+        and ``listener_last_rate_limit`` when it last tripped. status.py reads
+        them for ``telegram-archive status`` and ``GET /api/status``. A value is
+        written only when it changed, so an idle listener writes the heartbeat
+        alone, and a failed write is retried at the next beat.
+        """
+        values: dict[str, str] = {}
+        if self._last_update_at is not None:
+            values["listener_last_update"] = self._last_update_at.isoformat()
+        values["listener_deletions_blocked"] = str(self._protector.stats["operations_blocked"])
+        if self._protector.last_trip_at is not None:
+            values["listener_last_rate_limit"] = self._protector.last_trip_at.isoformat()
+        if heartbeat:
+            values["listener_heartbeat"] = datetime.now(UTC).isoformat()
+        for name, value in values.items():
+            if name != "listener_heartbeat" and self._written_state.get(name) == value:
+                continue
             try:
-                await asyncio.wait_for(self.db.set_metadata(key, datetime.now(UTC).isoformat()), timeout=10)
+                await asyncio.wait_for(
+                    self.db.set_metadata(account_metadata_key(name, self.account_id), value), timeout=10
+                )
+                self._written_state[name] = value
             except Exception as e:
                 # Debug only: a database outage already logs elsewhere, and this
                 # runs every 30 seconds.
-                logger.debug(f"Could not stamp the listener heartbeat: {type(e).__name__}")
-            await asyncio.sleep(LISTENER_HEARTBEAT_SECONDS)
+                logger.debug(f"Could not write the listener state: {type(e).__name__}")
 
     async def _fetch_new_custom_emoji(self) -> dict | None:
         """Fetch the files of custom emoji noted since the last run and never tried.
@@ -2358,6 +2425,10 @@ class TelegramListener:
             await self.db.set_metadata(
                 account_metadata_key("listener_active_since", self.account_id), datetime.now().isoformat()
             )
+            # The blocked-deletion count is per listener start; the heartbeat
+            # writes it again only when it changes.
+            await self.db.set_metadata(account_metadata_key("listener_deletions_blocked", self.account_id), "0")
+            self._written_state["listener_deletions_blocked"] = "0"
         except Exception as e:
             logger.warning(f"Could not write listener status to DB: {e}")
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -2383,6 +2454,8 @@ class TelegramListener:
                 except asyncio.CancelledError:
                     pass
                 self._heartbeat_task = None
+            # Keep the counts and the last update of the final seconds.
+            await self._write_listener_state(heartbeat=False)
             if self._custom_emoji_task:
                 self._custom_emoji_task.cancel()
                 try:
@@ -2514,7 +2587,7 @@ class TelegramListener:
             logger.info("")
             logger.info("   🛡️ Protection:")
             logger.info(f"      Rate limits triggered: {protector_stats['rate_limits_triggered']}")
-            logger.info(f"      Operations blocked: {protector_stats['operations_blocked']}")
+            logger.info(f"      Deletions blocked (not applied): {protector_stats['operations_blocked']}")
             logger.info(f"      Chats rate-limited: {protector_stats['chats_rate_limited']}")
 
             if self.stats["errors"]:

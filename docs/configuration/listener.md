@@ -136,7 +136,17 @@ Edits are not limited. An edit keeps the earlier text and its formatting as a ve
 
 Each chat has one sliding window, and only deletions count against it, so edits never use up the budget. With the defaults, the first 10 deletions inside 30 seconds are applied. The 11th goes over the limit. The listener then blocks that chat's deletions for one more window. Edits in that chat are still applied.
 
-The listener drops blocked deletions. It does not queue them, update the viewer or fire a webhook. It keeps every deletion it applied before the chat went over the limit. The counters live in memory and reset when the process restarts.
+The listener does not apply a blocked deletion: the message stays in the archive as it was, and the listener does not queue the deletion, update the viewer or fire a webhook. It keeps every deletion it applied before the chat went over the limit.
+
+Every deletion event that had deletions blocked logs one warning with their message ids (never the chat id), and says how to record them:
+
+```text
+🛡️ Rate limiter blocked 3 deletion(s), not applied, message ids: 5011, 5012, 5013. SYNC_DELETIONS_EDITS is off, so they stay unrecorded; enable it for a backup run to record them
+```
+
+The `SYNC_DELETIONS_EDITS` pass of the scheduled backup re-reads every archived message and records the deletions the listener blocked. With it off, nothing else records them.
+
+`telegram-archive status --json` and `GET /api/status` show, per account, `deletions_blocked`, the deletions blocked since the listener last started, and `last_rate_limit_at`, when the limiter last tripped. The count starts again at 0 each time the listener starts, a watchdog restart included; `last_rate_limit_at` is kept across restarts. The shutdown summary logs the same count as **Deletions blocked (not applied)**.
 
 The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the scheduled backup has no such limit.
 
@@ -151,6 +161,14 @@ The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the sch
 In the viewer, the sidebar header shows **Live**, with a green dot, under the archive's name while a listener is active. It stays **Live** while the full pass runs. Its tooltip gives the time of the last full pass. For the master login, the **Live sync** section of Archive status shows one row per account. See [Archive status](../viewer/using-the-viewer.md#archive-status).
 
 On the command line, `telegram-archive status` exits 1 when a configured account has no running listener while `ENABLE_LISTENER` is on. See [CLI](../reference/cli.md).
+
+A listener can be running and still receive nothing, for example when the account's session stopped getting updates. Each account's `last_update_at`, in `telegram-archive status --json` and `GET /api/status`, is when its listener last handled any Telegram update: a message, an edit, a deletion, a reaction, a pin or a chat action, in any chat, archived or not. It is written with the heartbeat, so it can be up to 30 seconds behind, and it is kept after the listener stops. To alert on it, compare it with the current time and pick a limit that fits how busy your chats are: an account in a few busy groups sees updates every few minutes, an account in quiet chats may see none for hours. For example, with `jq`:
+
+```bash
+telegram-archive status --json | jq -r '.listeners[] | select(.active) | "\(.account_id) \(.last_update_at)"'
+```
+
+Alert when the time printed for an account is older than your limit, or `null` while the listener has been active for longer than it.
 
 When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter. The edit counters are:
 

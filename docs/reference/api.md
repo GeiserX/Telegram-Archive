@@ -164,13 +164,32 @@ curl -s -b jar.txt http://localhost:8000/api/status
 {
   "backup": {"last_run": "2026-09-28T03:00:12", "in_progress": false},
   "stats_calculated_at": "2026-09-28T00:00:05",
-  "listeners": [{"account_id": 1, "active": true, "active_since": "2026-09-27T18:04:40"}],
+  "listeners": [
+    {
+      "account_id": 1,
+      "active": true,
+      "active_since": "2026-09-27T18:04:40",
+      "last_update_at": "2026-09-28T09:41:12.503118+00:00",
+      "deletions_blocked": 0,
+      "last_rate_limit_at": null
+    }
+  ],
   "media": {"downloaded": 1200, "pending": 3, "exhausted": 0, "skipped": 45},
   "database": {"backend": "postgresql", "size_bytes": 734003200}
 }
 ```
 
-`backend` is `sqlite` or `postgresql`. A monitoring script can alert when `backup.last_run` is too old, when a listener is not `active`, or when `media.exhausted` grows. A listener is `active` while the backup stamps its heartbeat, every 30 seconds, and for three minutes after the last stamp. `active_since` stays on a listener that is not active when it stopped without shutting down, as after a killed container; a clean stop clears it. `listener_active` in `/api/stats` follows the same rule.
+`backend` is `sqlite` or `postgresql`. A monitoring script can alert when `backup.last_run` is too old, when a listener is not `active`, or when `media.exhausted` grows. A listener is `active` while it stamps its heartbeat, every 30 seconds, and for three minutes after the last stamp. `active_since` stays on a listener that is not active when it stopped without shutting down, as after a killed container; a clean stop clears it. `listener_active` in `/api/stats` follows the same rule.
+
+Each listener row also carries:
+
+| Field | Value |
+|-------|-------|
+| `last_update_at` | When the listener last handled any Telegram update for the account, UTC. Written with the heartbeat, so up to 30 seconds behind, and kept after the listener stops. `null` until the listener has handled one. |
+| `deletions_blocked` | Deletions the [rate limiter](../configuration/listener.md#mass-operation-protection) refused since the listener last started. Starts again at 0 on every start, a watchdog restart included. `null` until a listener of this version has started. |
+| `last_rate_limit_at` | When the rate limiter last tripped for the account, UTC, kept across restarts. `null` if it never has. |
+
+An `active` listener whose `last_update_at` stops moving is connected but receiving nothing: alert when it is older than what your chats normally go without an update. A `deletions_blocked` above 0 means deletions were not recorded; the `SYNC_DELETIONS_EDITS` backup pass records them. See [Checking that it runs](../configuration/listener.md#checking-that-it-runs).
 
 ## Accounts, chats and folders
 
