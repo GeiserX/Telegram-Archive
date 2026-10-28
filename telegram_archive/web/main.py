@@ -62,6 +62,7 @@ from ..message_utils import (
     describe_exception,
     is_map_preview_name,
     media_display_filename,
+    parse_utc_timestamp,
     resolve_sender_display_name,
     utcnow_naive,
 )
@@ -5235,12 +5236,15 @@ async def export_chat(
     user: UserContext = Depends(require_auth),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
+    changed_since: str | None = Query(None),
 ):
     """Export chat history to JSON, optionally windowed by date.
 
     ``from`` is inclusive; ``to`` is inclusive of the named day when given as
     a bare date (internally an exclusive next-midnight bound) and exclusive
     when given as a full timestamp. Both accept ISO 8601, tz-aware or naive.
+    ``changed_since`` keeps only the messages whose archive record changed at
+    or after that instant (naive means UTC), each with its whole history.
     """
     if user.no_download:
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
@@ -5249,6 +5253,10 @@ async def export_chat(
     parsed_to = _parse_export_bound(to_date, "to", exclusive_end=True) if to_date else None
     if parsed_from and parsed_to and parsed_from >= parsed_to:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
+    try:
+        parsed_changed_since = parse_utc_timestamp(changed_since) if changed_since else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid changed_since timestamp. Use ISO 8601.") from None
 
     try:
         chat_row = await db.get_chat_by_id(chat.chat_id, account_id=chat.account_id)
@@ -5265,15 +5273,21 @@ async def export_chat(
         async def iter_json():
             yield "{\n"
             yield f'  "chat": {json.dumps(_export_chat_metadata(chat_row), ensure_ascii=False, default=str)},\n'
-            if parsed_from or parsed_to:
+            if parsed_from or parsed_to or parsed_changed_since:
                 # Record what this file contains — a windowed export must not
                 # masquerade as the full history.
                 window = {"from": from_date, "to": to_date}
+                if parsed_changed_since:
+                    window["changed_since"] = parsed_changed_since.isoformat()
                 yield f'  "filters": {json.dumps(window, ensure_ascii=False)},\n'
             yield '  "messages": [\n'
             first = True
             async for msg in db.get_messages_for_export(
-                chat.chat_id, account_id=chat.account_id, from_date=parsed_from, to_date=parsed_to
+                chat.chat_id,
+                account_id=chat.account_id,
+                from_date=parsed_from,
+                to_date=parsed_to,
+                changed_since=parsed_changed_since,
             ):
                 if not first:
                     yield ",\n"

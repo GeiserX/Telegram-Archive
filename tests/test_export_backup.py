@@ -94,13 +94,14 @@ async def test_export_to_json_writes_correct_structure():
             {"text": "helo", "date": "2024-01-01 00:00:00", "captured_at": "2024-01-01 00:05:00", "media": []}
         ]
         assert data["messages"][1]["versions"] == []
-        mock_db.get_messages_for_backup_export.assert_awaited_once_with(None, None, None)
+        mock_db.get_messages_for_backup_export.assert_awaited_once_with(None, None, None, changed_since=None)
         # 9.0 dropped the flat list: every version sits under its message.
         assert "message_versions" not in data
         assert len(data["chats"]) == 1
         assert data["filters"]["chat_id"] is None
         assert data["filters"]["start_date"] is None
         assert data["filters"]["end_date"] is None
+        assert data["filters"]["changed_since"] is None
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -120,7 +121,7 @@ async def test_export_to_json_with_date_filters():
         await exporter.export_to_json(output_file, chat_id=123, start_date="2024-01-01", end_date="2024-06-30")
 
         mock_db.get_messages_for_backup_export.assert_awaited_once_with(
-            123, datetime(2024, 1, 1), datetime(2024, 6, 30)
+            123, datetime(2024, 1, 1), datetime(2024, 6, 30), changed_since=None
         )
 
         with open(output_file, encoding="utf-8") as f:
@@ -295,7 +296,7 @@ async def test_async_main_export_command():
             result = await async_main()
 
         assert result == 0
-        mock_exporter.export_to_json.assert_awaited_once_with(output_file, 123, None, None)
+        mock_exporter.export_to_json.assert_awaited_once_with(output_file, 123, None, None, None)
         mock_exporter.close.assert_awaited_once()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

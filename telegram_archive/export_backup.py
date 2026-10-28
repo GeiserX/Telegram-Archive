@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .config import Config, setup_logging
 from .db import DatabaseAdapter, close_database, init_database
+from .message_utils import parse_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,12 @@ class BackupExporter:
         return cls(db)
 
     async def export_to_json(
-        self, output_file: str, chat_id: int | None = None, start_date: str | None = None, end_date: str | None = None
+        self,
+        output_file: str,
+        chat_id: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        changed_since: str | None = None,
     ):
         """
         Export messages to JSON file.
@@ -58,7 +64,15 @@ class BackupExporter:
             chat_id: Optional chat ID to filter by
             start_date: Optional start date (YYYY-MM-DD)
             end_date: Optional end date (YYYY-MM-DD)
+            changed_since: Optional ISO 8601 timestamp: only messages whose
+                archive record changed at or after it (UTC when it has no offset)
         """
+        # Parse before anything else, so a bad bound fails before the export starts.
+        try:
+            changed_since_dt = parse_utc_timestamp(changed_since) if changed_since else None
+        except ValueError:
+            raise ValueError(f"Invalid --changed-since timestamp: {changed_since!r}. Use ISO 8601.") from None
+
         logger.info("Starting export...")
 
         # Parse dates
@@ -71,7 +85,9 @@ class BackupExporter:
         # listed in the file. The account is part of each message: two
         # accounts' private chats with the same peer share the chat id and the
         # message ids, and are two conversations.
-        messages = await self.db.get_messages_for_backup_export(chat_id, start_dt, end_dt)
+        messages = await self.db.get_messages_for_backup_export(
+            chat_id, start_dt, end_dt, changed_since=changed_since_dt
+        )
 
         # Get chats
         chats = await self.db.get_all_chats()
@@ -80,7 +96,12 @@ class BackupExporter:
         # Build export data
         export_data = {
             "export_date": datetime.now(UTC).isoformat(),
-            "filters": {"chat_id": chat_id, "start_date": start_date, "end_date": end_date},
+            "filters": {
+                "chat_id": chat_id,
+                "start_date": start_date,
+                "end_date": end_date,
+                "changed_since": changed_since_dt.isoformat() if changed_since_dt else None,
+            },
             "statistics": {
                 "total_messages": len(messages),
                 "total_chats": len(chats_dict),
@@ -160,6 +181,11 @@ async def async_main():
     export_parser.add_argument("-c", "--chat-id", type=int, help="Filter by chat ID")
     export_parser.add_argument("-s", "--start-date", help="Start date (YYYY-MM-DD)")
     export_parser.add_argument("-e", "--end-date", help="End date (YYYY-MM-DD)")
+    export_parser.add_argument(
+        "--changed-since",
+        metavar="TIMESTAMP",
+        help="Only messages whose archive record changed at or after this ISO 8601 time (UTC without an offset)",
+    )
 
     # List chats command
     subparsers.add_parser("list-chats", help="List all backed up chats")
@@ -183,7 +209,9 @@ async def async_main():
 
         try:
             if args.command == "export":
-                await exporter.export_to_json(args.output, args.chat_id, args.start_date, args.end_date)
+                await exporter.export_to_json(
+                    args.output, args.chat_id, args.start_date, args.end_date, args.changed_since
+                )
             elif args.command == "list-chats":
                 await exporter.list_chats()
             elif args.command == "stats":

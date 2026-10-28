@@ -2706,6 +2706,50 @@ class DatabaseAdapter:
             conditions.append(Message.date <= end_date)
         return conditions
 
+    @staticmethod
+    def _changed_since_condition(since: datetime):
+        """Messages whose archive record changed at or after ``since`` (naive UTC).
+
+        A message counts as changed when the archive first stored it
+        (``created_at``), saw it deleted (``deleted_at``), or added a row to
+        its history: a text version (``message_versions.captured_at``), an
+        earlier media (``media_versions.captured_at``), a poll or preview
+        state (``message_snapshots.observed_at``) or a reaction state
+        (``reaction_history.observed_at``). Each history test is an EXISTS
+        on that table's per-message index. The subqueries read aliases, so
+        inside the export's own versions, media and reaction queries they
+        never correlate to the outer table, only to ``Message``.
+
+        ``since`` must be a datetime: SQLite stores these columns as text with
+        a space before the time, so a string bound with a ``T`` would compare
+        wrongly and miss rows. A bound datetime is written in the stored form.
+        """
+        if not isinstance(since, datetime):
+            raise TypeError("changed_since must be a datetime")
+
+        def history_since(model, column: str):
+            row = aliased(model)
+            return (
+                select(literal(1))
+                .where(
+                    row.account_id == Message.account_id,
+                    row.chat_id == Message.chat_id,
+                    row.message_id == Message.id,
+                    getattr(row, column) >= since,
+                )
+                .correlate(Message)
+                .exists()
+            )
+
+        return or_(
+            Message.created_at >= since,
+            Message.deleted_at >= since,
+            history_since(MessageVersion, "captured_at"),
+            history_since(MediaVersion, "captured_at"),
+            history_since(MessageSnapshot, "observed_at"),
+            history_since(ReactionHistory, "observed_at"),
+        )
+
     async def get_messages_for_backup_export(
         self,
         chat_id: int | None = None,
@@ -2713,6 +2757,7 @@ class DatabaseAdapter:
         end_date: datetime | None = None,
         *,
         account_id: int | None = None,
+        changed_since: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """What ``telegram-archive export`` writes, read from one snapshot.
 
@@ -2725,8 +2770,14 @@ class DatabaseAdapter:
         backup writing meanwhile cannot make a message, its versions, its
         media and its transcripts disagree: every transcript names a media
         listed in the same file.
+
+        ``changed_since`` (naive UTC) keeps only the messages whose archive
+        record changed at or after it (``_changed_since_condition``), on top
+        of the other filters. Each still carries its whole history.
         """
         conditions = self._date_range_conditions(chat_id, start_date, end_date, account_id)
+        if changed_since is not None:
+            conditions.append(self._changed_since_condition(changed_since))
         async with self.db_manager.async_session_factory() as session:
             await self._read_one_snapshot(session)
             transcripts: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
@@ -9055,12 +9106,15 @@ class DatabaseAdapter:
         account_id: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        changed_since: datetime | None = None,
     ):
         """Stream a chat's messages for the viewer's export (async generator).
 
         None account_id = unscoped until phase 4. ``from_date`` is a naive-UTC
         inclusive lower bound on Message.date, ``to_date`` an EXCLUSIVE upper
-        bound.
+        bound. ``changed_since`` (naive UTC) keeps only the messages whose
+        archive record changed at or after it (``_changed_since_condition``);
+        each still carries its whole history.
 
         Yields message dictionaries with sender info, deleted messages
         included and marked by ``is_deleted``/``deleted_at``. Each carries
@@ -9087,6 +9141,8 @@ class DatabaseAdapter:
             conditions.append(Message.date >= from_date)
         if to_date is not None:
             conditions.append(Message.date < to_date)
+        if changed_since is not None:
+            conditions.append(self._changed_since_condition(changed_since))
         stmt = (
             select(
                 Message.id,

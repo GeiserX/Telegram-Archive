@@ -25,6 +25,20 @@ def utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def parse_utc_timestamp(value: str) -> datetime:
+    """Parse an ISO 8601 timestamp to naive UTC, the form the archive stores.
+
+    Takes a ``T`` or a space before the time, ``Z`` or an offset, or neither,
+    in which case the time is already UTC. A bare date is its midnight. An
+    offset converts the instant to UTC; it is never dropped. Raises
+    ValueError for anything else.
+    """
+    parsed = datetime.fromisoformat(value.strip())
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
+
+
 def sender_display_name(sender: object | None) -> str | None:
     """Return a trimmed capture-time display name for a Telegram sender."""
     if sender is None:

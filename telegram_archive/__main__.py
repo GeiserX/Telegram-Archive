@@ -114,6 +114,11 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
     export_parser.add_argument("-c", "--chat-id", type=int, help="Filter by specific chat ID")
     export_parser.add_argument("-s", "--start-date", help="Start date (YYYY-MM-DD)")
     export_parser.add_argument("-e", "--end-date", help="End date (YYYY-MM-DD)")
+    export_parser.add_argument(
+        "--changed-since",
+        metavar="TIMESTAMP",
+        help="Only messages whose archive record changed at or after this ISO 8601 time (UTC without an offset)",
+    )
 
     # Stats command
     stats_parser = subparsers.add_parser(
@@ -331,7 +336,7 @@ async def run_export(args) -> int:
 
         exporter = await BackupExporter.create(config)
         try:
-            await exporter.export_to_json(args.output, args.chat_id, args.start_date, args.end_date)
+            await exporter.export_to_json(args.output, args.chat_id, args.start_date, args.end_date, args.changed_since)
         finally:
             await exporter.close()
         return 0

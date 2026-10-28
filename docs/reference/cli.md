@@ -107,6 +107,7 @@ On success it prints `Database schema is up to date.` and exits 0. On failure it
 
 ```text
 telegram-archive [--data-dir PATH] export -o FILE [-c CHAT_ID] [-s YYYY-MM-DD] [-e YYYY-MM-DD]
+                                   [--changed-since TIMESTAMP]
 ```
 
 | Short | Long | Argument | Required | Meaning |
@@ -115,6 +116,7 @@ telegram-archive [--data-dir PATH] export -o FILE [-c CHAT_ID] [-s YYYY-MM-DD] [
 | `-c` | `--chat-id` | `CHAT_ID` | no | Export only this chat's messages. |
 | `-s` | `--start-date` | `YYYY-MM-DD` | no | Keep messages dated on or after midnight UTC of this day. |
 | `-e` | `--end-date` | `YYYY-MM-DD` | no | Keep messages dated on or before midnight UTC of this day. |
+| | `--changed-since` | `TIMESTAMP` | no | Keep only messages whose archive record changed at or after this time. See [Exporting only what changed](#export-changed-since). |
 
 Writes messages from the archive to one JSON file. It lists each message's media but exports no media files and no file paths. For a full copy of the archive, see [Backing up the archive](../operations/backup-and-restore.md).
 
@@ -126,7 +128,7 @@ The command writes the file with an indent of 2 and keeps non-ASCII text as UTF-
 | Key | Content |
 |-----|---------|
 | `export_date` | The time of the export, UTC, ISO 8601. |
-| `filters` | `chat_id`, `start_date` and `end_date` as given, or `null`. |
+| `filters` | `chat_id`, `start_date` and `end_date` as given, or `null`, and `changed_since` as the UTC time it was read as (ISO 8601, no offset), or `null`. |
 | `statistics` | `total_messages`, `total_chats`, `total_message_versions` (the entries of every message's `versions`) `total_transcripts` and `total_message_snapshots` (the entries of every message's `snapshots`). |
 | `chats` | Every chat in the archive, even with `-c`. |
 | `messages` | The selected messages, ordered by date, oldest first. |
@@ -136,6 +138,38 @@ Before 9.0 the file also held a flat `message_versions` list, and `total_message
 Each message has `id`, `chat_id`, `sender_id`, `sender_name`, `date`, `text`, `reply_to_msg_id`, `reply_to_top_id`, `reply_to_text`, `forward_from_id`, `edit_date`, `edit_hide`, `raw_data`, `created_at`, `is_outgoing`, `is_pinned`, `is_deleted`, `deleted_at`, `account_id`, `media`, `versions`, `reaction_history` and `snapshots`. Messages deleted in soft mode are included, with `is_deleted` set to 1 and `deleted_at` set to when the archive noticed the deletion. `media` lists the message's current media and `versions` every earlier version the archive kept of it, oldest first, whatever its date. Both have the fields of the viewer's [Export](api.md#export): each version has `text`, `date` (when that text was current in Telegram), `captured_at` (when the archive saw it replaced), `source`, `entities` and `rich_message` as in [Message versions](api.md#message-versions), and `media`, the earlier media it was shown with, and `media_only` on an entry that holds earlier media and no text. The dates are written in the same format as the message's own dates. `reaction_history` lists every state of the message's reactions the archive kept, oldest first: `emoji`, `count` (0 when taken back), `previous_count`, `observed_at` and `source`, as in [the messages list](api.md#messages). `snapshots` lists every later state of the message's poll or link preview the archive kept, oldest first: `kind` (`poll` or `preview`), `payload` (the whole state, in the shape of `raw_data.poll` or `raw_data.webpage`), `observed_at` and `source` (`listener`, `sync` or `backup`). `raw_data` keeps the first capture. See [Poll and link preview snapshots](api.md#poll-and-link-preview-snapshots). Every transcript in the file names a media listed on its message or under one of its versions. Everything is read from one snapshot of the archive, so a backup running meanwhile cannot make a message disagree with its versions, its media or its transcripts. `edit_hide` is 1 when Telegram says the edit at `edit_date` is not to be shown, as it does when only the reactions changed: such a message was not edited unless `versions` holds an earlier text of it. It is null when the source did not report the flag: a message archived before the archive kept it, or one from a Telegram export import. A null flag counts as shown. A message with voice or media transcripts also has a `transcripts` list.
 
 It exits 0 on success. On any failure, a date in the wrong format included, it prints `Export failed: <error>` on stderr and exits 1.
+
+### Exporting only what changed { #export-changed-since }
+
+`-s` and `-e` select by the date Telegram gave the message. An old message that was edited, deleted or reacted to last night keeps its old date, so a date window never picks it up again. `--changed-since` selects by what the archive did instead. It keeps a message when, at or after the given time, the archive:
+
+- stored the message for the first time (`created_at`),
+- saw it deleted in Telegram (`deleted_at`),
+- kept an earlier text of it (`versions[].captured_at`),
+- kept an earlier media of it, replaced by an edit (`media_versions.captured_at`),
+- kept a later state of its poll or link preview (`snapshots[].observed_at`), or
+- kept a new state of its reactions (`reaction_history[].observed_at`).
+
+Each kept message is written with its whole history, as without the flag: versions, reaction states and snapshots from before the given time stay in it. The flag narrows `-c`, `-s` and `-e`; it never widens them. It works the same on SQLite and PostgreSQL.
+
+The time is ISO 8601. A `T` or a space can separate the date and the time. `Z` or an offset such as `+02:00` is converted to UTC; a time with neither is read as UTC. A bare date means its midnight UTC. Anything else fails the export with `Export failed: Invalid --changed-since timestamp`.
+
+To export on a schedule and miss nothing:
+
+1. Note the time, in UTC, just before each run starts, and keep it with the file.
+2. Start the next run from that time minus a few seconds: `--changed-since 2026-06-01T03:59:55Z` for a run that started at 04:00:00. A change written while the previous run was reading then lands in both files rather than in neither.
+3. When you merge the files, treat `account_id`, `chat_id` and `id` together as the key of a message, and keep the copy from the newest file. The overlap and a message changed twice both give you the same message in more than one file.
+
+The first run exports without the flag. Each later run, with GNU `date`:
+
+```bash
+# This run's start time, minus a 10-second overlap.
+next=$(date -u -d '10 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+telegram-archive export -o "changes-$next.json" --changed-since "$(cat last-export-start)" \
+  && echo "$next" > last-export-start
+```
+
+The stored time only moves when the export succeeds, so a failed run is covered by the next one.
 
 ## stats { #stats }
 
