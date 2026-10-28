@@ -439,7 +439,7 @@ const FEED_AT_FETCH = []
 const fetch = async (url) => {
     FEED_AT_FETCH.push({ cards: changesFeed.value.length, next: changesNextBefore.value })
     URLS.push(url)
-    return { ok: true, status: 200, json: async () => ({ changes: [], next_before: null }) }
+    return { ok: true, status: 200, json: async () => ({ changes: [], next_cursor: null, next_before: null }) }
 }
 globalThis.HTMLElement = class {}
 const document = { activeElement: null, addEventListener: () => {}, removeEventListener: () => {} }

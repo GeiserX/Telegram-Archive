@@ -3911,14 +3911,18 @@ async def get_recent_changes(
     user: UserContext = Depends(require_auth),
     since: str | None = Query(None),
     before: str | None = Query(None),
+    cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     chat_ref: str | None = Query(None),
     reactions: bool = Query(False),
 ):
     """What changed: deletions, edits, transcripts and reactions taken back, newest first.
 
-    ``since`` bounds the window's start (inclusive); ``before`` is the keyset
-    cursor — pass the last row's ``date`` to page older. Entitlements are the
+    ``since`` bounds the window's start (inclusive). ``cursor`` pages older:
+    pass the response's ``next_cursor`` back and the next page starts right
+    after the last row, so a walk lists every row once. ``before`` is the
+    older date-only bound (``next_before`` is still sent for it), which skips
+    rows sharing the date it names. Entitlements are the
     chat list's own compiled scope, so a restricted viewer sees only their
     chats' changes.
 
@@ -3932,11 +3936,17 @@ async def get_recent_changes(
     """
     parsed_since = _parse_changes_bound(since, "since") if since else None
     parsed_before = _parse_changes_bound(before, "before") if before else None
+    if cursor is not None:
+        try:
+            await db.decode_changes_cursor(cursor)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid cursor. Pass next_cursor back as it came.") from None
     chat = await _resolve_chat_ref(chat_ref, user) if chat_ref is not None else None
     try:
         changes = await db.get_recent_changes(
             since=parsed_since,
             before=parsed_before,
+            cursor=cursor,
             limit=limit,
             scope=_chat_scope(user),
             with_transcripts=not user.no_download,
@@ -3944,9 +3954,13 @@ async def get_recent_changes(
             chat_id=chat.chat_id if chat else None,
             account_id=chat.account_id if chat else None,
         )
-        next_cursor = changes[-1]["date"] if len(changes) == limit else None
+        full_page = len(changes) == limit
         return JSONResponse(
-            {"changes": changes, "next_before": next_cursor},
+            {
+                "changes": changes,
+                "next_cursor": changes[-1]["cursor"] if full_page else None,
+                "next_before": changes[-1]["date"] if full_page else None,
+            },
             headers={"Cache-Control": "private, no-store"},
         )
     except HTTPException:

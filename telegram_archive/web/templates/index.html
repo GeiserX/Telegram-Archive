@@ -11774,7 +11774,8 @@
                         const params = new URLSearchParams({ limit: '50' })
                         const since = changesSinceIso()
                         if (since) params.set('since', since)
-                        if (before) params.set('before', before)
+                        // The row cursor, so rows sharing the last one's date are not skipped.
+                        if (before) params.set('cursor', before)
                         if (changesChat.value) params.set('chat_ref', changesChat.value.ref)
                         // Only the server knows the reactions taken back; it sends
                         // them when the kind is ticked.
@@ -11790,7 +11791,7 @@
                         if (seq !== changesRequestSeq) return
                         if (before) changesFeed.value.push(...data.changes)
                         else changesFeed.value = data.changes
-                        changesNextBefore.value = data.next_before
+                        changesNextBefore.value = data.next_cursor
                         if (before) changesEmptyPages.value = shownChangeCount() > shownBefore ? 0 : changesEmptyPages.value + 1
                         // One chat's newest entry says nothing about the others, so
                         // only the feed of every chat marks the changes seen.

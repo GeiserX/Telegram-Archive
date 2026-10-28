@@ -330,7 +330,7 @@ All of these need any login. Results cover only chats the caller can see.
 |-----------------|-----------|----------|
 | `GET /api/search/messages` | `q` required, 1 to 500 characters. `limit` default 20, up to 100. `offset` up to 5000. | `{query, limit, offset, has_more, indexed, results}` |
 | `GET /api/tags/{tag}` | `scope` is `chat`, `mine` or `all`, default `all`. `chat_ref`, required with `scope=chat`. `limit` default 50, up to 200. `offset`. | `{tag, results, has_more, truncated}` |
-| `GET /api/changes` | `since` ISO, inclusive. `before` ISO cursor, exclusive. `limit` default 50, up to 200. `chat_ref` for one chat. `reactions=true` adds reactions taken back. | `{changes, next_before}` |
+| `GET /api/changes` | `since` ISO, inclusive. `cursor` from `next_cursor`, to page older. `before` ISO, exclusive (older date-only bound). `limit` default 50, up to 200. `chat_ref` for one chat. `reactions=true` adds reactions taken back. | `{changes, next_cursor, next_before}` |
 
 `/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum` and `avatar_url`.
 
@@ -340,7 +340,7 @@ All of these need any login. Results cover only chats the caller can see.
 curl -s -b jar.txt 'http://localhost:8000/api/tags/%23holiday?scope=all&limit=50'
 ```
 
-`/api/changes` lists deletions, edits and new transcripts, newest first, and with `reactions=true` the reactions taken back. Each change has `kind`, `date`, `chat` with `ref`, `title` and `type`, `message_id` and `sender_name`, plus:
+`/api/changes` lists deletions, edits and new transcripts, newest first, and with `reactions=true` the reactions taken back. Each change has `kind`, `date`, `cursor`, `chat` with `ref`, `title` and `type`, `message_id` and `sender_name`, plus:
 
 | `kind` | Extra fields |
 |--------|-------------|
@@ -353,7 +353,13 @@ A `reaction` row is one drop the archive kept in the reaction history: a count b
 
 `chat_ref` narrows the feed to one chat. For a channel or group that several accounts hold, that is every copy the caller may see, and each change is listed once under the copy the feed for every chat lists it under, so a row's `chat.ref` can name another account's copy of the same chat. A private chat narrows to the copy that ref names, since each account's private chat with one person is a different conversation. A chat the caller cannot see answers 404, the same as an unknown ref. Paging works the same way.
 
-Hard deletions never appear, and no-download logins get no transcript rows. The response is sent with `Cache-Control: private, no-store`. To walk the feed, pass `next_before` from each answer as `before` on the next request until it comes back empty. To poll for new changes, pass the time of your last poll as `since`:
+Hard deletions never appear, and no-download logins get no transcript rows. The response is sent with `Cache-Control: private, no-store`.
+
+To walk the feed, pass `next_cursor` from each answer as `cursor` on the next request, keeping the other parameters, until `next_cursor` comes back `null`. The walk is lossless: every change in the window is listed exactly once, however many share one timestamp and whatever the page size. Changes are ordered by `date`, newest first, then by kind (`deleted`, `edited`, `transcript`, `reaction`), then by the row's own keys, and the cursor names the place of one row in that order, so the next page starts right after it. Each row's `cursor` works the same way, if you stop partway and resume from a row you kept. It is opaque: sealed with a key the archive keeps in its database, so it names no chat id, cannot be edited, and still works after a restart. A malformed or edited cursor answers 400.
+
+`before` still works for clients written before `cursor`: it is an exclusive date bound, and `next_before` is the last row's `date`. Paging with it skips the changes that share that exact date, so a burst of deletions stored at one instant can lose rows at a page boundary. Use `cursor` for anything that has to be complete, such as keeping evidence.
+
+To poll for new changes, pass the time of your last poll as `since`:
 
 ```bash
 curl -s -b jar.txt 'http://localhost:8000/api/changes?since=2026-09-28T00:00:00Z&limit=200'
