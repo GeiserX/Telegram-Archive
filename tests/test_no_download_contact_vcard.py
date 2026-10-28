@@ -111,7 +111,7 @@ async def test_the_chat_export_stays_refused_to_a_no_download_login(main_mod, re
     user = main_mod.UserContext(username="viewer", role="viewer", no_download=True)
 
     with pytest.raises(main_mod.HTTPException) as exc:
-        await main_mod.export_chat(chat=_chat(main_mod), user=user, from_date=None, to_date=None)
+        await main_mod.export_chat(chat=_chat(main_mod), user=user, from_date=None, to_date=None, changed_since=None)
     assert exc.value.status_code == 403
 
 
