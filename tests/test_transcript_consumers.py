@@ -335,7 +335,34 @@ class TestExports:
         with patch.object(real_adapter, "_read_export_transcripts", wraps=read) as spy:
             exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, **window)]
         assert [(m["id"], [r["text"] for r in m["transcripts"]]) for m in exported] == [(1, ["inside the window"])]
-        assert spy.await_args.kwargs == {"account_id": 1, **window}
+        assert spy.await_args.kwargs == {"account_id": 1, **window, "changed_since": None}
+
+    async def test_an_incremental_export_reads_only_the_rows_of_the_changed_messages(self, real_adapter):
+        await _voice(real_adapter, 1, "stored after the bound")
+        await _voice(real_adapter, 2, "stored before the bound")
+        since = datetime(2026, 1, 1)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            from telegram_archive.db.models import Message
+
+            await session.execute(update(Message).where(Message.id == 2).values(created_at=since - timedelta(days=1)))
+            await session.commit()
+
+        rows = await real_adapter.get_transcripts_for_export(CHAT, account_id=1, changed_since=since)
+        assert [row["text"] for row in rows] == ["stored after the bound"]
+        # Without the bound both are read, as before.
+        rows = await real_adapter.get_transcripts_for_export(CHAT, account_id=1)
+        assert sorted(row["text"] for row in rows) == ["stored after the bound", "stored before the bound"]
+
+        read = real_adapter._read_export_transcripts
+        with patch.object(real_adapter, "_read_export_transcripts", wraps=read) as spy:
+            exported = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, changed_since=since)]
+        assert [(m["id"], [r["text"] for r in m["transcripts"]]) for m in exported] == [(1, ["stored after the bound"])]
+        assert spy.await_args.kwargs["changed_since"] == since
+
+        with patch.object(real_adapter, "_read_export_transcripts", wraps=read) as spy:
+            messages = await real_adapter.get_messages_for_backup_export(CHAT, account_id=1, changed_since=since)
+        assert [(m["id"], [r["text"] for r in m["transcripts"]]) for m in messages] == [(1, ["stored after the bound"])]
+        assert spy.await_args.kwargs["changed_since"] == since
 
     async def test_the_cli_export_attaches_rows_from_the_database(self, real_adapter, tmp_path):
         await _voice(real_adapter, 1, "cli words")

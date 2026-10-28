@@ -2781,7 +2781,9 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             await self._read_one_snapshot(session)
             transcripts: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-            for row in await self._read_export_transcripts(session, chat_id, account_id=account_id):
+            for row in await self._read_export_transcripts(
+                session, chat_id, account_id=account_id, changed_since=changed_since
+            ):
                 transcripts.setdefault((row["account_id"], row["chat_id"], row["message_id"]), []).append(row)
             result = await session.stream(select(Message).where(*conditions).order_by(*EXPORT_MESSAGE_ORDER))
             messages = []
@@ -9170,7 +9172,12 @@ class DatabaseAdapter:
             await self._read_one_snapshot(session)
             transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
             for row in await self._read_export_transcripts(
-                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+                session,
+                chat_id,
+                account_id=account_id,
+                from_date=from_date,
+                to_date=to_date,
+                changed_since=changed_since,
             ):
                 transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
             result = await session.stream(stmt)
@@ -10383,6 +10390,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        changed_since: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Every transcript row with the ``chat_id`` and ``message_id`` its media belongs to.
 
@@ -10394,10 +10402,18 @@ class DatabaseAdapter:
         ``from_date`` (inclusive) and ``to_date`` (exclusive) bound the date
         of the message, as ``get_messages_for_export`` does, so a windowed
         export reads only the rows of the messages it exports.
+        ``changed_since`` keeps only the messages ``_changed_since_condition``
+        selects, so an incremental export reads only the rows of the messages
+        that changed.
         """
         async with self.db_manager.async_session_factory() as session:
             return await self._read_export_transcripts(
-                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+                session,
+                chat_id,
+                account_id=account_id,
+                from_date=from_date,
+                to_date=to_date,
+                changed_since=changed_since,
             )
 
     async def _read_export_transcripts(
@@ -10408,6 +10424,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        changed_since: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """``get_transcripts_for_export`` in a session the caller holds.
 
@@ -10430,7 +10447,7 @@ class DatabaseAdapter:
             stmt = stmt.where(owners.c.chat_id == chat_id)
         if account_id is not None:
             stmt = stmt.where(MediaTranscript.account_id == account_id)
-        if from_date is not None or to_date is not None:
+        if from_date is not None or to_date is not None or changed_since is not None:
             stmt = stmt.join(
                 Message,
                 and_(
@@ -10443,6 +10460,8 @@ class DatabaseAdapter:
                 stmt = stmt.where(Message.date >= from_date)
             if to_date is not None:
                 stmt = stmt.where(Message.date < to_date)
+            if changed_since is not None:
+                stmt = stmt.where(self._changed_since_condition(changed_since))
         rows = []
         for transcript, media_chat_id, message_id in await session.execute(stmt):
             row = self._transcript_to_dict(transcript)

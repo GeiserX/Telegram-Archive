@@ -279,7 +279,7 @@ class TestQueryPlan:
             await real_adapter.get_messages_for_backup_export(changed_since=SINCE)
         finally:
             event.remove(engine, "before_cursor_execute", capture)
-        assert len(captured) == 6  # the messages and the five history walks
+        assert len(captured) == 7  # the messages, the five history walks and the transcripts
 
         scans = []
         async with real_adapter.db_manager.engine.connect() as conn:
