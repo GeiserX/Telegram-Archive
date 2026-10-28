@@ -180,11 +180,12 @@ def decode_changes_cursor(cursor: str) -> tuple[datetime, str, tuple[int, ...]]:
         date = datetime.fromisoformat(date_text)
     except (ValueError, TypeError) as e:
         raise ValueError("not a changes cursor") from e
-    if kind not in CHANGE_KIND_KEY_COUNT:
+    if not isinstance(date_text, str) or not isinstance(kind, str) or kind not in CHANGE_KIND_KEY_COUNT:
         raise ValueError("not a changes cursor")
     if not isinstance(keys, list) or len(keys) != CHANGE_KIND_KEY_COUNT[kind]:
         raise ValueError("not a changes cursor")
-    if not all(isinstance(k, int) and not isinstance(k, bool) for k in keys):
+    # Every key is a 64-bit integer column; a larger one would overflow in the driver.
+    if not all(isinstance(k, int) and not isinstance(k, bool) and -(2**63) <= k < 2**63 for k in keys):
         raise ValueError("not a changes cursor")
     if date.tzinfo:
         date = date.astimezone(UTC).replace(tzinfo=None)
@@ -210,7 +211,9 @@ def _changes_after_cursor(kind: str, date_col, key_cols: Sequence, cursor: tuple
             for i in range(len(key_cols))
         )
     )
-    return or_(date_col < cursor_date, and_(date_col == cursor_date, keys_below))
+    # The leading ``date <= cursor`` is redundant, but it is a plain range bound
+    # an index on the date can seek on; PostgreSQL does not take one out of an OR.
+    return and_(date_col <= cursor_date, or_(date_col < cursor_date, and_(date_col == cursor_date, keys_below)))
 
 
 # The messages page returns at most this many of a message's newest reaction
