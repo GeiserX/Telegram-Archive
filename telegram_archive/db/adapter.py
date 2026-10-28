@@ -2706,8 +2706,7 @@ class DatabaseAdapter:
             conditions.append(Message.date <= end_date)
         return conditions
 
-    @staticmethod
-    def _changed_since_condition(since: datetime):
+    def _changed_since_condition(self, since: datetime):
         """Messages whose archive record changed at or after ``since`` (naive UTC).
 
         A message counts as changed when the archive first stored it
@@ -2715,10 +2714,17 @@ class DatabaseAdapter:
         its history: a text version (``message_versions.captured_at``), an
         earlier media (``media_versions.captured_at``), a poll or preview
         state (``message_snapshots.observed_at``) or a reaction state
-        (``reaction_history.observed_at``). Each history test is an EXISTS
-        on that table's per-message index. The subqueries read aliases, so
-        inside the export's own versions, media and reaction queries they
-        never correlate to the outer table, only to ``Message``.
+        (``reaction_history.observed_at``).
+
+        Each of the six is a select of message keys, a range scan on that
+        timestamp's own index (042), so the cost follows how much changed, not
+        how big the archive is. The message key must be in one of them.
+        PostgreSQL gets one IN over their UNION ALL, which it turns into a
+        semi-join driven by the keys. SQLite cannot drive a lookup from a
+        compound IN and would test every message; given one IN per select,
+        joined by OR, it looks each key up by primary key instead. Every
+        select reads an alias, so inside the export's media, versions and
+        reaction queries it never correlates to the outer table.
 
         ``since`` must be a datetime: SQLite stores these columns as text with
         a space before the time, so a string bound with a ``T`` would compare
@@ -2727,28 +2733,22 @@ class DatabaseAdapter:
         if not isinstance(since, datetime):
             raise TypeError("changed_since must be a datetime")
 
-        def history_since(model, column: str):
+        def keys_of(model, id_column: str, column: str):
             row = aliased(model)
-            return (
-                select(literal(1))
-                .where(
-                    row.account_id == Message.account_id,
-                    row.chat_id == Message.chat_id,
-                    row.message_id == Message.id,
-                    getattr(row, column) >= since,
-                )
-                .correlate(Message)
-                .exists()
-            )
+            return select(row.account_id, row.chat_id, getattr(row, id_column)).where(getattr(row, column) >= since)
 
-        return or_(
-            Message.created_at >= since,
-            Message.deleted_at >= since,
-            history_since(MessageVersion, "captured_at"),
-            history_since(MediaVersion, "captured_at"),
-            history_since(MessageSnapshot, "observed_at"),
-            history_since(ReactionHistory, "observed_at"),
+        changed = (
+            keys_of(Message, "id", "created_at"),
+            keys_of(Message, "id", "deleted_at"),
+            keys_of(MessageVersion, "message_id", "captured_at"),
+            keys_of(MediaVersion, "message_id", "captured_at"),
+            keys_of(MessageSnapshot, "message_id", "observed_at"),
+            keys_of(ReactionHistory, "message_id", "observed_at"),
         )
+        key = tuple_(Message.account_id, Message.chat_id, Message.id)
+        if self._is_sqlite:
+            return or_(*(key.in_(keys) for keys in changed))
+        return key.in_(union_all(*changed))
 
     async def get_messages_for_backup_export(
         self,

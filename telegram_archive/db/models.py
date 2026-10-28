@@ -232,6 +232,10 @@ class Message(Base):
         Index("idx_messages_reply_to", "chat_id", "reply_to_msg_id"),
         # v6.2.0: Index for topic message lookups in forum chats
         Index("idx_messages_topic", "chat_id", "account_id", "reply_to_top_id", "date"),
+        # 042: ``export --changed-since`` seeks the messages stored or deleted
+        # at or after a time (``_changed_since_condition``).
+        Index("idx_messages_created_at", "created_at"),
+        Index("idx_messages_deleted_at", "deleted_at"),
         # PostgreSQL-only (#295-perf): the viewer's text search is
         # Message.text.ilike('%term%') - a leading wildcard, which a B-tree
         # can't serve at all, so every search was a full sequential scan
@@ -328,6 +332,8 @@ class MessageVersion(Base):
         UniqueConstraint("account_id", "change_hash", name="uq_message_versions_change_hash"),
         Index("idx_message_versions_message_date", "chat_id", "message_id", "date"),
         Index("idx_message_versions_message_captured", "chat_id", "message_id", "captured_at"),
+        # 042: ``export --changed-since`` seeks the versions kept at or after a time.
+        Index("idx_message_versions_captured_at", "captured_at"),
     )
 
 
@@ -590,6 +596,8 @@ class MediaVersion(Base):
         # media row, and the next id minted for the message is new.
         UniqueConstraint("account_id", "media_id", name="uq_media_versions_media_id"),
         Index("ix_media_versions_message", "account_id", "chat_id", "message_id"),
+        # 042: ``export --changed-since`` seeks the media replaced at or after a time.
+        Index("ix_media_versions_captured_at", "captured_at"),
     )
 
 
@@ -629,6 +637,8 @@ class MessageSnapshot(Base):
             ondelete="CASCADE",
         ),
         Index("ix_message_snapshots_message", "account_id", "chat_id", "message_id"),
+        # 042: ``export --changed-since`` seeks the states observed at or after a time.
+        Index("ix_message_snapshots_observed_at", "observed_at"),
     )
 
 
@@ -730,6 +740,8 @@ class ReactionHistory(Base):
             ondelete="CASCADE",
         ),
         Index("ix_reaction_history_message", "account_id", "chat_id", "message_id"),
+        # 042: ``export --changed-since`` seeks the states observed at or after a time.
+        Index("ix_reaction_history_observed_at", "observed_at"),
         # What changed lists drops newest first; the partial index holds only
         # them, so the feed never walks the far more common increases.
         Index(
