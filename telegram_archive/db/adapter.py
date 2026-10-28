@@ -6,6 +6,7 @@ This is a drop-in replacement for the old Database class.
 """
 
 import asyncio
+import base64
 import glob
 import hashlib
 import json
@@ -17,7 +18,7 @@ import shutil
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any
 
@@ -155,6 +156,62 @@ class _ExportWalk:
 # same emoji going from the same count to the same count is one event in What
 # changed; further apart, it is two.
 REACTION_EVENT_TOLERANCE_SECONDS = 900
+
+# What changed pages through one total order: the row's date, newest first;
+# at one date the kinds in this order; then each kind's own row keys, highest
+# first. The cursor names the last row of a page in that order, so the next
+# page starts right after it and a row sharing its date is never skipped.
+CHANGE_KIND_ORDER = ("deleted", "edited", "transcript", "reaction")
+# How many integer keys each kind's rows carry in the cursor.
+CHANGE_KIND_KEY_COUNT = {"deleted": 3, "edited": 1, "transcript": 3, "reaction": 1}
+
+
+def encode_changes_cursor(date: datetime, kind: str, keys: Sequence[int]) -> str:
+    """The opaque ``cursor`` of one What changed row."""
+    payload = json.dumps([date.isoformat(timespec="microseconds"), kind, [int(k) for k in keys]])
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def decode_changes_cursor(cursor: str) -> tuple[datetime, str, tuple[int, ...]]:
+    """(date as naive UTC, kind, keys) from a ``cursor``. ValueError when it is not one."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        date_text, kind, keys = json.loads(raw)
+        date = datetime.fromisoformat(date_text)
+    except (ValueError, TypeError) as e:
+        raise ValueError("not a changes cursor") from e
+    if kind not in CHANGE_KIND_KEY_COUNT:
+        raise ValueError("not a changes cursor")
+    if not isinstance(keys, list) or len(keys) != CHANGE_KIND_KEY_COUNT[kind]:
+        raise ValueError("not a changes cursor")
+    if not all(isinstance(k, int) and not isinstance(k, bool) for k in keys):
+        raise ValueError("not a changes cursor")
+    if date.tzinfo:
+        date = date.astimezone(UTC).replace(tzinfo=None)
+    return date, kind, tuple(keys)
+
+
+def _changes_after_cursor(kind: str, date_col, key_cols: Sequence, cursor: tuple[datetime, str, tuple[int, ...]]):
+    """The rows of ``kind`` that come after ``cursor`` in the feed's order."""
+    cursor_date, cursor_kind, cursor_keys = cursor
+    rank = CHANGE_KIND_ORDER.index(kind)
+    cursor_rank = CHANGE_KIND_ORDER.index(cursor_kind)
+    if rank < cursor_rank:
+        # This kind's rows at the cursor's date came before it.
+        return date_col < cursor_date
+    if rank > cursor_rank:
+        # This kind's rows at the cursor's date come after it.
+        return date_col <= cursor_date
+    # Same kind: at the cursor's date, the keys below the cursor's, compared
+    # column by column (written out, so both dialects read it the same way).
+    keys_below = or_(
+        *(
+            and_(*(key_cols[j] == cursor_keys[j] for j in range(i)), key_cols[i] < cursor_keys[i])
+            for i in range(len(key_cols))
+        )
+    )
+    return or_(date_col < cursor_date, and_(date_col == cursor_date, keys_below))
+
 
 # The messages page returns at most this many of a message's newest reaction
 # states, plus, for each emoji, the states the viewer reads: its newest state,
@@ -3987,6 +4044,7 @@ class DatabaseAdapter:
         *,
         since: datetime | None = None,
         before: datetime | None = None,
+        cursor: str | None = None,
         limit: int = 50,
         scope: ChatScope | None = None,
         with_transcripts: bool = True,
@@ -4016,10 +4074,16 @@ class DatabaseAdapter:
           than the rest, and the viewer asks for them only when the reader
           ticks the kind.
 
-        Newest first. ``before`` is an exclusive keyset cursor over the
-        per-row date: pass the last row's ``date`` back to page. Rows sharing
-        that exact microsecond with the cursor are skipped — this is a review
-        feed, not an export, and the export path is the lossless one.
+        Newest first, in one total order: the date, then the kind
+        (``CHANGE_KIND_ORDER``), then the row's own keys. Every row carries a
+        ``cursor`` naming its place in that order; pass the last row's back as
+        ``cursor`` and the next page starts right after it, so a walk lists
+        every row once even when many share one date. Each kind is read with
+        that condition and the limit, then the kinds are merged and cut to the
+        limit, which is exact: no row of the cut page can sit below another
+        kind's ``limit`` rows. ``before`` is the older, date-only bound: an
+        exclusive date window, kept for clients that still send it, which
+        skips the rows sharing the date it names.
         Entitlements ride ``scope.sql_predicates()`` against the joined chat
         row, the same compiled rules as the chat list — a restricted viewer's
         feed touches only their rows. Hard deletions cannot appear: their
@@ -4049,6 +4113,9 @@ class DatabaseAdapter:
                 select(
                     Message.id.label("message_id"),
                     Message.deleted_at.label("date"),
+                    Message.account_id.label("k0"),
+                    Message.chat_id.label("k1"),
+                    Message.id.label("k2"),
                     Message.text,
                     Message.sender_name,
                     Chat.ref,
@@ -4065,6 +4132,7 @@ class DatabaseAdapter:
                 select(
                     MessageVersion.message_id,
                     MessageVersion.captured_at.label("date"),
+                    MessageVersion.id.label("k0"),
                     MessageVersion.text.label("old_text"),
                     Message.text.label("new_text"),
                     Message.sender_name,
@@ -4090,6 +4158,9 @@ class DatabaseAdapter:
                     select(
                         Message.id.label("message_id"),
                         MediaTranscript.completed_at.label("date"),
+                        MediaTranscript.id.label("k0"),
+                        Message.chat_id.label("k1"),
+                        Message.id.label("k2"),
                         MediaTranscript.text,
                         MediaTranscript.language,
                         Message.sender_name,
@@ -4108,6 +4179,7 @@ class DatabaseAdapter:
                 select(
                     ReactionHistory.message_id,
                     ReactionHistory.observed_at.label("date"),
+                    ReactionHistory.id.label("k0"),
                     ReactionHistory.emoji,
                     ReactionHistory.count,
                     ReactionHistory.previous_count,
@@ -4142,6 +4214,23 @@ class DatabaseAdapter:
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at < before)
                 transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at < before)
                 reaction_stmt = reaction_stmt.where(ReactionHistory.observed_at < before)
+            # Each kind's date and keys, in the order the feed sorts them.
+            order_columns = {
+                "deleted": (Message.deleted_at, (Message.account_id, Message.chat_id, Message.id)),
+                "edited": (MessageVersion.captured_at, (MessageVersion.id,)),
+                "transcript": (MediaTranscript.completed_at, (MediaTranscript.id, Message.chat_id, Message.id)),
+                "reaction": (ReactionHistory.observed_at, (ReactionHistory.id,)),
+            }
+            if cursor is not None:
+                after = decode_changes_cursor(cursor)
+                deleted_stmt = deleted_stmt.where(_changes_after_cursor("deleted", *order_columns["deleted"], after))
+                edited_stmt = edited_stmt.where(_changes_after_cursor("edited", *order_columns["edited"], after))
+                transcript_stmt = transcript_stmt.where(
+                    _changes_after_cursor("transcript", *order_columns["transcript"], after)
+                )
+                reaction_stmt = reaction_stmt.where(
+                    _changes_after_cursor("reaction", *order_columns["reaction"], after)
+                )
             if scope is not None:
                 for predicate in scope.sql_predicates():
                     deleted_stmt = deleted_stmt.where(predicate)
@@ -4210,7 +4299,9 @@ class DatabaseAdapter:
             # suppressed only when a lower account carries one THIS query would
             # otherwise list. Without them an event whose other copy fell just
             # outside the window would vanish from the page instead of being
-            # deduplicated.
+            # deduplicated. The ``cursor`` does not ride in: it continues a walk,
+            # so a lower copy above it was listed on an earlier page, and the
+            # event must not come back on this one.
             # A transcript is an event of the message: two accounts holding one
             # channel each transcribe their own media row of the same audio,
             # and the text names the result the way the superseded text names
@@ -4288,12 +4379,21 @@ class DatabaseAdapter:
                 )
             )
 
-            deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
-            edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
-            transcript_stmt = transcript_stmt.order_by(MediaTranscript.completed_at.desc()).limit(per_stream)
-            reaction_stmt = reaction_stmt.order_by(ReactionHistory.observed_at.desc(), ReactionHistory.id.desc()).limit(
-                per_stream
-            )
+            def _newest_first(kind: str) -> list:
+                date_col, key_cols = order_columns[kind]
+                return [date_col.desc(), *(col.desc() for col in key_cols)]
+
+            deleted_stmt = deleted_stmt.order_by(*_newest_first("deleted")).limit(per_stream)
+            edited_stmt = edited_stmt.order_by(*_newest_first("edited")).limit(per_stream)
+            transcript_stmt = transcript_stmt.order_by(*_newest_first("transcript")).limit(per_stream)
+            reaction_stmt = reaction_stmt.order_by(*_newest_first("reaction")).limit(per_stream)
+
+            def _place(kind: str, row) -> dict[str, Any]:
+                keys = tuple(getattr(row, f"k{i}") for i in range(CHANGE_KIND_KEY_COUNT[kind]))
+                return {
+                    "cursor": encode_changes_cursor(row.date, kind, keys),
+                    "_order": (row.date, -CHANGE_KIND_ORDER.index(kind), keys),
+                }
 
             changes: list[dict[str, Any]] = []
             for row in (await session.execute(deleted_stmt)).all():
@@ -4301,6 +4401,7 @@ class DatabaseAdapter:
                     {
                         "kind": "deleted",
                         "date": row.date.isoformat() if row.date else None,
+                        **_place("deleted", row),
                         "chat": _chat_fields(row),
                         "message_id": row.message_id,
                         "sender_name": row.sender_name,
@@ -4312,6 +4413,7 @@ class DatabaseAdapter:
                     {
                         "kind": "edited",
                         "date": row.date.isoformat() if row.date else None,
+                        **_place("edited", row),
                         "chat": _chat_fields(row),
                         "message_id": row.message_id,
                         "sender_name": row.sender_name,
@@ -4325,6 +4427,7 @@ class DatabaseAdapter:
                     {
                         "kind": "transcript",
                         "date": row.date.isoformat() if row.date else None,
+                        **_place("transcript", row),
                         "chat": _chat_fields(row),
                         "message_id": row.message_id,
                         "sender_name": row.sender_name,
@@ -4338,6 +4441,7 @@ class DatabaseAdapter:
                     {
                         "kind": "reaction",
                         "date": row.date.isoformat() if row.date else None,
+                        **_place("reaction", row),
                         "chat": _chat_fields(row),
                         "message_id": row.message_id,
                         "sender_name": row.sender_name,
@@ -4348,7 +4452,8 @@ class DatabaseAdapter:
                         "count_after": row.count,
                     }
                 )
-            changes.sort(key=lambda c: c["date"] or "", reverse=True)
+            # The streams' own order, merged: date, then kind, then keys.
+            changes.sort(key=lambda c: c.pop("_order"), reverse=True)
             return changes[:per_stream]
 
     @staticmethod
