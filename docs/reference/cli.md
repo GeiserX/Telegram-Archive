@@ -150,9 +150,11 @@ It exits 0 on success. On any failure, a date in the wrong format included, it p
 - kept a later state of its poll or link preview (`snapshots[].observed_at`), or
 - kept a new state of its reactions (`reaction_history[].observed_at`).
 
-Each kept message is written with its whole history, as without the flag: versions, reaction states and snapshots from before the given time stay in it. The flag narrows `-c`, `-s` and `-e`; it never widens them. It works the same on SQLite and PostgreSQL.
+Each kept message is written with its whole history, as without the flag: versions, reaction states and snapshots from before the given time stay in it. The flag narrows `-c`, `-s` and `-e`; it never widens them. It works the same on SQLite and PostgreSQL, and reads only the rows that changed, so a nightly run costs about the same on a small archive as on a large one.
 
-The time is ISO 8601. A `T` or a space can separate the date and the time. `Z` or an offset such as `+02:00` is converted to UTC; a time with neither is read as UTC. A bare date means its midnight UTC. Anything else fails the export with `Export failed: Invalid --changed-since timestamp`.
+Some changes are not on that list, so they never select a message: the ones the archive writes into the message row itself, with no history row. A pin or unpin, a media download that finishes later, a transcript that finishes later, and a `sender_name` or `raw_data` filled in later all leave the message out of the next incremental file. With `DELETION_MODE=hard` a deleted message is removed from the archive, so no export, incremental or full, holds it any more. Run a full export now and then to catch the first kind.
+
+The time is ISO 8601. A `T` or a space can separate the date and the time. `Z` or an offset such as `+02:00` is converted to UTC; a time with neither is read as UTC. A bare date means its midnight UTC. Anything else, an empty value included, fails the export with `Export failed: Invalid --changed-since timestamp`.
 
 To export on a schedule and miss nothing:
 
@@ -169,7 +171,7 @@ telegram-archive export -o "changes-$next.json" --changed-since "$(cat last-expo
   && echo "$next" > last-export-start
 ```
 
-The stored time only moves when the export succeeds, so a failed run is covered by the next one.
+The stored time only moves when the export succeeds, so a failed run is covered by the next one. If `last-export-start` is missing or empty, the export fails rather than writing the whole archive under a name that says it holds only changes.
 
 ## stats { #stats }
 

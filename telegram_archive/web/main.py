@@ -5254,7 +5254,7 @@ async def export_chat(
     if parsed_from and parsed_to and parsed_from >= parsed_to:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
     try:
-        parsed_changed_since = parse_utc_timestamp(changed_since) if changed_since else None
+        parsed_changed_since = parse_utc_timestamp(changed_since) if changed_since is not None else None
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid changed_since timestamp. Use ISO 8601.") from None
 

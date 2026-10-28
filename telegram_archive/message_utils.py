@@ -31,11 +31,15 @@ def parse_utc_timestamp(value: str) -> datetime:
     Takes a ``T`` or a space before the time, ``Z`` or an offset, or neither,
     in which case the time is already UTC. A bare date is its midnight. An
     offset converts the instant to UTC; it is never dropped. Raises
-    ValueError for anything else.
+    ValueError for anything else, an instant that falls outside the years
+    1 to 9999 once converted to UTC included.
     """
     parsed = datetime.fromisoformat(value.strip())
     if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+        try:
+            parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+        except OverflowError:
+            raise ValueError(f"timestamp out of range: {value!r}") from None
     return parsed
 
 

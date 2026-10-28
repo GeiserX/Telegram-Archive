@@ -9,10 +9,12 @@ and PostgreSQL (``real_adapter``).
 """
 
 import json
+import re
 import time
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import event
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
@@ -44,9 +46,11 @@ EDITED, DELETED, NEW, UNTOUCHED, MEDIA_REPLACED, POLL_MOVED, REACTED, AT_SINCE =
 CHANGED = [EDITED, DELETED, NEW, MEDIA_REPLACED, POLL_MOVED, REACTED, AT_SINCE]
 
 
-def _message(message_id: int, *, chat_id: int = CHAT, created_at: datetime = STORED, **extra) -> Message:
+def _message(
+    message_id: int, *, chat_id: int = CHAT, created_at: datetime = STORED, account_id: int = 1, **extra
+) -> Message:
     return Message(
-        account_id=1,
+        account_id=account_id,
         id=message_id,
         chat_id=chat_id,
         date=SENT + timedelta(minutes=message_id),
@@ -123,6 +127,53 @@ async def _seed(adapter) -> None:
         await session.commit()
 
 
+async def _seed_second_account(adapter) -> None:
+    """Account 2 holds the same chat id and message id as account 1's untouched message.
+
+    Only account 2's copy changes after SINCE: an edit, a replaced media, a
+    poll state and a reaction state. Account 1's copy must stay out.
+    """
+    await adapter.upsert_chat({"id": CHAT, "type": "group", "title": "Fixture Group"}, account_id=2)
+    async with adapter.db_manager.async_session_factory() as session:
+        session.add(_message(UNTOUCHED, account_id=2))
+        await session.flush()
+        session.add_all(
+            [
+                MessageVersion(
+                    account_id=2,
+                    chat_id=CHAT,
+                    message_id=UNTOUCHED,
+                    text="account 2 draft",
+                    date=SENT,
+                    change_hash=f"2-{CHAT}-{UNTOUCHED}",
+                    captured_at=AFTER,
+                ),
+                MediaVersion(
+                    account_id=2,
+                    chat_id=CHAT,
+                    message_id=UNTOUCHED,
+                    media_id=f"2_{CHAT}_{UNTOUCHED}_photo",
+                    type="photo",
+                    downloaded=0,
+                    date=SENT,
+                    captured_at=AFTER,
+                ),
+                MessageSnapshot(
+                    account_id=2,
+                    chat_id=CHAT,
+                    message_id=UNTOUCHED,
+                    kind="poll",
+                    payload=json.dumps({"question": "fixture?"}),
+                    observed_at=AFTER,
+                ),
+                ReactionHistory(
+                    account_id=2, chat_id=CHAT, message_id=UNTOUCHED, emoji="👍", count=3, observed_at=AFTER
+                ),
+            ]
+        )
+        await session.commit()
+
+
 class TestParseUtcTimestamp:
     def test_every_iso_form_lands_on_the_same_naive_utc_instant(self):
         expected = datetime(2026, 2, 1, 10, 0, 0)
@@ -142,7 +193,8 @@ class TestParseUtcTimestamp:
         assert parse_utc_timestamp("2026-02-01") == datetime(2026, 2, 1)
 
     def test_anything_else_is_refused(self):
-        for value in ("not-a-time", "", "2026-13-01", "01/02/2026"):
+        # The last one is a valid offset whose UTC instant is before year 1.
+        for value in ("not-a-time", "", "  ", "2026-13-01", "01/02/2026", "0001-01-01T00:00:00+01:00"):
             with pytest.raises(ValueError):
                 parse_utc_timestamp(value)
 
@@ -185,9 +237,61 @@ class TestChangedSinceSelection:
         messages = await real_adapter.get_messages_for_backup_export(CHAT, end_date=end, changed_since=SINCE)
         assert sorted(m["id"] for m in messages) == [i for i in CHANGED if i <= REACTED]
 
+    async def test_another_accounts_change_never_selects_this_accounts_copy(self, real_adapter):
+        await _seed(real_adapter)
+        await _seed_second_account(real_adapter)
+        account_1 = [m async for m in real_adapter.get_messages_for_export(CHAT, account_id=1, changed_since=SINCE)]
+        assert sorted(m["id"] for m in account_1) == CHANGED
+        unscoped = await real_adapter.get_messages_for_backup_export(CHAT, changed_since=SINCE)
+        assert sorted((m["account_id"], m["id"]) for m in unscoped) == sorted(
+            [(1, i) for i in CHANGED] + [(2, UNTOUCHED)]
+        )
+
     async def test_a_string_bound_is_refused(self, real_adapter):
         with pytest.raises(TypeError):
             await real_adapter.get_messages_for_backup_export(CHAT, changed_since="2026-02-01T10:00:00")
+
+
+class TestQueryPlan:
+    """On SQLite, a whole-archive incremental export reads only what changed.
+
+    Captures every statement the export sends and EXPLAINs the ones carrying
+    the changed-since test: none may scan messages or a history table, each
+    must start from the timestamp indexes (042). PostgreSQL plans by table
+    statistics, so the same check on a tiny fixture would prove nothing there.
+    """
+
+    TABLES = ("messages", "media", "message_versions", "media_versions", "reaction_history", "message_snapshots")
+
+    async def test_no_statement_scans_the_archive(self, real_adapter):
+        if not real_adapter._is_sqlite:
+            pytest.skip("SQLite plans only; see the class docstring")
+        await _seed(real_adapter)
+        engine = real_adapter.db_manager.engine.sync_engine
+        captured: list[tuple[str, object]] = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            if "deleted_at >=" in statement:
+                captured.append((statement, parameters))
+
+        event.listen(engine, "before_cursor_execute", capture)
+        try:
+            await real_adapter.get_messages_for_backup_export(changed_since=SINCE)
+        finally:
+            event.remove(engine, "before_cursor_execute", capture)
+        assert len(captured) == 6  # the messages and the five history walks
+
+        scans = []
+        async with real_adapter.db_manager.engine.connect() as conn:
+            for statement, parameters in captured:
+                raw = await conn.get_raw_connection()
+                cursor = await raw.driver_connection.execute(f"EXPLAIN QUERY PLAN {statement}", parameters)
+                for row in await cursor.fetchall():
+                    # "SCAN messages_1 USING ..." scans messages under an alias.
+                    match = re.match(r"SCAN (\w+?)(?:_\d+)?\b", row[3])
+                    if match and match.group(1) in self.TABLES:
+                        scans.append(row[3])
+        assert scans == []
 
 
 class TestCommandExport:
@@ -203,9 +307,11 @@ class TestCommandExport:
 
     async def test_a_bad_timestamp_fails_before_reading(self, real_adapter, tmp_path):
         output = tmp_path / "export.json"
-        with pytest.raises(ValueError, match="--changed-since"):
-            await BackupExporter(real_adapter).export_to_json(str(output), changed_since="yesterday")
-        assert not output.exists()
+        # An empty value is refused too, never read as "no filter" (a full export).
+        for value in ("yesterday", ""):
+            with pytest.raises(ValueError, match="--changed-since"):
+                await BackupExporter(real_adapter).export_to_json(str(output), changed_since=value)
+            assert not output.exists()
 
 
 class TestViewerEndpoint:
@@ -268,8 +374,9 @@ class TestViewerEndpoint:
 
     async def test_a_bad_timestamp_is_a_400(self, viewer):
         async with self._client("changed-since-all") as client:
-            resp = await client.get(f"/api/chats/{viewer[CHAT]}/export", params={"changed_since": "yesterday"})
-        assert resp.status_code == 400
+            for value in ("yesterday", "", "0001-01-01T00:00:00+01:00"):
+                resp = await client.get(f"/api/chats/{viewer[CHAT]}/export", params={"changed_since": value})
+                assert resp.status_code == 400, value
 
     async def test_the_acl_is_unchanged(self, viewer):
         params = {"changed_since": "2026-02-01T10:00:00Z"}

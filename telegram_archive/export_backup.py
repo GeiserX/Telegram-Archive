@@ -69,7 +69,7 @@ class BackupExporter:
         """
         # Parse before anything else, so a bad bound fails before the export starts.
         try:
-            changed_since_dt = parse_utc_timestamp(changed_since) if changed_since else None
+            changed_since_dt = parse_utc_timestamp(changed_since) if changed_since is not None else None
         except ValueError:
             raise ValueError(f"Invalid --changed-since timestamp: {changed_since!r}. Use ISO 8601.") from None
 
