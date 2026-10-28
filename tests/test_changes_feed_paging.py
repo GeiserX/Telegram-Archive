@@ -30,7 +30,7 @@ from test_changes_chat_filter import GROUP_A, GROUP_B, as_principal, client, eve
 from test_changes_chat_filter import app_on as app_on  # noqa: F401  (pytest fixture)
 from test_transcript_consumers import _voice
 
-from telegram_archive.db.adapter import ChatScope
+from telegram_archive.db.adapter import ChatScope, DatabaseAdapter, decode_changes_cursor, encode_changes_cursor
 from telegram_archive.db.models import MediaTranscript, ReactionHistory
 
 UNRESTRICTED = ChatScope.build()
@@ -169,6 +169,61 @@ def encode_raw(payload) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
+def chat_id_forms(chat_id: int) -> list[bytes]:
+    """The ways a chat id could sit in a cursor: as text, or as 8 packed bytes."""
+    forms = [str(chat_id).encode(), str(abs(chat_id)).encode()]
+    for order in ("big", "little"):
+        forms.append(chat_id.to_bytes(8, order, signed=True))
+    return forms
+
+
+def reveals(cursor: str, chat_id: int) -> bool:
+    """Whether the cursor, or any base64 reading of it, carries ``chat_id``."""
+    readings = [cursor.encode()]
+    for decode in (base64.urlsafe_b64decode, base64.b64decode):
+        for pad in range(4):
+            try:
+                readings.append(decode(cursor + "=" * pad))
+            except ValueError:
+                pass
+    return any(form in reading for reading in readings for form in chat_id_forms(chat_id))
+
+
+class TestCursorIsOpaque:
+    async def test_no_cursor_carries_a_chat_id(self, app_on):
+        """A deletion's keys hold the chat id; the sealed cursor never shows it."""
+        expected = await seed_a_burst(app_on, every_kind=True)
+        as_principal(role="master")
+
+        async with client() as http:
+            body = (await http.get("/api/changes", params={"limit": 200, "reactions": "true"})).json()
+
+        cursors = [c["cursor"] for c in body["changes"]]
+        assert len(cursors) == len(expected)
+        # The check can fail: the unsealed form of a deletion's cursor carries the id.
+        assert reveals(encode_raw(["2026-01-01T00:00:00", "deleted", [1, GROUP_A, 1]]), GROUP_A)
+        for cursor in cursors:
+            for chat_id in (GROUP_A, GROUP_B, SHARED_CHANNEL):
+                assert not reveals(cursor, chat_id), cursor
+
+    async def test_a_cursor_survives_a_restart(self, real_adapter):
+        """The key lives in the database, so a new adapter reads an old cursor."""
+        await seed_a_burst(real_adapter)
+        first = await real_adapter.get_recent_changes(scope=UNRESTRICTED, limit=3)
+
+        restarted = DatabaseAdapter(real_adapter.db_manager)
+        page = await restarted.get_recent_changes(cursor=first[-1]["cursor"], scope=UNRESTRICTED, limit=3)
+
+        assert page and events(page)[0] not in events(first)
+        assert await restarted.changes_cursor_key() == await real_adapter.changes_cursor_key()
+
+    def test_another_key_cannot_read_it(self):
+        sealed = encode_changes_cursor(b"k" * 32, SAME_INSTANT, "edited", [1])
+        assert decode_changes_cursor(b"k" * 32, sealed)[1] == "edited"
+        with pytest.raises(ValueError):
+            decode_changes_cursor(b"j" * 32, sealed)
+
+
 class TestCursorInput:
     async def test_a_malformed_cursor_is_a_400(self, app_on):
         as_principal(role="master")
@@ -181,6 +236,30 @@ class TestCursorInput:
                 encode_raw(["2026-01-01", [], [1]]),
                 encode_raw(["2026-01-01", "edited", [2**70]]),
                 encode_raw([20260101, "edited", [1]]),
+            ):
+                resp = await http.get("/api/changes", params={"cursor": bad})
+                assert resp.status_code == 400, (bad, resp.text)
+
+    async def test_a_sealed_cursor_with_bad_contents_is_a_400(self, app_on):
+        """Sealed with the right key but not a row's place: still checked, still 400."""
+        as_principal(role="master")
+        key = await app_on.changes_cursor_key()
+
+        def seal(payload) -> str:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+            from telegram_archive.db.adapter import _CHANGES_CURSOR_AAD
+
+            nonce = b"n" * 12
+            sealed = nonce + AESGCM(key).encrypt(nonce, json.dumps(payload).encode(), _CHANGES_CURSOR_AAD)
+            return base64.urlsafe_b64encode(sealed).decode().rstrip("=")
+
+        async with client() as http:
+            for bad in (
+                seal(["2026-01-01", "nope", [1]]),
+                seal(["2026-01-01", "edited", [2**70]]),
+                seal(["2026-01-01", "deleted", [1]]),
+                seal([20260101, "edited", [1]]),
             ):
                 resp = await http.get("/api/changes", params={"cursor": bad})
                 assert resp.status_code == 400, (bad, resp.text)

@@ -22,6 +22,8 @@ from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import (
     and_,
     case,
@@ -166,19 +168,34 @@ CHANGE_KIND_ORDER = ("deleted", "edited", "transcript", "reaction")
 CHANGE_KIND_KEY_COUNT = {"deleted": 3, "edited": 1, "transcript": 3, "reaction": 1}
 
 
-def encode_changes_cursor(date: datetime, kind: str, keys: Sequence[int]) -> str:
-    """The opaque ``cursor`` of one What changed row."""
-    payload = json.dumps([date.isoformat(timespec="microseconds"), kind, [int(k) for k in keys]])
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+# The cursor carries the row's keys, and a deletion's keys include the chat id,
+# which for a private chat is the other person's Telegram user id. The viewer
+# never sends chat ids to the browser (it names chats by ``ref``), and a cursor
+# lands in query strings and access logs, so it is sealed with AES-GCM under a
+# key the database keeps in ``metadata`` (CHANGES_CURSOR_KEY_METADATA): opaque
+# to the reader, tamper-proof, and still valid after a restart.
+CHANGES_CURSOR_KEY_METADATA = "changes_cursor_key"
+_CHANGES_CURSOR_AAD = b"telegram-archive/changes-cursor/v1"
 
 
-def decode_changes_cursor(cursor: str) -> tuple[datetime, str, tuple[int, ...]]:
+def encode_changes_cursor(key: bytes, date: datetime, kind: str, keys: Sequence[int]) -> str:
+    """The opaque ``cursor`` of one What changed row, sealed with ``key``."""
+    payload = json.dumps([date.isoformat(timespec="microseconds"), kind, [int(k) for k in keys]]).encode()
+    nonce = secrets.token_bytes(12)
+    sealed = nonce + AESGCM(key).encrypt(nonce, payload, _CHANGES_CURSOR_AAD)
+    return base64.urlsafe_b64encode(sealed).decode().rstrip("=")
+
+
+def decode_changes_cursor(key: bytes, cursor: str) -> tuple[datetime, str, tuple[int, ...]]:
     """(date as naive UTC, kind, keys) from a ``cursor``. ValueError when it is not one."""
     try:
-        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        sealed = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        if len(sealed) < 12 + 16:
+            raise ValueError("too short")
+        raw = AESGCM(key).decrypt(sealed[:12], sealed[12:], _CHANGES_CURSOR_AAD)
         date_text, kind, keys = json.loads(raw)
         date = datetime.fromisoformat(date_text)
-    except (ValueError, TypeError) as e:
+    except (ValueError, TypeError, InvalidTag) as e:
         raise ValueError("not a changes cursor") from e
     if not isinstance(date_text, str) or not isinstance(kind, str) or kind not in CHANGE_KIND_KEY_COUNT:
         raise ValueError("not a changes cursor")
@@ -1154,6 +1171,8 @@ class DatabaseAdapter:
         self._transcript_fts_ready_cache: bool | None = None
         # (read_at, {telegram_user_id: account_id}) — see _account_owner_ids.
         self._account_owner_cache: tuple[float, dict[int, int]] | None = None
+        # The What changed cursor key, read (or made) once; see changes_cursor_key.
+        self._changes_cursor_key: bytes | None = None
 
     def _serialize_raw_data(self, raw_data: Any) -> str:
         """
@@ -4042,6 +4061,37 @@ class DatabaseAdapter:
             return func.abs(func.julianday(first) - func.julianday(second)) * 86400
         return func.abs(func.extract("epoch", first - second))
 
+    async def changes_cursor_key(self) -> bytes:
+        """The AES-256 key that seals What changed cursors, made on first use.
+
+        Kept in ``metadata`` so cursors survive a restart and every viewer on
+        one database shares it. Insert-if-absent, then read back: two viewers
+        starting at once agree on whichever key landed first.
+        """
+        if self._changes_cursor_key is not None:
+            return self._changes_cursor_key
+        stored = await self.get_metadata(CHANGES_CURSOR_KEY_METADATA)
+        if stored is None:
+            fresh = base64.urlsafe_b64encode(AESGCM.generate_key(bit_length=256)).decode()
+            insert = sqlite_insert if self._is_sqlite else pg_insert
+            async with self.db_manager.async_session_factory() as session:
+                await session.execute(
+                    insert(Metadata)
+                    .values(key=CHANGES_CURSOR_KEY_METADATA, value=fresh)
+                    .on_conflict_do_nothing(index_elements=["key"])
+                )
+                await session.commit()
+            stored = await self.get_metadata(CHANGES_CURSOR_KEY_METADATA)
+        key = base64.urlsafe_b64decode(stored)
+        if len(key) != 32:
+            raise RuntimeError("metadata changes_cursor_key is not a 256-bit key")
+        self._changes_cursor_key = key
+        return key
+
+    async def decode_changes_cursor(self, cursor: str) -> tuple[datetime, str, tuple[int, ...]]:
+        """(date, kind, keys) from a ``cursor`` this database sealed. ValueError when it is not one."""
+        return decode_changes_cursor(await self.changes_cursor_key(), cursor)
+
     async def get_recent_changes(
         self,
         *,
@@ -4225,7 +4275,7 @@ class DatabaseAdapter:
                 "reaction": (ReactionHistory.observed_at, (ReactionHistory.id,)),
             }
             if cursor is not None:
-                after = decode_changes_cursor(cursor)
+                after = await self.decode_changes_cursor(cursor)
                 deleted_stmt = deleted_stmt.where(_changes_after_cursor("deleted", *order_columns["deleted"], after))
                 edited_stmt = edited_stmt.where(_changes_after_cursor("edited", *order_columns["edited"], after))
                 transcript_stmt = transcript_stmt.where(
@@ -4391,10 +4441,12 @@ class DatabaseAdapter:
             transcript_stmt = transcript_stmt.order_by(*_newest_first("transcript")).limit(per_stream)
             reaction_stmt = reaction_stmt.order_by(*_newest_first("reaction")).limit(per_stream)
 
+            cursor_key = await self.changes_cursor_key()
+
             def _place(kind: str, row) -> dict[str, Any]:
                 keys = tuple(getattr(row, f"k{i}") for i in range(CHANGE_KIND_KEY_COUNT[kind]))
                 return {
-                    "cursor": encode_changes_cursor(row.date, kind, keys),
+                    "cursor": encode_changes_cursor(cursor_key, row.date, kind, keys),
                     "_order": (row.date, -CHANGE_KIND_ORDER.index(kind), keys),
                 }
 

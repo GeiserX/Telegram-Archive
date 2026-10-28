@@ -51,7 +51,6 @@ from ..db.adapter import (
     PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY,
     PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY,
     ChatScope,
-    decode_changes_cursor,
     parse_account_chat_stats_key,
     parse_entitlement_column,
 )
@@ -3938,7 +3937,7 @@ async def get_recent_changes(
     parsed_before = _parse_changes_bound(before, "before") if before else None
     if cursor is not None:
         try:
-            decode_changes_cursor(cursor)
+            await db.decode_changes_cursor(cursor)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid cursor. Pass next_cursor back as it came.") from None
     chat = await _resolve_chat_ref(chat_ref, user) if chat_ref is not None else None
