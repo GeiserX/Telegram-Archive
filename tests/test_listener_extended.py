@@ -3013,6 +3013,56 @@ class TestListenerStateWrites:
 
         assert listener._last_update_at is not None and listener._last_update_at.tzinfo is not None
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "on_message_edited",
+            "on_message_deleted",
+            "on_new_message",
+            "on_chat_action",
+            "on_pinned_messages",
+            "on_message_reactions",
+            "on_message_poll",
+        ],
+    )
+    async def test_every_handler_moves_the_last_update_time_before_its_flag_check(self, name):
+        listener, handlers, _, _ = _make_listener_with_handlers(
+            listen_edits=False,
+            listen_deletions=False,
+            listen_new_messages=False,
+            listen_chat_actions=False,
+            listen_reactions=False,
+        )
+        by_name = {fn.__name__: fn for fn in handlers.values()}
+        assert listener._last_update_at is None
+
+        await by_name[name](MagicMock())
+
+        assert listener._last_update_at is not None and listener._last_update_at.tzinfo is not None
+
+    async def test_shutdown_flush_has_one_overall_time_limit(self):
+        db = _make_db()
+        listener = TelegramListener(_make_config(listen_reactions=False), db, account_id=1)
+        real_wait_for = asyncio.wait_for
+        flush_timeouts = []
+
+        async def fake_wait_for(aw, timeout):
+            if getattr(aw, "__qualname__", "").endswith("_write_listener_state"):
+                # The final flush: a database that never answers.
+                flush_timeouts.append(timeout)
+                aw.close()
+                raise TimeoutError
+            return await real_wait_for(aw, timeout)
+
+        listener.client = MagicMock()
+        listener.client.run_until_disconnected = AsyncMock()
+        with patch("telegram_archive.listener.asyncio.wait_for", side_effect=fake_wait_for):
+            await listener.run()
+
+        assert flush_timeouts == [10]
+        cleared = [c.args[1] for c in db.set_metadata.await_args_list if c.args[0] == "listener_active_since"]
+        assert cleared[-1] == ""
+
     async def test_state_is_written_with_the_heartbeat_and_only_when_changed(self):
         db = _make_db()
         listener = TelegramListener(_make_config(), db, account_id=2)

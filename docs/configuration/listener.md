@@ -170,6 +170,8 @@ telegram-archive status --json | jq -r '.listeners[] | select(.active) | "\(.acc
 
 Alert when the time printed for an account is older than your limit, or `null` while the listener has been active for longer than it.
 
+`last_update_at` and `last_rate_limit_at` are UTC with an offset. `active_since` is the backup's local time with no offset, so compare it with the current time in the backup's `TZ`, not with UTC.
+
 When a listener stops, it logs counters for edits, deletions, new messages and the rate limiter. The edit counters are:
 
 | Counter | Counts |

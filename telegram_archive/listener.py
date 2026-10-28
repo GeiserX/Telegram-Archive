@@ -2454,8 +2454,13 @@ class TelegramListener:
                 except asyncio.CancelledError:
                     pass
                 self._heartbeat_task = None
-            # Keep the counts and the last update of the final seconds.
-            await self._write_listener_state(heartbeat=False)
+            # Keep the counts and the last update of the final seconds. One
+            # overall bound, so a database outage at shutdown cannot hold up
+            # clearing listener_active_since or a watchdog restart.
+            try:
+                await asyncio.wait_for(self._write_listener_state(heartbeat=False), timeout=10)
+            except Exception:
+                pass
             if self._custom_emoji_task:
                 self._custom_emoji_task.cancel()
                 try:

@@ -185,6 +185,7 @@ Each listener row also carries:
 
 | Field | Value |
 |-------|-------|
+| `active_since` | When the listener started, in the backup's local time with no UTC offset. `null` after a clean stop. |
 | `last_update_at` | When the listener last handled any Telegram update for the account, UTC. Written with the heartbeat, so up to 30 seconds behind, and kept after the listener stops. `null` until the listener has handled one. |
 | `deletions_blocked` | Deletions the [rate limiter](../configuration/listener.md#mass-operation-protection) refused since the listener last started. Starts again at 0 on every start, a watchdog restart included. `null` until a listener of this version has started. |
 | `last_rate_limit_at` | When the rate limiter last tripped for the account, UTC, kept across restarts. `null` if it never has. |
