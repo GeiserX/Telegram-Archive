@@ -2706,6 +2706,50 @@ class DatabaseAdapter:
             conditions.append(Message.date <= end_date)
         return conditions
 
+    def _changed_since_condition(self, since: datetime):
+        """Messages whose archive record changed at or after ``since`` (naive UTC).
+
+        A message counts as changed when the archive first stored it
+        (``created_at``), saw it deleted (``deleted_at``), or added a row to
+        its history: a text version (``message_versions.captured_at``), an
+        earlier media (``media_versions.captured_at``), a poll or preview
+        state (``message_snapshots.observed_at``) or a reaction state
+        (``reaction_history.observed_at``).
+
+        Each of the six is a select of message keys, a range scan on that
+        timestamp's own index (042), so the cost follows how much changed, not
+        how big the archive is. The message key must be in one of them.
+        PostgreSQL gets one IN over their UNION ALL, which it turns into a
+        semi-join driven by the keys. SQLite cannot drive a lookup from a
+        compound IN and would test every message; given one IN per select,
+        joined by OR, it looks each key up by primary key instead. Every
+        select reads an alias, so inside the export's media, versions and
+        reaction queries it never correlates to the outer table.
+
+        ``since`` must be a datetime: SQLite stores these columns as text with
+        a space before the time, so a string bound with a ``T`` would compare
+        wrongly and miss rows. A bound datetime is written in the stored form.
+        """
+        if not isinstance(since, datetime):
+            raise TypeError("changed_since must be a datetime")
+
+        def keys_of(model, id_column: str, column: str):
+            row = aliased(model)
+            return select(row.account_id, row.chat_id, getattr(row, id_column)).where(getattr(row, column) >= since)
+
+        changed = (
+            keys_of(Message, "id", "created_at"),
+            keys_of(Message, "id", "deleted_at"),
+            keys_of(MessageVersion, "message_id", "captured_at"),
+            keys_of(MediaVersion, "message_id", "captured_at"),
+            keys_of(MessageSnapshot, "message_id", "observed_at"),
+            keys_of(ReactionHistory, "message_id", "observed_at"),
+        )
+        key = tuple_(Message.account_id, Message.chat_id, Message.id)
+        if self._is_sqlite:
+            return or_(*(key.in_(keys) for keys in changed))
+        return key.in_(union_all(*changed))
+
     async def get_messages_for_backup_export(
         self,
         chat_id: int | None = None,
@@ -2713,6 +2757,7 @@ class DatabaseAdapter:
         end_date: datetime | None = None,
         *,
         account_id: int | None = None,
+        changed_since: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """What ``telegram-archive export`` writes, read from one snapshot.
 
@@ -2725,12 +2770,20 @@ class DatabaseAdapter:
         backup writing meanwhile cannot make a message, its versions, its
         media and its transcripts disagree: every transcript names a media
         listed in the same file.
+
+        ``changed_since`` (naive UTC) keeps only the messages whose archive
+        record changed at or after it (``_changed_since_condition``), on top
+        of the other filters. Each still carries its whole history.
         """
         conditions = self._date_range_conditions(chat_id, start_date, end_date, account_id)
+        if changed_since is not None:
+            conditions.append(self._changed_since_condition(changed_since))
         async with self.db_manager.async_session_factory() as session:
             await self._read_one_snapshot(session)
             transcripts: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-            for row in await self._read_export_transcripts(session, chat_id, account_id=account_id):
+            for row in await self._read_export_transcripts(
+                session, chat_id, account_id=account_id, changed_since=changed_since
+            ):
                 transcripts.setdefault((row["account_id"], row["chat_id"], row["message_id"]), []).append(row)
             result = await session.stream(select(Message).where(*conditions).order_by(*EXPORT_MESSAGE_ORDER))
             messages = []
@@ -9055,12 +9108,15 @@ class DatabaseAdapter:
         account_id: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        changed_since: datetime | None = None,
     ):
         """Stream a chat's messages for the viewer's export (async generator).
 
         None account_id = unscoped until phase 4. ``from_date`` is a naive-UTC
         inclusive lower bound on Message.date, ``to_date`` an EXCLUSIVE upper
-        bound.
+        bound. ``changed_since`` (naive UTC) keeps only the messages whose
+        archive record changed at or after it (``_changed_since_condition``);
+        each still carries its whole history.
 
         Yields message dictionaries with sender info, deleted messages
         included and marked by ``is_deleted``/``deleted_at``. Each carries
@@ -9087,6 +9143,8 @@ class DatabaseAdapter:
             conditions.append(Message.date >= from_date)
         if to_date is not None:
             conditions.append(Message.date < to_date)
+        if changed_since is not None:
+            conditions.append(self._changed_since_condition(changed_since))
         stmt = (
             select(
                 Message.id,
@@ -9114,7 +9172,12 @@ class DatabaseAdapter:
             await self._read_one_snapshot(session)
             transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
             for row in await self._read_export_transcripts(
-                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+                session,
+                chat_id,
+                account_id=account_id,
+                from_date=from_date,
+                to_date=to_date,
+                changed_since=changed_since,
             ):
                 transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
             result = await session.stream(stmt)
@@ -10327,6 +10390,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        changed_since: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Every transcript row with the ``chat_id`` and ``message_id`` its media belongs to.
 
@@ -10338,10 +10402,18 @@ class DatabaseAdapter:
         ``from_date`` (inclusive) and ``to_date`` (exclusive) bound the date
         of the message, as ``get_messages_for_export`` does, so a windowed
         export reads only the rows of the messages it exports.
+        ``changed_since`` keeps only the messages ``_changed_since_condition``
+        selects, so an incremental export reads only the rows of the messages
+        that changed.
         """
         async with self.db_manager.async_session_factory() as session:
             return await self._read_export_transcripts(
-                session, chat_id, account_id=account_id, from_date=from_date, to_date=to_date
+                session,
+                chat_id,
+                account_id=account_id,
+                from_date=from_date,
+                to_date=to_date,
+                changed_since=changed_since,
             )
 
     async def _read_export_transcripts(
@@ -10352,6 +10424,7 @@ class DatabaseAdapter:
         account_id: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        changed_since: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """``get_transcripts_for_export`` in a session the caller holds.
 
@@ -10374,7 +10447,7 @@ class DatabaseAdapter:
             stmt = stmt.where(owners.c.chat_id == chat_id)
         if account_id is not None:
             stmt = stmt.where(MediaTranscript.account_id == account_id)
-        if from_date is not None or to_date is not None:
+        if from_date is not None or to_date is not None or changed_since is not None:
             stmt = stmt.join(
                 Message,
                 and_(
@@ -10387,6 +10460,8 @@ class DatabaseAdapter:
                 stmt = stmt.where(Message.date >= from_date)
             if to_date is not None:
                 stmt = stmt.where(Message.date < to_date)
+            if changed_since is not None:
+                stmt = stmt.where(self._changed_since_condition(changed_since))
         rows = []
         for transcript, media_chat_id, message_id in await session.execute(stmt):
             row = self._transcript_to_dict(transcript)

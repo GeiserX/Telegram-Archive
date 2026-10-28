@@ -1073,7 +1073,7 @@ class TestExportEndpoint(_WebTestBase):
             }
         )
 
-        async def fake_export(chat_id, account_id=None, from_date=None, to_date=None):
+        async def fake_export(chat_id, account_id=None, from_date=None, to_date=None, changed_since=None):
             yield {"id": 1, "text": "hello", "date": "2025-01-01"}
             yield {"id": 2, "text": "world", "date": "2025-01-02"}
 

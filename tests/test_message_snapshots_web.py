@@ -96,7 +96,7 @@ async def test_a_no_download_login_keeps_the_snapshots_and_is_refused_the_export
     (msg,) = await _messages(main_mod, two, user)
     assert msg["snapshots"]["poll"]["count"] == 1
     with pytest.raises(main_mod.HTTPException) as exc:
-        await main_mod.export_chat(chat=two, user=user, from_date=None, to_date=None)
+        await main_mod.export_chat(chat=two, user=user, from_date=None, to_date=None, changed_since=None)
     assert exc.value.status_code == 403
 
 
@@ -107,7 +107,7 @@ async def test_the_export_lists_the_states_of_its_account_only(main_mod, real_ad
 
     for account, expected in ((1, []), (2, [True])):
         chat = main_mod.ChatContext(account_id=account, chat_id=CHAT_ID, ref=CHAT_REF, type="group")
-        response = await main_mod.export_chat(chat=chat, user=user, from_date=None, to_date=None)
+        response = await main_mod.export_chat(chat=chat, user=user, from_date=None, to_date=None, changed_since=None)
         body = "".join([part async for part in response.body_iterator])
         (msg,) = json.loads(body)["messages"]
         assert [snapshot["payload"]["closed"] for snapshot in msg["snapshots"]] == expected

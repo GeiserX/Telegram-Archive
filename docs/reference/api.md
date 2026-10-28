@@ -402,12 +402,15 @@ The open routes answer `{"ok": true}` on success and 404 `Not configured` when t
 |-----------|---------|
 | `from` | Start, inclusive, ISO 8601 |
 | `to` | A bare date such as `2026-06-30` includes that whole day. A full timestamp is exclusive. |
+| `changed_since` | ISO 8601 time. Keeps only the messages whose archive record changed at or after it: stored for the first time, seen deleted, or given a new text version, earlier media, poll or preview state or reaction state. A time without `Z` or an offset is UTC; a `T` or a space separates date and time. In a raw URL a `+` offset must be written `%2B`, or it reads as a space and the time is refused; `curl -G --data-urlencode 'changed_since=2026-06-01T05:59:55+02:00'` encodes it for you. |
 
-`from` must be before `to`, or the route answers 400. Without either, the export holds the whole chat. Save the stream to a file:
+`from` must be before `to`, or the route answers 400. A `changed_since` that is not ISO 8601, an empty one included, answers 400. Without any of them, the export holds the whole chat. `changed_since` narrows `from` and `to`, and each message it keeps carries its whole history. A change the archive writes into the message row itself (a pin, a media download or a transcript that finishes later) does not select a message, and a message removed with `DELETION_MODE=hard` is gone from every export. It follows the same rules as the command's `--changed-since`, including the recipe for exporting on a schedule in [Exporting only what changed](cli.md#export-changed-since). In a viewer export the chat `ref` and the message `id` together are the key to merge files on. Save the stream to a file:
 
 ```bash
 curl -s -b jar.txt -o june.json \
   'http://localhost:8000/api/chats/<ref>/export?from=2026-06-01&to=2026-06-30'
+curl -s -b jar.txt -o changes.json \
+  'http://localhost:8000/api/chats/<ref>/export?changed_since=2026-06-01T03:59:55Z'
 ```
 
 The response is an `application/json` attachment named `<chat name>_export.json`:
@@ -420,7 +423,7 @@ The response is an `application/json` attachment named `<chat name>_export.json`
 }
 ```
 
-`filters` appears only when `from` or `to` was given. The window picks messages by their send date.
+`filters` appears only when `from`, `to` or `changed_since` was given. The window picks messages by their send date. With `changed_since`, `filters` also holds `changed_since`, the UTC time it was read as (ISO 8601, no offset).
 
 Each message has `id`, `date`, `sender` (`name`, `username`), `text`, `is_outgoing` and `reply_to`, and these fields that say what the archive kept:
 
