@@ -6,6 +6,18 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.5.0] - 2026-10-28
+
+Better evidence of what the archive captured and what it may have missed: deletions the listener's limiter refuses are now logged and counted, the status shows when each listener last heard from Telegram, exports can pick up only what changed, and the What changed feed no longer skips rows between pages. Includes migration 042, which adds six timestamp indexes; on a large archive the first start after upgrading takes longer while PostgreSQL or SQLite builds them. Thanks to @Scalpinho, whose questions in #599 led to all of it.
+
+### Added
+- **The status shows when each listener last received an update from Telegram.** Each listener row in `telegram-archive status --json` and `GET /api/status` gains `last_update_at` (the last handled Telegram event, not the heartbeat), `deletions_blocked` (since the listener started) and `last_rate_limit_at`. They are written with the 30-second heartbeat, so there is no extra write per message. Alert on a stale `last_update_at` to catch a listener that runs but no longer receives anything. (#600)
+- **Exports can take only what changed.** `telegram-archive export --changed-since <time>` and the viewer export's `changed_since` keep the messages whose archive record changed at or after that time: newly stored, seen deleted, or given a new text version, earlier media, poll or preview state or reaction state. Old messages edited or deleted after the last run are included, with their whole history. See [Exporting only what changed](reference/cli.md#export-changed-since). (#601)
+
+### Fixed
+- **Deletions the mass-operation limiter blocks are no longer silent.** Each deletion event it blocks logs one warning with the message ids and says whether `SYNC_DELETIONS_EDITS` will record them later. The per-chat "deletions discarded" figure at shutdown always read 1; it now counts every blocked deletion. (#600)
+- **Paging through the What changed feed lists every change.** Rows stored at the same instant across a page boundary were skipped. `/api/changes` now returns an opaque `next_cursor` that pages losslessly; `before` and `next_before` still work for older clients. (#602)
+
 ## [9.4.2] - 2026-10-26
 
 Live updates work again on SQLite, plus dependency updates. No migration. Docker deployments only need the new pins.
