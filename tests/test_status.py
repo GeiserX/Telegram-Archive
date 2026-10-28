@@ -38,6 +38,10 @@ def _beat(age: timedelta = timedelta(0)) -> str:
     return (datetime.now(UTC) - age).isoformat()
 
 
+# The listener state fields of a listener that never wrote them.
+NO_LISTENER_STATE = {"last_update_at": None, "deletions_blocked": None, "last_rate_limit_at": None}
+
+
 def _mock_db(metadata: dict, *, account_ids=None, is_sqlite: bool = True) -> MagicMock:
     db = MagicMock()
     db.get_metadata = AsyncMock(side_effect=lambda key: metadata.get(key))
@@ -95,8 +99,8 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
                 "backup": {"last_run": "2026-01-15T06:00:00Z", "in_progress": False},
                 "stats_calculated_at": "2026-01-15T06:20:00",
                 "listeners": [
-                    {"account_id": 1, "active": False, "active_since": None},
-                    {"account_id": 2, "active": True, "active_since": "2026-01-15T05:00:00"},
+                    {"account_id": 1, "active": False, "active_since": None} | NO_LISTENER_STATE,
+                    {"account_id": 2, "active": True, "active_since": "2026-01-15T05:00:00"} | NO_LISTENER_STATE,
                 ],
                 "media": {"downloaded": 10, "pending": 2, "exhausted": 1, "skipped": 0},
                 "database": {"backend": "sqlite", "size_bytes": 4096},
@@ -122,7 +126,8 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
         payload = await collect_status(db, _mock_config())
 
         self.assertEqual(
-            payload["listeners"], [{"account_id": 1, "active": True, "active_since": "2026-01-15T05:00:00"}]
+            payload["listeners"],
+            [{"account_id": 1, "active": True, "active_since": "2026-01-15T05:00:00"} | NO_LISTENER_STATE],
         )
 
     async def _listener_problems(self, heartbeat_age: timedelta) -> tuple[list, list[str]]:
@@ -139,7 +144,9 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
         """A killed container never clears its start flag; only a fresh heartbeat counts."""
         listeners, problems = await self._listener_problems(timedelta(minutes=10))
 
-        self.assertEqual(listeners, [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"}])
+        self.assertEqual(
+            listeners, [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"} | NO_LISTENER_STATE]
+        )
         self.assertEqual(problems, ["the listener of account 1 is not running"])
 
     async def test_a_fresh_heartbeat_reads_as_running(self):
@@ -153,7 +160,9 @@ class TestCollectStatus(unittest.IsolatedAsyncioTestCase):
 
         payload = await collect_status(db, _mock_config())
 
-        self.assertEqual(payload["listeners"], [{"account_id": 1, "active": False, "active_since": None}])
+        self.assertEqual(
+            payload["listeners"], [{"account_id": 1, "active": False, "active_since": None} | NO_LISTENER_STATE]
+        )
 
     async def test_metadata_failure_propagates(self):
         db = _mock_db({})
@@ -564,7 +573,9 @@ async def test_collect_status_on_a_real_engine(real_adapter):
 
     backend = "sqlite" if real_adapter.db_manager._is_sqlite else "postgresql"
     assert payload["backup"] == {"last_run": _iso_z(now - timedelta(minutes=5)), "in_progress": False}
-    assert payload["listeners"] == [{"account_id": 1, "active": True, "active_since": "2026-01-15T05:00:00"}]
+    assert payload["listeners"] == [
+        {"account_id": 1, "active": True, "active_since": "2026-01-15T05:00:00"} | NO_LISTENER_STATE
+    ]
     assert payload["media"] == {"downloaded": 0, "pending": 0, "exhausted": 0, "skipped": 0}
     assert payload["database"]["backend"] == backend
     assert isinstance(payload["database"]["size_bytes"], int)
@@ -639,5 +650,51 @@ async def test_status_command_flags_a_killed_listener_on_a_real_engine(real_adap
 
     payload = json.loads(out.getvalue())
     assert code == 1
-    assert payload["listeners"] == [{"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"}]
+    assert payload["listeners"] == [
+        {"account_id": 1, "active": False, "active_since": "2026-01-15T05:00:00"} | NO_LISTENER_STATE
+    ]
     assert payload["problems"] == ["the listener of account 1 is not running"]
+
+
+class TestListenerStateFields(unittest.IsolatedAsyncioTestCase):
+    async def test_the_listener_state_is_read_per_account(self):
+        db = _mock_db(
+            {
+                "listener_active_since_account_2": "2026-01-15T05:00:00",
+                "listener_heartbeat_account_2": _beat(),
+                "listener_last_update_account_2": "2026-01-15T05:40:00+00:00",
+                "listener_deletions_blocked_account_2": "12",
+                "listener_last_rate_limit_account_2": "2026-01-15T05:30:00+00:00",
+                "listener_deletions_blocked": "not a number",
+            },
+            account_ids=[1, 2],
+        )
+
+        listeners = (await collect_status(db, _mock_config()))["listeners"]
+
+        self.assertEqual(listeners[0], {"account_id": 1, "active": False, "active_since": None} | NO_LISTENER_STATE)
+        self.assertEqual(
+            listeners[1],
+            {
+                "account_id": 2,
+                "active": True,
+                "active_since": "2026-01-15T05:00:00",
+                "last_update_at": "2026-01-15T05:40:00+00:00",
+                "deletions_blocked": 12,
+                "last_rate_limit_at": "2026-01-15T05:30:00+00:00",
+            },
+        )
+
+
+async def test_listener_state_on_a_real_engine(real_adapter):
+    now = datetime.now(UTC)
+    await _seed(real_adapter, now - timedelta(minutes=5), now)
+    await real_adapter.set_metadata("listener_last_update", "2026-01-15T05:40:00+00:00")
+    await real_adapter.set_metadata("listener_deletions_blocked", "3")
+    await real_adapter.set_metadata("listener_last_rate_limit", "2026-01-15T05:30:00+00:00")
+
+    payload = await collect_status(real_adapter, _mock_config())
+
+    assert payload["listeners"][0]["last_update_at"] == "2026-01-15T05:40:00+00:00"
+    assert payload["listeners"][0]["deletions_blocked"] == 3
+    assert payload["listeners"][0]["last_rate_limit_at"] == "2026-01-15T05:30:00+00:00"
