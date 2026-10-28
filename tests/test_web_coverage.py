@@ -2325,6 +2325,10 @@ if __name__ == "__main__":
     unittest.main()
 
 
+# The listener state fields of a listener that never wrote them.
+NO_STATE = {"last_update_at": None, "deletions_blocked": None, "last_rate_limit_at": None}
+
+
 @_skip_unless_web
 class TestOperatorStatus(_MasterTestBase):
     """GET /api/status — the one-page health answer (master-only)."""
@@ -2354,8 +2358,8 @@ class TestOperatorStatus(_MasterTestBase):
         payload = resp.json()
         assert payload["backup"] == {"last_run": "2026-08-22T06:00:00Z", "in_progress": False}
         assert payload["listeners"] == [
-            {"account_id": 1, "active": False, "active_since": None},
-            {"account_id": 2, "active": True, "active_since": "2026-08-22T05:00:00"},
+            {"account_id": 1, "active": False, "active_since": None} | NO_STATE,
+            {"account_id": 2, "active": True, "active_since": "2026-08-22T05:00:00"} | NO_STATE,
         ]
         assert payload["media"] == {"downloaded": 10, "pending": 2, "exhausted": 1}
         assert payload["database"] == {"backend": "sqlite", "size_bytes": 4096}
@@ -2396,7 +2400,7 @@ class TestOperatorStatus(_MasterTestBase):
         expected = {
             "backup": {"last_run": "2026-08-22T06:00:00Z", "in_progress": True},
             "stats_calculated_at": "2026-08-22T03:00:00",
-            "listeners": [{"account_id": 1, "active": True, "active_since": "2026-08-22T05:00:00"}],
+            "listeners": [{"account_id": 1, "active": True, "active_since": "2026-08-22T05:00:00"} | NO_STATE],
             "media": {"downloaded": 7, "pending": 0, "exhausted": 3, "skipped": 1},
             "database": {"backend": "postgresql", "size_bytes": 8192},
         }

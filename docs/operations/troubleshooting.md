@@ -49,7 +49,7 @@ The answer holds:
 
 - `backup.last_run` and `backup.in_progress`
 - `stats_calculated_at`
-- `listeners`: one entry per account, with `active` and `active_since`
+- `listeners`: one entry per account, with `active`, `active_since`, `last_update_at`, `deletions_blocked` and `last_rate_limit_at`. See [Checking that it runs](../configuration/listener.md#checking-that-it-runs) for what they mean and how to alert on them.
 - `media`: the media counts
 - `database.backend` and `database.size_bytes`
 

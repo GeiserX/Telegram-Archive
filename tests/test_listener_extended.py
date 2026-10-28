@@ -2930,4 +2930,177 @@ class TestListenerHeartbeat:
         ):
             await listener._heartbeat_loop()
 
-        assert db.set_metadata.await_count == 2
+        # Each beat writes the heartbeat and retries the blocked count it could not write.
+        assert db.set_metadata.await_count == 4
+
+
+class TestBlockedDeletionsAreVisible:
+    """#599: a deletion the rate limiter refused is logged with its id and counted in the status."""
+
+    def test_every_blocked_deletion_counts_against_the_chat_block(self):
+        """The shutdown summary's 'N deletions discarded' read 1 however many were blocked."""
+        protector = MassOperationProtector(threshold=1, window_seconds=60)
+        protector.check_operation(100, "deletion")  # applied
+        protector.check_operation(100, "deletion")  # trips the limit
+        protector.check_operation(100, "deletion")  # already blocked
+        protector.check_operation(100, "deletion")  # already blocked
+
+        assert protector.get_blocked_chats()[100][1] == 3
+        assert protector.stats["operations_blocked"] == 3
+        assert protector.last_trip_at is not None and protector.last_trip_at.tzinfo is not None
+
+    async def test_blocked_ids_are_logged_in_one_line_without_the_chat_id(self, caplog):
+        listener, handlers, db, config = _make_listener_with_handlers(
+            mass_operation_threshold=1, mass_operation_window_seconds=60
+        )
+        config.sync_deletions_edits = False
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [501, 502, 503]
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.listener"):
+            await handlers[events.MessageDeleted](event)
+
+        lines = [r.getMessage() for r in caplog.records if "Rate limiter blocked" in r.getMessage()]
+        assert len(lines) == 1
+        assert "blocked 2 deletion(s)" in lines[0]
+        assert "message ids: 502, 503" in lines[0]
+        assert "SYNC_DELETIONS_EDITS is off" in lines[0]
+        assert "1234567890" not in caplog.text
+        assert db.mark_message_deleted.await_count + db.delete_message.await_count == 1
+        assert listener.stats["operations_discarded"] == 2
+
+    async def test_the_log_says_the_sync_records_them_when_it_is_on(self, caplog):
+        listener, handlers, _, config = _make_listener_with_handlers(
+            mass_operation_threshold=1, mass_operation_window_seconds=60
+        )
+        config.sync_deletions_edits = True
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [1, 2]
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.listener"):
+            await handlers[events.MessageDeleted](event)
+
+        assert "SYNC_DELETIONS_EDITS is on, so the next backup records them" in caplog.text
+
+    async def test_no_line_when_nothing_was_blocked(self, caplog):
+        _, handlers, _, _ = _make_listener_with_handlers()
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [1, 2]
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.listener"):
+            await handlers[events.MessageDeleted](event)
+
+        assert "Rate limiter blocked" not in caplog.text
+
+
+class TestListenerStateWrites:
+    """#599: last update, blocked count and last trip ride on the heartbeat, written only when changed."""
+
+    def _written(self, db) -> dict:
+        return {call.args[0]: call.args[1] for call in db.set_metadata.await_args_list}
+
+    async def test_any_handled_update_moves_the_last_update_time(self):
+        listener, handlers, _, config = _make_listener_with_handlers(listen_deletions=False)
+        event = MagicMock()
+        event.chat_id = -1009999
+        event.deleted_ids = [1]
+        assert listener._last_update_at is None
+
+        await handlers[events.MessageDeleted](event)
+
+        assert listener._last_update_at is not None and listener._last_update_at.tzinfo is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "on_message_edited",
+            "on_message_deleted",
+            "on_new_message",
+            "on_chat_action",
+            "on_pinned_messages",
+            "on_message_reactions",
+            "on_message_poll",
+        ],
+    )
+    async def test_every_handler_moves_the_last_update_time_before_its_flag_check(self, name):
+        listener, handlers, _, _ = _make_listener_with_handlers(
+            listen_edits=False,
+            listen_deletions=False,
+            listen_new_messages=False,
+            listen_chat_actions=False,
+            listen_reactions=False,
+        )
+        by_name = {fn.__name__: fn for fn in handlers.values()}
+        assert listener._last_update_at is None
+
+        await by_name[name](MagicMock())
+
+        assert listener._last_update_at is not None and listener._last_update_at.tzinfo is not None
+
+    async def test_shutdown_flush_has_one_overall_time_limit(self):
+        db = _make_db()
+        listener = TelegramListener(_make_config(listen_reactions=False), db, account_id=1)
+        real_wait_for = asyncio.wait_for
+        flush_timeouts = []
+
+        async def fake_wait_for(aw, timeout):
+            if getattr(aw, "__qualname__", "").endswith("_write_listener_state"):
+                # The final flush: a database that never answers.
+                flush_timeouts.append(timeout)
+                aw.close()
+                raise TimeoutError
+            return await real_wait_for(aw, timeout)
+
+        listener.client = MagicMock()
+        listener.client.run_until_disconnected = AsyncMock()
+        with patch("telegram_archive.listener.asyncio.wait_for", side_effect=fake_wait_for):
+            await listener.run()
+
+        assert flush_timeouts == [10]
+        cleared = [c.args[1] for c in db.set_metadata.await_args_list if c.args[0] == "listener_active_since"]
+        assert cleared[-1] == ""
+
+    async def test_state_is_written_with_the_heartbeat_and_only_when_changed(self):
+        db = _make_db()
+        listener = TelegramListener(_make_config(), db, account_id=2)
+        listener._last_update_at = datetime.fromisoformat("2026-01-15T05:00:00+00:00")
+
+        await listener._write_listener_state(heartbeat=True)
+        first = self._written(db)
+        assert first["listener_last_update_account_2"] == "2026-01-15T05:00:00+00:00"
+        assert first["listener_deletions_blocked_account_2"] == "0"
+        assert "listener_heartbeat_account_2" in first
+        assert "listener_last_rate_limit_account_2" not in first
+
+        db.set_metadata.reset_mock()
+        await listener._write_listener_state(heartbeat=True)
+        assert [call.args[0] for call in db.set_metadata.await_args_list] == ["listener_heartbeat_account_2"]
+
+        listener._protector.stats["operations_blocked"] = 4
+        listener._protector.last_trip_at = datetime.fromisoformat("2026-01-15T05:01:00+00:00")
+        db.set_metadata.reset_mock()
+        await listener._write_listener_state(heartbeat=False)
+        assert self._written(db) == {
+            "listener_deletions_blocked_account_2": "4",
+            "listener_last_rate_limit_account_2": "2026-01-15T05:01:00+00:00",
+        }
+
+    async def test_run_resets_the_count_and_flushes_the_state_on_exit(self):
+        db = _make_db()
+        listener = TelegramListener(_make_config(listen_reactions=False), db, account_id=1)
+
+        async def run_until_disconnected():
+            listener._protector.stats["operations_blocked"] = 7
+
+        listener.client = MagicMock()
+        listener.client.run_until_disconnected = run_until_disconnected
+        await listener.run()
+
+        blocked = [
+            call.args[1] for call in db.set_metadata.await_args_list if call.args[0] == "listener_deletions_blocked"
+        ]
+        assert blocked[0] == "0"
+        assert blocked[-1] == "7"
