@@ -57,6 +57,13 @@ class TestCreateParser(unittest.TestCase):
         self.assertEqual(args.chat_id, 123)
         self.assertEqual(args.start_date, "2025-01-01")
         self.assertEqual(args.end_date, "2025-12-31")
+        self.assertIsNone(args.changed_since)
+
+    def test_parser_export_takes_changed_since(self):
+        """--changed-since reaches the export as the raw timestamp text."""
+        parser = create_parser()
+        args = parser.parse_args(["export", "-o", "out.json", "--changed-since", "2026-02-01T10:00:00Z"])
+        self.assertEqual(args.changed_since, "2026-02-01T10:00:00Z")
 
     def test_parser_has_stats_command(self):
         """Parser recognizes 'stats' subcommand."""
