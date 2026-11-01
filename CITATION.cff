@@ -10,8 +10,8 @@ authors:
 repository-code: "https://github.com/GeiserX/Telegram-Archive"
 url: "https://geiserx.github.io/Telegram-Archive/"
 license: GPL-3.0-or-later
-version: 9.5.0
-date-released: 2026-10-28
+version: 9.5.1
+date-released: 2026-11-01
 keywords:
   - telegram
   - backup
