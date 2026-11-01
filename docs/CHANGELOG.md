@@ -6,6 +6,16 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.5.1] - 2026-11-01
+
+A security update for one dependency, plus CI updates. No migration. Docker deployments only need the new pins.
+
+### Security
+- **pyasn1 0.6.5.** pyasn1 comes in through `rsa`, which Telethon uses. Version 0.6.4 had four decoding paths where crafted ASN.1 input took quadratic CPU time (GHSA-2qm8-x737-gmw5, GHSA-mm57-4v3p-rchx, GHSA-9m75-vc3g-4x39, GHSA-fm9c-5rcf-2q5p). (#606)
+
+### Changed
+- CI actions: setup-python 7.1.0, CodeQL 4.39.1, docker/login-action 4.7.0, setup-uv 10.3.3, gh-action-pypi-publish 1.14.3. (#604, #605)
+
 ## [9.5.0] - 2026-10-28
 
 Better evidence of what the archive captured and what it may have missed: deletions the listener's limiter refuses are now logged and counted, the status shows when each listener last heard from Telegram, exports can pick up only what changed, and the What changed feed no longer skips rows between pages. Includes migration 042, which adds six timestamp indexes; on a large archive the first start after upgrading takes longer while PostgreSQL or SQLite builds them. Thanks to @Scalpinho, whose questions in #599 led to all of it.
