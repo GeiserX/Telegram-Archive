@@ -55,6 +55,17 @@ _retries: set = set()
 # resume_saved_state(), so each client object loads them at most once.
 _pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
+# session file name -> rows a deferred replay could not load before its client
+# disconnected. An owned listener builds a new client on its next connect(),
+# and the old client's disconnect writes its newer in-memory state to the
+# session file, so remember_saved_state() takes these rows instead.
+_deferred: dict = {}
+
+
+def _session_key(client):
+    name = getattr(getattr(client, "session", None), "filename", None)
+    return name if isinstance(name, str) and name != ":memory:" else None
+
 
 async def remember_saved_state(client) -> None:
     """Stash the session's saved update state for a later resume_saved_state().
@@ -70,6 +81,10 @@ async def remember_saved_state(client) -> None:
             logger.warning("Telethon internals changed; restart replay disabled, live updates only")
         return
     try:
+        deferred = _deferred.pop(_session_key(client), None)
+        if deferred is not None:
+            _pending[client] = deferred
+            return
         _pending[client] = list(await utils.maybe_async(client.session.get_update_states()))
     except Exception as e:
         logger.warning(f"Could not read saved update state ({type(e).__name__}); live updates only")
@@ -137,6 +152,7 @@ async def resume_saved_state(client) -> None:
     if MessageBox is None:
         return  # remember_saved_state() already warned
     rows = _pending.pop(client, None)
+    _deferred.pop(_session_key(client), None)
     try:
         box = getattr(client, "_message_box", None)
         if box is not None:
@@ -169,7 +185,12 @@ async def _resume_when_idle(client, account, rows) -> None:
     try:
         for _ in range(_RETRY_WAIT_STEPS):
             if not client.is_connected():
-                _pending[client] = rows  # the next listener.connect() on this client retries
+                # The next listener.connect() retries: on this client if it is
+                # shared, on a new one built over the same session if it is owned.
+                _pending[client] = rows
+                key = _session_key(client)
+                if key is not None:
+                    _deferred[key] = rows
                 logger.info(
                     "Client disconnected before the update difference finished; replay waits for the next connect"
                 )

@@ -57,6 +57,13 @@ def _simulate_on_login(client: TelegramClient, pts: int = 900) -> None:
     client._message_box.load(SessionState(0, 0, False, pts, 0, now, 0, None), [])
 
 
+@pytest.fixture(autouse=True)
+def _no_deferred_rows_between_tests():
+    update_state._deferred.clear()
+    yield
+    update_state._deferred.clear()
+
+
 @pytest.fixture
 def session_path(tmp_path):
     return str(tmp_path / "account")
@@ -237,7 +244,29 @@ class TestNothingToLoad:
         client._message_box.getting_diff_for = set()
         await resume_saved_state(client)
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 500
+        assert update_state._deferred == {}
         client.session.close()
+
+    async def test_disconnect_during_retry_hands_the_rows_to_a_new_client(self, session_path, monkeypatch):
+        """An owned listener builds a new client; the old one's disconnect saved its newer state."""
+        client = self._busy_client(session_path, monkeypatch, connected=False)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+        await resume_saved_state(client)
+        await self._settle()
+        client.session.set_update_state(0, _state(900))  # what disconnect() persists
+        client.session.save()
+        client.session.close()
+
+        replacement = _client(session_path)
+        await remember_saved_state(replacement)
+        _simulate_on_login(replacement)
+        await resume_saved_state(replacement)
+
+        assert replacement._message_box.map[ENTRY_ACCOUNT].pts == 500
+        assert update_state._deferred == {}
+        replacement.session.close()
 
     async def test_retry_failure_warns_with_the_type_name_only(self, session_path, monkeypatch, caplog):
         client = self._busy_client(session_path, monkeypatch)
