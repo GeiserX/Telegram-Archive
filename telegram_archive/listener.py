@@ -86,6 +86,7 @@ from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import absorb_media_floods, call_with_flood_retry, complete_rich_message
 from .transcription import transcribe_media
 from .transcription_contract import is_transcribable
+from .update_state import remember_saved_state, resume_saved_state
 from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
@@ -555,7 +556,9 @@ class TelegramListener:
         ``client.catch_up()``, once the handlers are attached: the official apps
         ask for updates.getDifference on every new session, and this is the same
         request, so updates Telegram queued while this client was not listening
-        reach the handlers instead of being dropped.
+        reach the handlers instead of being dropped. On a client's first
+        connect the difference starts from the update state saved in the
+        session file (#611), so a process restart replays what it missed too.
         """
         # If using shared client, just verify it's connected
         if self.client is not None and not self._owns_client:
@@ -581,6 +584,8 @@ class TelegramListener:
                 **self.config.get_telegram_client_kwargs(),
             )
             self._owns_client = True
+            # Before connect(): Telethon's keepalive overwrites the saved state.
+            await remember_saved_state(self.client)
 
             # Connect and authenticate
             await self.client.connect()
@@ -606,9 +611,14 @@ class TelegramListener:
 
         # Ask Telegram for what this client missed, now that every handler is
         # attached (Telethon's own advice for catch_up). It queues
-        # updatesTooLong, so the update loop sends updates.getDifference from
-        # the state it holds in memory; a FloodWait there is handled inside
-        # Telethon, and updates.differenceTooLong is left to the full pass.
+        # updatesTooLong, so the update loop sends updates.getDifference. On the
+        # client's first connect that difference starts from the update state
+        # saved in the session file, loaded just below (once per client); after
+        # that, from the state Telethon holds in memory. A FloodWait postpones
+        # it to the next gap or Telethon's 15-minute deadline without moving
+        # pts. A TooLong answer drops the gap; update_state logs it, and
+        # SYNC_DELETIONS_EDITS or the full pass recovers it.
+        await resume_saved_state(self.client)
         await self.client.catch_up()
         logger.info("Catch-up requested")
 

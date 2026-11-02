@@ -22,12 +22,29 @@ While a listener runs, it stamps a heartbeat in the database every 30 seconds. T
 
 Telegram keeps the updates a client missed for a while and hands them over when the client asks for them. The official apps ask on every new connection, and the listener does the same. Each time a listener starts or restarts, it first attaches its handlers and only then reconnects and asks Telegram for what it missed. New messages and edits from the outage, and whatever else Telegram replays, are then saved as if they had just happened.
 
+A process restart is covered the same way. The Telegram library keeps its update state in the session file, and on its first start the listener asks Telegram for everything since that state, after its handlers are attached. The startup log shows one line for it:
+
+```text
+Catch-up: resuming from update state dated 5m ago, account gap 8 pts, 12 channels (0 without access hash)
+```
+
+The account gap counts the missed updates in private chats and basic groups. Supergroups and channels have their own counters, which Telegram reports only when it sends their updates, within 15 minutes of the start at most. `No saved update state, nothing to replay` means a fresh session.
+
+A replay is handled exactly like live updates:
+
+- Replayed deletions are applied only with `LISTEN_DELETIONS=true`, and they count against the [mass-operation limit](#mass-operation-protection). In a chat with more than 10 deletions during the downtime, the 11th and later are blocked and logged, and `SYNC_DELETIONS_EDITS` records them.
+- A replayed deletion is dated when the listener applies it, not when it happened. The soft-delete time and the webhook `date` are the replay time.
+- Replayed new messages notify the viewer and Web Push like live ones.
+- A crash can replay up to a minute of updates twice. Edits and deletions are idempotent, so the archive does not change.
+
 A short network blip that the Telegram library reconnects by itself is covered too. The handlers stay attached, and the missed updates arrive once the library notices the gap, within 15 minutes at most.
 
 Some things are not replayed:
 
-- A process restart. A stopped container keeps no update state, so a restart runs the startup backup instead. That pass fetches new messages. Edits, deletions and reactions to older messages made while the process was stopped are caught only by `SYNC_DELETIONS_EDITS`, the reaction re-sweep, or a later read of the same messages.
-- A very long outage. When Telegram answers that too much was missed, the listener drops the replay and the next full pass fetches the new messages.
+- A restart after a one-shot command. `backup`, `auth`, `fill-gaps` and the scripts connect with the same session file and save the current update state into it, so a listener started after them has nothing left to replay. Edits and deletions made before that are caught only by `SYNC_DELETIONS_EDITS`.
+- A very long outage. When Telegram answers that too much was missed, for the account or for one chat (roughly 100 or more updates in one supergroup or channel), the listener drops that replay and logs a warning, `Telegram dropped a channel's replay as too long (pts A→B)`. The next full pass fetches the new messages, and `SYNC_DELETIONS_EDITS` records the edits and deletions.
+- A stop during the replay. `docker stop` while the replay runs can lose the updates still being handled; the library saves its state as it shuts down.
+- Reactions. They carry no update counter, so a restart does not replay them; the reaction re-sweep (`REACTION_RESWEEP_DAYS`) covers them.
 - Reactions you add from another device, which Telegram does not always push. See [Reactions](#reactions).
 
 That is why the daily full pass stays on.
@@ -148,7 +165,7 @@ The `SYNC_DELETIONS_EDITS` pass of the scheduled backup re-reads every archived 
 
 `telegram-archive status --json` and `GET /api/status` show, per account, `deletions_blocked`, the deletions blocked since the listener last started, and `last_rate_limit_at`, when the limiter last tripped. The count starts again at 0 each time the listener starts, a watchdog restart included; `last_rate_limit_at` is kept across restarts. The shutdown summary logs the same count as **Deletions blocked (not applied)**.
 
-The limiter covers the listener only. The `SYNC_DELETIONS_EDITS` pass of the scheduled backup has no such limit.
+The limiter covers the listener only, the restart replay included: a burst of deletions replayed after a restart counts against it like a live one. The `SYNC_DELETIONS_EDITS` pass of the scheduled backup has no such limit.
 
 !!! warning "Checked at startup, even with the listener off"
     Both values must be at least `1`. The backup and the viewer refuse to start otherwise.

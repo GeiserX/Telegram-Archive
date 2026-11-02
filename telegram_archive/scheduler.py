@@ -422,6 +422,9 @@ class BackupScheduler:
         only the handlers attached at that moment and are then gone, because the
         update state has moved past them. listener.connect() then asks for the
         difference itself (client.catch_up()), which covers shorter outages.
+        On a client's first listener start, that difference begins from the
+        update state saved in the session file (#611), so a process restart
+        replays too.
 
         ``delay`` (the watchdog's pause) is spent with the new handlers already
         attached, so a scheduled backup that heals the client during the pause
@@ -432,8 +435,9 @@ class BackupScheduler:
             if entry.connection.client is None or entry.row_id is None:
                 # No client exists yet (one account of several failed at
                 # startup) or the row is unresolved, which needs the login. A
-                # client built now starts from a fresh update state, so there
-                # is nothing to replay yet: heal first, as before. The branch
+                # client built now loads nothing at connect: its saved update
+                # state is applied by listener.connect() after attach, so
+                # healing first is still safe. The branch
                 # reads the client object, not is_connected: a failed heal
                 # clears that flag but keeps the client and its update state,
                 # and reviving that client replays the outage at once.

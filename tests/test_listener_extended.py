@@ -1302,6 +1302,45 @@ class TestOnPinnedMessagesHandler:
 # ===========================================================================
 
 
+class TestRestartReplayThroughLimiter:
+    """#611: a restart replays deletions as one burst, and the limiter still applies."""
+
+    async def _replay(self, threshold):
+        listener, handlers, db, config = _make_listener_with_handlers(
+            listen_deletions=True,
+            deletion_mode="soft",
+            mass_operation_threshold=threshold,
+            mass_operation_window_seconds=30,
+        )
+        handler = handlers[events.MessageDeleted]
+
+        def deletion(msg_id):
+            event = MagicMock()
+            event.chat_id = -1001234567890
+            event.deleted_ids = [msg_id]
+            return event
+
+        # Telethon spawns every update of a difference slice as its own task.
+        await asyncio.gather(*(handler(deletion(i)) for i in range(1, 26)))
+        replay_applied = listener.stats["deletions_applied"]
+        replay_discarded = listener.stats["operations_discarded"]
+        await handler(deletion(100))  # a live deletion right after the replay
+        return listener, replay_applied, replay_discarded
+
+    async def test_burst_beyond_the_threshold_is_blocked(self):
+        listener, applied, discarded = await self._replay(threshold=10)
+
+        assert applied == 10
+        assert discarded == 15
+        assert listener.stats["deletions_applied"] == 10  # the live one is blocked too
+
+    async def test_control_a_high_threshold_applies_the_whole_burst(self):
+        listener, applied, discarded = await self._replay(threshold=100)
+
+        assert applied == 25
+        assert discarded == 0
+
+
 class TestOnMessageDeletedRateLimiting:
     """Tests for deletion handler rate limiting and resolved-chat paths."""
 

@@ -62,7 +62,7 @@ At startup the scheduler logs one line that says which mode it runs, for example
 
 The listener does not see everything, so the full pass is still needed:
 
-- Telegram replays only a limited window of missed updates after a disconnect. After a long outage, or a process restart, the pass fetches what the listener could not.
+- Telegram replays only a limited window of missed updates after a disconnect. After a long outage, the pass fetches what the listener could not.
 - Reactions you add from another device are not always pushed to the listener.
 - A chat you join while the backup is down is picked up by the next pass.
 - Gap-fill (`FILL_GAPS`) and the [reaction re-sweep](#reaction-re-sweep) run as part of the pass.

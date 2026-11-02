@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+- **The listener now replays edits, deletions and new messages missed while the process was stopped**, from the update state Telethon already keeps in the session file. Before, a restart started from "now" and only `SYNC_DELETIONS_EDITS` recovered what changed while it was down. Replayed deletions still need `LISTEN_DELETIONS=true` and go through the mass-operation limit. See [Catching up after a disconnect](configuration/listener.md#catching-up-after-a-disconnect). (#611)
+
 ## [9.5.1] - 2026-11-01
 
 A security update for one dependency, plus CI updates. No migration. Docker deployments only need the new pins.

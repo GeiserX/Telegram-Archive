@@ -1303,6 +1303,30 @@ class TestListenerRestartCatchUp:
         assert calls == ["add_event_handler"] * 7 + ["sleep 5", "client.connect", "catch_up"]
         assert isinstance(entry.listener, TelegramListener)
 
+    async def test_restart_loads_saved_state_after_attach_and_heal(self):
+        """#611: the saved update state is applied by listener.connect(), after the handlers."""
+        from test_listener import _catch_up_db
+
+        from telegram_archive.listener import TelegramListener
+
+        calls: list = []
+        connection = _HealingConnection(calls)
+
+        async def record_resume(client):
+            calls.append("resume_saved_state")
+
+        with patch("telegram_archive.scheduler.signal.signal"):
+            scheduler, entry = _catch_up_scheduler(connection)
+            with (
+                patch("telegram_archive.listener.create_adapter", new_callable=AsyncMock, return_value=_catch_up_db()),
+                patch.object(TelegramListener, "run", new_callable=AsyncMock),
+                patch("telegram_archive.listener.resume_saved_state", side_effect=record_resume),
+            ):
+                await scheduler._start_listener()
+                await entry.listener_task
+
+        assert calls == ["add_event_handler"] * 7 + ["client.connect", "resume_saved_state", "catch_up"]
+
     async def test_a_restart_after_a_failed_heal_still_attaches_first(self):
         """A failed heal clears is_connected but keeps the client and its update state.
 
