@@ -141,7 +141,8 @@ services:
       # REACTION_RESWEEP_MAX_PER_CHAT: ${REACTION_RESWEEP_MAX_PER_CHAT:-500}
       # REACTION_RESWEEP_BATCH_DELAY_SECONDS: ${REACTION_RESWEEP_BATCH_DELAY_SECONDS:-2}
 
-      # Mass operation protection (only applies when ENABLE_LISTENER=true)
+      # Mass operation protection (only applies when ENABLE_LISTENER=true).
+      # It also applies to deletions the listener replays after a restart (those need LISTEN_DELETIONS=true too).
       # MASS_OPERATION_THRESHOLD: ${MASS_OPERATION_THRESHOLD:-10}
       # MASS_OPERATION_WINDOW_SECONDS: ${MASS_OPERATION_WINDOW_SECONDS:-30}
       # MASS_OPERATION_BUFFER_DELAY: ${MASS_OPERATION_BUFFER_DELAY:-2.0}

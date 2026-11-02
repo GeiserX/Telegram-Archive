@@ -4,7 +4,7 @@ Tests for the real-time listener module.
 
 import asyncio
 from datetime import UTC
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telethon import events
@@ -1904,6 +1904,47 @@ class TestCatchUpOnConnect:
         assert calls.count("add_event_handler") == 7
         assert calls == ["add_event_handler"] * 7 + ["catch_up"]
         assert listener._tracked_chat_ids == {-1001234567890}
+
+    async def test_saved_state_loads_after_every_handler_and_before_catch_up(self):
+        """#611: the restart replay reaches the handlers only if it loads after attach()."""
+        calls: list = []
+        client = _RecordingClient(calls)
+        listener = TelegramListener(_catch_up_config(), _catch_up_db(), client=client, account_id=1)
+
+        async def record_resume(c):
+            assert c is client
+            calls.append("resume_saved_state")
+
+        with patch("telegram_archive.listener.resume_saved_state", side_effect=record_resume):
+            await listener.connect()
+
+        assert calls == ["add_event_handler"] * 7 + ["resume_saved_state", "catch_up"]
+
+    async def test_own_client_remembers_saved_state_before_connecting(self):
+        """The standalone listener stashes update_state before connect() rewrites it."""
+        calls: list = []
+        client = _RecordingClient(calls)
+
+        async def connect():
+            calls.append("client.connect")
+
+        client.connect = connect
+        listener = TelegramListener(_catch_up_config(), _catch_up_db(), account_id=1)
+        listener.account = MagicMock(session_path="/tmp/test-session", api_id=1, api_hash="x")
+        listener.config.get_telegram_client_kwargs = MagicMock(return_value={})
+
+        with (
+            patch("telegram_archive.listener.TelegramClient", return_value=client),
+            patch(
+                "telegram_archive.listener.remember_saved_state",
+                new_callable=AsyncMock,
+                side_effect=lambda c: calls.append("remember_saved_state"),
+            ),
+        ):
+            await listener.connect()
+
+        assert calls[:2] == ["remember_saved_state", "client.connect"]
+        assert calls[-1] == "catch_up"
 
     async def test_stop_detaches_what_attach_registered(self):
         calls: list = []

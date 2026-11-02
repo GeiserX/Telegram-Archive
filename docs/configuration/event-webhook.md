@@ -77,7 +77,7 @@ When `EVENT_WEBHOOK_CHAT_IDS` is set, the line ends with `, restricted to N chat
 | `message_id` | Telegram message id | Telegram message id |
 | `sender_id` | Sender's Telegram id | Sender's Telegram id |
 | `sender_name` | Sender name from the archive | Sender name from the archive |
-| `date` | Telegram's edit time, with an offset, such as `2026-09-28T10:00:00+00:00`. Blank when the edit event carries no edit time, which the archive accepts only for a message that was never edited before. | Time the deletion was observed, in UTC with no offset and with microseconds, such as `2026-09-28T10:00:00.400369` |
+| `date` | Telegram's edit time, with an offset, such as `2026-09-28T10:00:00+00:00`. Blank when the edit event carries no edit time, which the archive accepts only for a message that was never edited before. | Time the deletion was observed, in UTC with no offset and with microseconds, such as `2026-09-28T10:00:00.400369`. A deletion replayed after a restart carries the replay time. |
 | `text` | The new text | The archived text of the deleted message |
 | `old_text` | The previous archived text | Blank |
 | `new_text` | The new text | Blank |
@@ -194,6 +194,7 @@ The listener hands each request to a background task and never waits for it.
 - Any status below 300 counts as success.
 - A 3xx or any other 4xx response is a permanent failure. Redirects are never followed, so set `EVENT_WEBHOOK_URL` to the final URL.
 - When 100 deliveries are already in flight, new events are dropped.
+- After a restart the listener [replays the edits and deletions it missed](listener.md#catching-up-after-a-disconnect), so they arrive in one burst. Past 100 in flight the rest are dropped, logged only at DEBUG.
 - Nothing is stored for redelivery. A failed or dropped event is gone, and the archive itself is unaffected.
 - Shutdown cancels any delivery still in flight.
 

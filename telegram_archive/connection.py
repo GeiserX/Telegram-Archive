@@ -25,6 +25,7 @@ from telethon.errors import FloodPremiumWaitError, FloodWaitError
 
 from . import LOGIN_DOCS_URL
 from .config import AccountConfig, Config
+from .update_state import remember_saved_state
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,10 @@ class TelegramConnection:
                 self.account.api_hash,
                 **self.config.get_telegram_client_kwargs(),
             )
+            # Read the saved update state before connect() overwrites it; only a
+            # listener loads it (listener.connect(), after attaching). A revived
+            # client keeps its in-memory state, so it is not re-read there.
+            await remember_saved_state(self._client)
         else:
             logger.info("Reviving the existing Telegram client in place")
 
