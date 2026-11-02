@@ -4,6 +4,7 @@ Built on a real TelegramClient over a temporary SQLiteSession that never
 connects, so the Telethon internals the helper relies on are the real ones.
 """
 
+import asyncio
 import datetime
 import logging
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +17,13 @@ from telethon._updates.messagebox import ENTRY_ACCOUNT
 from telethon._updates.messagebox import State as BoxState
 from telethon.sessions import SQLiteSession
 from telethon.tl import types
-from telethon.tl.types.updates import ChannelDifferenceEmpty, ChannelDifferenceTooLong, State
+from telethon.tl.types.updates import (
+    ChannelDifferenceEmpty,
+    ChannelDifferenceTooLong,
+    DifferenceEmpty,
+    DifferenceTooLong,
+    State,
+)
 
 from telegram_archive import update_state
 from telegram_archive.update_state import remember_saved_state, resume_saved_state
@@ -75,8 +82,8 @@ class TestRoundTrip:
         assert "1 channels (0 without access hash)" in lines[0]
         client.session.close()
 
-    async def test_control_without_resume_the_box_stays_at_now(self, session_path):
-        """Red control: Telethon alone ignores the saved rows."""
+    async def test_premise_without_resume_the_box_stays_at_now(self, session_path):
+        """Premise: Telethon alone ignores the saved rows."""
         _seed_session(session_path)
         client = _client(session_path)
         await remember_saved_state(client)
@@ -140,7 +147,29 @@ class TestNothingToLoad:
         assert [r.getMessage() for r in caplog.records] == ["No saved update state, nothing to replay"]
         client.session.close()
 
-    async def test_difference_in_flight_is_not_overwritten(self, session_path, caplog):
+    async def test_difference_in_flight_is_waited_for_then_loaded(self, session_path, monkeypatch):
+        monkeypatch.setattr(update_state, "_DIFF_WAIT_SECONDS", 0.01)
+        _seed_session(session_path)
+        client = _client(session_path)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        box = client._message_box
+        box.getting_diff_for = {ENTRY_ACCOUNT}
+
+        async def finish_the_difference():
+            await asyncio.sleep(0.03)
+            box.map[ENTRY_ACCOUNT].pts = 950  # what the in-flight difference fetched
+            box.getting_diff_for = set()
+
+        finisher = asyncio.create_task(finish_the_difference())
+        await resume_saved_state(client)
+        await finisher
+
+        assert box.map[ENTRY_ACCOUNT].pts == 500
+        client.session.close()
+
+    async def test_difference_still_in_flight_keeps_the_stash_and_warns(self, session_path, monkeypatch, caplog):
+        monkeypatch.setattr(update_state, "_DIFF_WAIT_SECONDS", 0)
         _seed_session(session_path)
         client = _client(session_path)
         await remember_saved_state(client)
@@ -151,7 +180,18 @@ class TestNothingToLoad:
             await resume_saved_state(client)
 
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
-        assert [r.getMessage() for r in caplog.records] == ["Update difference already running; saved state not loaded"]
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (
+                logging.WARNING,
+                "Update difference still running; restart replay skipped, "
+                "only SYNC_DELETIONS_EDITS=true recovers its edits and deletions",
+            )
+        ]
+
+        # The next listener.connect() on this client retries with the same rows.
+        client._message_box.getting_diff_for = set()
+        await resume_saved_state(client)
+        assert client._message_box.map[ENTRY_ACCOUNT].pts == 500
         client.session.close()
 
 
@@ -228,6 +268,35 @@ class TestTooLongWarning:
         assert caplog.records == []
         client.session.close()
 
+    def _client_with_account_diff(self, session_path):
+        client = _client(session_path)
+        _simulate_on_login(client, pts=500)
+        update_state._watch_too_long(client._message_box)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+        return client
+
+    def test_account_too_long_logs_one_warning(self, session_path, caplog):
+        client = self._client_with_account_diff(session_path)
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.update_state"):
+            client._message_box.apply_difference(DifferenceTooLong(pts=900), client._mb_entity_cache)
+
+        lines = [r.getMessage() for r in caplog.records]
+        assert len(lines) == 1
+        assert "account replay as too long (pts 500→900)" in lines[0]
+        assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
+        client.session.close()
+
+    def test_control_an_ordinary_account_difference_logs_nothing(self, session_path, caplog):
+        client = self._client_with_account_diff(session_path)
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.update_state"):
+            client._message_box.apply_difference(DifferenceEmpty(date=SAVED_DATE, seq=8), client._mb_entity_cache)
+
+        assert caplog.records == []
+        assert client._message_box.map[ENTRY_ACCOUNT].pts == 500
+        client.session.close()
+
     def test_wraps_only_once(self, session_path):
         client = self._client_with_channel(session_path)
         wrapped = client._message_box.apply_channel_difference
@@ -267,6 +336,27 @@ class TestTelethonContract:
         )
 
 
+class TestTelethonInternalsMissing:
+    async def test_replay_is_disabled_with_one_warning(self, session_path, monkeypatch, caplog):
+        """A Telethon without the private names: no crash, one WARNING, nothing loaded."""
+        monkeypatch.setattr(update_state, "MessageBox", None)
+        monkeypatch.setattr(update_state, "_unavailable_warned", False)
+        _seed_session(session_path)
+        client = _client(session_path)
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await remember_saved_state(client)
+            await remember_saved_state(client)
+            _simulate_on_login(client)
+            await resume_saved_state(client)
+
+        assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
+        assert [r.getMessage() for r in caplog.records] == [
+            "Telethon internals changed; restart replay disabled, live updates only"
+        ]
+        client.session.close()
+
+
 class TestOnlyListenerClientsLoad:
     def test_client_kwargs_never_ask_telethon_to_catch_up(self):
         from telegram_archive.config import Config, build_telegram_client_kwargs
@@ -291,7 +381,9 @@ class TestOnlyListenerClientsLoad:
         _wire_default_account(config)
         conn = TelegramConnection(config)
 
+        calls: list[str] = []
         mock_client = AsyncMock()
+        mock_client.connect = AsyncMock(side_effect=lambda: calls.append("client.connect"))
         mock_client.is_user_authorized = AsyncMock(return_value=True)
         mock_client.get_me = AsyncMock(return_value=MagicMock())
         mock_client.session = MagicMock()
@@ -299,11 +391,18 @@ class TestOnlyListenerClientsLoad:
 
         with (
             patch("telegram_archive.connection.TelegramClient", return_value=mock_client),
-            patch("telegram_archive.connection.remember_saved_state", new_callable=AsyncMock) as remember,
+            patch(
+                "telegram_archive.connection.remember_saved_state",
+                new_callable=AsyncMock,
+                side_effect=lambda client: calls.append("remember"),
+            ) as remember,
             patch.object(TelegramConnection, "_session_has_auth", return_value=False),
         ):
             await conn.connect()
+            # The saved state is read before connect() lets the keepalive overwrite it.
+            assert calls[:2] == ["remember", "client.connect"]
             conn._connected = False  # the socket died; the next connect revives in place
             await conn.connect()
 
         remember.assert_awaited_once_with(mock_client)
+        assert calls.count("remember") == 1

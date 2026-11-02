@@ -32,7 +32,7 @@ The account gap counts the missed updates in private chats and basic groups. Sup
 
 A replay is handled exactly like live updates:
 
-- Replayed deletions are applied only with `LISTEN_DELETIONS=true`, and they count against the [mass-operation limit](#mass-operation-protection). In a chat with more than 10 deletions during the downtime, the 11th and later are blocked and logged, and `SYNC_DELETIONS_EDITS` records them.
+- Replayed deletions are applied only with `LISTEN_DELETIONS=true`, and they count against the [mass-operation limit](#mass-operation-protection). In a chat with more than 10 deletions during the downtime, the 11th and later are blocked and logged. They are recorded later only if `SYNC_DELETIONS_EDITS` is on (off by default).
 - A replayed deletion is dated when the listener applies it, not when it happened. The soft-delete time and the webhook `date` are the replay time.
 - Replayed new messages notify the viewer and Web Push like live ones.
 - A crash can replay up to a minute of updates twice. Edits and deletions are idempotent, so the archive does not change.
@@ -41,8 +41,8 @@ A short network blip that the Telegram library reconnects by itself is covered t
 
 Some things are not replayed:
 
-- A restart after a one-shot command. `backup`, `auth`, `fill-gaps` and the scripts connect with the same session file and save the current update state into it, so a listener started after them has nothing left to replay. Edits and deletions made before that are caught only by `SYNC_DELETIONS_EDITS`.
-- A very long outage. When Telegram answers that too much was missed, for the account or for one chat (roughly 100 or more updates in one supergroup or channel), the listener drops that replay and logs a warning, `Telegram dropped a channel's replay as too long (pts A→B)`. The next full pass fetches the new messages, and `SYNC_DELETIONS_EDITS` records the edits and deletions.
+- A restart after a one-shot command. Any command that connects with the same session (see [One client per session](../getting-started/telegram-login.md#one-client-per-session)) saves the current update state into it, so a listener started after it has nothing left to replay. Edits and deletions made before that are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default).
+- A very long outage. When Telegram answers that too much was missed, for the account or for one chat (roughly 100 or more updates in one supergroup or channel), the listener drops that replay and logs a warning that contains `replay as too long (pts A→B)`. The next full pass fetches the new messages; the edits and deletions are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default).
 - A stop during the replay. `docker stop` while the replay runs can lose the updates still being handled; the library saves its state as it shuts down.
 - Reactions. They carry no update counter, so a restart does not replay them; the reaction re-sweep (`REACTION_RESWEEP_DAYS`) covers them.
 - Reactions you add from another device, which Telegram does not always push. See [Reactions](#reactions).
