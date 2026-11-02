@@ -257,7 +257,7 @@ The archive only learns about deletions when the listener runs with `LISTEN_DELE
 
 Joins, title changes and other chat events show as centred pills. Click the name of the person who did it to open their details. An event deleted in Telegram ends with "· deleted".
 
-When a group was converted to a supergroup, a banner says "This group continues as a supergroup" or "Migrated from <title>".
+When a group was converted to a supergroup, a banner says "This group continues as a supergroup" or "Migrated from `<title>`".
 
 ## Moving through time
 
