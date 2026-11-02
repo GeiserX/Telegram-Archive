@@ -42,7 +42,7 @@ A short network blip that the Telegram library reconnects by itself is covered t
 Some things are not replayed:
 
 - A restart after a one-shot command. Any command that connects with the same session (see [One client per session](../getting-started/telegram-login.md#one-client-per-session)) saves the current update state into it, so a listener started after it has nothing left to replay. Edits and deletions made before that are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default).
-- A very long outage. When Telegram answers that too much was missed, for the account or for one chat (roughly 100 or more updates in one supergroup or channel), the listener drops that replay and logs a warning that contains `replay as too long (pts A→B)`. The next full pass fetches the new messages; the edits and deletions are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default).
+- A very long outage. When Telegram answers that too much was missed, for the account or for one chat (roughly 100 or more updates in one supergroup or channel), the listener drops that replay and logs a warning that contains `replay as too long (pts A→B)`. The next full pass fetches the new messages; the edits and deletions are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default), and with `SYNC_DELETIONS_EDITS_DAYS` above 0 only for messages posted inside that window, see [Checking only recent messages](schedule.md#sync-window).
 - A stop during the replay. `docker stop` while the replay runs can lose the updates still being handled; the library saves its state as it shuts down.
 - Reactions. They carry no update counter, so a restart does not replay them; the reaction re-sweep (`REACTION_RESWEEP_DAYS`) covers them.
 - Reactions you add from another device, which Telegram does not always push. See [Reactions](#reactions).
@@ -161,7 +161,7 @@ Every deletion event that had deletions blocked logs one warning with their mess
 🛡️ Rate limiter blocked 3 deletion(s), not applied, message ids: 5011, 5012, 5013. SYNC_DELETIONS_EDITS is off, so they stay unrecorded; enable it for a backup run to record them
 ```
 
-The `SYNC_DELETIONS_EDITS` pass of the scheduled backup re-reads every archived message and records the deletions the listener blocked. With it off, nothing else records them.
+The `SYNC_DELETIONS_EDITS` pass of the scheduled backup re-reads every archived message and records the deletions the listener blocked. With it off, nothing else records them. With [`SYNC_DELETIONS_EDITS_DAYS`](schedule.md#sync-window) above 0, the pass reads only messages posted in the last N days. A blocked deletion of an older post is recorded only by a full pass, with `SYNC_DELETIONS_EDITS_DAYS=0`, and the warning says so.
 
 `telegram-archive status --json` and `GET /api/status` show, per account, `deletions_blocked`, the deletions blocked since the listener last started, and `last_rate_limit_at`, when the limiter last tripped. The count starts again at 0 each time the listener starts, a watchdog restart included; `last_rate_limit_at` is kept across restarts. The shutdown summary logs the same count as **Deletions blocked (not applied)**.
 

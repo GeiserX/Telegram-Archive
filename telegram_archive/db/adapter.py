@@ -2900,8 +2900,14 @@ class DatabaseAdapter:
             message = result.scalar_one_or_none()
             return self._message_to_dict(message) if message else None
 
-    async def get_messages_sync_data(self, chat_id: int, *, account_id: int) -> dict[int, str | None]:
-        """Get message IDs and their edit dates for sync checking."""
+    async def get_messages_sync_data(
+        self, chat_id: int, *, account_id: int, since: datetime | None = None
+    ) -> dict[int, str | None]:
+        """Get message IDs and their edit dates for sync checking.
+
+        ``since`` keeps only messages posted at or after it, highest id first
+        (SYNC_DELETIONS_EDITS_DAYS, #608). None returns every stored message.
+        """
         async with self.db_manager.async_session_factory() as session:
             # Exclude soft-deleted rows so sync doesn't re-check them. The is_(None) arm is
             # defensive (is_deleted is NOT NULL with server_default 0) and mirrors is_archived.
@@ -2912,6 +2918,8 @@ class DatabaseAdapter:
                     or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
                 )
             )
+            if since is not None:
+                stmt = stmt.where(Message.date >= since).order_by(Message.id.desc())
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
 

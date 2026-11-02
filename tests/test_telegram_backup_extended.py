@@ -1119,6 +1119,56 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
     def setUp(self):
         self.backup = _make_backup()
 
+    def test_days_window_passes_since(self):
+        """#608: SYNC_DELETIONS_EDITS_DAYS>0 asks the adapter for posts since now - N days."""
+        self.backup.config.sync_deletions_edits_days = 14.0
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
+        fixed_now = datetime(2026, 11, 2, 12, 0)
+
+        with patch.object(telegram_backup, "utcnow_naive", return_value=fixed_now):
+            _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        self.backup.db.get_messages_sync_data.assert_awaited_once_with(
+            100, account_id=1, since=datetime(2026, 10, 19, 12, 0)
+        )
+
+    def test_days_zero_reads_every_message(self):
+        """SYNC_DELETIONS_EDITS_DAYS=0 queries exactly as before: no since."""
+        self.backup.config.sync_deletions_edits_days = 0.0
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
+
+        _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        self.backup.db.get_messages_sync_data.assert_awaited_once_with(100, account_id=1)
+
+    def test_huge_days_reads_every_message_without_overflow(self):
+        """A window reaching past year 1 (e.g. 1e6 days meant as 'everything') reads all, no OverflowError."""
+        for days in (1e6, 1e10):
+            self.backup.config.sync_deletions_edits_days = days
+            self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
+
+            _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+            self.backup.db.get_messages_sync_data.assert_awaited_once_with(100, account_id=1)
+
+    def test_mock_config_days_reads_every_message(self):
+        """A MagicMock config attribute is not a number and must behave as 0."""
+        self.assertIsInstance(self.backup.config.sync_deletions_edits_days, MagicMock)
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
+
+        _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        self.backup.db.get_messages_sync_data.assert_awaited_once_with(100, account_id=1)
+
+    def test_window_logged_with_count(self):
+        self.backup.config.sync_deletions_edits_days = 14.0
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
+
+        with self.assertLogs("telegram_archive.telegram_backup", level="INFO") as logs:
+            _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+        self.assertIn("Syncing deletions and edits for 0 messages posted in the last 14 days", "\n".join(logs.output))
+
     def test_no_local_messages_returns_early(self):
         """Returns early when no local messages exist."""
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
