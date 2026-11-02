@@ -168,30 +168,90 @@ class TestNothingToLoad:
         assert box.map[ENTRY_ACCOUNT].pts == 500
         client.session.close()
 
-    async def test_difference_still_in_flight_keeps_the_stash_and_warns(self, session_path, monkeypatch, caplog):
+    def _busy_client(self, session_path, monkeypatch, *, connected=True):
         monkeypatch.setattr(update_state, "_DIFF_WAIT_SECONDS", 0)
+        monkeypatch.setattr(update_state, "_RETRY_WAIT_SECONDS", 0.01)
         _seed_session(session_path)
         client = _client(session_path)
+        client.is_connected = lambda: connected
+        client.catch_up = AsyncMock()
+        return client
+
+    async def _settle(self):
+        while update_state._retries:
+            await asyncio.gather(*update_state._retries)
+
+    async def test_difference_still_in_flight_is_retried_once_it_finishes(self, session_path, monkeypatch, caplog):
+        client = self._busy_client(session_path, monkeypatch)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        box = client._message_box
+        box.getting_diff_for = {ENTRY_ACCOUNT}
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await resume_saved_state(client)
+            assert box.map[ENTRY_ACCOUNT].pts == 900  # deferred, not loaded yet
+            client.catch_up.assert_not_awaited()
+
+            await asyncio.sleep(0.03)
+            box.map[ENTRY_ACCOUNT].pts = 950  # what the in-flight difference fetched
+            box.getting_diff_for = set()
+            await self._settle()
+
+        assert box.map[ENTRY_ACCOUNT].pts == 500
+        client.catch_up.assert_awaited_once()
+        lines = [(r.levelno, r.getMessage()) for r in caplog.records]
+        assert lines[0] == (logging.INFO, "Update difference still running; restart replay deferred until it finishes")
+        assert len(lines) == 2 and "account gap 450 pts" in lines[1][1]
+        client.session.close()
+
+    async def test_retry_gives_up_with_one_warning(self, session_path, monkeypatch, caplog):
+        client = self._busy_client(session_path, monkeypatch)
+        monkeypatch.setattr(update_state, "_RETRY_WAIT_STEPS", 3)
         await remember_saved_state(client)
         _simulate_on_login(client)
         client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
 
         with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
             await resume_saved_state(client)
+            await self._settle()
 
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
-        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
-            (
-                logging.WARNING,
-                "Update difference still running; restart replay skipped, "
-                "only SYNC_DELETIONS_EDITS=true recovers its edits and deletions",
-            )
-        ]
+        client.catch_up.assert_not_awaited()
+        assert caplog.records[-1].levelno == logging.WARNING
+        assert "still running after 10 minutes" in caplog.records[-1].getMessage()
+        client.session.close()
+
+    async def test_disconnect_during_retry_keeps_the_stash_for_the_next_connect(self, session_path, monkeypatch):
+        client = self._busy_client(session_path, monkeypatch, connected=False)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+
+        await resume_saved_state(client)
+        await self._settle()
+        client.catch_up.assert_not_awaited()
+        assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
 
         # The next listener.connect() on this client retries with the same rows.
         client._message_box.getting_diff_for = set()
         await resume_saved_state(client)
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 500
+        client.session.close()
+
+    async def test_retry_failure_warns_with_the_type_name_only(self, session_path, monkeypatch, caplog):
+        client = self._busy_client(session_path, monkeypatch)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+        client.catch_up = AsyncMock(side_effect=RuntimeError("secret detail"))
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await resume_saved_state(client)
+            client._message_box.getting_diff_for = set()
+            await self._settle()
+
+        assert caplog.records[-1].getMessage() == "Could not load saved update state (RuntimeError); live updates only"
         client.session.close()
 
 
