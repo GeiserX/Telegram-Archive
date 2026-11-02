@@ -126,7 +126,7 @@ Older messages are never read again by a normal run. Edits and deletions of mess
 | Option | What it catches | Cost |
 |--------|-----------------|------|
 | [Real-time listener](listener.md) | Edits, deletions, new messages and reactions as they happen | A process that stays connected. |
-| [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) | Edits and deletions of every archived message | Re-reads the whole archive on every run. |
+| [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) | Edits and deletions of every archived message, or of the last N days with [`SYNC_DELETIONS_EDITS_DAYS`](#sync-window) | Re-reads the whole archive, or the window, on every run. Telegram answers about 300 ids per 30 seconds, so a million messages take more than a day. |
 | [`REACTION_RESWEEP_DAYS`](#reaction-re-sweep) | Reaction changes on recent messages | Up to 500 messages per chat per run, spaced out. |
 | [`FILL_GAPS`](#gap-fill) | Messages missing between two archived messages | One scan of the stored ids per chat after each backup run. |
 
@@ -137,6 +137,19 @@ With [`SYNC_DELETIONS_EDITS=true`](../reference/environment-variables.md#sync_de
 A message counts as deleted only when Telegram's answer matches the requested ids one for one. If the answer does not match, no message from that request is marked deleted in this run. A deletion follows [`DELETION_MODE`](../reference/environment-variables.md#deletion_mode). The default, `soft`, marks the message deleted and keeps it. `hard` removes the row.
 
 This sync fires no [event webhook](event-webhook.md).
+
+#### Checking only recent messages {#sync-window}
+
+Telegram answers about 300 message ids per 30 seconds when they are asked for by id. A full sweep of one million messages takes more than a day, so on a large archive one run never ends before the next one is due.
+
+[`SYNC_DELETIONS_EDITS_DAYS`](../reference/environment-variables.md#sync_deletions_edits_days) limits the sync to messages posted in the last N days, newest first. The date is the one Telegram gives the message when it is posted, not when it was archived. `0`, the default, re-reads every archived message.
+
+```bash
+SYNC_DELETIONS_EDITS=true
+SYNC_DELETIONS_EDITS_DAYS=14
+```
+
+The window is a deliberate blind spot. Edits, deletions, poll, preview and reaction changes on older posts are not seen, including changes made while the archive was down. To catch them, run a full pass: set `SYNC_DELETIONS_EDITS_DAYS=0`, or unset it, and restart. The [`schedule`](#the-schedule-command) command runs one backup straight away on start. Set the window back once that run ends.
 
 !!! danger "No mass-operation limit"
     The [mass-operation protection](listener.md#mass-operation-protection) only covers the real-time listener. This sync has no such limit. With `DELETION_MODE=hard`, it removes every message that Telegram confirms as gone, however many there are. Keep `DELETION_MODE=soft` unless you want deleted messages gone from the archive too.

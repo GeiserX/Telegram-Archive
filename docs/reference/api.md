@@ -190,7 +190,7 @@ Each listener row also carries:
 | `deletions_blocked` | Deletions the [rate limiter](../configuration/listener.md#mass-operation-protection) refused since the listener last started. Starts again at 0 on every start, a watchdog restart included. `null` until a listener of this version has started. |
 | `last_rate_limit_at` | When the rate limiter last tripped for the account, UTC, kept across restarts. `null` if it never has. |
 
-An `active` listener whose `last_update_at` stops moving is connected but receiving nothing: alert when it is older than what your chats normally go without an update. A `deletions_blocked` above 0 means deletions were not recorded; the `SYNC_DELETIONS_EDITS` backup pass records them. See [Checking that it runs](../configuration/listener.md#checking-that-it-runs).
+An `active` listener whose `last_update_at` stops moving is connected but receiving nothing: alert when it is older than what your chats normally go without an update. A `deletions_blocked` above 0 means deletions were not recorded; the `SYNC_DELETIONS_EDITS` backup pass records them. With [`SYNC_DELETIONS_EDITS_DAYS`](../configuration/schedule.md#sync-window) above 0 it records only those posted inside the window. See [Checking that it runs](../configuration/listener.md#checking-that-it-runs).
 
 ## Accounts, chats and folders
 

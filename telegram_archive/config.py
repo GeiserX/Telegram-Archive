@@ -94,6 +94,18 @@ def _is_http_url(raw: str) -> bool:
         return False
 
 
+def sync_deletions_edits_window(config) -> float:
+    """SYNC_DELETIONS_EDITS_DAYS of ``config``, or 0 when it holds no number.
+
+    0 means the sync re-reads every stored message. Test doubles built on
+    MagicMock answer any attribute with a mock, which must read as 0.
+    """
+    days = getattr(config, "sync_deletions_edits_days", 0)
+    if isinstance(days, bool) or not isinstance(days, (int, float)):
+        return 0.0
+    return max(0.0, float(days))
+
+
 def _parse_float_env(name: str, default: float) -> float:
     """os.getenv(name) as a finite float that FAILS BY NAME.
 
@@ -969,6 +981,11 @@ class Config:
         # When enabled, checks all backed up messages for deletions/edits on Telegram
         self.sync_deletions_edits = _parse_bool_env("SYNC_DELETIONS_EDITS", False)
 
+        # SYNC_DELETIONS_EDITS_DAYS: limit that sync to messages posted in the last N
+        # days (#608). Telegram answers about 300 ids per 30 s by id, so a sweep of
+        # millions of messages takes days. 0 (default) re-reads every stored message.
+        self.sync_deletions_edits_days: float = max(0.0, _parse_float_env("SYNC_DELETIONS_EDITS_DAYS", 0.0))
+
         # Media verification mode
         # When enabled, checks all media files on disk and re-downloads missing/corrupted ones
         # Useful for recovering from interrupted backups or deleted media files
@@ -1284,9 +1301,15 @@ class Config:
             logger.debug(f"  Chat types: {self.chat_types}")
         logger.debug(f"Schedule: {self.schedule}")
         if self.sync_deletions_edits:
-            logger.warning(
-                "SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)"
-            )
+            if self.sync_deletions_edits_days > 0:
+                logger.warning(
+                    "SYNC_DELETIONS_EDITS enabled - this will check messages from the last "
+                    f"{self.sync_deletions_edits_days:g} days for deletions/edits"
+                )
+            else:
+                logger.warning(
+                    "SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)"
+                )
         if self.log_chat_titles:
             logger.warning("LOG_CHAT_TITLES enabled - chat titles will appear in the backup progress log")
         if self.verify_media:

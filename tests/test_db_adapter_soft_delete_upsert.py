@@ -300,6 +300,21 @@ async def test_get_messages_sync_data_excludes_soft_deleted(sqlite_adapter):
 
 
 @pytest.mark.asyncio
+async def test_get_messages_sync_data_since_keeps_recent_posts_newest_first(sqlite_adapter):
+    """SYNC_DELETIONS_EDITS_DAYS (#608): ``since`` drops older posts and orders newest first."""
+    for message_id, day in ((30, 1), (31, 20), (32, 25)):
+        await sqlite_adapter.insert_message(
+            {"id": message_id, "chat_id": 400, "date": datetime(2026, 10, day, 12, 0), "text": "t"}, account_id=1
+        )
+
+    recent = await sqlite_adapter.get_messages_sync_data(400, account_id=1, since=datetime(2026, 10, 15))
+    assert list(recent) == [32, 31]
+
+    every = await sqlite_adapter.get_messages_sync_data(400, account_id=1)
+    assert sorted(every) == [30, 31, 32]
+
+
+@pytest.mark.asyncio
 async def test_update_message_text_records_previous_version(sqlite_adapter):
     await sqlite_adapter.insert_message(
         {"id": 20, "chat_id": 300, "date": datetime(2026, 6, 26, 9, 0), "text": "original"}, account_id=1

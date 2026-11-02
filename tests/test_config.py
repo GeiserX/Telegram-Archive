@@ -1241,6 +1241,48 @@ class TestSyncDeletionsEditsLogging(unittest.TestCase):
             self.assertTrue(config.sync_deletions_edits)
 
 
+class TestSyncDeletionsEditsDays(unittest.TestCase):
+    """SYNC_DELETIONS_EDITS_DAYS (#608): parsed like REACTION_RESWEEP_DAYS."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _config(self, **env):
+        base = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, **env}
+        with patch.dict(os.environ, base, clear=True):
+            return Config()
+
+    def test_unset_means_every_message(self):
+        self.assertEqual(self._config().sync_deletions_edits_days, 0.0)
+
+    def test_parses_days(self):
+        self.assertEqual(self._config(SYNC_DELETIONS_EDITS_DAYS="14").sync_deletions_edits_days, 14.0)
+
+    def test_negative_floored_at_zero(self):
+        self.assertEqual(self._config(SYNC_DELETIONS_EDITS_DAYS="-3").sync_deletions_edits_days, 0.0)
+
+    def test_non_number_stops_startup(self):
+        with self.assertRaisesRegex(ValueError, "SYNC_DELETIONS_EDITS_DAYS must be a number"):
+            self._config(SYNC_DELETIONS_EDITS_DAYS="abc")
+
+    def test_banner_names_the_window(self):
+        config = self._config(SYNC_DELETIONS_EDITS="true", SYNC_DELETIONS_EDITS_DAYS="14")
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
+            config.log_summary()
+        text = "\n".join(logs.output)
+        self.assertIn("messages from the last 14 days", text)
+        self.assertNotIn("ALL messages", text)
+
+    def test_banner_without_window_is_unchanged(self):
+        config = self._config(SYNC_DELETIONS_EDITS="true")
+        with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
+            config.log_summary()
+        self.assertIn("this will check ALL messages for deletions/edits (expensive!)", "\n".join(logs.output))
+
+
 class TestVerifyMediaLogging(unittest.TestCase):
     """Test VERIFY_MEDIA info log path (line 349)."""
 

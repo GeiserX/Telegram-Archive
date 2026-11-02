@@ -120,7 +120,7 @@ A 64-character secret the master login creates under **Admin settings > Share to
 
 ## Sync pass
 
-The optional step of a backup run, on when `SYNC_DELETIONS_EDITS=true`, that re-reads every archived message to pick up edits and deletions. It applies `DELETION_MODE`. Mass-operation protection does not cover it, and it fires no event webhook. It is expensive on large archives. See [SYNC_DELETIONS_EDITS](../configuration/schedule.md#sync_deletions_edits).
+The optional step of a backup run, on when `SYNC_DELETIONS_EDITS=true`, that re-reads every archived message to pick up edits and deletions. It applies `DELETION_MODE`. Mass-operation protection does not cover it, and it fires no event webhook. It is expensive on large archives; `SYNC_DELETIONS_EDITS_DAYS` limits it to messages posted in the last N days. See [SYNC_DELETIONS_EDITS](../configuration/schedule.md#sync_deletions_edits).
 
 ## Telegram account
 

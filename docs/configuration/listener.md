@@ -144,7 +144,7 @@ Every deletion event that had deletions blocked logs one warning with their mess
 🛡️ Rate limiter blocked 3 deletion(s), not applied, message ids: 5011, 5012, 5013. SYNC_DELETIONS_EDITS is off, so they stay unrecorded; enable it for a backup run to record them
 ```
 
-The `SYNC_DELETIONS_EDITS` pass of the scheduled backup re-reads every archived message and records the deletions the listener blocked. With it off, nothing else records them.
+The `SYNC_DELETIONS_EDITS` pass of the scheduled backup re-reads every archived message and records the deletions the listener blocked. With it off, nothing else records them. With [`SYNC_DELETIONS_EDITS_DAYS`](schedule.md#sync-window) above 0, the pass reads only messages posted in the last N days. A blocked deletion of an older post is recorded only by a full pass, with `SYNC_DELETIONS_EDITS_DAYS=0`, and the warning says so.
 
 `telegram-archive status --json` and `GET /api/status` show, per account, `deletions_blocked`, the deletions blocked since the listener last started, and `last_rate_limit_at`, when the limiter last tripped. The count starts again at 0 each time the listener starts, a watchdog restart included; `last_rate_limit_at` is kept across restarts. The shutdown summary logs the same count as **Deletions blocked (not applied)**.
 
