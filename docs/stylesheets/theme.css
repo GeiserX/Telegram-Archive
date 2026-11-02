@@ -42,11 +42,18 @@
  * Only the first topic is styled. Material puts the site name in one
  * .md-header__topic and the page title in a second one, and swaps them on
  * scroll. Styling both would change every page title too.
+ *
+ * The light colour is for a dark header, so it applies only in the dark
+ * scheme. A theme whose light scheme has a light header would otherwise draw
+ * the name white on white.
  */
 .md-header__topic:first-child .md-ellipsis {
-  color: #F2F6FA;
   font-weight: 800;
   letter-spacing: -0.01em;
+}
+
+[data-md-color-scheme="slate"] .md-header__topic:first-child .md-ellipsis {
+  color: #F2F6FA;
 }
 
 /* Keep the mark and the name close, so they read as one unit. */
