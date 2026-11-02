@@ -44,7 +44,7 @@ from telethon.utils import get_peer_id
 
 from . import LOGIN_DOCS_URL
 from .avatar_utils import avatar_photo_id, get_avatar_paths
-from .config import AccountConfig, Config
+from .config import AccountConfig, Config, sync_deletions_edits_window
 from .custom_emoji import CUSTOM_EMOJI_MAX_ATTEMPTS, CUSTOM_EMOJI_MAX_PER_RUN, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -3431,10 +3431,17 @@ class TelegramBackup:
             chat_id: Chat ID to sync
             entity: Telegram entity
         """
-        logger.info("  → Syncing deletions and edits for chat...")
-
-        # Get all local message IDs and their edit dates
-        local_messages = await self.db.get_messages_sync_data(chat_id, account_id=self.account_id)
+        # SYNC_DELETIONS_EDITS_DAYS (#608): 0 reads every stored message; N>0 only
+        # the messages posted in the last N days, newest first.
+        days = sync_deletions_edits_window(self.config)
+        if days > 0:
+            since = utcnow_naive() - timedelta(days=days)
+            local_messages = await self.db.get_messages_sync_data(chat_id, account_id=self.account_id, since=since)
+            window = f"posted in the last {days:g} days"
+        else:
+            local_messages = await self.db.get_messages_sync_data(chat_id, account_id=self.account_id)
+            window = "(all)"
+        logger.info(f"  → Syncing deletions and edits for {len(local_messages)} messages {window}")
         if not local_messages:
             return
 

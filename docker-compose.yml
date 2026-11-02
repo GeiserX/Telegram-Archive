@@ -176,6 +176,7 @@ services:
 
       # Batch sync alternative (expensive — prefer ENABLE_LISTENER instead)
       SYNC_DELETIONS_EDITS: ${SYNC_DELETIONS_EDITS:-false}
+      SYNC_DELETIONS_EDITS_DAYS: ${SYNC_DELETIONS_EDITS_DAYS:-0}
       VERIFY_MEDIA: ${VERIFY_MEDIA:-false}
       INTERNAL_PUSH_SECRET: ${INTERNAL_PUSH_SECRET:-}
       # Split containers: realtime pushes must target the viewer SERVICE, not

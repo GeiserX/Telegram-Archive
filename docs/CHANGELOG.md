@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **`SYNC_DELETIONS_EDITS` can check only recent messages.** Telegram answers about 300 ids per 30 seconds by id, so on an archive of millions of messages one sweep took days. `SYNC_DELETIONS_EDITS_DAYS=N` re-checks only messages posted in the last N days, highest message id first. The default, `0`, re-reads every message as before. Changes to older posts wait for a run with `0`. See [Checking only recent messages](configuration/schedule.md#sync-window). (#608)
+
 ## [9.5.1] - 2026-11-01
 
 A security update for one dependency, plus CI updates. No migration. Docker deployments only need the new pins.

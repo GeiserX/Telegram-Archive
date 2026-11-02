@@ -35,7 +35,7 @@ from telethon.tl.types import (
 from telethon.utils import get_peer_id
 
 from .avatar_utils import avatar_photo_id, get_avatar_paths
-from .config import AccountConfig, Config
+from .config import AccountConfig, Config, sync_deletions_edits_window
 from .custom_emoji import CUSTOM_EMOJI_BATCH, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -1530,7 +1530,14 @@ class TelegramListener:
         Ids only: the chat id stays out of the log (Logging Rules). The archive
         keeps these messages as they were; only a deletion sweep records them.
         """
-        if self.config.sync_deletions_edits is True:
+        days = sync_deletions_edits_window(self.config)
+        if self.config.sync_deletions_edits is True and days > 0:
+            recovery = (
+                f"SYNC_DELETIONS_EDITS is on with SYNC_DELETIONS_EDITS_DAYS={days:g}, so the next backup "
+                f"records those posted in the last {days:g} days; older ones only on a full pass "
+                "(SYNC_DELETIONS_EDITS_DAYS=0)"
+            )
+        elif self.config.sync_deletions_edits is True:
             recovery = "SYNC_DELETIONS_EDITS is on, so the next backup records them"
         else:
             recovery = "SYNC_DELETIONS_EDITS is off, so they stay unrecorded; enable it for a backup run to record them"

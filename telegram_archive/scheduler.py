@@ -915,7 +915,7 @@ async def main():
     """Main entry point for the scheduler."""
     try:
         # Load configuration
-        from .config import Config, setup_logging
+        from .config import Config, setup_logging, sync_deletions_edits_window
 
         config = Config()
         setup_logging(config)
@@ -955,9 +955,14 @@ async def main():
             logger.info(line)
         config.log_listener_summary()
         if config.sync_deletions_edits:
-            logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
-            logger.warning("   → Will re-check ALL messages for edits/deletions each run")
-            logger.warning("   → This is expensive but catches changes made while offline")
+            days = sync_deletions_edits_window(config)
+            if days > 0:
+                logger.warning(f"⚠️  SYNC_DELETIONS_EDITS: ENABLED (messages from the last {days:g} days)")
+                logger.warning("   → Older messages are re-checked only on a run with SYNC_DELETIONS_EDITS_DAYS=0")
+            else:
+                logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
+                logger.warning("   → Will re-check ALL messages for edits/deletions each run")
+                logger.warning("   → This is expensive but catches changes made while offline")
         logger.info("=" * 60)
 
         # Migrate flat _shared/ to sharded layout (idempotent, runs once)

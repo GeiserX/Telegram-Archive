@@ -105,3 +105,11 @@ class TestShippedDefaults(unittest.TestCase):
         self.assertEqual(_compose_default("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES", commented=True), default)
         self.assertEqual(_env_example_value("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES", commented=True), default)
         self.assertEqual(_reference_default("TRANSCRIPTION_DRAIN_INTERVAL_MINUTES"), f"`{default}`")
+
+    def test_the_sync_window_matches_the_code(self):
+        """SYNC_DELETIONS_EDITS_DAYS (#608): 0, every stored message, in all four places."""
+        default = _config().sync_deletions_edits_days
+        self.assertEqual(default, 0.0)
+        self.assertEqual(float(_compose_default("SYNC_DELETIONS_EDITS_DAYS")), default)
+        self.assertEqual(float(_env_example_value("SYNC_DELETIONS_EDITS_DAYS")), default)
+        self.assertEqual(_reference_default("SYNC_DELETIONS_EDITS_DAYS"), "`0`")

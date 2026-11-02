@@ -25,7 +25,7 @@ In short, we recommend C for the mark and H for finding the marked messages. [Th
 Two paths can tell the archive that a message is gone. Both are off by default; the [settings reference](../reference/environment-variables.md#listen_deletions) has every flag named here.
 
 - **The listener** (`LISTEN_DELETIONS=true`). While it runs, Telegram sends it an event for each deletion. In private chats and basic groups the event carries only message ids, not the chat, so the archive looks each id up in the account's chats and skips it when the id is in more than one. A mass-operation guard caps each chat at 10 deletions in 30 seconds (`MASS_OPERATION_THRESHOLD`, `MASS_OPERATION_WINDOW_SECONDS`): past that, the chat's deletions are dropped for the next 30 seconds.
-- **The sync** (`SYNC_DELETIONS_EDITS=true`). During a backup run it asks Telegram for every archived message of a chat, 100 at a time. A message Telegram no longer returns is marked deleted. When Telegram's answer does not line up with the ids asked for, the batch marks nothing and the next run tries again.
+- **The sync** (`SYNC_DELETIONS_EDITS=true`). During a backup run it asks Telegram for every archived message of a chat, 100 at a time, or only those posted in the last `SYNC_DELETIONS_EDITS_DAYS` days. A message Telegram no longer returns is marked deleted. When Telegram's answer does not line up with the ids asked for, the batch marks nothing and the next run tries again.
 
 With `DELETION_MODE=soft`, the default, the row stays: `is_deleted` becomes 1 and `deleted_at` records the time. With `hard` the row is removed and there is nothing left to mark.
 

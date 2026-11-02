@@ -2984,6 +2984,24 @@ class TestBlockedDeletionsAreVisible:
 
         assert "SYNC_DELETIONS_EDITS is on, so the next backup records them" in caplog.text
 
+    async def test_the_log_names_the_window_when_the_sync_checks_recent_posts_only(self, caplog):
+        """#608: with SYNC_DELETIONS_EDITS_DAYS the next backup misses older posts; the line says so."""
+        listener, handlers, _, config = _make_listener_with_handlers(
+            mass_operation_threshold=1, mass_operation_window_seconds=60
+        )
+        config.sync_deletions_edits = True
+        config.sync_deletions_edits_days = 14.0
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [1, 2]
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.listener"):
+            await handlers[events.MessageDeleted](event)
+
+        assert "so the next backup records them" not in caplog.text
+        assert "records those posted in the last 14 days" in caplog.text
+        assert "older ones only on a full pass (SYNC_DELETIONS_EDITS_DAYS=0)" in caplog.text
+
     async def test_no_line_when_nothing_was_blocked(self, caplog):
         _, handlers, _, _ = _make_listener_with_handlers()
         event = MagicMock()
