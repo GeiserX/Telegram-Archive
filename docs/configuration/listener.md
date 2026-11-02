@@ -26,7 +26,7 @@ A short network blip that the Telegram library reconnects by itself is covered t
 
 Some things are not replayed:
 
-- A process restart. A stopped container keeps no update state, so a restart runs the startup backup instead. That pass fetches new messages. Edits, deletions and reactions to older messages made while the process was stopped are caught only by `SYNC_DELETIONS_EDITS`, the reaction re-sweep, or a later read of the same messages.
+- A process restart. A stopped container keeps no update state, so a restart runs the startup backup instead. That pass fetches new messages. Edits, deletions and reactions to older messages made while the process was stopped are caught only by `SYNC_DELETIONS_EDITS`, the reaction re-sweep, or a later read of the same messages. With `SYNC_DELETIONS_EDITS_DAYS` above 0, the sync catches them only for messages posted inside the window. Older ones wait for a full pass, see [Checking only recent messages](schedule.md#sync-window).
 - A very long outage. When Telegram answers that too much was missed, the listener drops the replay and the next full pass fetches the new messages.
 - Reactions you add from another device, which Telegram does not always push. See [Reactions](#reactions).
 

@@ -301,17 +301,26 @@ async def test_get_messages_sync_data_excludes_soft_deleted(sqlite_adapter):
 
 @pytest.mark.asyncio
 async def test_get_messages_sync_data_since_keeps_recent_posts_newest_first(sqlite_adapter):
-    """SYNC_DELETIONS_EDITS_DAYS (#608): ``since`` drops older posts and orders newest first."""
-    for message_id, day in ((30, 1), (31, 20), (32, 25)):
-        await sqlite_adapter.insert_message(
-            {"id": message_id, "chat_id": 400, "date": datetime(2026, 10, day, 12, 0), "text": "t"}, account_id=1
-        )
+    """SYNC_DELETIONS_EDITS_DAYS (#608): ``since`` drops older posts and orders newest first.
+
+    Dates do not rise with ids (31 is newer than 32), so the date-descending
+    index order differs from id order and only ORDER BY id DESC gives [33, 32, 31].
+    Id 33 sits exactly on ``since``: the bound is inclusive.
+    """
+    rows = (
+        (30, datetime(2026, 10, 1, 12, 0)),
+        (31, datetime(2026, 10, 25, 12, 0)),
+        (32, datetime(2026, 10, 20, 12, 0)),
+        (33, datetime(2026, 10, 15)),
+    )
+    for message_id, date in rows:
+        await sqlite_adapter.insert_message({"id": message_id, "chat_id": 400, "date": date, "text": "t"}, account_id=1)
 
     recent = await sqlite_adapter.get_messages_sync_data(400, account_id=1, since=datetime(2026, 10, 15))
-    assert list(recent) == [32, 31]
+    assert list(recent) == [33, 32, 31]
 
     every = await sqlite_adapter.get_messages_sync_data(400, account_id=1)
-    assert sorted(every) == [30, 31, 32]
+    assert sorted(every) == [30, 31, 32, 33]
 
 
 @pytest.mark.asyncio

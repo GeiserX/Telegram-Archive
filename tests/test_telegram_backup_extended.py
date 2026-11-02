@@ -1141,6 +1141,16 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
 
         self.backup.db.get_messages_sync_data.assert_awaited_once_with(100, account_id=1)
 
+    def test_huge_days_reads_every_message_without_overflow(self):
+        """A window reaching past year 1 (e.g. 1e6 days meant as 'everything') reads all, no OverflowError."""
+        for days in (1e6, 1e10):
+            self.backup.config.sync_deletions_edits_days = days
+            self.backup.db.get_messages_sync_data = AsyncMock(return_value={})
+
+            _run(self.backup._sync_deletions_and_edits(100, MagicMock()))
+
+            self.backup.db.get_messages_sync_data.assert_awaited_once_with(100, account_id=1)
+
     def test_mock_config_days_reads_every_message(self):
         """A MagicMock config attribute is not a number and must behave as 0."""
         self.assertIsInstance(self.backup.config.sync_deletions_edits_days, MagicMock)

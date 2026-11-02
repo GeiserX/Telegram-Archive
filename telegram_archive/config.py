@@ -13,6 +13,7 @@ import re
 import sys
 import urllib.parse
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -98,12 +99,17 @@ def sync_deletions_edits_window(config) -> float:
     """SYNC_DELETIONS_EDITS_DAYS of ``config``, or 0 when it holds no number.
 
     0 means the sync re-reads every stored message. Test doubles built on
-    MagicMock answer any attribute with a mock, which must read as 0.
+    MagicMock answer any attribute with a mock, which must read as 0. A window
+    reaching back past year 1 covers every message anyway and would overflow
+    ``now - timedelta(days=...)``, so it reads as 0 too.
     """
     days = getattr(config, "sync_deletions_edits_days", 0)
     if isinstance(days, bool) or not isinstance(days, (int, float)):
         return 0.0
-    return max(0.0, float(days))
+    days = max(0.0, float(days))
+    if days >= (datetime.now() - datetime.min).days:
+        return 0.0
+    return days
 
 
 def _parse_float_env(name: str, default: float) -> float:
@@ -1301,10 +1307,11 @@ class Config:
             logger.debug(f"  Chat types: {self.chat_types}")
         logger.debug(f"Schedule: {self.schedule}")
         if self.sync_deletions_edits:
-            if self.sync_deletions_edits_days > 0:
+            days = sync_deletions_edits_window(self)
+            if days > 0:
                 logger.warning(
                     "SYNC_DELETIONS_EDITS enabled - this will check messages from the last "
-                    f"{self.sync_deletions_edits_days:g} days for deletions/edits"
+                    f"{days:g} days for deletions/edits"
                 )
             else:
                 logger.warning(

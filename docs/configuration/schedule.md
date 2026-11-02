@@ -132,11 +132,14 @@ Older messages are never read again by a normal run. Edits and deletions of mess
 
 ### SYNC_DELETIONS_EDITS
 
-With [`SYNC_DELETIONS_EDITS=true`](../reference/environment-variables.md#sync_deletions_edits), every run re-reads every archived message of every chat, 100 ids per request. The sync applies an edit when Telegram reports a different edit date. It also reconciles reactions.
+With [`SYNC_DELETIONS_EDITS=true`](../reference/environment-variables.md#sync_deletions_edits), every run re-reads every archived message of every chat, or only the recent ones (see [Checking only recent messages](#sync-window)), 100 ids per request. The sync applies an edit when Telegram reports a different edit date. It also reconciles reactions.
 
 A message counts as deleted only when Telegram's answer matches the requested ids one for one. If the answer does not match, no message from that request is marked deleted in this run. A deletion follows [`DELETION_MODE`](../reference/environment-variables.md#deletion_mode). The default, `soft`, marks the message deleted and keeps it. `hard` removes the row.
 
 This sync fires no [event webhook](event-webhook.md).
+
+!!! danger "No mass-operation limit"
+    The [mass-operation protection](listener.md#mass-operation-protection) only covers the real-time listener. This sync has no such limit. With `DELETION_MODE=hard`, it removes every message that Telegram confirms as gone, however many there are. Keep `DELETION_MODE=soft` unless you want deleted messages gone from the archive too.
 
 #### Checking only recent messages {#sync-window}
 
@@ -150,9 +153,6 @@ SYNC_DELETIONS_EDITS_DAYS=14
 ```
 
 The window is a deliberate blind spot. Edits, deletions, poll, preview and reaction changes on older posts are not seen, including changes made while the archive was down. To catch them, run a full pass: set `SYNC_DELETIONS_EDITS_DAYS=0`, or unset it, and restart. The [`schedule`](#the-schedule-command) command runs one backup straight away on start. Set the window back once that run ends.
-
-!!! danger "No mass-operation limit"
-    The [mass-operation protection](listener.md#mass-operation-protection) only covers the real-time listener. This sync has no such limit. With `DELETION_MODE=hard`, it removes every message that Telegram confirms as gone, however many there are. Keep `DELETION_MODE=soft` unless you want deleted messages gone from the archive too.
 
 ### Reaction re-sweep
 

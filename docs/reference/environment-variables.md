@@ -176,7 +176,7 @@ Feature page: [Schedule and backup tuning](../configuration/schedule.md).
 |---|---|---|---|
 | <span id="batch_size"></span>`BATCH_SIZE` | `100` | backup | Messages written per database batch. Not clamped. |
 | <span id="checkpoint_interval"></span>`CHECKPOINT_INTERVAL` | `1` | backup | Save the chat's progress every N batches. Floored at 1. |
-| <span id="sync_deletions_edits"></span>`SYNC_DELETIONS_EDITS` | `false` | backup | Re-read every archived message each run to catch edits and deletions. Slow on large archives. Deletions follow `DELETION_MODE`. The mass-operation limit does not apply to it, and it never fires the event webhook. |
+| <span id="sync_deletions_edits"></span>`SYNC_DELETIONS_EDITS` | `false` | backup | Re-read every archived message each run to catch edits and deletions. Slow on large archives. `SYNC_DELETIONS_EDITS_DAYS` limits it to recent posts. Deletions follow `DELETION_MODE`. The mass-operation limit does not apply to it, and it never fires the event webhook. |
 | <span id="sync_deletions_edits_days"></span>`SYNC_DELETIONS_EDITS_DAYS` | `0` | backup | Limit `SYNC_DELETIONS_EDITS` to messages posted in the last N days. `0` re-reads every archived message. Floored at 0. A non-number stops startup. Changes to older messages wait for a run with `0`. See [Checking only recent messages](../configuration/schedule.md#sync-window). |
 | <span id="fill_gaps"></span>`FILL_GAPS` | `false` | backup | Run gap-fill after the startup backup and after each scheduled backup. The one-shot `backup` command never runs it. |
 | <span id="gap_threshold"></span>`GAP_THRESHOLD` | `50` | backup | A gap is a jump between stored message ids larger than this. `fill-gaps --threshold` overrides it. |
