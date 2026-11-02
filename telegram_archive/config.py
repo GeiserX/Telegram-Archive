@@ -13,7 +13,7 @@ import re
 import sys
 import urllib.parse
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -107,7 +107,7 @@ def sync_deletions_edits_window(config) -> float:
     if isinstance(days, bool) or not isinstance(days, (int, float)):
         return 0.0
     days = max(0.0, float(days))
-    if days >= (datetime.now() - datetime.min).days:
+    if days >= (datetime.now(UTC).replace(tzinfo=None) - datetime.min).days:
         return 0.0
     return days
 

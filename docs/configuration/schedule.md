@@ -145,14 +145,14 @@ This sync fires no [event webhook](event-webhook.md).
 
 Telegram answers about 300 message ids per 30 seconds when they are asked for by id. A full sweep of one million messages takes more than a day, so on a large archive one run never ends before the next one is due.
 
-[`SYNC_DELETIONS_EDITS_DAYS`](../reference/environment-variables.md#sync_deletions_edits_days) limits the sync to messages posted in the last N days, newest first. The date is the one Telegram gives the message when it is posted, not when it was archived. `0`, the default, re-reads every archived message.
+[`SYNC_DELETIONS_EDITS_DAYS`](../reference/environment-variables.md#sync_deletions_edits_days) limits the sync to messages posted in the last N days, highest message id first. The date is the one Telegram gives the message when it is posted, not when it was archived. `0`, the default, re-reads every archived message.
 
 ```bash
 SYNC_DELETIONS_EDITS=true
 SYNC_DELETIONS_EDITS_DAYS=14
 ```
 
-The window is a deliberate blind spot. Edits, deletions, poll, preview and reaction changes on older posts are not seen, including changes made while the archive was down. To catch them, run a full pass: set `SYNC_DELETIONS_EDITS_DAYS=0`, or unset it, and restart. The [`schedule`](#the-schedule-command) command runs one backup straight away on start. Set the window back once that run ends.
+The window is a deliberate blind spot. Edits, deletions, poll, preview and reaction changes on older posts are not seen, including changes made while the archive was down. To catch them, run a full pass: set `SYNC_DELETIONS_EDITS_DAYS=0`, or unset it, and recreate the container. With Docker Compose that is `docker compose up -d`: `docker compose restart` keeps the old environment. The [`schedule`](#the-schedule-command) command runs one backup straight away on start. Set the window back once that run ends.
 
 ### Reaction re-sweep
 

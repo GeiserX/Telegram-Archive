@@ -2905,7 +2905,7 @@ class DatabaseAdapter:
     ) -> dict[int, str | None]:
         """Get message IDs and their edit dates for sync checking.
 
-        ``since`` keeps only messages posted at or after it, newest first
+        ``since`` keeps only messages posted at or after it, highest id first
         (SYNC_DELETIONS_EDITS_DAYS, #608). None returns every stored message.
         """
         async with self.db_manager.async_session_factory() as session:
