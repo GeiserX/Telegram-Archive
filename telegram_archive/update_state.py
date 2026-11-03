@@ -42,9 +42,29 @@ _unavailable_warned = False
 _DIFF_WAIT_STEPS = 50
 _DIFF_WAIT_SECONDS = 0.2
 
+# When that wait runs out, a background task keeps waiting up to
+# _RETRY_WAIT_STEPS * _RETRY_WAIT_SECONDS (10 minutes), then loads the state
+# and calls client.catch_up() itself.
+_RETRY_WAIT_STEPS = 600
+_RETRY_WAIT_SECONDS = 1.0
+
+# Strong references, so a waiting retry task is not garbage collected.
+_retries: set = set()
+
 # client -> the update_state rows read before its first connect(). Popped by
 # resume_saved_state(), so each client object loads them at most once.
 _pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+# session file name -> rows a deferred replay could not load before its client
+# disconnected. An owned listener builds a new client on its next connect(),
+# and the old client's disconnect writes its newer in-memory state to the
+# session file, so remember_saved_state() takes these rows instead.
+_deferred: dict = {}
+
+
+def _session_key(client):
+    name = getattr(getattr(client, "session", None), "filename", None)
+    return name if isinstance(name, str) and name != ":memory:" else None
 
 
 async def remember_saved_state(client) -> None:
@@ -61,6 +81,12 @@ async def remember_saved_state(client) -> None:
             logger.warning("Telethon internals changed; restart replay disabled, live updates only")
         return
     try:
+        # Read, not popped: if this client fails to connect, the next one still
+        # needs them. resume_saved_state() clears them once they reach replay.
+        deferred = _deferred.get(_session_key(client))
+        if deferred is not None:
+            _pending[client] = deferred
+            return
         _pending[client] = list(await utils.maybe_async(client.session.get_update_states()))
     except Exception as e:
         logger.warning(f"Could not read saved update state ({type(e).__name__}); live updates only")
@@ -121,12 +147,14 @@ async def resume_saved_state(client) -> None:
 
     Call after the handlers are attached and before ``client.catch_up()``, so
     the difference Telethon then fetches starts from the saved state and its
-    updates reach the handlers. Logs exactly one INFO line, or one WARNING on
-    failure.
+    updates reach the handlers. Logs one INFO line, or one WARNING on failure.
+    If a difference is still running after the wait, the load moves to a
+    background task that waits for it to finish and then catches up itself.
     """
     if MessageBox is None:
         return  # remember_saved_state() already warned
     rows = _pending.pop(client, None)
+    _deferred.pop(_session_key(client), None)
     try:
         box = getattr(client, "_message_box", None)
         if box is not None:
@@ -144,33 +172,66 @@ async def resume_saved_state(client) -> None:
             await asyncio.sleep(_DIFF_WAIT_SECONDS)
         else:
             if box.getting_diff_for:
-                _pending[client] = rows  # the next listener.connect() on this client retries
-                logger.warning(
-                    "Update difference still running; restart replay skipped, "
-                    "only SYNC_DELETIONS_EDITS=true recovers its edits and deletions"
+                task = asyncio.create_task(_resume_when_idle(client, account, rows))
+                _retries.add(task)
+                task.add_done_callback(_retries.discard)
+                logger.info("Update difference still running; restart replay deferred until it finishes")
+                return
+        await _load(client, box, account, rows)
+    except Exception as e:
+        logger.warning(f"Could not load saved update state ({type(e).__name__}); live updates only")
+
+
+async def _resume_when_idle(client, account, rows) -> None:
+    """Wait for the running difference to finish, then load the saved state and catch up."""
+    try:
+        for _ in range(_RETRY_WAIT_STEPS):
+            if not client.is_connected():
+                # The next listener.connect() retries: on this client if it is
+                # shared, on a new one built over the same session if it is owned.
+                _pending[client] = rows
+                key = _session_key(client)
+                if key is not None:
+                    _deferred[key] = rows
+                logger.info(
+                    "Client disconnected before the update difference finished; replay waits for the next connect"
                 )
                 return
-        current = box.map.get(ENTRY_ACCOUNT)
-        channels = [ChannelState(entity_id, state.pts) for entity_id, state in rows if entity_id != 0]
-        box.load(
-            SessionState(0, 0, False, account.pts, account.qts, int(account.date.timestamp()), account.seq, None),
-            channels,
-        )
-        # Mirrors telegrambaseclient.connect(): a channel difference needs the
-        # channel's access hash.
-        missing = 0
-        for channel in channels:
-            try:
-                entity = await utils.maybe_async(client.session.get_input_entity(channel.channel_id))
-                client._mb_entity_cache.put(Entity(EntityType.CHANNEL, entity.channel_id, entity.access_hash))
-            except ValueError, AttributeError:
-                # AttributeError: the id resolved to a user, not a channel.
-                missing += 1
-        age = datetime.datetime.now(datetime.UTC) - account.date
-        gap = current.pts - account.pts if current is not None else "?"
-        logger.info(
-            f"Catch-up: resuming from update state dated {_age(age)} ago, account gap {gap} pts, "
-            f"{len(channels)} channels ({missing} without access hash)"
+            box = client._message_box
+            if not box.getting_diff_for:
+                await _load(client, box, account, rows)
+                await client.catch_up()
+                return
+            await asyncio.sleep(_RETRY_WAIT_SECONDS)
+        logger.warning(
+            "Update difference still running after 10 minutes; restart replay skipped, "
+            "only SYNC_DELETIONS_EDITS=true recovers its edits and deletions"
         )
     except Exception as e:
         logger.warning(f"Could not load saved update state ({type(e).__name__}); live updates only")
+
+
+async def _load(client, box, account, rows) -> None:
+    """Load the saved rows into ``box`` and cache the channels' access hashes. Logs one INFO line."""
+    current = box.map.get(ENTRY_ACCOUNT)
+    channels = [ChannelState(entity_id, state.pts) for entity_id, state in rows if entity_id != 0]
+    box.load(
+        SessionState(0, 0, False, account.pts, account.qts, int(account.date.timestamp()), account.seq, None),
+        channels,
+    )
+    # Mirrors telegrambaseclient.connect(): a channel difference needs the
+    # channel's access hash.
+    missing = 0
+    for channel in channels:
+        try:
+            entity = await utils.maybe_async(client.session.get_input_entity(channel.channel_id))
+            client._mb_entity_cache.put(Entity(EntityType.CHANNEL, entity.channel_id, entity.access_hash))
+        except ValueError, AttributeError:
+            # AttributeError: the id resolved to a user, not a channel.
+            missing += 1
+    age = datetime.datetime.now(datetime.UTC) - account.date
+    gap = current.pts - account.pts if current is not None else "?"
+    logger.info(
+        f"Catch-up: resuming from update state dated {_age(age)} ago, account gap {gap} pts, "
+        f"{len(channels)} channels ({missing} without access hash)"
+    )

@@ -57,6 +57,13 @@ def _simulate_on_login(client: TelegramClient, pts: int = 900) -> None:
     client._message_box.load(SessionState(0, 0, False, pts, 0, now, 0, None), [])
 
 
+@pytest.fixture(autouse=True)
+def _no_deferred_rows_between_tests():
+    update_state._deferred.clear()
+    yield
+    update_state._deferred.clear()
+
+
 @pytest.fixture
 def session_path(tmp_path):
     return str(tmp_path / "account")
@@ -168,30 +175,116 @@ class TestNothingToLoad:
         assert box.map[ENTRY_ACCOUNT].pts == 500
         client.session.close()
 
-    async def test_difference_still_in_flight_keeps_the_stash_and_warns(self, session_path, monkeypatch, caplog):
+    def _busy_client(self, session_path, monkeypatch, *, connected=True):
         monkeypatch.setattr(update_state, "_DIFF_WAIT_SECONDS", 0)
+        monkeypatch.setattr(update_state, "_RETRY_WAIT_SECONDS", 0.01)
         _seed_session(session_path)
         client = _client(session_path)
+        client.is_connected = lambda: connected
+        client.catch_up = AsyncMock()
+        return client
+
+    async def _settle(self):
+        while update_state._retries:
+            await asyncio.gather(*update_state._retries)
+
+    async def test_difference_still_in_flight_is_retried_once_it_finishes(self, session_path, monkeypatch, caplog):
+        client = self._busy_client(session_path, monkeypatch)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        box = client._message_box
+        box.getting_diff_for = {ENTRY_ACCOUNT}
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await resume_saved_state(client)
+            assert box.map[ENTRY_ACCOUNT].pts == 900  # deferred, not loaded yet
+            client.catch_up.assert_not_awaited()
+
+            await asyncio.sleep(0.03)
+            box.map[ENTRY_ACCOUNT].pts = 950  # what the in-flight difference fetched
+            box.getting_diff_for = set()
+            await self._settle()
+
+        assert box.map[ENTRY_ACCOUNT].pts == 500
+        client.catch_up.assert_awaited_once()
+        lines = [(r.levelno, r.getMessage()) for r in caplog.records]
+        assert lines[0] == (logging.INFO, "Update difference still running; restart replay deferred until it finishes")
+        assert len(lines) == 2 and "account gap 450 pts" in lines[1][1]
+        client.session.close()
+
+    async def test_retry_gives_up_with_one_warning(self, session_path, monkeypatch, caplog):
+        client = self._busy_client(session_path, monkeypatch)
+        monkeypatch.setattr(update_state, "_RETRY_WAIT_STEPS", 3)
         await remember_saved_state(client)
         _simulate_on_login(client)
         client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
 
         with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
             await resume_saved_state(client)
+            await self._settle()
 
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
-        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
-            (
-                logging.WARNING,
-                "Update difference still running; restart replay skipped, "
-                "only SYNC_DELETIONS_EDITS=true recovers its edits and deletions",
-            )
-        ]
+        client.catch_up.assert_not_awaited()
+        assert caplog.records[-1].levelno == logging.WARNING
+        assert "still running after 10 minutes" in caplog.records[-1].getMessage()
+        client.session.close()
+
+    async def test_disconnect_during_retry_keeps_the_stash_for_the_next_connect(self, session_path, monkeypatch):
+        client = self._busy_client(session_path, monkeypatch, connected=False)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+
+        await resume_saved_state(client)
+        await self._settle()
+        client.catch_up.assert_not_awaited()
+        assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
 
         # The next listener.connect() on this client retries with the same rows.
         client._message_box.getting_diff_for = set()
         await resume_saved_state(client)
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 500
+        assert update_state._deferred == {}
+        client.session.close()
+
+    async def test_disconnect_during_retry_hands_the_rows_to_a_new_client(self, session_path, monkeypatch):
+        """An owned listener builds a new client; the old one's disconnect saved its newer state."""
+        client = self._busy_client(session_path, monkeypatch, connected=False)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+        await resume_saved_state(client)
+        await self._settle()
+        client.session.set_update_state(0, _state(900))  # what disconnect() persists
+        client.session.save()
+        client.session.close()
+
+        failed = _client(session_path)  # connect() or the authorization check raised
+        await remember_saved_state(failed)
+        failed.session.close()
+
+        replacement = _client(session_path)
+        await remember_saved_state(replacement)
+        _simulate_on_login(replacement)
+        await resume_saved_state(replacement)
+
+        assert replacement._message_box.map[ENTRY_ACCOUNT].pts == 500
+        assert update_state._deferred == {}
+        replacement.session.close()
+
+    async def test_retry_failure_warns_with_the_type_name_only(self, session_path, monkeypatch, caplog):
+        client = self._busy_client(session_path, monkeypatch)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+        client.catch_up = AsyncMock(side_effect=RuntimeError("secret detail"))
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await resume_saved_state(client)
+            client._message_box.getting_diff_for = set()
+            await self._settle()
+
+        assert caplog.records[-1].getMessage() == "Could not load saved update state (RuntimeError); live updates only"
         client.session.close()
 
 
