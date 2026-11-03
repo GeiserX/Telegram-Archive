@@ -259,6 +259,10 @@ class TestNothingToLoad:
         client.session.save()
         client.session.close()
 
+        failed = _client(session_path)  # connect() or the authorization check raised
+        await remember_saved_state(failed)
+        failed.session.close()
+
         replacement = _client(session_path)
         await remember_saved_state(replacement)
         _simulate_on_login(replacement)

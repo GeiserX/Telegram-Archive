@@ -81,7 +81,9 @@ async def remember_saved_state(client) -> None:
             logger.warning("Telethon internals changed; restart replay disabled, live updates only")
         return
     try:
-        deferred = _deferred.pop(_session_key(client), None)
+        # Read, not popped: if this client fails to connect, the next one still
+        # needs them. resume_saved_state() clears them once they reach replay.
+        deferred = _deferred.get(_session_key(client))
         if deferred is not None:
             _pending[client] = deferred
             return
