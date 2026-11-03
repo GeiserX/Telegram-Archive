@@ -6,11 +6,15 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.6.0] - 2026-11-02
+
+Edits and deletions are easier to keep up with on large archives: the listener catches up on what changed while it was stopped, and `SYNC_DELETIONS_EDITS` can check only recent messages. No migration. Docker deployments only need the new pins. Thanks to @Scalpinho, whose measurements in #608 led to both.
+
 ### Added
 - **`SYNC_DELETIONS_EDITS` can check only recent messages.** Telegram answers about 300 ids per 30 seconds by id, so on an archive of millions of messages one sweep took days. `SYNC_DELETIONS_EDITS_DAYS=N` re-checks only messages posted in the last N days, highest message id first. The default, `0`, re-reads every message as before. Changes to older posts wait for a run with `0`. See [Checking only recent messages](configuration/schedule.md#sync-window). (#608)
 
 ### Fixed
-- **The listener now replays edits, deletions and new messages missed while the process was stopped**, from the update state Telethon already keeps in the session file. Before, a restart started from "now" and only `SYNC_DELETIONS_EDITS` recovered what changed while it was down. Replayed deletions still need `LISTEN_DELETIONS=true` and go through the mass-operation limit. See [Catching up after a disconnect](configuration/listener.md#catching-up-after-a-disconnect). (#611)
+- **The listener now replays edits, deletions and new messages missed while the process was stopped**, from the update state Telethon already keeps in the session file. Before, a restart started from "now" and only `SYNC_DELETIONS_EDITS` recovered what changed while it was down. Replayed deletions still need `LISTEN_DELETIONS=true` and go through the mass-operation limit. If Telethon is still fetching a difference when the listener connects, the replay waits up to 10 minutes for it to finish instead of being skipped. See [Catching up after a disconnect](configuration/listener.md#catching-up-after-a-disconnect). (#611, #614)
 
 ## [9.5.1] - 2026-11-01
 
