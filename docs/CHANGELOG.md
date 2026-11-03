@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+- **After a restart, the listener replays each channel at once instead of 15 minutes later.** Telethon fetched a saved channel's missed updates only 15 minutes after the saved state was loaded, so a busy channel often passed the 100 updates Telegram replays for a user account and its gap was dropped as too long. The same requests now go out as soon as the saved state is loaded, for every channel the session has an access hash for; one Telegram rate-limits then is still retried 15 minutes later. The too-long warning now says what is lost: new messages still arrive with the next backup, edits and deletions in the gap come back only with `SYNC_DELETIONS_EDITS=true` within `SYNC_DELETIONS_EDITS_DAYS`, and a message posted and deleted inside the gap cannot be recovered. See [Catching up after a disconnect](configuration/listener.md#catching-up-after-a-disconnect). (#608)
+
+### Changed
+- **`LOG_CHAT_TITLES=true` also names the channel in the listener's too-long warning**, with its cleaned title and its id (`-100…`, as the archive stores it), so you can tell which channel lost its replay. Off by default, and off the line is unchanged: no title, no id. Thanks to @Scalpinho for asking. (#608)
+
 ## [9.6.0] - 2026-11-02
 
 Edits and deletions are easier to keep up with on large archives: the listener catches up on what changed while it was stopped, and `SYNC_DELETIONS_EDITS` can check only recent messages. No migration. Docker deployments only need the new pins. Thanks to @Scalpinho, whose measurements in #608 led to both.

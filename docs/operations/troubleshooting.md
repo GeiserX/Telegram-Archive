@@ -101,7 +101,7 @@ An unknown value silently becomes `INFO`. The viewer ignores `LOG_LEVEL` and alw
 
 ### What the logs contain
 
-The backup's logs never contain chat ids, message text, account names or phone numbers. Set `LOG_CHAT_TITLES=true` to add a cleaned chat title to the two lines that report progress through each chat:
+By default, the logs never contain chat ids, message text, account names or phone numbers. Set `LOG_CHAT_TITLES=true` to add a cleaned chat title to the two lines that report progress through each chat:
 
 ```text
 [3/40] Backing up
@@ -109,6 +109,14 @@ The backup's logs never contain chat ids, message text, account names or phone n
 ```
 
 The backup appends the title to the end of each line. For a private chat it writes `private chat` instead of the name.
+
+The same setting also names the channel in the listener's warning about a replay dropped as too long. It adds the cleaned title and the channel id, as the archive stores it:
+
+```text
+Telegram dropped a channel's replay as too long: "Demo News" (id -1001234567890) (pts 40→400); ...
+```
+
+When Telegram's answer does not include the channel, the title reads `untitled chat` and the id is still there.
 
 `FLOOD_WAIT_LOG_THRESHOLD` hides short Telegram rate-limit pauses, called FloodWaits. The default is 10 seconds. While it fetches message history, the backup does not log a FloodWait shorter than this the first time it occurs. Set it to `0` to log every one.
 
@@ -195,7 +203,7 @@ Open a bug report at [github.com/GeiserX/Telegram-Archive/issues](https://github
 - Whether you run SQLite or PostgreSQL.
 - Your operating system, Docker version or Python version.
 
-The logs carry no chat content, so you can paste them as they are. If you turned on `LOG_CHAT_TITLES`, remove the titles first.
+The logs carry no chat content, so you can paste them as they are. If you turned on `LOG_CHAT_TITLES`, remove the chat titles and ids first.
 
 An issue with no activity for 14 days is marked stale and closed 14 days later. Reply to it to keep it open.
 

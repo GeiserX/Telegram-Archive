@@ -1911,8 +1911,9 @@ class TestCatchUpOnConnect:
         client = _RecordingClient(calls)
         listener = TelegramListener(_catch_up_config(), _catch_up_db(), client=client, account_id=1)
 
-        async def record_resume(c):
+        async def record_resume(c, config=None):
             assert c is client
+            assert config is listener.config  # the LOG_CHAT_TITLES gate reaches the TooLong warning
             calls.append("resume_saved_state")
 
         with patch("telegram_archive.listener.resume_saved_state", side_effect=record_resume):

@@ -358,7 +358,7 @@ Feature page: [Monitoring and troubleshooting](../operations/troubleshooting.md)
 | Variable | Default | Read by | Notes |
 |---|---|---|---|
 | <span id="log_level"></span>`LOG_LEVEL` | `INFO` | backup | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, in any case. `WARN` counts as `WARNING`. An unknown name silently becomes `INFO`. Applied by the backup, the scheduler and the CLI. The viewer always logs at `INFO`, even though the stock compose passes it. |
-| <span id="log_chat_titles"></span>`LOG_CHAT_TITLES` | `false` | backup | Name the chat on the two per-chat progress lines. Private chats are named by kind only. |
+| <span id="log_chat_titles"></span>`LOG_CHAT_TITLES` | `false` | backup | Name the chat on the two per-chat progress lines, and the channel (title and id) in the listener's warning about a replay dropped as too long. Private chats are named by kind only. Remove titles and ids from logs you paste. |
 | <span id="flood_wait_log_threshold"></span>`FLOOD_WAIT_LOG_THRESHOLD` | `10` | backup | While fetching message history, a first FloodWait shorter than this many seconds is not logged. `0` logs every one. Other calls log every FloodWait as a warning. |
 
 ## Health checks and images {#health-and-image}

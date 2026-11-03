@@ -1278,12 +1278,14 @@ def describe_exception(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-# The one place a chat title may reach a log line (#439), and the only thing the
-# PII guard exempts. Its NAME is what makes that possible: the guard's matcher
-# pairs a subject with a field, so "chat_title_for_log" is itself a violation and
-# the exemption for it has to be written down where a reviewer sees it. A blandly
-# named helper would need no exemption at all, which is the laundering hole the
-# guard's own docstring warns about.
+# The only route a chat title takes to a log line (#439), with chat_id_for_log
+# below for the id: both behind LOG_CHAT_TITLES, both exempted by name in the PII
+# guard, callable from any log line where knowing the chat helps the operator.
+# Their NAMES are what make that possible: the guard's matcher pairs a subject
+# with a field, so "chat_title_for_log" is itself a violation and the exemption
+# for it has to be written down where a reviewer sees it. A blandly named helper
+# would need no exemption at all, which is the laundering hole the guard's own
+# docstring warns about.
 #
 # Categories replaced rather than deleted, so tampering reads as tampering:
 #   Cc  control characters - the newline that forges a whole second log record
@@ -1329,6 +1331,21 @@ def chat_title_for_log(entity, config) -> str:
     if len(cleaned) > _LOG_TITLE_MAX_CHARS:
         cleaned = cleaned[: _LOG_TITLE_MAX_CHARS - 1].rstrip() + "…"
     return f': "{cleaned}"'
+
+
+def chat_id_for_log(chat_id, config) -> str:
+    """The chat's id as a log suffix, `` (id -1001234567890)``, or "" unless the operator opted in.
+
+    The sibling of ``chat_title_for_log``, behind the same ``LOG_CHAT_TITLES``
+    gate. Pass the id the way the archive stores it and the viewer shows it
+    (``-100…`` for a channel). Anything but a plain int gives "", so a title
+    cannot be routed through here.
+    """
+    if getattr(config, "log_chat_titles", False) is not True:
+        return ""
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+        return ""
+    return f" (id {chat_id})"
 
 
 def extract_topic_id(message: object) -> int | None:

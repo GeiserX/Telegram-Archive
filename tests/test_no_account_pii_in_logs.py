@@ -305,7 +305,9 @@ class TestNoAccountPiiInLogs(unittest.TestCase):
 # added, in the very function this guard exists to protect. _is_chat_object
 # matches on SUBSTRING, so an object named `identity` is flagged too; rename the
 # local or bind it differently, the same escape any other false positive has.
-_ID_SUBJECTS = ("chat", "topic", "entity", "dialog")
+# `channel` since #608: Telethon's InputChannel carries the id as `channel_id`,
+# and an ungated `request.channel.channel_id` scanned green before it.
+_ID_SUBJECTS = ("chat", "topic", "entity", "dialog", "channel")
 _ID_FIELDS = frozenset({"id", "name", "title"})
 
 
@@ -333,15 +335,18 @@ def _is_chat_object(value: ast.AST) -> bool:
     return bool(obj) and any(s in obj.lower() for s in _ID_SUBJECTS)
 
 
-def _chat_object_field_reads(node: ast.AST) -> list[str]:
+def _chat_object_field_reads(node: ast.AST, *, exempt_sink: bool = True) -> list[str]:
     """id / name / title pulled from a chat/topic OBJECT.
 
     ``chat.id``, ``chat["id"]``, ``chat.get("id")`` — the shapes the name scan
     cannot see because the identifier is a dict key or attribute, not a variable.
     A live ``chat.get("id")`` leak in the viewer got through the first version.
     """
+    exempt = _sink_exempt_nodes(node) if exempt_sink else set()
     found: list[str] = []
     for child in ast.walk(node):
+        if id(child) in exempt:
+            continue
         if isinstance(child, ast.Attribute) and child.attr in _ID_FIELDS and _is_chat_object(child.value):
             found.append(f".{child.attr}")
         elif (
@@ -446,10 +451,31 @@ CHAT_ID_LOG_ALLOWLIST = frozenset(
 )
 
 
-# The single sanctioned title sink (#439). Its name pairs chat+title, so the
-# matcher below reports it like any other violation; this constant is the one
-# thing that clears it, and deleting it turns the two real call sites red.
+# The sanctioned sinks, both behind LOG_CHAT_TITLES (#439, #608). Their names
+# pair chat+title and chat+id, so the matcher below reports them like any other
+# violation; these constants are the one thing that clears them, and deleting
+# one turns its real call sites red. Any log line may call them; nothing else
+# may put a chat's title or id on a log line.
 TITLE_LOG_SINK = "chat_title_for_log"
+ID_LOG_SINK = "chat_id_for_log"
+LOG_SINKS = (TITLE_LOG_SINK, ID_LOG_SINK)
+
+
+def _sink_exempt_nodes(node: ast.AST) -> set[int]:
+    """Nodes the sanctioned sinks clear: each callee NAME, plus the id sink's first argument.
+
+    The title sink's arguments stay scanned, so chat_title_for_log(chat_id, ...)
+    still reports chat_id. The id sink takes the id by design and prints it only
+    when the operator opted in, and only as an int, so its first argument is
+    cleared; its other arguments stay scanned. Only the bare-name call form clears.
+    """
+    exempt: set[int] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in LOG_SINKS:
+            exempt.add(id(child.func))
+            if child.func.id == ID_LOG_SINK and child.args:
+                exempt.update(id(d) for d in ast.walk(child.args[0]))
+    return exempt
 
 
 def _chat_identifier_hits(node: ast.AST, *, exempt_sink: bool = True) -> list[str]:
@@ -458,19 +484,13 @@ def _chat_identifier_hits(node: ast.AST, *, exempt_sink: bool = True) -> list[st
     ``len(chat_ids)`` is a count, which the rule explicitly permits; the raw
     collection or a single id is what must not be logged.
 
-    ``exempt_sink=False`` reports the sanctioned title sink too, which is how the
+    ``exempt_sink=False`` reports the sanctioned sinks too, which is how the
     tests prove the exemption is load-bearing rather than decorative.
     """
-    exempt: set[int] = set()
+    exempt: set[int] = _sink_exempt_nodes(node) if exempt_sink else set()
     for child in ast.walk(node):
-        if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Name):
-            continue
-        if child.func.id == "len":
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == "len":
             exempt.update(id(d) for d in ast.walk(child))
-        elif exempt_sink and child.func.id == TITLE_LOG_SINK:
-            # The callee name ONLY. Its arguments stay scanned, so
-            # chat_title_for_log(chat_id, ...) still reports chat_id.
-            exempt.add(id(child.func))
 
     found: list[str] = []
     for child in ast.walk(node):
@@ -490,6 +510,43 @@ def _chat_identifier_hits(node: ast.AST, *, exempt_sink: bool = True) -> list[st
     return found
 
 
+def _is_chat_object_itself(value: ast.AST) -> bool:
+    """A Name/Attribute that IS a chat object: its last name component is a subject.
+
+    ``entity``, ``request.channel``, ``diff.chats``, ``source_chat`` qualify;
+    ``chat_count``, ``entity_type`` and ``total_topics`` do not. A telethon ``Channel`` or ``User``
+    repr carries the title and the id, so formatting the object itself is a leak.
+    """
+    obj = value.id if isinstance(value, ast.Name) else value.attr if isinstance(value, ast.Attribute) else None
+    if not obj:
+        return False
+    name = obj.lower()
+    # A plural counts only as the whole name (``diff.chats``): ``total_topics`` is a count.
+    return name.split("_")[-1] in _ID_SUBJECTS or (name.endswith("s") and name[:-1] in _ID_SUBJECTS)
+
+
+def _chat_object_leaks(argument: ast.AST, *, exempt_sink: bool = True) -> list[str]:
+    """A chat object formatted whole, or a ``get_peer_id(...)`` call, outside the id sink.
+
+    ``{entity}``, ``{entity!r}``, ``logger.info("%s", entity)`` print the repr
+    (title and id); ``get_peer_id(x)`` computes the very id the id sink prints.
+    """
+    exempt = _sink_exempt_nodes(argument) if exempt_sink else set()
+    found: list[str] = []
+    if _is_chat_object_itself(argument):
+        found.append(f"the chat object {ast.unparse(argument)}")
+    for child in ast.walk(argument):
+        if id(child) in exempt:
+            continue
+        if isinstance(child, ast.FormattedValue) and _is_chat_object_itself(child.value):
+            found.append(f"the chat object {ast.unparse(child.value)}")
+        elif isinstance(child, ast.Call):
+            name = child.func.attr if isinstance(child.func, ast.Attribute) else getattr(child.func, "id", None)
+            if name == "get_peer_id":
+                found.append("get_peer_id(...)")
+    return found
+
+
 def _violations_in_tree(rel: str, tree: ast.AST, *, exempt_sink: bool = True) -> list[str]:
     """Every violation in one parsed file. Split out so a test can run the REAL
     matcher over a mutated copy of a real source file rather than a fixture."""
@@ -500,8 +557,10 @@ def _violations_in_tree(rel: str, tree: ast.AST, *, exempt_sink: bool = True) ->
         for argument in [*node.args, *(kw.value for kw in node.keywords)]:
             for name in _chat_identifier_hits(argument, exempt_sink=exempt_sink):
                 violations.append(f"{rel}:{node.lineno} logs {name}")
-            for read in _chat_object_field_reads(argument):
+            for read in _chat_object_field_reads(argument, exempt_sink=exempt_sink):
                 violations.append(f"{rel}:{node.lineno} logs a chat/topic {read}")
+            for leak in _chat_object_leaks(argument, exempt_sink=exempt_sink):
+                violations.append(f"{rel}:{node.lineno} logs {leak}")
     return violations
 
 
@@ -532,9 +591,10 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
             "Logging must not read a chat id, topic id or title (CLAUDE.md). Log a count, "
             "or nothing. If the identifier is genuinely the operator-facing answer (a list "
             "command, an interactive destructive tool), add the file to CHAT_ID_LOG_ALLOWLIST "
-            f"with a reason. A chat TITLE has exactly one sanctioned route: {TITLE_LOG_SINK}(entity, "
-            "config), imported by bare name and called inline in the log call — the module-qualified "
-            "form is still a violation, and the helper decides whether the operator opted in. "
+            f"with a reason. To name the chat for the operator, call {TITLE_LOG_SINK}(entity, config) "
+            f"or {ID_LOG_SINK}(chat_id, config), imported by bare name and called inline in the log "
+            "call: the module-qualified form is still a violation, and the helper decides whether the "
+            "operator opted in (LOG_CHAT_TITLES). "
             "Offending call sites:\n  " + "\n  ".join(violations),
         )
 
@@ -674,46 +734,111 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
                     f"a raw {replacement} at the sanctioned site must fail the guard",
                 )
 
-    def test_the_sanctioned_sink_is_called_only_where_it_was_sanctioned(self) -> None:
-        """Counts EVERY call anywhere under telegram_archive/ and scripts/, not only those
-        nested in a logging call — hoisting the suffix into a local first is the
-        same laundering hole, and this is what bounds it. A third caller is a
-        reviewed line in the diff, never a silent widening."""
+    def test_the_channel_id_at_the_too_long_warning_is_gated(self) -> None:
+        """Positive control for the id sink (#608): mutate the REAL update_state.py
+        so the channel's title or id reaches the warning without the gate, and
+        watch the REAL matcher go red."""
+        rel = "telegram_archive/update_state.py"
+        source = (REPO / rel).read_text(encoding="utf-8")
+        id_anchor = f"{ID_LOG_SINK}(utils.get_peer_id(request.channel), self._log_config)"
+        title_anchor = f"{TITLE_LOG_SINK}(entity, self._log_config)"
+        self.assertEqual(1, source.count(id_anchor))
+        self.assertEqual(1, source.count(title_anchor))
+        self.assertEqual([], _violations_in_tree(rel, ast.parse(source)))
+        for anchor, replacement in (
+            (id_anchor, "request.channel.channel_id"),
+            (id_anchor, "utils.get_peer_id(request.channel)"),
+            (id_anchor, "entity"),
+            (id_anchor, "entity!r"),
+            (id_anchor, "request.channel"),
+            (id_anchor, "diff.chats"),
+            (id_anchor, f"message_utils.{ID_LOG_SINK}(request.channel.channel_id, self._log_config)"),
+            (title_anchor, "entity.title"),
+            (title_anchor, f"{TITLE_LOG_SINK}(entity, self._log_config) or entity.id"),
+        ):
+            with self.subTest(replacement=replacement):
+                mutated = ast.parse(source.replace(anchor, replacement, 1))
+                self.assertTrue(_violations_in_tree(rel, mutated), f"an ungated {replacement} must fail the guard")
+
+    def test_the_id_sink_clears_its_id_argument_only(self) -> None:
+        """The id sink takes the id itself, so its first argument is cleared;
+        anything else on the line is still scanned, and so is the module-qualified form."""
+        cases = {
+            f'logger.info(f"x{{{ID_LOG_SINK}(chat_id, self.config)}}")': [],
+            f'logger.info(f"x{{{ID_LOG_SINK}(entity.id, self.config)}}")': [],
+            f'logger.info(f"x{{{ID_LOG_SINK}(chat_id, c)}} {{chat_id}}")': ["chat_id"],
+            f'logger.info(f"x{{{ID_LOG_SINK}(chat_id, c)}} {{entity.title}}")': [".title"],
+            f'logger.info(f"x{{message_utils.{ID_LOG_SINK}(chat_id, c)}}")': [ID_LOG_SINK, "chat_id"],
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                argument = ast.parse(source).body[0].value.args[0]
+                self.assertEqual(expected, _chat_identifier_hits(argument) + _chat_object_field_reads(argument))
+        argument = ast.parse(f'logger.info(f"x{{{ID_LOG_SINK}(chat_id, c)}}")').body[0].value.args[0]
+        self.assertEqual([ID_LOG_SINK, "chat_id"], _chat_identifier_hits(argument, exempt_sink=False))
+
+    def test_a_chat_object_or_a_peer_id_is_caught_outside_the_id_sink(self) -> None:
+        """A Channel/User repr carries the title and the id, and get_peer_id computes
+        the id the sink prints, so both are leaks unless they sit in the id sink."""
+        cases = {
+            'logger.info(f"x {entity}")': ["the chat object entity"],
+            'logger.info(f"x {entity!r}")': ["the chat object entity"],
+            'logger.info(f"x {request.channel}")': ["the chat object request.channel"],
+            'logger.info(f"x {diff.chats}")': ["the chat object diff.chats"],
+            'logger.info("x %s", entity)': ["the chat object entity"],
+            'logger.info(f"x {utils.get_peer_id(peer)}")': ["get_peer_id(...)"],
+            f'logger.info(f"x{{{ID_LOG_SINK}(utils.get_peer_id(request.channel), c)}}")': [],
+            f'logger.info(f"x{{{TITLE_LOG_SINK}(entity, c)}}")': [],
+            'logger.info(f"x {chat_count} {total_topics} {entity_type}")': [],
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                call = ast.parse(source).body[0].value
+                found = [leak for argument in call.args for leak in _chat_object_leaks(argument)]
+                self.assertEqual(expected, found)
+
+    def test_the_title_sink_is_never_handed_a_dialog(self) -> None:
+        """Any log line may call the sinks, but never on a telethon Dialog:
+        Dialog.title is the display name of the person behind a private chat,
+        and the sink names a private chat by kind only when it gets the User."""
         calls: list[str] = []
         for rel, tree in _scanned_source_files():
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == TITLE_LOG_SINK:
                     first = node.args[0] if node.args else None
-                    argument = first.id if isinstance(first, ast.Name) else ast.dump(first) if first else "<none>"
-                    calls.append(f"{rel}({argument})")
-        self.assertEqual(
-            ["telegram_archive/telegram_backup.py(entity)", "telegram_archive/telegram_backup.py(entity)"],
-            sorted(calls),
-            "the title sink may be called only from the two progress lines, and only on `entity` — "
-            "`dialog` would name the person behind a private chat, because Dialog.title is their display name",
-        )
+                    if first is None or "dialog" in ast.unparse(first).lower():
+                        calls.append(f"{rel}:{node.lineno}")
+        self.assertEqual([], calls, "pass the chat entity (dialog.entity's User or Chat), never the Dialog")
 
-    def test_the_sanctioned_sink_is_bound_exactly_once(self) -> None:
-        """The exemption is keyed on a NAME, so pin what that name is bound to.
-        Without this, `chat_title_for_log = _rich_label` inside the backup module
-        passes every other guard here."""
-        bindings: list[str] = []
+    def test_the_sanctioned_sinks_are_bound_only_to_message_utils(self) -> None:
+        """The exemption is keyed on a NAME, so pin what that name is bound to:
+        one def each in message_utils, and elsewhere only an import from it.
+        Without this, `chat_title_for_log = _rich_label` in any module passes
+        every other guard here."""
+        bad: list[str] = []
+        defs: list[str] = []
         for rel, tree in _scanned_source_files():
             for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == TITLE_LOG_SINK:
-                    bindings.append(f"{rel}:def")
-                elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in LOG_SINKS:
+                    defs.append(f"{rel}:{node.name}")
+                elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign | ast.NamedExpr):
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                    if any(isinstance(t, ast.Name) and t.id == TITLE_LOG_SINK for t in targets):
-                        bindings.append(f"{rel}:assign")
+                    if any(isinstance(t, ast.Name) and t.id in LOG_SINKS for t in targets):
+                        bad.append(f"{rel}:{node.lineno} assigns")
                 elif isinstance(node, ast.Import | ast.ImportFrom):
-                    if any((a.asname or a.name) == TITLE_LOG_SINK for a in node.names):
-                        bindings.append(f"{rel}:import")
+                    for alias in node.names:
+                        bound = alias.asname or alias.name
+                        if bound not in LOG_SINKS and alias.name not in LOG_SINKS:
+                            continue
+                        from_utils = isinstance(node, ast.ImportFrom) and (node.module or "").endswith("message_utils")
+                        if not from_utils or alias.name != bound:
+                            bad.append(f"{rel}:{node.lineno} imports {alias.name} as {bound}")
         self.assertEqual(
-            ["telegram_archive/message_utils.py:def", "telegram_archive/telegram_backup.py:import"],
-            sorted(bindings),
-            "the sanctioned name must mean exactly one reviewed function",
+            sorted(f"telegram_archive/message_utils.py:{name}" for name in LOG_SINKS),
+            sorted(defs),
+            "each sanctioned name must mean exactly one reviewed function",
         )
+        self.assertEqual([], bad, "the sanctioned names may only be imported, unrenamed, from message_utils")
 
     def test_the_sanctioned_sink_never_reads_an_identifying_attribute(self) -> None:
         """The gate is the guard, so pin what its body may touch: no identifying
@@ -752,6 +877,20 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         self.assertEqual([], reads, "the gate must never read an identifying attribute")
         self.assertEqual(set(), set(calls) - allowed_calls, "the gate may only call stdlib string/type helpers")
         self.assertNotIn("!r", inspect.getsource(chat_title_for_log), "a telethon repr carries the title AND the id")
+
+    def test_the_id_sink_prints_only_an_int_and_only_when_opted_in(self) -> None:
+        from types import SimpleNamespace
+
+        from telegram_archive.message_utils import chat_id_for_log
+
+        on, off = SimpleNamespace(log_chat_titles=True), SimpleNamespace(log_chat_titles=False)
+        self.assertEqual(" (id -1001234567890)", chat_id_for_log(-1001234567890, on))
+        for config in (off, SimpleNamespace(), SimpleNamespace(log_chat_titles="true"), None):
+            with self.subTest(config=config):
+                self.assertEqual("", chat_id_for_log(-1001234567890, config))
+        for value in ("Demo News", True, None, -1.0):
+            with self.subTest(value=value):
+                self.assertEqual("", chat_id_for_log(value, on), "only an int may come out of the id sink")
 
     def test_no_filesystem_handler_logs_a_raw_exception(self) -> None:
         """Exception text is the third leak route, and it shipped in v7.33.3.
