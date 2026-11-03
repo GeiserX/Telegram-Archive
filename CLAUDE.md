@@ -178,9 +178,9 @@ declining Telegram's attachment is the whole mechanism.
 
 ### Logging Rules
 
-- **Never log chat IDs, topic IDs, or topic titles** — these are considered PII per the project's guidelines. Log only aggregated counts (e.g., "skipping N topics across M chats").
-- **The one exception is `chat_title_for_log(entity, config)`** (`telegram_archive/message_utils.py`), the opt-in `LOG_CHAT_TITLES` gate from #439. It is the only sanctioned route a chat title has, it is called inline at exactly two progress lines, and `tests/test_no_account_pii_in_logs.py` exempts that one callee name and nothing else. Do not add a second caller, do not rebind the name, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead — the guard is meant to fire.
-- **Never log message content** — same PII rule applies.
+- **By default, never log chat IDs, chat titles, topic IDs or topic titles.** Log only aggregated counts (e.g., "skipping N topics across M chats").
+- **Naming a chat is the operator's choice.** With `LOG_CHAT_TITLES=true` (off by default), any log line where knowing the chat helps the operator may name it: the title through `chat_title_for_log(entity, config)` and, where useful, the id through `chat_id_for_log(chat_id, config)` (the marked id the archive stores, `-100…` for a channel; both in `telegram_archive/message_utils.py`). Always go through these gates, called inline by bare name, never unconditionally; with the flag off they return "" and the line is unchanged. Pass the chat entity, never a telethon `Dialog` (its title is the person's name in a private chat). `tests/test_no_account_pii_in_logs.py` exempts exactly these two names (and the id sink's first argument), and flags a chat object formatted whole (`{entity}`, its repr holds title and id) or a `get_peer_id(...)` anywhere else on a log line; do not rebind them, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead.
+- **Never log message content**, flag or no flag.
 
 ## CI/CD Pipeline
 

@@ -26,6 +26,8 @@ import weakref
 
 from telethon import utils
 
+from .message_utils import chat_id_for_log, chat_title_for_log
+
 try:
     from telethon._updates import ChannelState, Entity, EntityType, SessionState
     from telethon._updates.messagebox import ENTRY_ACCOUNT, MessageBox
@@ -103,6 +105,14 @@ def _age(delta: datetime.timedelta) -> str:
     return f"{seconds // 86400}d"
 
 
+# What a dropped replay costs, said once for every warning about one.
+_TOO_LONG_TAIL = (
+    "new messages arrive with the next backup; edits and deletions in the gap only with "
+    "SYNC_DELETIONS_EDITS=true within SYNC_DELETIONS_EDITS_DAYS; a message posted and deleted "
+    "in the gap is lost"
+)
+
+
 class _WatchedMessageBox(MessageBox or object):
     """MessageBox that logs a WARNING whenever Telegram answers a difference with TooLong.
 
@@ -114,35 +124,45 @@ class _WatchedMessageBox(MessageBox or object):
 
     __slots__ = ()
 
+    # The listener's config, for the LOG_CHAT_TITLES gate. None names nothing.
+    # A class attribute: the slots leave no room on the instance, so
+    # _watch_too_long gives each config its own empty-slots subclass.
+    _log_config = None
+
     def apply_difference(self, diff, chat_hashes):
         if isinstance(diff, DifferenceTooLong):
             before = self.map.get(ENTRY_ACCOUNT)
             logger.warning(
                 f"Telegram dropped the account replay as too long "
-                f"(pts {before.pts if before else '?'}→{diff.pts}); only SYNC_DELETIONS_EDITS=true "
-                f"recovers its edits and deletions"
+                f"(pts {before.pts if before else '?'}→{diff.pts}); {_TOO_LONG_TAIL}"
             )
         return super().apply_difference(diff, chat_hashes)
 
     def apply_channel_difference(self, request, diff, chat_hashes):
         if isinstance(diff, ChannelDifferenceTooLong):
-            # No channel id in the log: chat ids never reach the logs.
+            # Names the channel only when the operator opted in (LOG_CHAT_TITLES);
+            # off, the line carries no id and no title.
             before = self.map.get(request.channel.channel_id)
+            entity = next((c for c in diff.chats if getattr(c, "id", None) == request.channel.channel_id), None)
             logger.warning(
-                f"Telegram dropped a channel's replay as too long "
-                f"(pts {before.pts if before else '?'}→{diff.dialog.pts}); only "
-                f"SYNC_DELETIONS_EDITS=true recovers its edits and deletions"
+                f"Telegram dropped a channel's replay as too long"
+                f"{chat_title_for_log(entity, self._log_config)}"
+                f"{chat_id_for_log(utils.get_peer_id(request.channel), self._log_config)} "
+                f"(pts {before.pts if before else '?'}→{diff.dialog.pts}); {_TOO_LONG_TAIL}"
             )
         return super().apply_channel_difference(request, diff, chat_hashes)
 
 
-def _watch_too_long(box) -> None:
+def _watch_too_long(box, config=None) -> None:
     """Make ``box`` log TooLong answers. Idempotent; leaves anything but a plain MessageBox alone."""
     if MessageBox is not None and type(box) is MessageBox:
-        box.__class__ = _WatchedMessageBox
+        if config is None:
+            box.__class__ = _WatchedMessageBox
+        else:
+            box.__class__ = type("_WatchedMessageBox", (_WatchedMessageBox,), {"__slots__": (), "_log_config": config})
 
 
-async def resume_saved_state(client) -> None:
+async def resume_saved_state(client, config=None) -> None:
     """Load the stashed update state into the client's MessageBox, once.
 
     Call after the handlers are attached and before ``client.catch_up()``, so
@@ -150,6 +170,7 @@ async def resume_saved_state(client) -> None:
     updates reach the handlers. Logs one INFO line, or one WARNING on failure.
     If a difference is still running after the wait, the load moves to a
     background task that waits for it to finish and then catches up itself.
+    ``config`` gates whether a channel's TooLong warning names the channel.
     """
     if MessageBox is None:
         return  # remember_saved_state() already warned
@@ -158,7 +179,7 @@ async def resume_saved_state(client) -> None:
     try:
         box = getattr(client, "_message_box", None)
         if box is not None:
-            _watch_too_long(box)
+            _watch_too_long(box, config)
         account = next((state for entity_id, state in rows or () if entity_id == 0), None)
         if account is None or account.pts == 0:
             logger.info("No saved update state, nothing to replay")
@@ -203,10 +224,7 @@ async def _resume_when_idle(client, account, rows) -> None:
                 await client.catch_up()
                 return
             await asyncio.sleep(_RETRY_WAIT_SECONDS)
-        logger.warning(
-            "Update difference still running after 10 minutes; restart replay skipped, "
-            "only SYNC_DELETIONS_EDITS=true recovers its edits and deletions"
-        )
+        logger.warning(f"Update difference still running after 10 minutes; restart replay skipped; {_TOO_LONG_TAIL}")
     except Exception as e:
         logger.warning(f"Could not load saved update state ({type(e).__name__}); live updates only")
 
@@ -222,13 +240,27 @@ async def _load(client, box, account, rows) -> None:
     # Mirrors telegrambaseclient.connect(): a channel difference needs the
     # channel's access hash.
     missing = 0
+    hashed = []
     for channel in channels:
         try:
             entity = await utils.maybe_async(client.session.get_input_entity(channel.channel_id))
             client._mb_entity_cache.put(Entity(EntityType.CHANNEL, entity.channel_id, entity.access_hash))
+            hashed.append(channel.channel_id)
         except ValueError, AttributeError:
             # AttributeError: the id resolved to a user, not a channel.
             missing += 1
+    # box.load() defers each channel's difference 15 minutes, long enough for a
+    # busy channel to go TooLong (#608); start them now, the account first so it
+    # still runs before them. Hashless channels are skipped: Telethon would drop
+    # their saved pts. If Telethon changed the call, keep its 15-minute default.
+    begin = getattr(box, "try_begin_get_diff", None)
+    if callable(begin):
+        try:
+            begin(ENTRY_ACCOUNT, "restored from session")
+            for channel_id in hashed:
+                begin(channel_id, "restored from session")
+        except Exception as e:
+            logger.debug(f"Could not start the channel replays at once ({type(e).__name__})")
     age = datetime.datetime.now(datetime.UTC) - account.date
     gap = current.pts - account.pts if current is not None else "?"
     logger.info(

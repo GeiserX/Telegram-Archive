@@ -1318,7 +1318,10 @@ class Config:
                     "SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)"
                 )
         if self.log_chat_titles:
-            logger.warning("LOG_CHAT_TITLES enabled - chat titles will appear in the backup progress log")
+            logger.warning(
+                "LOG_CHAT_TITLES enabled - chat titles will appear in the backup progress log, "
+                "and a channel's title and id in the listener's too-long replay warning"
+            )
         if self.verify_media:
             logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
         if self.parallel_download_enabled:

@@ -28,7 +28,7 @@ The archive does not wait out a FloodWait longer than 3600 seconds. It retries t
 docker compose logs -f telegram-backup
 ```
 
-By default, the logs do not contain chat names, message text, account names or phone numbers. The per-chat progress lines show a position such as `[12/40] Backing up`, not the chat. Archived chats show as `[Archived 3/7]`. To add the chat title to those lines, set `LOG_CHAT_TITLES=true`. The archive replaces control and formatting characters in the title with spaces and cuts it to 64 characters. Private chats still show only as `private chat`, never by name.
+By default, the logs do not contain chat names, message text, account names or phone numbers. The per-chat progress lines show a position such as `[12/40] Backing up`, not the chat. Archived chats show as `[Archived 3/7]`. To add the chat title to those lines, set `LOG_CHAT_TITLES=true`. The archive replaces control and formatting characters in the title with spaces and cuts it to 64 characters. Private chats still show only as `private chat`, never by name. The same setting also names the channel, by title and id, in the listener's warning about a replay dropped as too long. With it on, remove titles and ids from logs before you paste them anywhere.
 
 ## Watch from the viewer
 

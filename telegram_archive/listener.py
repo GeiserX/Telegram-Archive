@@ -618,7 +618,7 @@ class TelegramListener:
         # it to the next gap or Telethon's 15-minute deadline without moving
         # pts. A TooLong answer drops the gap; update_state logs it, and
         # SYNC_DELETIONS_EDITS or the full pass recovers it.
-        await resume_saved_state(self.client)
+        await resume_saved_state(self.client, self.config)
         await self.client.catch_up()
         logger.info("Catch-up requested")
 

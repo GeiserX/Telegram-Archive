@@ -30,6 +30,8 @@ from telegram_archive.update_state import remember_saved_state, resume_saved_sta
 
 CHANNEL_ID = 123
 CHANNEL_HASH = 4242
+NO_HASH_ID = 456
+MARKED_ID = telethon.utils.get_peer_id(types.PeerChannel(CHANNEL_ID))  # -1000000000123, the id the archive stores
 SAVED_DATE = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
 
@@ -87,6 +89,62 @@ class TestRoundTrip:
         assert len(lines) == 1
         assert "account gap 400 pts" in lines[0]
         assert "1 channels (0 without access hash)" in lines[0]
+        client.session.close()
+
+    async def test_restored_channels_begin_their_difference_at_once(self, session_path):
+        """Without this, Telethon waits 15 minutes and a busy channel's gap goes TooLong (#608)."""
+        _seed_session(session_path)
+        session = SQLiteSession(session_path)
+        session.set_update_state(NO_HASH_ID, _state(60))
+        session.save()
+        session.close()
+        client = _client(session_path)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+
+        await resume_saved_state(client)
+
+        box = client._message_box
+        assert CHANNEL_ID in box.getting_diff_for
+        assert ENTRY_ACCOUNT in box.getting_diff_for  # so the account difference still goes first
+        assert NO_HASH_ID not in box.getting_diff_for
+        assert box.map[NO_HASH_ID].pts == 60  # kept, not dropped by a hashless difference
+        req = box.get_channel_difference(client._mb_entity_cache)
+        assert req.channel.channel_id == CHANNEL_ID
+        assert req.pts == 40
+        client.session.close()
+
+    async def test_without_try_begin_get_diff_the_load_still_works(self, session_path, monkeypatch, caplog):
+        from telethon._updates.messagebox import MessageBox
+
+        monkeypatch.delattr(MessageBox, "try_begin_get_diff")
+        _seed_session(session_path)
+        client = _client(session_path)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await resume_saved_state(client)
+
+        assert client._message_box.map[CHANNEL_ID].pts == 40
+        assert not client._message_box.getting_diff_for
+        assert [r.levelno for r in caplog.records] == [logging.INFO]
+        client.session.close()
+
+    async def test_a_changed_try_begin_get_diff_keeps_the_load(self, session_path, monkeypatch, caplog):
+        from telethon._updates.messagebox import MessageBox
+
+        monkeypatch.setattr(MessageBox, "try_begin_get_diff", lambda self, entry: None)
+        _seed_session(session_path)
+        client = _client(session_path)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+
+        with caplog.at_level(logging.INFO, logger="telegram_archive.update_state"):
+            await resume_saved_state(client)
+
+        assert client._message_box.map[CHANNEL_ID].pts == 40
+        assert [r.levelno for r in caplog.records] == [logging.INFO]
         client.session.close()
 
     async def test_premise_without_resume_the_box_stays_at_now(self, session_path):
@@ -346,8 +404,90 @@ class TestTooLongWarning:
         lines = [r.getMessage() for r in caplog.records]
         assert len(lines) == 1
         assert "pts 40→400" in lines[0]
+        assert "new messages arrive with the next backup" in lines[0]
+        assert "SYNC_DELETIONS_EDITS_DAYS" in lines[0]
+        assert "\n" not in lines[0]
         assert str(CHANNEL_ID) not in lines[0]
         assert client._message_box.map[CHANNEL_ID].pts == 400
+        client.session.close()
+
+    def _channel_too_long(self, session_path, caplog, config, chats):
+        client = _client(session_path)
+        _simulate_on_login(client)
+        client._message_box.map[CHANNEL_ID] = BoxState(pts=40, deadline=0)
+        update_state._watch_too_long(client._message_box, config)
+        diff = ChannelDifferenceTooLong(
+            dialog=MagicMock(pts=400), messages=[], chats=chats, users=[], final=True, timeout=None
+        )
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.update_state"):
+            client._message_box.apply_channel_difference(self._request(), diff, client._mb_entity_cache)
+        client.session.close()
+        lines = [r.getMessage() for r in caplog.records]
+        assert len(lines) == 1
+        return lines[0]
+
+    @staticmethod
+    def _channel(title):
+        return types.Channel(
+            id=CHANNEL_ID, title=title, photo=types.ChatPhotoEmpty(), date=SAVED_DATE, access_hash=CHANNEL_HASH
+        )
+
+    @staticmethod
+    def _config(on):
+        config = MagicMock()
+        config.log_chat_titles = on
+        return config
+
+    def test_log_chat_titles_off_keeps_the_line_anonymous(self, session_path, caplog):
+        """Off (the default): byte-identical to the line without a config."""
+        line = self._channel_too_long(session_path, caplog, self._config(False), [self._channel("Demo News")])
+        assert line == (f"Telegram dropped a channel's replay as too long (pts 40→400); {update_state._TOO_LONG_TAIL}")
+        assert "Demo News" not in line
+        assert str(CHANNEL_ID) not in line
+
+    def test_log_chat_titles_on_names_the_channel(self, session_path, caplog):
+        line = self._channel_too_long(session_path, caplog, self._config(True), [self._channel("Demo News")])
+        assert line.startswith(
+            f'Telegram dropped a channel\'s replay as too long: "Demo News" (id {MARKED_ID}) (pts 40→400); '
+        )
+
+    def test_log_chat_titles_on_sanitises_the_title(self, session_path, caplog):
+        line = self._channel_too_long(
+            session_path, caplog, self._config(True), [self._channel('Demo" (pts 1→2)\nFAKE\x1b[31m')]
+        )
+        assert "\n" not in line
+        assert "\x1b" not in line
+        assert f': "Demo\' (pts 1→2) FAKE [31m" (id {MARKED_ID})' in line
+
+    def test_log_chat_titles_on_without_the_entity_gives_id_and_marker(self, session_path, caplog):
+        line = self._channel_too_long(session_path, caplog, self._config(True), [])
+        assert f"as too long: untitled chat (id {MARKED_ID}) (pts 40→400)" in line
+
+    def test_log_chat_titles_on_leaves_the_account_warning_alone(self, session_path, caplog):
+        for on in (False, True):
+            caplog.clear()
+            client = _client(session_path)
+            _simulate_on_login(client, pts=500)
+            update_state._watch_too_long(client._message_box, self._config(on))
+            client._message_box.getting_diff_for = {ENTRY_ACCOUNT}
+            with caplog.at_level(logging.WARNING, logger="telegram_archive.update_state"):
+                client._message_box.apply_difference(DifferenceTooLong(pts=900), client._mb_entity_cache)
+            client.session.close()
+            assert [r.getMessage() for r in caplog.records] == [
+                f"Telegram dropped the account replay as too long (pts 500→900); {update_state._TOO_LONG_TAIL}"
+            ]
+
+    async def test_resume_saved_state_hands_the_config_to_the_box(self, session_path):
+        _seed_session(session_path)
+        client = _client(session_path)
+        await remember_saved_state(client)
+        _simulate_on_login(client)
+        config = self._config(True)
+
+        await resume_saved_state(client, config)
+
+        assert isinstance(client._message_box, update_state._WatchedMessageBox)
+        assert client._message_box._log_config is config
         client.session.close()
 
     def test_control_an_ordinary_difference_logs_nothing(self, session_path, caplog):
@@ -377,6 +517,9 @@ class TestTooLongWarning:
         lines = [r.getMessage() for r in caplog.records]
         assert len(lines) == 1
         assert "account replay as too long (pts 500→900)" in lines[0]
+        assert "new messages arrive with the next backup" in lines[0]
+        assert "SYNC_DELETIONS_EDITS_DAYS" in lines[0]
+        assert "\n" not in lines[0]
         assert client._message_box.map[ENTRY_ACCOUNT].pts == 900
         client.session.close()
 
@@ -412,6 +555,7 @@ class TestTelethonContract:
         assert callable(box.load)
         assert isinstance(box.getting_diff_for, set)
         assert callable(client._mb_entity_cache.put)
+        assert list(inspect.signature(box.try_begin_get_diff).parameters) == ["entry", "reason"]
         assert list(inspect.signature(box.apply_channel_difference).parameters) == [
             "request",
             "diff",

@@ -1366,7 +1366,7 @@ class TestListenerRestartCatchUp:
         calls: list = []
         connection = _HealingConnection(calls)
 
-        async def record_resume(client):
+        async def record_resume(client, config=None):
             calls.append("resume_saved_state")
 
         with patch("telegram_archive.scheduler.signal.signal"):
