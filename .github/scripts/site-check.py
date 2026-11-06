@@ -1,3 +1,6 @@
+# Copied from the new-repo templates into every docs repo. Repos run different ruff
+# settings, so their formatter leaves this file as it is: lint it, do not reformat it.
+# fmt: off
 """Post-build check of a Zensical site: the rules `zensical build --strict` does not enforce.
 
 usage: python3 -I .github/scripts/site-check.py <site_dir> [zensical.toml]
@@ -48,9 +51,9 @@ import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-SWALLOW = re.compile(r"<(title|textarea|xmp|plaintext|noembed|noframes)\b", re.I)
+SWALLOW = re.compile(r"<(title|textarea|xmp|plaintext|noembed|noframes)\b", re.IGNORECASE)
 TOKEN = re.compile(r"<!--\s*n:(?:proyectos|categorias|retirados)\s*-->")
-ARTICLE = re.compile(r"<article\b.*?</article>", re.S)
+ARTICLE = re.compile(r"<article\b.*?</article>", re.DOTALL)
 ATTR = re.compile(r'\s(?:href|src)="([^"]*)"')
 COPY = re.compile(r'\sdata-md-copy-url="([^"]*)"')
 NAV = re.compile(r'<a\s+href="([^"]*)"\s+class="md-(?:nav|tabs)__link')
@@ -155,6 +158,9 @@ def main(site_dir: str, config_path: str) -> int:
             t = resolve(page, url)
             if t == "ABS":
                 errors.add(f"{rel}: absolute link {url} (outside {prefix})")
+            elif t is not None and not t.is_relative_to(site):
+                # ../LICENSE from the top page: the file exists in the checkout, not on Pages.
+                errors.add(f"{rel}: {url} leaves the built site (resolves to {t})")
             elif t is not None and not t.exists():
                 shown = t.relative_to(site) if t.is_relative_to(site) else t
                 errors.add(f"{rel}: {url} -> missing {shown}")
@@ -197,13 +203,11 @@ def main(site_dir: str, config_path: str) -> int:
         offline_on = "offline" in plugins and (offline or {}).get("enabled", True) is not False
         directory_urls = cfg.get("use_directory_urls", True) and not offline_on
         for src in (plugins.get("redirects") or {}).get("redirect_maps") or {}:
-            s = src[:-3] if src.endswith(".md") else src
+            s = src.removesuffix(".md")
             # A README page is its folder's index: sub/README.md -> sub/index.html in every mode.
             if s == "README" or s.endswith("/README"):
                 s = s[: -len("README")] + "index"
-            if not directory_urls:
-                stub = site / (s + ".html")
-            elif s == "index" or s.endswith("/index"):
+            if not directory_urls or s == "index" or s.endswith("/index"):
                 stub = site / (s + ".html")
             else:
                 stub = site / s / "index.html"
