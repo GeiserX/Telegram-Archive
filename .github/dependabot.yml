@@ -64,3 +64,14 @@ updates:
         applies-to: security-updates
         patterns:
           - '*'
+  # The docs site's one pin (zensical). Monthly: the strict build and
+  # site-check in the Docs workflow prove each bump.
+  - package-ecosystem: pip
+    directory: /docs
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build(docs)
+    labels:
+      - docs
+      - automated
