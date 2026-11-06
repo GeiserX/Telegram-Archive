@@ -148,7 +148,7 @@ pre-commit run --all-files
 
 The hooks:
 
-- check YAML and TOML syntax, except `mkdocs.yml`, which the strict docs build validates
+- check YAML and TOML syntax
 - make every file end with one newline and strip trailing whitespace
 - block merge-conflict markers and files over 500 KB
 - run `ruff --fix` and `ruff format`
@@ -181,22 +181,23 @@ A data fix that cannot be a migration goes in `scripts/` as a data migration scr
 
 ## Build the docs locally
 
-The site is built with MkDocs Material and published at <https://geiserx.github.io/Telegram-Archive>.
+The site is built with [Zensical](https://zensical.org/) and published at <https://geiserx.github.io/Telegram-Archive>.
 
 ```bash
 pip install -r docs/requirements-docs.txt
-mkdocs serve           # live preview at http://127.0.0.1:8000
-mkdocs build --strict  # what CI runs
+python -m zensical serve                    # live preview at http://localhost:8000
+python -m zensical build --clean --strict   # what CI runs, then:
+python -I .github/scripts/site-check.py site
 ```
 
-The strict build fails on any warning, including a broken link, a missing anchor, an absolute link between pages or a missing snippet include.
+The strict build fails on a broken link, a missing anchor or a missing snippet include. `site-check.py` fails on what the build lets through: a page in no nav entry, a nav entry for a missing file, a missing image, a link rooted at `/` and a raw `<title>` tag in a page.
 
-- Every new page needs an entry in the `nav` section of `mkdocs.yml`.
-- MkDocs builds every Markdown file under `docs/`. A file that must not become a page goes in `exclude_docs`.
+- Every new page needs an entry in the `nav` list of `zensical.toml`.
+- Zensical builds every Markdown file under `docs/`. A file that must not become a page goes in `exclude_docs`.
 - Link between pages with relative paths, such as `[Upgrading](operations/upgrading.md)` from this page.
 - Every page has an edit link that opens the file on GitHub.
 
-A pull request that touches `docs/` or `mkdocs.yml` runs the strict build. A merge to `main` that touches them publishes the site.
+Every pull request runs the strict build and the site check. A merge to `main` that touches `docs/`, `zensical.toml` or `docker-compose.yml` publishes the site.
 
 ## Branches, commits and pull requests
 
