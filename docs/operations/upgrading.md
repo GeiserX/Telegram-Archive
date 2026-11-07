@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.6.0
+        image: drumsergio/telegram-archive:9.7.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.6.0
+        image: drumsergio/telegram-archive-viewer:9.7.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.6.0`, `v9.6.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.7.0`, `v9.7.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.7.0 | Nothing to change. No migration. A JSON chat export that sends `media`, `max_file_mb` or `players` now gets a 400; drop those parameters, or add `format=html`.
 | 9.6.0 | Nothing to change. No migration. `SYNC_DELETIONS_EDITS_DAYS` is new and defaults to `0`, a full pass as before. |
 | 9.5.1 | Nothing to change. No migration. |
 | 9.5.0 | Nothing to change. Migration 042 runs on the first start and adds six timestamp indexes (two of them on `messages`), so on a large archive that start takes longer than usual; let it finish. |
