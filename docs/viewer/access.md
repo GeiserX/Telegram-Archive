@@ -169,7 +169,7 @@ Each token login checks the presented token against every live token in turn, at
 
 A viewer account or share token with downloads off can read messages but cannot take files away:
 
-- Media files, thumbnails, chat exports and voice transcripts answer HTTP 403.
+- Media files, thumbnails, chat exports and voice transcripts answer HTTP 403. That covers both export formats, so a no-download login cannot take media away inside an HTML export either.
 - A shared contact shows its name and phone, and its vCard text is not sent.
 - A photo or a video keeps its place and proportions as a placeholder that says `hidden for this login`, or `hidden for this link` in a session opened through a share link. A voice message keeps its row, with its play button dimmed and "playback off for this login" (or "this link") beside its duration.
 - **Export chat** is not offered, and What changed shows no transcripts.

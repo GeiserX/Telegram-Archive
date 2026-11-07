@@ -259,7 +259,7 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
 
 
 async def ensure_thumbnail(
-    media_root: Path, size: int, folder: str, filename: str, *, cache_dir: Path | None = None
+    media_root: Path, size: int, folder: str, filename: str, *, cache_dir: Path | None = None, generate: bool = True
 ) -> tuple[Path, str] | None:
     """Return (thumb_path, resolved_folder) or None.
 
@@ -269,6 +269,8 @@ async def ensure_thumbnail(
 
     When cache_dir is provided, thumbnails are written there instead of
     under {media_root}/.thumbs/ — this supports read-only media volumes.
+
+    With ``generate=False`` only a thumbnail already in the cache is returned.
     """
     if size not in ALLOWED_SIZES:
         return None
@@ -300,6 +302,8 @@ async def ensure_thumbnail(
 
     if dest.exists():
         return dest, resolved_folder
+    if not generate:
+        return None
 
     if not source.exists():
         alt_folders = legacy_folder_alternates(folder)

@@ -413,11 +413,27 @@ Deletions appear here only when the archive learns about them: the listener runs
 
 ## Export a chat
 
-**Export chat**, in the chat header's **More actions** menu, downloads the open chat as a JSON file. On a phone it is in the info panel. **From** reads "First message" and **To** reads "Today" until you click one and pick a day in the calendar; the cross beside a day clears it. Both days are included. The file downloads in place.
+**Export chat**, in the chat header's **More actions** menu, downloads the open chat. On a phone it is in the info panel. Pick the format first: **JSON (data)** for scripts and other tools, or **HTML page (opens offline)** for reading in a browser. **From** reads "First message" and **To** reads "Today" until you click one and pick a day in the calendar; the cross beside a day clears it. Both days are included. The file downloads in place.
 
-![The Export chat dialog with its From and To days](../images/screenshots/export-desktop.png)
+![The Export chat dialog with JSON chosen and its From and To days](../images/screenshots/export-desktop.png)
 
-The file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date`, its media under `media` and, under `versions`, every earlier text and media the archive kept, and under `reaction_history` every state of its reactions the archive saw. Media is listed by name, type and size, so each transcript points at a media in the file. The fields are in [Export](../reference/api.md#export). It holds no media files.
+The JSON file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date`, its media under `media` and, under `versions`, every earlier text and media the archive kept, and under `reaction_history` every state of its reactions the archive saw. Media is listed by name, type and size, so each transcript points at a media in the file. The fields are in [Export](../reference/api.md#export). It holds no media files.
+
+### Export as HTML
+
+The HTML export is a ZIP named `<title>_export.zip`. Unzip it and open `index.html` in its `ChatExport_<title>` folder. It needs no server and no network, and the pages carry no JavaScript. The folder looks like a Telegram Desktop export: the messages are in `messages.html`, `messages2.html` and so on, and each media type has its own folder. `index.html` shows the chat, the days you picked, when the export was made, the media options, how many files were left out and why, and a link to each page with its first and last day.
+
+Pages show messages the way the viewer does: formatting, replies that link to the message they answer, forwards, reactions, polls, locations and contacts. Messages deleted in Telegram stay, marked with the day the archive saw them go. An edited message is marked as edited, with its earlier versions behind **Earlier versions**. Transcripts appear under their voice or video message. A page ends after 1000 messages, or after 40 players so a phone can still play them.
+
+With HTML chosen, the dialog has three more settings:
+
+- **Media.** The types to copy into the ZIP: **Photos**, **Videos**, **Voice messages**, **Video messages**, **GIFs**, **Stickers** and **Files**. All but **Files** start ticked, because files are usually where most of the space goes. With nothing ticked, the pages hold text only.
+- **Skip files larger than** a number of MB, from 1 to 3900. It starts at 50 and applies to each file.
+- **Play media inside the page.** On, videos, GIFs, voice messages and audio play in the page, and a link to each file sits beside its player. Off, each of them is a card with its name, length and size that links to the file, as Telegram Desktop exports it. It starts on.
+
+A file that is not in the ZIP keeps its card, without a link, and says why: "Not included in this export" for a type you did not tick, "Larger than the N MB limit of this export", "Not downloaded to the archive" for media the backup never downloaded, or "Missing from the archive's storage" when the file is gone from disk. Animated `.tgs` stickers show as a card, because browsers cannot play them. A reply to a message the export does not hold says "In reply to a message outside this export".
+
+A large chat with media makes a large ZIP. It is built while it downloads, so the download shows no total size.
 
 [No-download logins](access.md#no-download-logins) cannot export, and have no **More actions** menu.
 

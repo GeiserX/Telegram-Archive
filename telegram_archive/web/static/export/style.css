@@ -1,0 +1,84 @@
+/* Telegram-Archive HTML export. One file, no fonts, no remote resources. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1d2733;
+  --muted: #70777f;
+  --line: #e6e8eb;
+  --bubble: #f4f5f7;
+  --accent: #168acd;
+  --spoiler: #8a9099;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1621;
+    --fg: #e6ebf0;
+    --muted: #8b98a5;
+    --line: #22303f;
+    --bubble: #182533;
+    --accent: #5eb5f7;
+    --spoiler: #4d5b6a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover, a:focus { text-decoration: underline; }
+.page_wrap { max-width: 760px; margin: 0 auto; padding: 0 12px 24px; }
+.page_header { position: sticky; top: 0; background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px 0; z-index: 1; }
+.page_header .text { font-size: 17px; }
+.bold { font-weight: 600; }
+.details { color: var(--muted); font-size: 12.5px; }
+.page_nav { display: flex; gap: 16px; padding: 10px 0; }
+.day_separator { text-align: center; margin: 16px 0 8px; }
+.day_separator .body { display: inline-block; padding: 2px 10px; border-radius: 12px; background: var(--bubble); }
+.message { display: flex; gap: 10px; padding: 6px 0; }
+.message.service { justify-content: center; }
+.message.service .body { text-align: center; padding: 4px 12px; border-radius: 12px; background: var(--bubble); }
+.userpic_wrap { flex: 0 0 auto; }
+.userpic {
+  width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 600; font-size: 13px;
+}
+.userpic1 { background: #e17076; } .userpic2 { background: #faa774; } .userpic3 { background: #a695e7; }
+.userpic4 { background: #7bc862; } .userpic5 { background: #6ec9cb; } .userpic6 { background: #65aadd; }
+.userpic7 { background: #ee7aae; } .userpic8 { background: #6d839e; }
+.message > .body { flex: 1 1 auto; min-width: 0; background: var(--bubble); border-radius: 10px; padding: 6px 10px; }
+.message.outgoing > .body { border-left: 3px solid var(--accent); }
+.message.deleted > .body { opacity: .8; border-left: 3px solid #d14e4e; }
+.pull_right { float: right; margin-left: 8px; }
+.from_name { color: var(--accent); font-weight: 600; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.forwarded { border-left: 2px solid var(--accent); padding-left: 8px; margin: 4px 0; background: none; }
+.reply_to { border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; }
+.reply_quote { font-style: italic; }
+.media_wrap { margin: 6px 0; }
+.photo_wrap img.photo, img.sticker { max-width: 100%; max-height: 480px; border-radius: 8px; display: block; }
+img.sticker { max-width: 200px; }
+video { max-width: 100%; max-height: 480px; border-radius: 8px; display: block; background: #000; }
+video.round { width: 240px; height: 240px; border-radius: 50%; object-fit: cover; }
+audio { width: 100%; max-width: 420px; display: block; }
+.media_link, .media_card { display: block; padding: 6px 0; }
+.media.skipped .media_card { opacity: .75; }
+.media_poll ul, ul.skip_counts, .pages { margin: 4px 0; padding-left: 20px; }
+.webpage { border-left: 2px solid var(--accent); padding-left: 8px; margin: 6px 0; }
+.transcript { white-space: pre-wrap; border-left: 2px solid var(--line); padding-left: 8px; }
+.reactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.reaction { padding: 1px 8px; border-radius: 12px; border: 1px solid var(--line); }
+.marks span + span::before { content: "· "; }
+.versions { margin-top: 6px; }
+.versions summary { cursor: pointer; color: var(--muted); }
+.version { border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; }
+.version_text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tg-code { font-family: ui-monospace, Menlo, Consolas, monospace; background: rgba(127,127,127,.15); padding: 0 3px; border-radius: 3px; }
+.tg-pre { font-family: ui-monospace, Menlo, Consolas, monospace; background: rgba(127,127,127,.15); padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; margin: 4px 0; }
+.tg-blockquote { border-left: 3px solid var(--accent); margin: 4px 0; padding-left: 8px; }
+.tg-mention { color: var(--accent); }
+/* Blurred, as the viewer hides it: colour emoji ignore `color`, so a transparent text colour would show them. */
+.tg-spoiler { filter: blur(4px); user-select: none; border-radius: 3px; cursor: pointer; }
+.tg-spoiler:hover, .tg-spoiler:focus { filter: none; user-select: text; }
