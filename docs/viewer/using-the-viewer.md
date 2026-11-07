@@ -415,7 +415,7 @@ Deletions appear here only when the archive learns about them: the listener runs
 
 **Export chat**, in the chat header's **More actions** menu, downloads the open chat. On a phone it is in the info panel. Pick the format first: **JSON (data)** for scripts and other tools, or **HTML page (opens offline)** for reading in a browser. **From** reads "First message" and **To** reads "Today" until you click one and pick a day in the calendar; the cross beside a day clears it. Both days are included. The file downloads in place.
 
-![The Export chat dialog with JSON chosen and its From and To days](../images/screenshots/export-desktop.png)
+![The Export chat dialog with HTML chosen: the media types to copy (Files left off), the size limit for skipped files, the switch that plays media inside the page, and the From and To days](../images/screenshots/export-desktop.png)
 
 The JSON file is named `<title>_export.json`. It holds the chat, the filters you used and the messages. Messages deleted in Telegram are included and marked with `is_deleted` and `deleted_at`, and each message carries its `edit_date`, its media under `media` and, under `versions`, every earlier text and media the archive kept, and under `reaction_history` every state of its reactions the archive saw. Media is listed by name, type and size, so each transcript points at a media in the file. The fields are in [Export](../reference/api.md#export). It holds no media files.
 
@@ -436,6 +436,8 @@ A file that is not in the ZIP keeps its card, without a link, and says why: "Not
 A large chat with media makes a large ZIP. It is built while it downloads, so the download shows no total size.
 
 [No-download logins](access.md#no-download-logins) cannot export, and have no **More actions** menu.
+
+Without the viewer, [`telegram-archive export-chat`](../reference/cli.md#export-chat) writes the same JSON file or the same ZIP from the command line.
 
 ## Main menu
 

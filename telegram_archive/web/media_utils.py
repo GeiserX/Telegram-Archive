@@ -4,7 +4,12 @@ Centralizes the Telegram marked-ID convention so it's defined once
 and used consistently across serve_media, thumbnails, and ACL checks.
 """
 
+import logging
 import os
+import re
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 CHANNEL_ID_OFFSET: int = 1_000_000_000_000
 
@@ -95,3 +100,90 @@ def resolve_stored_media_path(file_path: str | None, media_root: str) -> str | N
     if candidate != root and not candidate.startswith(root + os.sep):
         return None
     return candidate
+
+
+# A drive-qualified Windows path: "C:/x", "C:\\x" or the drive-relative "C:x".
+WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def media_relative_path(file_path: str | None, media_root: Path | None) -> str | None:
+    """Normalize a media row's file_path to a media-root-relative path, or None.
+
+    Rows hold whatever the writer stored. Modern archives store a relative path;
+    older ones stored an absolute path, with whichever separator the machine that
+    wrote it uses. Three shapes have to end up as the same root-relative tail:
+
+    - a relative path, from either platform;
+    - an absolute path under the CURRENT media root;
+    - an absolute path under a DIFFERENT root, which is an archive that has been
+      moved to another directory or drive (#438). The media directory is always
+      named after the root's own last component (config builds it as
+      ``<BACKUP_PATH>/media``), so whatever follows that component is the tail
+      the current root expects, and a moved archive keeps working without
+      rewriting every row in the database.
+
+    Deliberately lexical: no filesystem call. This runs for every media row of
+    every message list, and the media root is a network or FUSE mount on most
+    installs, where one ``Path.resolve()`` costs ~260 us against ~0.07 us for a
+    string compare — 19 ms on a 50-row page, on an endpoint the viewer polls
+    every three seconds. Nothing here is a security bound: the bound is applied
+    where the bytes are read, by resolve_media_file and ensure_thumbnail, which
+    both resolve the joined path and re-check it against the root.
+    """
+    if not file_path or not media_root:
+        return None
+
+    # Whichever separator wrote the row. A stored file NAME never contains a
+    # backslash — sanitize_media_filename collapses them before the name is
+    # written — so a backslash here is always a directory separator.
+    path = file_path.replace("\\", "/")
+    root = media_root.as_posix()
+
+    # "/x", "C:/x" and "C:x" are all absolute enough to need the root stripped.
+    if path.startswith("/") or WINDOWS_DRIVE_PREFIX.match(path):
+        if path.startswith(root + "/"):
+            path = path[len(root) + 1 :]
+        else:
+            anchor = "/" + media_root.name + "/"
+            cut = path.rfind(anchor)
+            if cut < 0:
+                return None
+            path = path[cut + len(anchor) :]
+
+    if not path or path.startswith("/") or ".." in path.split("/"):
+        return None
+    return path
+
+
+def resolve_media_file(relative_path: str, media_root: Path) -> Path | None:
+    """Resolve a root-relative media path to a real file inside the media root.
+
+    Same containment contract as the pre-8.0 serve path: resolve(strict=True),
+    the legacy positive/negative folder fallback for pre-v4.0.5 archives, and
+    the is_relative_to bound that keeps a symlink from escaping the root.
+    Returns the resolved Path or None.
+    """
+    candidate = media_root / relative_path
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError, ValueError:
+        # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
+        # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
+        parts = relative_path.split("/", 1)
+        resolved = None
+        if len(parts) == 2:
+            folder, rest = parts
+            for alt in legacy_folder_alternates(folder):
+                try:
+                    resolved = (media_root / alt / rest).resolve(strict=True)
+                    logger.debug("Legacy fallback: served media via alternate folder resolution")
+                    break
+                except OSError, ValueError, RuntimeError:
+                    continue
+        if resolved is None:
+            return None
+    if not resolved.is_relative_to(media_root):
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved

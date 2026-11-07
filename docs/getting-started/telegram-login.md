@@ -207,7 +207,7 @@ While `schedule` runs, do not run any of these against the same session:
 - `scripts/auth_noninteractive.py`
 - `scripts/restore_chat.py`
 
-Stop the backup service first, run the command, then start the service again. The command saves the current update state into the session, so the listener does not replay what happened while the service was stopped; those edits and deletions are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default). `export`, `stats`, `status` and `list-chats` never change archived data and never connect to Telegram, so they are safe while the service runs.
+Stop the backup service first, run the command, then start the service again. The command saves the current update state into the session, so the listener does not replay what happened while the service was stopped; those edits and deletions are recorded only if `SYNC_DELETIONS_EDITS` is on (off by default). `export`, `export-chat`, `stats`, `status` and `list-chats` never change archived data and never connect to Telegram, so they are safe while the service runs.
 
 Never point two installs at the same session file.
 

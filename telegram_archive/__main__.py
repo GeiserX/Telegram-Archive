@@ -9,6 +9,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import secrets
 import sys
 from pathlib import Path
 
@@ -40,6 +42,7 @@ GETTING STARTED:
      telegram-archive status       # Is the archive healthy? (exit code 1 if not)
      telegram-archive check-media  # Any media file missing? (--repair fixes them)
      telegram-archive export -o file.json  # Export to JSON
+     telegram-archive export-chat --chat @name --format html --media photo,video  # One chat, as the viewer exports it
 
   5. Import Telegram Desktop exports:
      telegram-archive import -p /path/to/export              # JSON (full account export)
@@ -119,6 +122,63 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         metavar="TIMESTAMP",
         help="Only messages whose archive record changed at or after this ISO 8601 time (UTC without an offset)",
     )
+
+    export_chat_parser = subparsers.add_parser(
+        "export-chat",
+        help="Export one chat as JSON or as HTML pages in a ZIP, the same file the viewer's Export chat downloads",
+        description=(
+            "Export one chat to a file without the web viewer: JSON (the same bytes as the viewer's JSON "
+            "export) or HTML pages in a ZIP that open offline (the same pages and files as the viewer's "
+            "HTML export). Media files are read from the archive's media folder (BACKUP_PATH/media). "
+            "The file is written to the current directory under the name the viewer's download has, "
+            "and an existing file is never replaced unless --force is given. Exit code 2 for a refused "
+            "argument, 1 when the chat is not found or the export fails."
+        ),
+    )
+    export_chat_parser.add_argument(
+        "--chat",
+        required=True,
+        metavar="CHAT",
+        help="The chat: its id (marked format, e.g. -1001234567890), its viewer ref, or @username. "
+        "Write --chat=REF for a ref that starts with '-'",
+    )
+    export_chat_parser.add_argument(
+        "--account", type=int, metavar="N", help="The account that holds the chat, when more than one does"
+    )
+    export_chat_parser.add_argument(
+        "--format", dest="export_format", choices=("json", "html"), default="json", help="json (default) or html"
+    )
+    export_chat_parser.add_argument(
+        "--media",
+        metavar="KINDS",
+        help="HTML only: the media kinds to copy, comma separated (photo,video,voice,video_note,gif,sticker,file); "
+        "none when absent",
+    )
+    export_chat_parser.add_argument(
+        "--max-file-mb", metavar="N", help="HTML only: leave out any file over N MB (1 to 3900, default 50)"
+    )
+    export_chat_parser.add_argument(
+        "--no-players",
+        action="store_true",
+        help="HTML only: show audio and video as file cards instead of players in the page",
+    )
+    export_chat_parser.add_argument("--from", dest="from_date", metavar="DATE", help="First day (ISO 8601), included")
+    export_chat_parser.add_argument(
+        "--to", dest="to_date", metavar="DATE", help="Last day (ISO 8601); a bare date includes that whole day"
+    )
+    export_chat_parser.add_argument(
+        "--changed-since",
+        metavar="TIMESTAMP",
+        help="Only messages whose archive record changed at or after this ISO 8601 time (UTC without an offset)",
+    )
+    export_chat_parser.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        help="Where to write the file (default: <chat name>_export.json or .zip in the current directory); "
+        "'-' writes JSON to standard output",
+    )
+    export_chat_parser.add_argument("--force", action="store_true", help="Replace the output file if it exists")
 
     # Stats command
     stats_parser = subparsers.add_parser(
@@ -342,6 +402,153 @@ async def run_export(args) -> int:
         return 0
     except Exception as e:
         print(f"Export failed: {e}", file=sys.stderr)
+        return 1
+
+
+async def _find_export_chat(db, chat: str, account_id: int | None) -> list[dict]:
+    """The chat rows ``--chat`` names: by @username, else by ref, else by chat id."""
+    if chat.startswith("@"):
+        return await db.find_chats(username=chat[1:], account_id=account_id)
+    row = await db.get_chat_by_ref(chat, account_id=account_id)
+    if row:
+        return [row]
+    if re.fullmatch(r"-?[0-9]{1,20}", chat):
+        return await db.find_chats(chat_id=int(chat), account_id=account_id)
+    return []
+
+
+async def export_chat_to_file(db, args, *, media_root: Path | None, tz) -> int:
+    """Write the chat ``args`` names to its file, as the viewer exports it. Returns the exit code."""
+    from .web.chat_export import (
+        ExportArgumentError,
+        export_filename,
+        export_names,
+        iter_export_html,
+        iter_export_json,
+        media_poster,
+        media_source,
+        parse_export_options,
+        parse_export_window,
+    )
+
+    try:
+        options = parse_export_options(
+            args.export_format, args.media, args.max_file_mb, "false" if args.no_players else None
+        )
+        window = parse_export_window(args.from_date, args.to_date, args.changed_since)
+    except ExportArgumentError as e:
+        print(f"Export refused: {e}", file=sys.stderr)
+        return 2
+    if args.output == "-" and options is not None:
+        print("Export refused: --output - writes JSON only; give a file name for --format html", file=sys.stderr)
+        return 2
+
+    matches = await _find_export_chat(db, args.chat, args.account)
+    if not matches:
+        print("Chat not found.", file=sys.stderr)
+        return 1
+    if len(matches) > 1:
+        accounts = sorted({row["account_id"] for row in matches})
+        if len(accounts) == 1:
+            # Two chats of one account carry that username (an old row kept it); --account cannot pick.
+            print("Export refused: more than one chat holds that username; pass the chat id or ref.", file=sys.stderr)
+        else:
+            listed = ", ".join(str(account) for account in accounts)
+            print(f"Export refused: accounts {listed} all hold that chat; pass --account.", file=sys.stderr)
+        return 2
+    chat_row = matches[0]
+
+    if options is None:
+        pieces = (
+            piece.encode("utf-8")
+            async for piece in iter_export_json(
+                db, chat_row, window, chat_id=chat_row["id"], account_id=chat_row["account_id"]
+            )
+        )
+    else:
+        cache_dir = None
+        poster = None
+        if media_root:
+            from .web.thumbnails import resolve_cache_dir
+
+            cache_dir = resolve_cache_dir(media_root)
+
+            async def poster(media, _source, may_generate):
+                return await media_poster(media, media_root, cache_dir, may_generate)
+
+        pieces = iter_export_html(
+            db,
+            chat_row,
+            options,
+            window,
+            chat_id=chat_row["id"],
+            account_id=chat_row["account_id"],
+            resolve_media=lambda file_path: media_source(file_path, media_root),
+            poster=poster,
+            tz=tz,
+        )
+
+    if args.output == "-":
+        async for piece in pieces:
+            sys.stdout.buffer.write(piece)
+        sys.stdout.buffer.flush()
+        return 0
+
+    _chat_name, safe_name = export_names(chat_row)
+    path = Path(args.output) if args.output else Path.cwd() / export_filename(safe_name, args.export_format)
+    refused = f"Export refused: {path} exists; pass --force to replace it."
+    if not args.force and os.path.lexists(path):
+        print(refused, file=sys.stderr)
+        return 2
+    # The export is written beside the target and only then put in its place, so a failed or
+    # killed run never leaves a half-written file under the final name nor loses the file --force replaces.
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.part")
+    # 0o666 under the umask: the mode a plain open() would give the file.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            async for piece in pieces:
+                handle.write(piece)
+        if args.force:
+            os.replace(tmp, path)
+        else:
+            try:
+                os.link(tmp, path)  # fails when the path appeared meanwhile: never overwrite
+            except FileExistsError:
+                print(refused, file=sys.stderr)
+                return 2
+            except OSError:
+                # A filesystem without hard links: the check above is the guard.
+                if os.path.lexists(path):
+                    print(refused, file=sys.stderr)
+                    return 2
+                os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    print(f"Exported to {path}", file=sys.stderr)
+    return 0
+
+
+async def run_export_chat(args) -> int:
+    """Run export-chat: 0 when written, 2 for a refused argument, 1 when the chat is missing or the export fails."""
+    from .config import Config, setup_logging
+    from .db import close_database, create_adapter
+    from .web.chat_export import export_timezone
+
+    try:
+        config = Config()
+        setup_logging(config)
+        config.log_summary()
+        media_root = Path(config.media_path).resolve() if os.path.exists(config.media_path) else None
+        tz = export_timezone(config.viewer_timezone)
+        db = await create_adapter()
+        try:
+            return await export_chat_to_file(db, args, media_root=media_root, tz=tz)
+        finally:
+            await close_database()
+    except Exception as e:
+        # The type only: a driver or filesystem error can quote a path or a row.
+        print(f"Export failed: {type(e).__name__}", file=sys.stderr)
         return 1
 
 
@@ -747,6 +954,8 @@ def main() -> int:
         return run_schedule(args)
     elif args.command == "export":
         return asyncio.run(run_export(args))
+    elif args.command == "export-chat":
+        return asyncio.run(run_export_chat(args))
     elif args.command == "stats":
         return asyncio.run(run_stats(args))
     elif args.command == "status":

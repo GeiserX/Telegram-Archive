@@ -41,7 +41,7 @@ Running `telegram-archive` with no arguments prints help and exits 0. Running it
 
 | Needs an authorized Telegram session | Database only, no Telegram credentials |
 |--------------------------------------|----------------------------------------|
-| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-details` | `migrate`, `export`, `stats`, `status`, `check-media`, `list-chats`, `import`, `merge` |
+| `auth`, `backup`, `schedule`, `fill-gaps`, `backfill-topics`, `reclassify-round-videos`, `backfill-details` | `migrate`, `export`, `export-chat`, `stats`, `status`, `check-media`, `list-chats`, `import`, `merge` |
 
 !!! warning "One client per session"
     Stop the backup service before any command that connects to Telegram. See [One client per session](../getting-started/telegram-login.md#one-client-per-session).
@@ -172,6 +172,39 @@ telegram-archive export -o "changes-$next.json" --changed-since "$(cat last-expo
 ```
 
 The stored time only moves when the export succeeds, so a failed run is covered by the next one. If `last-export-start` is missing or empty, the export fails rather than writing the whole archive under a name that says it holds only changes.
+
+## export-chat { #export-chat }
+
+```text
+telegram-archive [--data-dir PATH] export-chat --chat CHAT [--account N] [--format json|html]
+                                   [--media KINDS] [--max-file-mb N] [--no-players]
+                                   [--from DATE] [--to DATE] [--changed-since TIMESTAMP]
+                                   [-o PATH] [--force]
+```
+
+| Short | Long | Argument | Required | Meaning |
+|-------|------|----------|----------|---------|
+| | `--chat` | `CHAT` | yes | The chat: its id in marked format (for example `-1001234567890`), its ref from the viewer's address bar, or `@username`. Write `--chat=REF` for a ref that starts with `-`. |
+| | `--account` | `N` | when more than one account holds the chat | The account id that holds the chat. |
+| | `--format` | `json` or `html` | no | `json` (the default) or `html`. |
+| | `--media` | `KINDS` | no | HTML only. The media types to copy, separated by commas: `photo`, `video`, `voice`, `video_note`, `gif`, `sticker`, `file`. Without it the pages hold text only. |
+| | `--max-file-mb` | `N` | no | HTML only. Leave out any file larger than N MB, from 1 to 3900. The default is 50. |
+| | `--no-players` | | no | HTML only. Show videos, GIFs, voice messages and audio as file cards instead of players. |
+| | `--from` | `DATE` | no | Keep messages from this day or time on, ISO 8601. |
+| | `--to` | `DATE` | no | Keep messages up to this day or time, ISO 8601. A bare date includes that whole day. |
+| | `--changed-since` | `TIMESTAMP` | no | Keep only messages whose archive record changed at or after this time, as for [`export`](#export-changed-since). |
+| `-o` | `--output` | `PATH` | no | The file to write. The default is `<title>_export.json` or `<title>_export.zip` in the current directory. `-` writes JSON to standard output. |
+| | `--force` | | no | Replace the output file when it exists. |
+
+Exports one chat to the same file the viewer's **Export chat** downloads, without the viewer running. JSON is the viewer's JSON export byte for byte, with the fields listed in [Export](api.md#export). HTML is the viewer's ZIP of pages that open offline, described in [Export as HTML](../viewer/using-the-viewer.md#export-as-html). Media files are read from the archive's media folder, `BACKUP_PATH/media`, and the timezone of the pages is `VIEWER_TIMEZONE`. The options and their limits are the viewer's, and a refused option gets the same message.
+
+```bash
+telegram-archive export-chat --chat @example_channel --format html --media photo,video,voice
+```
+
+In Docker, write the file under `/data`, for example `-o /data/chat.zip`, because the container's root filesystem is read-only.
+
+It prints `Exported to <path>` on stderr and exits 0. An existing file is kept: the command prints `Export refused: <path> exists; pass --force to replace it.` and exits 2. A refused option prints `Export refused: <reason>` and exits 2, and so does a chat id or username that more than one account holds, until `--account` names one. A username that two chats of the same account carry is refused too; pass that chat's id or ref instead. A chat the archive does not hold prints `Chat not found.` and exits 1. Any other failure prints `Export failed: <error type>` on stderr and exits 1. The file is written under a hidden `.<name>.….part` name in the same folder and moved into place only when it is complete, so a failed run never leaves a partial file under the output name and never removes the file `--force` was going to replace. A run killed by a signal can leave the `.part` file behind; delete it. It needs no Telegram session and no web viewer.
 
 ## stats { #stats }
 

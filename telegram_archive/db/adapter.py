@@ -9104,6 +9104,26 @@ class DatabaseAdapter:
                 return None
             return self._chat_row_to_dict(chat)
 
+    async def find_chats(
+        self, *, chat_id: int | None = None, username: str | None = None, account_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Every chat row with this id or this username (case-insensitive), by account.
+
+        For the ``export-chat`` command, which names a chat the way its
+        operator knows it: one chat id or username can be held by several
+        accounts, so the caller sees every match and asks for ``--account``.
+        """
+        stmt = select(Chat)
+        if chat_id is not None:
+            stmt = stmt.where(Chat.id == chat_id)
+        if username is not None:
+            stmt = stmt.where(func.lower(Chat.username) == username.lower())
+        if account_id is not None:
+            stmt = stmt.where(Chat.account_id == account_id)
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(stmt.order_by(Chat.account_id))
+            return [self._chat_row_to_dict(chat) for chat in result.scalars()]
+
     async def get_pinned_messages(self, chat_id: int, *, account_id: int | None = None) -> list[dict[str, Any]]:
         """Get all pinned messages for a chat, ordered by date descending (newest first).
 
