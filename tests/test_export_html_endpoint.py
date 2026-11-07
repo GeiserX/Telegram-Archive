@@ -509,8 +509,9 @@ class TestJsonUnchanged:
         assert default.status_code == 200
         assert default.content == explicit.content
         # The chat's ref is random per run; everything else is the fixture's.
+        # The file ends in one newline (end-of-file-fixer); the response does not.
         recorded = GOLDEN.read_bytes().replace(b"@REF@", viewer[CHAT].encode())
-        assert default.content == recorded
+        assert default.content + b"\n" == recorded
 
     async def test_without_render_the_adapter_yields_the_same_keys(self, viewer):
         keys = set()
