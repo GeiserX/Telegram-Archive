@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.7.0] - 2026-11-07
+
+Chats can now be exported as HTML pages that open offline, with photos, voice and video playable inside them, and the listener catches up on busy channels right after a restart instead of 15 minutes later. No migration. Docker deployments only need the new pins.
+
 ### Added
 - **Export a chat as an HTML page that opens offline, with photos, voice and video playable inside it.** **Export chat** has a new format, **HTML page (opens offline)**, and `GET /api/chats/{chat_ref}/export` takes `format=html`. It downloads a ZIP laid out like a Telegram Desktop export: `index.html`, paged `messages.html` files, one stylesheet and a folder per media type. You pick which media types to copy (in the dialog, all but files start ticked; through the API, only the types named in `media=`), a size limit per file (50 MB by default) and whether media plays in the page or shows as a link card. A file left out keeps its card and says why. The pages need no server, no network and no JavaScript. Deleted messages, earlier versions, reactions and transcripts are kept, as in the viewer. JSON stays the default and its output does not change; a JSON request that sends `media`, `max_file_mb` or `players` now gets a 400 instead of having them ignored. No-download logins still cannot export. See [Export as HTML](viewer/using-the-viewer.md#export-as-html) and [HTML export](reference/api.md#html-export). Thanks to @C-Mberland for showing the need in #624. (#625)
 

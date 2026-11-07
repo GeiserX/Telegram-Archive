@@ -60,7 +60,7 @@ Search the [open issues](https://github.com/GeiserX/Telegram-Archive/issues) fir
 
 ## Recently shipped
 
-- **Unreleased:** Export a chat as HTML pages that open offline, with photos, voice and video playable in the page. See [Export as HTML](../viewer/using-the-viewer.md#export-as-html).
+- **9.7.0:** Export a chat as HTML pages that open offline, with photos, voice and video playable in the page. See [Export as HTML](../viewer/using-the-viewer.md#export-as-html).
 - **8.12.0:** A channel or group that several accounts hold is listed once, tagged with every account that holds it.
 - **8.4.0:** Seven color themes, picked from the sidebar header. See [Themes and wallpaper](../viewer/themes.md).
 - **8.3.0:** Full-text search on SQLite and PostgreSQL, matching the start of words.
