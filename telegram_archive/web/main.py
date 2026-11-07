@@ -43,7 +43,6 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .. import __version__
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import (
@@ -63,7 +62,6 @@ from ..message_utils import (
     describe_exception,
     is_map_preview_name,
     media_display_filename,
-    parse_utc_timestamp,
     resolve_sender_display_name,
     utcnow_naive,
 )
@@ -77,8 +75,8 @@ from ..transcription_contract import (
     verify_webhook,
     webhook_key,
 )
-from . import export_html, oidc
-from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
+from . import chat_export, oidc
+from .media_utils import THUMBNAIL_EXTENSIONS, media_relative_path, resolve_media_file
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -1710,16 +1708,6 @@ def _strip_original_media_paths(messages: list[dict]) -> None:
                     item.pop("transcripts", None)
 
 
-def _export_chat_metadata(chat: dict) -> dict:
-    """Return the minimal chat metadata needed by JSON exports.
-
-    The export FILE keeps the chat id — it is the user's own data leaving the
-    system, not a URL — and gains the ref so an export can be correlated with
-    the viewer's addressing.
-    """
-    return {key: chat.get(key) for key in ("id", "ref", "type", "title", "username")}
-
-
 # Setup paths
 templates_dir = Path(__file__).parent / "templates"
 static_dir = Path(__file__).parent / "static"
@@ -1869,91 +1857,14 @@ def _url_media_key(message_id: object, media_type: object) -> str | None:
     return f"{message_id}_{media_type}"
 
 
-# A drive-qualified Windows path: "C:/x", "C:\\x" or the drive-relative "C:x".
-_WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
-
-
 def _media_relative_path(file_path: str | None) -> str | None:
-    """Normalize a media row's file_path to a media-root-relative path, or None.
-
-    Rows hold whatever the writer stored. Modern archives store a relative path;
-    older ones stored an absolute path, with whichever separator the machine that
-    wrote it uses. Three shapes have to end up as the same root-relative tail:
-
-    - a relative path, from either platform;
-    - an absolute path under the CURRENT media root;
-    - an absolute path under a DIFFERENT root, which is an archive that has been
-      moved to another directory or drive (#438). The media directory is always
-      named after the root's own last component (config builds it as
-      ``<BACKUP_PATH>/media``), so whatever follows that component is the tail
-      the current root expects, and a moved archive keeps working without
-      rewriting every row in the database.
-
-    Deliberately lexical: no filesystem call. This runs for every media row of
-    every message list, and the media root is a network or FUSE mount on most
-    installs, where one ``Path.resolve()`` costs ~260 us against ~0.07 us for a
-    string compare — 19 ms on a 50-row page, on an endpoint the viewer polls
-    every three seconds. Nothing here is a security bound: the bound is applied
-    where the bytes are read, by _resolve_media_file and ensure_thumbnail, which
-    both resolve the joined path and re-check it against the root.
-    """
-    if not file_path or not _media_root:
-        return None
-
-    # Whichever separator wrote the row. A stored file NAME never contains a
-    # backslash — sanitize_media_filename collapses them before the name is
-    # written — so a backslash here is always a directory separator.
-    path = file_path.replace("\\", "/")
-    root = _media_root.as_posix()
-
-    # "/x", "C:/x" and "C:x" are all absolute enough to need the root stripped.
-    if path.startswith("/") or _WINDOWS_DRIVE_PREFIX.match(path):
-        if path.startswith(root + "/"):
-            path = path[len(root) + 1 :]
-        else:
-            anchor = "/" + _media_root.name + "/"
-            cut = path.rfind(anchor)
-            if cut < 0:
-                return None
-            path = path[cut + len(anchor) :]
-
-    if not path or path.startswith("/") or ".." in path.split("/"):
-        return None
-    return path
+    """``media_utils.media_relative_path`` against this viewer's media root."""
+    return media_relative_path(file_path, _media_root)
 
 
 def _resolve_media_file(relative_path: str):
-    """Resolve a root-relative media path to a real file inside the media root.
-
-    Same containment contract as the pre-8.0 serve path: resolve(strict=True),
-    the legacy positive/negative folder fallback for pre-v4.0.5 archives, and
-    the is_relative_to bound that keeps a symlink from escaping the root.
-    Returns the resolved Path or None.
-    """
-    candidate = _media_root / relative_path
-    try:
-        resolved = candidate.resolve(strict=True)
-    except OSError, ValueError:
-        # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
-        # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
-        parts = relative_path.split("/", 1)
-        resolved = None
-        if len(parts) == 2:
-            folder, rest = parts
-            for alt in legacy_folder_alternates(folder):
-                try:
-                    resolved = (_media_root / alt / rest).resolve(strict=True)
-                    logger.debug("Legacy fallback: served media via alternate folder resolution")
-                    break
-                except OSError, ValueError, RuntimeError:
-                    continue
-        if resolved is None:
-            return None
-    if not resolved.is_relative_to(_media_root):
-        return None
-    if not resolved.is_file():
-        return None
-    return resolved
+    """``media_utils.resolve_media_file`` against this viewer's media root."""
+    return resolve_media_file(relative_path, _media_root)
 
 
 async def _entitled_media_row(chat: ChatContext, media_key: str, *, earlier_media: bool = True) -> dict:
@@ -5220,31 +5131,6 @@ async def get_message_dates(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-def _parse_export_bound(value: str, param: str, *, exclusive_end: bool) -> datetime:
-    """Parse an export date bound to naive UTC (the #365 conversion contract).
-
-    A bare date (``2026-01-31``) as the end bound means "through that whole
-    day", so it becomes the NEXT midnight and the query compares with ``<``.
-    Offset-bearing datetimes are converted to UTC and stripped — Message.date
-    is naive UTC, so relabelling would shift the window by the client offset.
-    """
-    date_only = len(value) == 10
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid {param} date. Use ISO 8601.") from None
-    if parsed.tzinfo:
-        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
-    if exclusive_end and date_only:
-        try:
-            parsed += timedelta(days=1)
-        except OverflowError:
-            # to=9999-12-31 means "no upper bound" — clamp instead of 500ing
-            # on a valid ISO date.
-            parsed = datetime.max
-    return parsed
-
-
 @app.get("/api/chats/{chat_ref}/export")
 async def export_chat(
     chat: ChatContext = Depends(require_chat),
@@ -5275,97 +5161,27 @@ async def export_chat(
     if user.no_download:
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
-    if export_format not in ("json", "html"):
-        raise HTTPException(status_code=400, detail="Invalid format. Use json or html.")
-    html_options = None
-    if export_format == "json":
-        if media is not None or max_file_mb is not None or players is not None:
-            raise HTTPException(status_code=400, detail="media, max_file_mb and players apply to format=html only")
-    else:
-        try:
-            kinds = export_html.parse_media_kinds(media)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from None
-        limit_mb = export_html.DEFAULT_MAX_FILE_MB
-        if max_file_mb is not None:
-            limit_mb = int(max_file_mb) if re.fullmatch(r"[0-9]{1,4}", max_file_mb) else 0
-            if not 1 <= limit_mb <= export_html.MAX_FILE_MB_LIMIT:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"max_file_mb must be a whole number from 1 to {export_html.MAX_FILE_MB_LIMIT}",
-                )
-        if players is None or players.lower() == "true":
-            show_players = True
-        elif players.lower() == "false":
-            show_players = False
-        else:
-            raise HTTPException(status_code=400, detail="players must be true or false")
-        html_options = export_html.HtmlExportOptions(
-            media=kinds, max_file_bytes=limit_mb * 1024 * 1024, players=show_players
-        )
-
-    parsed_from = _parse_export_bound(from_date, "from", exclusive_end=False) if from_date else None
-    parsed_to = _parse_export_bound(to_date, "to", exclusive_end=True) if to_date else None
-    if parsed_from and parsed_to and parsed_from >= parsed_to:
-        raise HTTPException(status_code=400, detail="'from' must be before 'to'")
     try:
-        parsed_changed_since = parse_utc_timestamp(changed_since) if changed_since is not None else None
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid changed_since timestamp. Use ISO 8601.") from None
+        html_options = chat_export.parse_export_options(export_format, media, max_file_mb, players)
+        window = chat_export.parse_export_window(from_date, to_date, changed_since)
+    except chat_export.ExportArgumentError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
 
     try:
         chat_row = await db.get_chat_by_id(chat.chat_id, account_id=chat.account_id)
         if not chat_row:
             raise HTTPException(status_code=404, detail="Chat not found")
 
-        # The download filename never falls back to the chat id: the saved name
-        # lands in filesystem listings, which are the same surface as a URL.
-        chat_name = chat_row.get("title") or chat_row.get("username") or chat.ref
-        # Sanitize filename
-        safe_name = "".join(c for c in chat_name if c.isalnum() or c in (" ", "-", "_")).strip()
-        filename = f"{safe_name}_export.json"
+        _chat_name, safe_name = chat_export.export_names(chat_row)
+        filename = chat_export.export_filename(safe_name, "json")
 
         if html_options is not None:
-            return _html_export_response(
-                chat,
-                chat_row,
-                chat_name,
-                safe_name,
-                html_options,
-                window=(from_date, to_date, parsed_from, parsed_to, parsed_changed_since),
-            )
-
-        async def iter_json():
-            yield "{\n"
-            yield f'  "chat": {json.dumps(_export_chat_metadata(chat_row), ensure_ascii=False, default=str)},\n'
-            if parsed_from or parsed_to or parsed_changed_since:
-                # Record what this file contains — a windowed export must not
-                # masquerade as the full history.
-                window = {"from": from_date, "to": to_date}
-                if parsed_changed_since:
-                    window["changed_since"] = parsed_changed_since.isoformat()
-                yield f'  "filters": {json.dumps(window, ensure_ascii=False)},\n'
-            yield '  "messages": [\n'
-            first = True
-            async for msg in db.get_messages_for_export(
-                chat.chat_id,
-                account_id=chat.account_id,
-                from_date=parsed_from,
-                to_date=parsed_to,
-                changed_since=parsed_changed_since,
-            ):
-                if not first:
-                    yield ",\n"
-                first = False
-                # Ensure UTF-8 encoding for non-Latin characters
-                yield "    " + json.dumps(msg, ensure_ascii=False, default=str)
-            yield "\n  ]\n"
-            yield "}"
+            return _html_export_response(chat, chat_row, safe_name, html_options, window)
 
         # RFC 5987 encoding for non-ASCII filenames
         encoded_filename = quote(filename)
         return StreamingResponse(
-            iter_json(),
+            chat_export.iter_export_json(db, chat_row, window, chat_id=chat.chat_id, account_id=chat.account_id),
             media_type="application/json; charset=utf-8",
             headers={
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
@@ -5384,67 +5200,40 @@ async def export_chat(
 
 def _export_media_source(file_path: str | None):
     """The real file behind a media row's stored path, inside the media root, or None."""
-    if not _media_root:
-        return None
-    relative = _media_relative_path(file_path)
-    return _resolve_media_file(relative) if relative else None
+    return chat_export.media_source(file_path, _media_root)
 
 
 async def _export_poster(media: dict, _source: Path, may_generate: bool) -> Path | None:
-    """The viewer's own thumbnail of a video, from the trusted cache, as the export's poster.
-
-    ``may_generate`` False (the export spent its poster time) takes a cached one only.
-    """
+    """The viewer's own thumbnail of a video, from the trusted cache, as the export's poster."""
     global _thumb_cache_dir
-    relative = _media_relative_path(media.get("file_path")) if _media_root else None
-    folder, _, filename = (relative or "").rpartition("/")
-    if not folder:
+    if not _media_root:
         return None
-    from .thumbnails import ensure_thumbnail, resolve_cache_dir
+    from .thumbnails import resolve_cache_dir
 
     if _thumb_cache_dir is None:
         _thumb_cache_dir = resolve_cache_dir(_media_root)
-    result = await ensure_thumbnail(
-        _media_root, 400, folder, filename, cache_dir=_thumb_cache_dir, generate=may_generate
-    )
-    return result[0] if result else None
+    return await chat_export.media_poster(media, _media_root, _thumb_cache_dir, may_generate)
 
 
-def _html_export_response(chat, chat_row, chat_name, safe_name, options, *, window) -> StreamingResponse:
+def _html_export_response(chat, chat_row, safe_name, options, window) -> StreamingResponse:
     """The HTML export: a streamed ZIP, always an attachment, never an HTML document on this origin."""
-    from_date, to_date, parsed_from, parsed_to, parsed_changed_since = window
-    filters = None
-    if parsed_from or parsed_to or parsed_changed_since:
-        filters = {"from": from_date, "to": to_date}
-        if parsed_changed_since:
-            filters["changed_since"] = parsed_changed_since.isoformat()
-    try:
-        tz = ZoneInfo(config.viewer_timezone or "UTC")
-    except ZoneInfoNotFoundError, ValueError:
-        tz = UTC
-    messages = db.get_messages_for_export(
-        chat.chat_id,
+    tz = chat_export.export_timezone(config.viewer_timezone)
+    pieces = chat_export.iter_export_html(
+        db,
+        chat_row,
+        options,
+        window,
+        chat_id=chat.chat_id,
         account_id=chat.account_id,
-        from_date=parsed_from,
-        to_date=parsed_to,
-        changed_since=parsed_changed_since,
-        render=True,
+        resolve_media=_export_media_source,
+        poster=_export_poster if _media_root else None,
+        tz=tz,
     )
 
     async def stream():
         try:
             # Spooled first: the database snapshot closes before the download starts.
-            async for piece in export_html.iter_html_zip(
-                export_html.spool_messages(messages),
-                chat={key: chat_row.get(key) for key in ("type", "title", "username")} | {"title": chat_name},
-                filters=filters,
-                options=options,
-                resolve_media=_export_media_source,
-                poster=_export_poster if _media_root else None,
-                tz=tz,
-                top=f"ChatExport_{export_html.safe_top_name(safe_name)}",
-                version=__version__,
-            ):
+            async for piece in pieces:
                 yield piece
         except Exception as e:
             # The response is already under way: ending it here leaves a ZIP
@@ -5452,7 +5241,7 @@ def _html_export_response(chat, chat_row, chat_name, safe_name, options, *, wind
             logger.error(f"Error exporting chat as HTML: {type(e).__name__}")
             raise
 
-    filename = quote(f"{safe_name}_export.zip")
+    filename = quote(chat_export.export_filename(safe_name, "html"))
     return StreamingResponse(
         stream(),
         media_type="application/zip",

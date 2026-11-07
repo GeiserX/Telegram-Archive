@@ -226,11 +226,12 @@ Run any command with a fresh container:
 docker compose run --rm telegram-backup python -m telegram_archive <command>
 ```
 
-`export`, `stats`, `status` and `list-chats` never change archived data and never connect to Telegram, so you can also run them inside the running container:
+`export`, `export-chat`, `stats`, `status` and `list-chats` never change archived data and never connect to Telegram, so you can also run them inside the running container:
 
 ```bash
 docker compose exec telegram-backup python -m telegram_archive stats
 docker compose exec telegram-backup python -m telegram_archive export -o /data/backups/export.json
+docker compose exec telegram-backup python -m telegram_archive export-chat --chat @example_channel --format html -o /data/backups/chat.zip
 ```
 
 The container's root filesystem is read-only, so any output file must go under `/data`. It then appears under `./data` on the host.

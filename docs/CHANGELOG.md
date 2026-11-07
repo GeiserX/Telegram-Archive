@@ -6,6 +6,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+- **Export a chat from the command line, as JSON or as the HTML ZIP, without the web viewer.** `telegram-archive export-chat --chat <id, ref or @username>` writes the same file the viewer's **Export chat** downloads: the JSON byte for byte, or the ZIP of pages that open offline, with the same `--media`, `--max-file-mb`, `--no-players`, `--from`, `--to` and `--changed-since` options and the same limits. It reads media from the archive's media folder, so a pip install or the backup container alone can export. It never replaces an existing file unless given `--force`. See [export-chat](reference/cli.md#export-chat). (#627)
+
 ## [9.7.0] - 2026-11-07
 
 Chats can now be exported as HTML pages that open offline, with photos, voice and video playable inside them, and the listener catches up on busy channels right after a restart instead of 15 minutes later. No migration. Docker deployments only need the new pins.
