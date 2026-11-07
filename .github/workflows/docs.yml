@@ -84,7 +84,7 @@ jobs:
       # The social plugin downloads its font from Google Fonts on every build
       # (--clean empties its cache) and stops the build if that download fails;
       # it has no retry of its own. So a failed font download, and only that,
-      # gets two more tries. Any other error fails on the first run.
+      # (the manifest or a font file) gets two more tries. Any other error fails on the first run.
       - name: Build
         # bash -eo pipefail: without it the `| tee` below reports tee's status,
         # so a failed build would pass.
@@ -95,7 +95,7 @@ jobs:
             if python -m zensical build --clean --strict 2>&1 | tee "$log"; then
               exit 0
             fi
-            if ! grep -q -e 'failed to fetch font family' -e 'failed to read Google Fonts manifest' "$log"; then
+            if ! grep -q -e 'failed to fetch font family' -e 'failed to read Google Fonts manifest' -e 'failed to download font from' -e 'failed to read font from' "$log"; then
               exit 1
             fi
             echo "::warning::Font download for the social cards failed (attempt $attempt of 3)"
