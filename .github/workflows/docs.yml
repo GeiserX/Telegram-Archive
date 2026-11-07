@@ -86,6 +86,9 @@ jobs:
       # it has no retry of its own. So a failed font download, and only that,
       # gets two more tries. Any other error fails on the first run.
       - name: Build
+        # bash -eo pipefail: without it the `| tee` below reports tee's status,
+        # so a failed build would pass.
+        shell: bash
         run: |
           log="$RUNNER_TEMP/zensical-build.log"
           for attempt in 1 2 3; do
