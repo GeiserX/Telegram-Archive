@@ -41,7 +41,7 @@ This page lists what Telegram Archive does not do yet, written as what you will 
 
 - **Webhooks for new messages.** The [event webhook](../configuration/event-webhook.md) can fire on new messages, not only on edits and deletions. Today new messages reach only Web Push and open viewer pages.
 - **API tokens for scripts.** Scripts call the viewer's HTTP API with an API token, and the `/docs` page renders. Today a script logs in the way the browser does and sends the session cookie, as the [HTTP API](../reference/api.md) page shows, and the `/docs` and `/redoc` pages render blank.
-- **HTML and PDF export.** Export a chat as a readable HTML page or a PDF. Today [export](../viewer/using-the-viewer.md#export-a-chat) writes JSON.
+- **PDF export.** Export a chat as a PDF. Today [export](../viewer/using-the-viewer.md#export-a-chat) writes JSON, or HTML pages that open offline with their media.
 - **Import from other tools.** Import backups made by other Telegram backup tools. Today `telegram-archive import` reads Telegram Desktop exports, and two archives can be [merged](../operations/maintenance.md#merge-two-archives).
 - **Object storage for media.** Media is stored in S3-compatible object storage. Today it is stored on the local file system.
 
@@ -60,6 +60,7 @@ Search the [open issues](https://github.com/GeiserX/Telegram-Archive/issues) fir
 
 ## Recently shipped
 
+- **Unreleased:** Export a chat as HTML pages that open offline, with photos, voice and video playable in the page. See [Export as HTML](../viewer/using-the-viewer.md#export-as-html).
 - **8.12.0:** A channel or group that several accounts hold is listed once, tagged with every account that holds it.
 - **8.4.0:** Seven color themes, picked from the sidebar header. See [Themes and wallpaper](../viewer/themes.md).
 - **8.3.0:** Full-text search on SQLite and PostgreSQL, matching the start of words.

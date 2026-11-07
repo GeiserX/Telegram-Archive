@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -43,6 +43,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .. import __version__
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import (
@@ -76,7 +77,7 @@ from ..transcription_contract import (
     verify_webhook,
     webhook_key,
 )
-from . import oidc
+from . import export_html, oidc
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -5251,17 +5252,57 @@ async def export_chat(
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
     changed_since: str | None = Query(None),
+    # Annotated, so a direct call (the tests do) gets plain defaults, not Query objects.
+    export_format: Annotated[str, Query(alias="format")] = "json",
+    media: Annotated[str | None, Query()] = None,
+    max_file_mb: Annotated[str | None, Query()] = None,
+    players: Annotated[str | None, Query()] = None,
 ):
-    """Export chat history to JSON, optionally windowed by date.
+    """Export chat history to JSON, or to HTML pages in a ZIP, optionally windowed by date.
 
     ``from`` is inclusive; ``to`` is inclusive of the named day when given as
     a bare date (internally an exclusive next-midnight bound) and exclusive
     when given as a full timestamp. Both accept ISO 8601, tz-aware or naive.
     ``changed_since`` keeps only the messages whose archive record changed at
     or after that instant (naive means UTC), each with its whole history.
+
+    ``format=html`` answers a ZIP of HTML pages that open offline
+    (``export_html``). ``media`` names the media kinds it copies (none when
+    absent), ``max_file_mb`` the per-file limit (1 to 3900, default 50) and
+    ``players`` whether audio and video play inside the page (default true).
+    Those three are refused with JSON, which takes exactly the old path.
     """
     if user.no_download:
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
+    if export_format not in ("json", "html"):
+        raise HTTPException(status_code=400, detail="Invalid format. Use json or html.")
+    html_options = None
+    if export_format == "json":
+        if media is not None or max_file_mb is not None or players is not None:
+            raise HTTPException(status_code=400, detail="media, max_file_mb and players apply to format=html only")
+    else:
+        try:
+            kinds = export_html.parse_media_kinds(media)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+        limit_mb = export_html.DEFAULT_MAX_FILE_MB
+        if max_file_mb is not None:
+            limit_mb = int(max_file_mb) if re.fullmatch(r"[0-9]{1,4}", max_file_mb) else 0
+            if not 1 <= limit_mb <= export_html.MAX_FILE_MB_LIMIT:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"max_file_mb must be a whole number from 1 to {export_html.MAX_FILE_MB_LIMIT}",
+                )
+        if players is None or players.lower() == "true":
+            show_players = True
+        elif players.lower() == "false":
+            show_players = False
+        else:
+            raise HTTPException(status_code=400, detail="players must be true or false")
+        html_options = export_html.HtmlExportOptions(
+            media=kinds, max_file_bytes=limit_mb * 1024 * 1024, players=show_players
+        )
 
     parsed_from = _parse_export_bound(from_date, "from", exclusive_end=False) if from_date else None
     parsed_to = _parse_export_bound(to_date, "to", exclusive_end=True) if to_date else None
@@ -5283,6 +5324,16 @@ async def export_chat(
         # Sanitize filename
         safe_name = "".join(c for c in chat_name if c.isalnum() or c in (" ", "-", "_")).strip()
         filename = f"{safe_name}_export.json"
+
+        if html_options is not None:
+            return _html_export_response(
+                chat,
+                chat_row,
+                chat_name,
+                safe_name,
+                html_options,
+                window=(from_date, to_date, parsed_from, parsed_to, parsed_changed_since),
+            )
 
         async def iter_json():
             yield "{\n"
@@ -5329,6 +5380,87 @@ async def export_chat(
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _export_media_source(file_path: str | None):
+    """The real file behind a media row's stored path, inside the media root, or None."""
+    if not _media_root:
+        return None
+    relative = _media_relative_path(file_path)
+    return _resolve_media_file(relative) if relative else None
+
+
+async def _export_poster(media: dict, _source: Path, may_generate: bool) -> Path | None:
+    """The viewer's own thumbnail of a video, from the trusted cache, as the export's poster.
+
+    ``may_generate`` False (the export spent its poster time) takes a cached one only.
+    """
+    global _thumb_cache_dir
+    relative = _media_relative_path(media.get("file_path")) if _media_root else None
+    folder, _, filename = (relative or "").rpartition("/")
+    if not folder:
+        return None
+    from .thumbnails import ensure_thumbnail, resolve_cache_dir
+
+    if _thumb_cache_dir is None:
+        _thumb_cache_dir = resolve_cache_dir(_media_root)
+    result = await ensure_thumbnail(
+        _media_root, 400, folder, filename, cache_dir=_thumb_cache_dir, generate=may_generate
+    )
+    return result[0] if result else None
+
+
+def _html_export_response(chat, chat_row, chat_name, safe_name, options, *, window) -> StreamingResponse:
+    """The HTML export: a streamed ZIP, always an attachment, never an HTML document on this origin."""
+    from_date, to_date, parsed_from, parsed_to, parsed_changed_since = window
+    filters = None
+    if parsed_from or parsed_to or parsed_changed_since:
+        filters = {"from": from_date, "to": to_date}
+        if parsed_changed_since:
+            filters["changed_since"] = parsed_changed_since.isoformat()
+    try:
+        tz = ZoneInfo(config.viewer_timezone or "UTC")
+    except ZoneInfoNotFoundError, ValueError:
+        tz = UTC
+    messages = db.get_messages_for_export(
+        chat.chat_id,
+        account_id=chat.account_id,
+        from_date=parsed_from,
+        to_date=parsed_to,
+        changed_since=parsed_changed_since,
+        render=True,
+    )
+
+    async def stream():
+        try:
+            # Spooled first: the database snapshot closes before the download starts.
+            async for piece in export_html.iter_html_zip(
+                export_html.spool_messages(messages),
+                chat={key: chat_row.get(key) for key in ("type", "title", "username")} | {"title": chat_name},
+                filters=filters,
+                options=options,
+                resolve_media=_export_media_source,
+                poster=_export_poster if _media_root else None,
+                tz=tz,
+                top=f"ChatExport_{export_html.safe_top_name(safe_name)}",
+                version=__version__,
+            ):
+                yield piece
+        except Exception as e:
+            # The response is already under way: ending it here leaves a ZIP
+            # with no central directory, which every unzip refuses.
+            logger.error(f"Error exporting chat as HTML: {type(e).__name__}")
+            raise
+
+    filename = quote(f"{safe_name}_export.zip")
+    return StreamingResponse(
+        stream(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 # ============================================================================

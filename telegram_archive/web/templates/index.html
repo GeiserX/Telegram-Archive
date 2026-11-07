@@ -4358,6 +4358,18 @@
         .admin-field:disabled {
             color: rgb(var(--tg-muted));
         }
+        /* The export's media types, two to a line so the dialog stays short. */
+        .export-media-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        /* The export's size limit: a short number field inside a row. */
+        .export-size-field {
+            width: 88px;
+            flex-shrink: 0;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
         .admin-form {
             padding-bottom: 4px;
         }
@@ -9345,10 +9357,12 @@
             </section>
         </div>
 
-        <!-- Export Chat Modal (date-windowed JSON export) -->
-        <!-- Telegram Desktop's "Export chat history" box: From and To as link-coloured
-             values that open the calendar, then Cancel and Export. The file downloads
-             in place; no new tab. Not offered to a login without downloads. -->
+        <!-- Export Chat Modal (date-windowed JSON or HTML export) -->
+        <!-- Telegram Desktop's "Export chat history" box: the format, then (for
+             HTML) the media to copy, a size limit and the players switch, then From
+             and To as link-coloured values that open the calendar, then Cancel and
+             Export. The file downloads in place; no new tab. Not offered to a login
+             without downloads. -->
         <div v-if="showExportModal"
             class="tg-dialog-scrim is-sheet"
             @click.self="showExportModal = false" @keydown.escape="showDatePickerModal || (showExportModal = false)"
@@ -9358,10 +9372,56 @@
                 <div class="tg-dialog-head">
                     <div class="min-w-0 flex-1">
                         <h3 id="export-modal-title" class="tg-dialog-title">Export chat</h3>
-                        <p class="tg-dialog-sub">A JSON file with the messages the archive holds for this chat.</p>
+                        <p class="tg-dialog-sub">{{ exportFormat === 'html'
+                            ? 'A ZIP of pages that open in any browser, offline, with the media you pick.'
+                            : 'A JSON file with the messages the archive holds for this chat.' }}</p>
                     </div>
                 </div>
                 <div class="tg-dialog-body">
+                    <h4 class="tg-section-title !mt-1" id="export-format-label">Format</h4>
+                    <div role="radiogroup" aria-labelledby="export-format-label">
+                        <button v-for="fmt in EXPORT_FORMATS" :key="fmt.value" type="button" role="radio"
+                            class="tg-row" :aria-checked="exportFormat === fmt.value ? 'true' : 'false'"
+                            @click="exportFormat = fmt.value">
+                            <span class="tg-radio" aria-hidden="true"></span>
+                            <span class="tg-row-label">{{ fmt.label }}</span>
+                        </button>
+                    </div>
+                    <!-- HTML only: the media types to copy into the ZIP (files are off by
+                         default, they are where the bulk lives), a per-file size limit,
+                         and players or link cards. With no type ticked the pages carry
+                         text only, so the limit and the switch have nothing to act on. -->
+                    <template v-if="exportFormat === 'html'">
+                        <h4 class="tg-section-title" id="export-media-label">Media</h4>
+                        <div role="group" aria-labelledby="export-media-label" class="export-media-grid">
+                            <button v-for="kind in EXPORT_MEDIA_KINDS" :key="kind.value" type="button" role="checkbox"
+                                class="tg-row" :aria-checked="exportMedia[kind.value] ? 'true' : 'false'"
+                                @click="exportMedia[kind.value] = !exportMedia[kind.value]">
+                                <span class="tg-check" aria-hidden="true"><svg v-if="exportMedia[kind.value]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                                <span class="tg-row-label">{{ kind.label }}</span>
+                            </button>
+                        </div>
+                        <div class="tg-row">
+                            <label for="export-max-file-mb" class="tg-row-label">Skip files larger than</label>
+                            <input id="export-max-file-mb" v-model.number="exportMaxFileMb" type="number" inputmode="numeric"
+                                min="1" max="3900" step="1" class="admin-field export-size-field"
+                                :disabled="!exportMediaSelected"
+                                :aria-invalid="exportSizeInvalid ? 'true' : null"
+                                :aria-describedby="exportSizeInvalid ? 'export-size-error' : null" />
+                            <span class="tg-row-value" aria-hidden="true">MB</span>
+                        </div>
+                        <div class="tg-row">
+                            <span class="tg-row-label" id="export-players-label">Play media inside the page
+                                <span class="tg-row-sub">{{ exportPlayers ? 'Videos and voice messages play in the page, with a link to each file.' : 'Each file is a link, as Telegram Desktop exports it.' }}</span>
+                            </span>
+                            <button type="button" role="switch" class="tg-switch" aria-labelledby="export-players-label"
+                                :aria-checked="exportPlayers ? 'true' : 'false'"
+                                :disabled="!exportMediaSelected"
+                                @click="exportPlayers = !exportPlayers"></button>
+                        </div>
+                        <p v-if="exportSizeInvalid" id="export-size-error" role="alert" class="tg-note text-tg-danger-fg">The size limit is a whole number of MB from 1 to 3900.</p>
+                    </template>
+                    <h4 class="tg-section-title">Messages</h4>
                     <div class="tg-row">
                         <span class="tg-row-label">From</span>
                         <button type="button" class="tg-text-btn -mr-2" @click="openExportDatePicker('from')"
@@ -9393,8 +9453,8 @@
                 <div class="tg-dialog-actions">
                     <button type="button" @click="showExportModal = false" class="tg-text-btn">Cancel</button>
                     <button type="button" @click="runExport" class="tg-text-btn" :disabled="exportBusy"
-                        :aria-disabled="exportRangeInvalid ? 'true' : null"
-                        :aria-describedby="exportRangeInvalid ? 'export-range-error' : null">{{ exportBusy ? 'Exporting…' : 'Export' }}</button>
+                        :aria-disabled="exportRangeInvalid || exportSizeInvalid ? 'true' : null"
+                        :aria-describedby="exportRangeInvalid ? 'export-range-error' : (exportSizeInvalid ? 'export-size-error' : null)">{{ exportBusy ? 'Exporting…' : 'Export' }}</button>
                 </div>
             </section>
         </div>
@@ -16713,6 +16773,32 @@
                 const showExportModal = ref(false)
                 const exportFromDate = ref('')
                 const exportToDate = ref('')
+                // The format and, for HTML, what goes into the ZIP. The names are the
+                // API's media= values; files start off because they hold the bulk.
+                const EXPORT_FORMATS = [
+                    { value: 'json', label: 'JSON (data)' },
+                    { value: 'html', label: 'HTML page (opens offline)' },
+                ]
+                const EXPORT_MEDIA_KINDS = [
+                    { value: 'photo', label: 'Photos', on: true },
+                    { value: 'video', label: 'Videos', on: true },
+                    { value: 'voice', label: 'Voice messages', on: true },
+                    { value: 'video_note', label: 'Video messages', on: true },
+                    { value: 'gif', label: 'GIFs', on: true },
+                    { value: 'sticker', label: 'Stickers', on: true },
+                    { value: 'file', label: 'Files', on: false },
+                ]
+                const exportFormat = ref('json')
+                const exportMedia = ref(Object.fromEntries(EXPORT_MEDIA_KINDS.map(k => [k.value, k.on])))
+                const exportMaxFileMb = ref(50)
+                const exportPlayers = ref(true)
+                const exportMediaSelected = computed(() => EXPORT_MEDIA_KINDS.some(k => exportMedia.value[k.value]))
+                // Checked only where it is sent: HTML with at least one type ticked.
+                const exportSizeInvalid = computed(() => {
+                    if (exportFormat.value !== 'html' || !exportMediaSelected.value) return false
+                    const mb = exportMaxFileMb.value
+                    return !(Number.isInteger(mb) && mb >= 1 && mb <= 3900)
+                })
 
                 const exportDialog = ref(null)
                 const exportError = ref('')
@@ -16723,7 +16809,7 @@
                     showExportModal.value = true
                     nextTick(() => exportDialog.value?.querySelector('button')?.focus())
                 }
-                watch([exportFromDate, exportToDate], () => { exportError.value = '' })
+                watch([exportFromDate, exportToDate, exportFormat, exportMaxFileMb, exportPlayers, () => EXPORT_MEDIA_KINDS.map(k => exportMedia.value[k.value]).join()], () => { exportError.value = '' })
                 const exportRangeInvalid = computed(() => Boolean(exportFromDate.value && exportToDate.value && exportFromDate.value > exportToDate.value))
 
                 // The file downloads in place, never in a new tab. A download link
@@ -16732,8 +16818,20 @@
                 // nothing is built yet): an error stays in the dialog, and only a
                 // good answer starts the download and says so.
                 const runExport = async () => {
-                    if (!selectedChat.value || exportBusy.value || exportRangeInvalid.value) return
+                    if (!selectedChat.value || exportBusy.value || exportRangeInvalid.value || exportSizeInvalid.value) return
                     const params = new URLSearchParams()
+                    // JSON sends no format, so its request is the one it always was; the
+                    // server answers 400 to media options given with JSON.
+                    if (exportFormat.value === 'html') {
+                        params.set('format', 'html')
+                        // No media= means text only, so the options go only with a type.
+                        const media = EXPORT_MEDIA_KINDS.filter(k => exportMedia.value[k.value]).map(k => k.value)
+                        if (media.length) {
+                            params.set('media', media.join(','))
+                            params.set('max_file_mb', String(exportMaxFileMb.value))
+                            params.set('players', exportPlayers.value ? 'true' : 'false')
+                        }
+                    }
                     // Bare dates: the server includes the whole "to" day (#365 tz contract).
                     if (exportFromDate.value) params.set('from', exportFromDate.value)
                     if (exportToDate.value) params.set('to', exportToDate.value)
@@ -21197,6 +21295,14 @@
                     exportError,
                     exportRangeInvalid,
                     exportBusy,
+                    EXPORT_FORMATS,
+                    EXPORT_MEDIA_KINDS,
+                    exportFormat,
+                    exportMedia,
+                    exportMaxFileMb,
+                    exportPlayers,
+                    exportMediaSelected,
+                    exportSizeInvalid,
                     openExportDatePicker,
                     jumpToFirstMessage,
                     formatDayValue,

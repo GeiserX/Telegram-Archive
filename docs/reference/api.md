@@ -402,10 +402,11 @@ The open routes answer `{"ok": true}` on success and 404 `Not configured` when t
 
 ## Export
 
-`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file. It needs a login that can see the chat and answers 403 for no-download logins. It is sent with `Cache-Control: private, no-store`, so neither the browser nor a proxy keeps a copy.
+`GET /api/chats/{chat_ref}/export` streams a chat as one JSON file, or with `format=html` as a ZIP of HTML pages and media (see [HTML export](#html-export)). It needs a login that can see the chat and answers 403 for no-download logins, in both formats. It is sent with `Cache-Control: private, no-store`, so neither the browser nor a proxy keeps a copy.
 
 | Parameter | Meaning |
 |-----------|---------|
+| `format` | `json` (the default) or `html`. A request without it gets the same JSON as before `html` existed, byte for byte. |
 | `from` | Start, inclusive, ISO 8601 |
 | `to` | A bare date such as `2026-06-30` includes that whole day. A full timestamp is exclusive. |
 | `changed_since` | ISO 8601 time. Keeps only the messages whose archive record changed at or after it: stored for the first time, seen deleted, or given a new text version, earlier media, poll or preview state or reaction state. A time without `Z` or an offset is UTC; a `T` or a space separates date and time. In a raw URL a `+` offset must be written `%2B`, or it reads as a space and the time is refused; `curl -G --data-urlencode 'changed_since=2026-06-01T05:59:55+02:00'` encodes it for you. |
@@ -462,7 +463,7 @@ The export pairs earlier media with versions the way the edit history does. It s
 
 ### Export media { #export-media }
 
-Each media entry, current or earlier, has these fields. None is a file path, and the export holds no files.
+Each media entry, current or earlier, has these fields. None is a file path, and the JSON export holds no files.
 
 | Field | Content |
 |-------|---------|
@@ -505,6 +506,42 @@ So every transcript in the file names a media listed in the same file, on its me
 Before 9.0 the file also ended with a flat `message_versions` list. It is gone: every version is under its message. See [Upgrading to 9.0](../operations/upgrading.md#upgrading-to-90).
 
 Everything in the file is read from one snapshot of the archive, so a backup writing during the export cannot make a message disagree with its versions, its media, its reaction history, its snapshots or its transcripts. The export reads a message's versions, media, reaction states and snapshots as it writes that message, so a long chat is never held in memory at once. If they ever stop lining up with the messages, the export stops with an error instead of writing messages without them. The file then ends early and is not valid JSON.
+
+### HTML export { #html-export }
+
+With `format=html` the route answers an `application/zip` attachment named `<chat name>_export.zip`. `from`, `to` and `changed_since` work as they do for JSON. Three more parameters choose the media:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `media` | A comma list of the types to copy: `photo`, `video`, `voice`, `video_note`, `gif`, `sticker`, `file`. Without it the export is text only, so a caller always asks for the media it wants. `file` covers documents and audio files. |
+| `max_file_mb` | A whole number from 1 to 3900, default 50. A file larger than this many MB stays out of the ZIP. The ceiling keeps every entry out of ZIP64, which macOS Archive Utility cannot extract from a streamed ZIP. |
+| `players` | `true` (default) or `false`. `true` puts a `<video>` or `<audio>` player in the page, with a link to the file beside it. `false` writes a card that links to the file, as Telegram Desktop does. |
+
+These answer 400: a `format` other than `json` or `html`, an unknown name in `media` (the message names it), a `max_file_mb` outside 1 to 3900, and `media`, `max_file_mb` or `players` sent with `format=json`. The 403 for a no-download login comes before any of them.
+
+```bash
+curl -s -b jar.txt -o june.zip \
+  'http://localhost:8000/api/chats/<ref>/export?format=html&media=photo,video,voice&max_file_mb=100&from=2026-06-01&to=2026-06-30'
+```
+
+The ZIP holds one folder, `ChatExport_<chat name>/`, laid out the way Telegram Desktop lays out its exports:
+
+| Path | Content |
+|------|---------|
+| `index.html` | The chat, the filters, the export time in UTC, the Telegram Archive version, the media options, the count of files left out by reason, and a link to each page with its first and last day. |
+| `messages.html`, `messages2.html`, … | The messages, oldest first. A page ends after 1000 messages or 40 players. |
+| `css/style.css` | The one stylesheet, light or dark from the system setting. |
+| `photos/` | `photo` |
+| `video_files/` | `video`; with `players=true`, a `_thumb.webp` poster beside each when one could be made |
+| `voice_messages/` | `voice` |
+| `round_video_messages/` | `video_note`; with `players=true`, a `_thumb.webp` poster beside each when one could be made |
+| `animations/` | `gif` |
+| `stickers/` | `sticker` |
+| `files/` | `file` |
+
+A media folder appears only when it holds a file. The names inside are ours, `<message id>_<n>` plus the file's extension, so no stored name can reach outside the folder. The original file name shows in the page and in the link's `download` attribute. The pages load no script, font or remote file. Each one sets a Content Security Policy that blocks scripts.
+
+A file left out keeps its card without a link, with the reason: not included in this export, larger than the limit, not downloaded to the archive, or missing from the archive's storage. The ZIP is written while it streams, so the response has no `Content-Length`. The messages are first read from one snapshot of the archive into a temporary file on the server, about the size of the JSON export, so the snapshot closes before the download starts however slow the client is. If a file fails to read after its entry has started, the response stops before the ZIP's closing directory, and `unzip` reports the archive as broken instead of handing back a short one.
 
 ## Transcripts
 

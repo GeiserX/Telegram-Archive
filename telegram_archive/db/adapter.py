@@ -3641,15 +3641,19 @@ class DatabaseAdapter:
         }
 
     @staticmethod
-    def _export_media_dict(row) -> dict[str, Any]:
+    def _export_media_dict(row, *, with_file: bool = False) -> dict[str, Any]:
         """One media as both exports list it: what a reader needs to tell it
         apart and match its transcripts, never where the file lies on disk.
 
         ``media_id`` is the id the transcripts of that media name: the media
         row's id, or for earlier media the id the row had when an edit
         replaced it (``media_versions.media_id``).
+
+        ``with_file`` is for the viewer's HTML export only, which copies the
+        file into its ZIP: it adds the stored ``file_path`` and ``downloaded``.
+        The renderer reads the path to find the bytes and never writes it.
         """
-        return {
+        media = {
             "media_id": row.media_id,
             "type": row.type,
             "file_name": row.file_name,
@@ -3659,6 +3663,10 @@ class DatabaseAdapter:
             "height": row.height,
             "duration": row.duration,
         }
+        if with_file:
+            media["file_path"] = row.file_path
+            media["downloaded"] = bool(row.downloaded)
+        return media
 
     @staticmethod
     def _export_version_dict(row, *, iso: bool = True) -> dict[str, Any]:
@@ -3764,14 +3772,16 @@ class DatabaseAdapter:
 
         A message can hold more than one media row. Its rows come in the order
         the viewer picks the one it shows: a downloaded row before a pending
-        one, then the lowest id. ``file_path`` is read for
-        ``scripts/restore_chat.py`` only (``include_media``); no export writes it.
+        one, then the lowest id. ``file_path`` and ``downloaded`` are read for
+        ``scripts/restore_chat.py`` (``include_media``) and the HTML export
+        (``render``), which copy the files; no export writes the path.
         """
         stmt = select(
             *cls._message_keys_of(Media),
             Media.id.label("media_id"),
             Media.type,
             Media.file_path,
+            Media.downloaded,
             Media.file_name,
             Media.file_size,
             Media.mime_type,
@@ -9277,6 +9287,7 @@ class DatabaseAdapter:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         changed_since: datetime | None = None,
+        render: bool = False,
     ):
         """Stream a chat's messages for the viewer's export (async generator).
 
@@ -9301,8 +9312,18 @@ class DatabaseAdapter:
         the files again: each message also gets ``media_type`` and
         ``media_path``, the stored path of its first media row, or None, and
         ``media_files``, the ``type`` and ``path`` of every media row in the
-        order ``media`` lists them. The viewer's export never passes it, so no
-        file path leaves the archive.
+        order ``media`` lists them. The viewer's JSON export never passes it,
+        so no file path leaves the archive.
+
+        ``render`` is for the viewer's HTML export, which draws each message
+        and copies its files into a ZIP. Each message also gets ``raw`` (its
+        ``raw_data`` as a dict: formatting, forward name, link preview, service
+        kind), ``reply_to_text``, ``is_pinned`` and ``reactions``, the live
+        reactions per emoji as the viewer's chips count them
+        (``_attach_page_reactions``: the ``reactions`` rows not taken back,
+        summed per emoji, in emoji order). Each media dict gains ``file_path``
+        and ``downloaded`` for the copy; the renderer never writes the path.
+        Without it the output is what it always was.
         """
         conditions = [Message.chat_id == chat_id]
         if account_id is not None:
@@ -9331,6 +9352,7 @@ class DatabaseAdapter:
                 User.first_name,
                 User.last_name,
                 User.username,
+                *((Message.reply_to_text, Message.is_pinned) if render else ()),
             )
             .outerjoin(User, Message.sender_id == User.id)
             .where(*conditions)
@@ -9338,6 +9360,9 @@ class DatabaseAdapter:
         )
         async with self.db_manager.async_session_factory() as session:
             await self._read_one_snapshot(session)
+            live_reactions = (
+                await _ExportWalk.open(session, self._live_reactions_of_messages_query(conditions)) if render else None
+            )
             transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
             for row in await self._read_export_transcripts(
                 session,
@@ -9374,7 +9399,7 @@ class DatabaseAdapter:
                     # Telegram's flag for that edit_date, as the command's
                     # export carries it: 1 when only the reactions moved it.
                     "edit_hide": row.edit_hide if isinstance(row.edit_hide, int) else None,
-                    "media": [self._export_media_dict(media_row) for media_row in media],
+                    "media": [self._export_media_dict(media_row, with_file=render) for media_row in media],
                 }
                 if include_media:
                     msg["media_type"] = media[0].type if media else None
@@ -9390,7 +9415,38 @@ class DatabaseAdapter:
                 msg["versions"] = versions
                 msg["reaction_history"] = reaction_history
                 msg["snapshots"] = snapshots
+                if render:
+                    msg["raw"] = _raw_data_dict(row.raw_data) or {}
+                    msg["reply_to_text"] = row.reply_to_text
+                    msg["is_pinned"] = bool(row.is_pinned)
+                    msg["reactions"] = self._live_reaction_counts(
+                        await live_reactions.take((row.account_id, row.chat_id, row.id))
+                    )
                 yield msg
+            if live_reactions is not None and live_reactions.pending is not None:
+                raise RuntimeError("Export reactions fell out of step with the messages")
+
+    @classmethod
+    def _live_reactions_of_messages_query(cls, message_conditions: list):
+        """The reactions not taken back of the messages ``message_conditions`` pick, in export order.
+
+        Each message's rows by emoji, then id: the order ``_attach_page_reactions``
+        reads them in, so the HTML export lists a message's chips as the viewer does.
+        """
+        stmt = select(*cls._message_keys_of(Reaction), Reaction.emoji, Reaction.count).where(
+            Reaction.removed_at.is_(None)
+        )
+        return cls._joined_to_its_message(stmt, Reaction, message_conditions).order_by(
+            *EXPORT_MESSAGE_ORDER, Reaction.emoji.asc(), Reaction.id.asc()
+        )
+
+    @staticmethod
+    def _live_reaction_counts(rows: list) -> list[dict[str, Any]]:
+        """``[{emoji, count}]`` per emoji, summed as ``_attach_page_reactions`` sums ``msg.reactions``."""
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row.emoji] = counts.get(row.emoji, 0) + (row.count if row.count is not None else 1)
+        return [{"emoji": emoji, "count": count} for emoji, count in counts.items()]
 
     # ========== Forum Topic Operations (v6.2.0) ==========
 
