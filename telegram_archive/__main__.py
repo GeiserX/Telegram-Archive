@@ -518,8 +518,11 @@ async def export_chat_to_file(db, args, *, media_root: Path | None, tz) -> int:
                 print(refused, file=sys.stderr)
                 return 2
             except OSError:
-                # A filesystem without hard links: the check above is the guard.
-                if os.path.lexists(path):
+                # A filesystem without hard links: claim the name atomically, so the
+                # replace only ever overwrites the empty placeholder this run created.
+                try:
+                    os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+                except FileExistsError:
                     print(refused, file=sys.stderr)
                     return 2
                 os.replace(tmp, path)

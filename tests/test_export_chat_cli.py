@@ -270,6 +270,19 @@ class TestRefusals:
         assert out.read_bytes() == await _viewer_bytes(viewer[CHAT], {})
         assert not list(tmp_path.glob(".*.part"))
 
+    async def test_without_hard_links_a_file_that_appears_is_still_kept(self, viewer, real_adapter, tmp_path, capsys):
+        out = tmp_path / "out.json"
+
+        def no_links_and_someone_else_writes(src, dst):
+            Path(dst).write_bytes(b"theirs")
+            raise PermissionError("no hard links here")
+
+        with patch.object(cli.os, "link", no_links_and_someone_else_writes):
+            assert await _run(real_adapter, tmp_path, f"--chat={viewer[CHAT]}", "-o", str(out)) == 2
+        assert out.read_bytes() == b"theirs"
+        assert "--force" in capsys.readouterr().err
+        assert not list(tmp_path.glob(".*.part"))
+
     async def test_the_file_gets_the_mode_a_plain_open_gives(self, viewer, real_adapter, tmp_path):
         umask = os.umask(0o022)
         try:
