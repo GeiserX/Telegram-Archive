@@ -142,6 +142,16 @@ link = "https://pypi.org/project/telegram-archive/"
 [project.plugins.llmstxt.sections]
 Documentation = ["*.md", "*/*.md"]
 
+# A preview image per page for links shared on chat apps and social sites
+# (og:image and twitter:image). The card takes the site's own colours from
+# docs/stylesheets/theme.css: the banner background #0E1621 and the banner
+# title colour #F2F6FA; the logo is theme.logo. The font comes from Google
+# Fonts at build time, which is why the docs workflow retries a failed font
+# download.
+[project.plugins.social]
+cards_layout_options.background_color = "#0E1621"
+cards_layout_options.color = "#F2F6FA"
+
 [project.markdown_extensions]
 admonition = {}
 "pymdownx.details" = {}
