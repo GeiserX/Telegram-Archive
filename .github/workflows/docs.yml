@@ -80,8 +80,25 @@ jobs:
       # even if someone removes that line. `python -m zensical`, never the bare
       # `zensical` command: it puts the repo root on sys.path, which the awesome
       # lists' Markdown extension needs, and every repo builds the same way.
+      #
+      # The social plugin downloads its font from Google Fonts on every build
+      # (--clean empties its cache) and stops the build if that download fails;
+      # it has no retry of its own. So a failed font download, and only that,
+      # gets two more tries. Any other error fails on the first run.
       - name: Build
-        run: python -m zensical build --clean --strict
+        run: |
+          log="$RUNNER_TEMP/zensical-build.log"
+          for attempt in 1 2 3; do
+            if python -m zensical build --clean --strict 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if ! grep -q -e 'failed to fetch font family' -e 'failed to read Google Fonts manifest' "$log"; then
+              exit 1
+            fi
+            echo "::warning::Font download for the social cards failed (attempt $attempt of 3)"
+            sleep 20
+          done
+          exit 1
 
       # What the strict build does not check: a page in no nav entry, a nav
       # entry for a missing file, a missing image, a /rooted link, a raw <title>
