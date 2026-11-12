@@ -118,14 +118,14 @@
 .md-typeset .grid.cards > ul > li:hover,
 .md-typeset .grid > .card:focus-within,
 .md-typeset .grid > .card:hover {
-  border-color: #2DD4BF;
+  border-color: var(--md-typeset-a-color);
 }
 
 /* FAQ entries (??? question). Material draws them lime green, a colour that
    appears nowhere else here; use the accent instead. */
 .md-typeset .admonition.question,
 .md-typeset details.question {
-  border-color: #2DD4BF;
+  border-color: var(--md-typeset-a-color);
 }
 
 .md-typeset .admonition.question:focus-within,
@@ -135,7 +135,7 @@
 
 .md-typeset .question > .admonition-title::after,
 .md-typeset .question > summary::after {
-  color: #2DD4BF;
+  color: var(--md-typeset-a-color);
 }
 
 .md-typeset .question > .admonition-title,
@@ -145,7 +145,7 @@
 
 .md-typeset .question > .admonition-title::before,
 .md-typeset .question > summary::before {
-  background-color: #2DD4BF;
+  background-color: var(--md-typeset-a-color);
 }
 
 /* The home page keeps an H1 for search, screen readers and the browser tab.
