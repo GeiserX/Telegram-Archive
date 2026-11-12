@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="256" height="256" role="img" aria-label="Telegram Archive">
+  <!-- Chat stack: the stack as one drum, with two message rows on its front,
+       one received (left) and one sent (right). -->
+  <ellipse cx="180" cy="96" rx="110" ry="34" fill="#C5E4F3"/>
+  <g fill="none" stroke="#2AABEE" stroke-width="13" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M70 96 A110 34 0 0 1 290 96 L290 264 A110 34 0 0 1 70 264 Z"/>
+    <ellipse cx="180" cy="96" rx="110" ry="34"/>
+  </g>
+  <rect x="100" y="166" width="104" height="32" rx="16" fill="#C5E4F3"/>
+  <rect x="156" y="216" width="104" height="32" rx="16" fill="#7FC1EA"/>
+</svg>

@@ -1,0 +1,11 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360' width='1024' height='1024'><rect width='360' height='360' fill='#0E1621'/><g transform='translate(28.8 28.8) scale(0.84)'>
+  <!-- Pile: a chat card with two message rows, one received (left) and one
+       sent (right), on top of a pile of older ones. -->
+  <g fill="none" stroke="#2AABEE" stroke-width="13" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M116 66 H244"/>
+    <path d="M90 96 H270"/>
+    <rect x="56" y="126" width="248" height="172" rx="28"/>
+  </g>
+  <rect x="88" y="156" width="120" height="40" rx="20" fill="#C5E4F3"/>
+  <rect x="152" y="222" width="120" height="40" rx="20" fill="#7FC1EA"/>
+</g></svg>

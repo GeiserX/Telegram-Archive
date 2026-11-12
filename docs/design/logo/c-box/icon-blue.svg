@@ -1,0 +1,10 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360' width='1024' height='1024'><rect width='360' height='360' fill='#0E1621'/><g transform='translate(28.8 28.8) scale(0.84)'>
+  <!-- Kept messages: a box with a solid lid, holding two message rows, one
+       received (left) and one sent (right). -->
+  <g fill="none" stroke="#2AABEE" stroke-width="13" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="52" y="64" width="256" height="44" rx="14" fill="#2AABEE"/>
+    <path d="M72 108 V270 A26 26 0 0 0 98 296 H262 A26 26 0 0 0 288 270 V108"/>
+  </g>
+  <rect x="104" y="142" width="116" height="40" rx="20" fill="#C5E4F3"/>
+  <rect x="140" y="212" width="116" height="40" rx="20" fill="#7FC1EA"/>
+</g></svg>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="256" height="256" role="img" aria-label="Telegram Archive">
+  <!-- History: an open ring that runs back, around two message rows, one
+       received (left) and one sent (right). -->
+  <g fill="none" stroke="#2AABEE" stroke-width="16" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M66 210.5 A118 118 0 1 0 78 121"/>
+    <path d="M118 106 L78 121 L70 80"/>
+  </g>
+  <rect x="106" y="134" width="112" height="32" rx="16" fill="#C5E4F3"/>
+  <rect x="142" y="194" width="112" height="32" rx="16" fill="#7FC1EA"/>
+</svg>
