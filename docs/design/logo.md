@@ -1,5 +1,7 @@
 # A new logo: six proposals
 
+> **Implemented.** We ship D, History, in teal. The logo, the favicon, the banner, the social preview, the viewer's installed-app icons and the docs accent now use it, and so does the iOS app. The favicon has its own heavier drawing for 16, 32 and 48 px, `docs/images/favicon.svg`. The pictures below are the proposals as they were compared.
+
 Our mark is a paper plane with a database stack in front of it. The paper plane is Telegram's own mark. App Review rejected TG Archive, the iOS reader, under guideline 4.1(c) for that reason: the icon contains another developer's mark. The same drawing is the docs logo, the favicon, the banner of both repositories and the viewer's installed-app icon.
 
 We need one mark that is ours and that works in all of those places. This page shows six proposals. Nothing ships from this page: we pick one, and a second change replaces the files.

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="256" height="256" role="img" aria-label="Telegram Archive">
+  <!--
+    Small sizes: the mark of logo.svg with an outline almost twice as heavy
+    and larger rows, for the 16, 32 and 48 px pictures in the viewer's
+    favicon.ico. At those sizes the outline of icon.svg is half a pixel wide.
+  -->
+  <rect x="0" y="0" width="360" height="360" rx="72" fill="#0F172A"/>
+  <g transform="translate(18 18) scale(0.9)">
+  <g fill="none" stroke="#2DD4BF" stroke-width="30" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M66 210.5 A118 118 0 1 0 78 121"/>
+    <path d="M130 100 L78 121 L64 66"/>
+  </g>
+  <rect x="100" y="124" width="124" height="46" rx="23" fill="#CCFBF1"/>
+  <rect x="140" y="192" width="124" height="46" rx="23" fill="#5EEAD4"/>
+  </g>
+</svg>
