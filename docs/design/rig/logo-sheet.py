@@ -9,12 +9,19 @@ docs header) in each colourway, and writes:
     docs/design/logo/<key>/sheet.webp    one proposal in every place
     docs/design/logo/<key>/icon-<colourway>.svg   the icon on its plate
     docs/design/logo/overview.webp       every proposal side by side
+    docs/design/logo/pixels.webp         every proposal at 32 and 16 real pixels
+
+The sheets and the overview are drawn at twice their size, so a 16 px sample
+there covers 32 pixels. pixels.webp is the one picture at real size: each icon
+is rendered at exactly 32 and 16 pixels, and shown again with every pixel
+enlarged to a square.
 
 Needs rsvg-convert and ImageMagick (magick). Run from anywhere:
 
     python3 docs/design/rig/logo-sheet.py
 """
 
+import base64
 import re
 import subprocess
 import sys
@@ -99,7 +106,29 @@ class Page:
     def rect(self, x, y, w, h, fill, rx=0):
         self.parts.append(f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='{rx}' fill='{fill}'/>")
 
-    def write(self, target: Path):
+    def pixels(self, body, colourway, x, y, size, enlarge=1):
+        """The icon rendered at exactly `size` pixels, each pixel drawn `enlarge` wide."""
+        svg = (
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360'>"
+            f"<rect width='360' height='360' rx='72' fill='{PLATE}'/>"
+            f"<g transform='translate({180 * (1 - ICON_SCALE):.1f} {180 * (1 - ICON_SCALE):.1f}) "
+            f"scale({ICON_SCALE})'>{recolour(body, colourway, 'px')}</g></svg>"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src, png = Path(tmp) / "icon.svg", Path(tmp) / "icon.png"
+            src.write_text(svg)
+            subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", str(png), str(src)], check=True)
+            if enlarge > 1:
+                subprocess.run(
+                    ["magick", str(png), "-filter", "point", "-resize", f"{enlarge * 100}%", str(png)], check=True
+                )
+            data = base64.b64encode(png.read_bytes()).decode()
+        side = size * enlarge
+        self.parts.append(
+            f"<image x='{x}' y='{y}' width='{side}' height='{side}' href='data:image/png;base64,{data}'/>"
+        )
+
+    def write(self, target: Path, zoom: int = 2, lossless: bool = False):
         svg = (
             f"<svg xmlns='http://www.w3.org/2000/svg' width='{self.width}' "
             f"height='{self.height}' viewBox='0 0 {self.width} {self.height}'>" + "".join(self.parts) + "</svg>"
@@ -107,8 +136,9 @@ class Page:
         with tempfile.TemporaryDirectory() as tmp:
             src, png = Path(tmp) / "page.svg", Path(tmp) / "page.png"
             src.write_text(svg)
-            subprocess.run(["rsvg-convert", "-z", "2", "-o", str(png), str(src)], check=True)
-            subprocess.run(["magick", str(png), "-quality", "90", str(target)], check=True)
+            quality = ["-define", "webp:lossless=true"] if lossless else ["-quality", "90"]
+            subprocess.run(["rsvg-convert", "-z", str(zoom), "-o", str(png), str(src)], check=True)
+            subprocess.run(["magick", str(png), *quality, str(target)], check=True)
 
 
 def sheet(key: str, body: str) -> None:
@@ -156,6 +186,25 @@ def overview(marks: dict) -> None:
     page.write(LOGO_DIR / "overview.webp")
 
 
+def pixels(marks: dict) -> None:
+    """Every proposal at 32 and 16 real pixels, and the same pixels enlarged."""
+    row, block = 148, 330
+    page = Page(40 + 150 + len(COLOURWAYS) * block, 60 + len(marks) * row)
+    for col, colourway in enumerate(COLOURWAYS):
+        x = 190 + col * block
+        page.text(x, 36, f"{colourway.capitalize()}: 32 and 16 px, then enlarged", size=13)
+    for line, (key, body) in enumerate(marks.items()):
+        y = 56 + line * row
+        page.text(40, y + 70, NAMES.get(key, key), size=14, fill=TEXT, weight=800)
+        for col, colourway in enumerate(COLOURWAYS):
+            x = 190 + col * block
+            page.pixels(body, colourway, x, y, 32)
+            page.pixels(body, colourway, x, y + 48, 16)
+            page.pixels(body, colourway, x + 48, y, 32, enlarge=4)
+            page.pixels(body, colourway, x + 192, y, 16, enlarge=8)
+    page.write(LOGO_DIR / "pixels.webp", zoom=1, lossless=True)
+
+
 def icon_files(key: str, body: str) -> None:
     for colourway in COLOURWAYS:
         svg = (
@@ -181,6 +230,7 @@ def main() -> int:
         sheet(key, body)
         icon_files(key, body)
     overview(marks)
+    pixels(marks)
     print(f"drew {len(marks)} proposals: {', '.join(marks)}")
     return 0
 

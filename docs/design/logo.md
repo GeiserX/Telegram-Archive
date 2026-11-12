@@ -26,7 +26,13 @@ Each proposal is drawn in two colourways.
 
 ## The proposals
 
-Each sheet shows the mark as the app icon, at two home-screen sizes, in a dark and a light browser tab at 32 and 16 px, and beside the name in the docs header.
+Each sheet shows the mark as the app icon, at two home-screen sizes, in a dark and a light browser tab at 32 and 16 px, and beside the name in the docs header. The sheets are drawn at twice their size, so a 16 px sample there covers 32 pixels.
+
+The next picture is at real size. Each icon is rendered at exactly 32 and 16 pixels, and then shown again with every pixel enlarged to a square. Judge the small sizes from this one.
+
+![Every proposal at 32 and 16 real pixels, and enlarged](logo/pixels.webp)
+
+At 16 pixels the outline is about half a pixel wide in every proposal, so each one is faint in a browser tab. The filled shapes carry the mark at that size: the lid in C, the card in E and the top face in A and B. The mark we pick gets a second drawing with a heavier outline for the 16 and 32 px favicon.
 
 ### A. Stack
 
@@ -110,6 +116,7 @@ In this repository:
 
 - `docs/images/logo.svg`, `docs/images/icon.svg` and `docs/images/banner.svg`
 - `telegram_archive/web/static/favicon.ico`, `apple-touch-icon.png`, `icon-192.png` and `icon-512.png`
+- A small-size drawing of the mark with a heavier outline, for the favicon
 - `docs/stylesheets/theme.css`, if the accent changes to teal
 
 In TG-Archive-iOS:
