@@ -23,17 +23,17 @@ from pathlib import Path
 
 LOGO_DIR = Path(__file__).resolve().parents[1] / "logo"
 
-PLATE = "#0E1621"   # banner and docs background
-PANEL = "#17212B"   # viewer sidebar, Telegram Night
-DEEP = "#070C12"    # banner side panel
+PLATE = "#0E1621"  # banner and docs background
+PANEL = "#17212B"  # viewer sidebar, Telegram Night
+DEEP = "#070C12"  # banner side panel
 TEXT = "#F2F6FA"
 DIM = "#8FA3B5"
 
 # The marks are drawn in the first colourway; the others are text replacements.
 TOKENS = ("#2AABEE", "#C5E4F3", "#7FC1EA")
 COLOURWAYS = {
-    "blue": ("#2AABEE", "#C5E4F3", "#7FC1EA"),   # the docs accent today
-    "teal": ("#2DD4BF", "#CCFBF1", "#5EEAD4"),   # the iOS app's own accent
+    "blue": ("#2AABEE", "#C5E4F3", "#7FC1EA"),  # the docs accent today
+    "teal": ("#2DD4BF", "#CCFBF1", "#5EEAD4"),  # the iOS app's own accent
 }
 
 NAMES = {
@@ -84,8 +84,7 @@ class Page:
         self.count += 1
         scale = size / 360
         self.parts.append(
-            f"<g transform='translate({x} {y}) scale({scale})'>"
-            f"{recolour(body, colourway, str(self.count))}</g>"
+            f"<g transform='translate({x} {y}) scale({scale})'>{recolour(body, colourway, str(self.count))}</g>"
         )
 
     def icon(self, body, colourway, x, y, size, plate=PLATE, radius=0.2237):
@@ -103,8 +102,7 @@ class Page:
     def write(self, target: Path):
         svg = (
             f"<svg xmlns='http://www.w3.org/2000/svg' width='{self.width}' "
-            f"height='{self.height}' viewBox='0 0 {self.width} {self.height}'>"
-            + "".join(self.parts) + "</svg>"
+            f"height='{self.height}' viewBox='0 0 {self.width} {self.height}'>" + "".join(self.parts) + "</svg>"
         )
         with tempfile.TemporaryDirectory() as tmp:
             src, png = Path(tmp) / "page.svg", Path(tmp) / "page.png"
@@ -171,10 +169,7 @@ def icon_files(key: str, body: str) -> None:
 
 
 def main() -> int:
-    marks = {
-        path.parent.name: inner(path.read_text())
-        for path in sorted(LOGO_DIR.glob("*/mark.svg"))
-    }
+    marks = {path.parent.name: inner(path.read_text()) for path in sorted(LOGO_DIR.glob("*/mark.svg"))}
     if not marks:
         print(f"no docs/design/logo/<key>/mark.svg found under {LOGO_DIR}", file=sys.stderr)
         return 1
