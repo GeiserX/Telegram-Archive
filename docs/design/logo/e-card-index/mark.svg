@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="256" height="256" role="img" aria-label="Telegram Archive">
+  <!-- Card index: one index card with its tab, standing in a drawer that
+       carries a label plate. -->
+  <g fill="none" stroke="#2AABEE" stroke-width="13" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M100 176 V120 Q100 108 112 108 H190 V84 Q190 72 202 72 H248 Q260 72 260 84 V176 Z" fill="#C5E4F3"/>
+    <rect x="60" y="176" width="240" height="118" rx="20"/>
+  </g>
+  <rect x="135" y="218" width="90" height="34" rx="8" fill="#7FC1EA"/>
+</svg>

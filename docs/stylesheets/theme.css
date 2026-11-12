@@ -1,8 +1,8 @@
 /* Match the docs to the banner and the app icon.
  *
  * banner.svg draws the name on #0E1621 with a darker #070C12 panel, and uses
- * Telegram blue #2AABEE for its accent bar and divider. The logo is the same
- * blue on a dark plate. These values keep the header, the logo and the page in
+ * teal #2DD4BF for its accent bar and divider. The logo is the same teal on a
+ * dark plate. These values keep the header, the logo and the page in
  * one palette.
  */
 :root {
@@ -12,8 +12,8 @@
   --md-primary-bg-color:        #F2F6FA;  /* banner title text */
   --md-primary-bg-color--light: #8FA3B5;  /* banner tagline text */
 
-  --md-accent-fg-color:         #2AABEE;  /* banner accent */
-  --md-accent-fg-color--transparent: #2AABEE1a;
+  --md-accent-fg-color:         #2DD4BF;  /* banner accent */
+  --md-accent-fg-color--transparent: #2DD4BF1a;
 }
 
 /* Dark scheme: the page body uses the banner background too, so the header
@@ -21,13 +21,15 @@
 [data-md-color-scheme="slate"] {
   --md-default-bg-color:        #0E1621;
   --md-code-bg-color:           #17212B;
-  --md-typeset-a-color:         #2AABEE;
+  --md-typeset-a-color:         #2DD4BF;
 }
 
-/* Light scheme: #2AABEE on white is 2.6:1, too faint for body links.
-   #0F7AB8 is the same hue at 4.7:1. */
+/* Light scheme: #2DD4BF on white is 1.9:1, too faint for body links.
+   #0F766E is the same hue at 5.5:1. */
 [data-md-color-scheme="default"] {
-  --md-typeset-a-color:         #0F7AB8;
+  --md-typeset-a-color:         #0F766E;
+  /* Material draws a hovered link in the accent: #2DD4BF on white is 1.9:1. */
+  --md-accent-fg-color:         #0D6B63;
 }
 
 /* Give the header logo a fixed size so it does not crowd the site name. */
@@ -83,19 +85,26 @@
   color: #ffffff;
 }
 
+/* Dark scheme: the link colour is #2DD4BF, and white on it is 1.9:1. The
+   page colour on it is 9.8:1. */
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):focus,
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  color: #0E1621;
+}
+
 .md-typeset .md-button--primary,
 .md-typeset .md-button--primary:focus,
 .md-typeset .md-button--primary:hover {
-  /* White on #2AABEE is 2.6:1. #0F7AB8 -> #0F6FA8 keeps every point above
+  /* White on #2DD4BF is 1.9:1. #0F766E -> #0D6B63 keeps every point above
      4.5:1. */
-  background: linear-gradient(90deg, #0F7AB8 0%, #0F6FA8 100%);
+  background: linear-gradient(90deg, #0F766E 0%, #0D6B63 100%);
   border-color: transparent;
   color: #ffffff;
 }
 
 .md-typeset .md-button--primary:focus,
 .md-typeset .md-button--primary:hover {
-  box-shadow: 0 0.2rem 0.8rem #2AABEE59;
+  box-shadow: 0 0.2rem 0.8rem #2DD4BF59;
 }
 
 /* Grid cards: the border picks up the accent on hover, so the cards match
@@ -109,34 +118,34 @@
 .md-typeset .grid.cards > ul > li:hover,
 .md-typeset .grid > .card:focus-within,
 .md-typeset .grid > .card:hover {
-  border-color: #2AABEE;
+  border-color: var(--md-typeset-a-color);
 }
 
 /* FAQ entries (??? question). Material draws them lime green, a colour that
    appears nowhere else here; use the accent instead. */
 .md-typeset .admonition.question,
 .md-typeset details.question {
-  border-color: #2AABEE;
+  border-color: var(--md-typeset-a-color);
 }
 
 .md-typeset .admonition.question:focus-within,
 .md-typeset details.question:focus-within {
-  box-shadow: 0 0 0 0.2rem #2AABEE1a;
+  box-shadow: 0 0 0 0.2rem #2DD4BF1a;
 }
 
 .md-typeset .question > .admonition-title::after,
 .md-typeset .question > summary::after {
-  color: #2AABEE;
+  color: var(--md-typeset-a-color);
 }
 
 .md-typeset .question > .admonition-title,
 .md-typeset .question > summary {
-  background-color: #2AABEE1a;
+  background-color: #2DD4BF1a;
 }
 
 .md-typeset .question > .admonition-title::before,
 .md-typeset .question > summary::before {
-  background-color: #2AABEE;
+  background-color: var(--md-typeset-a-color);
 }
 
 /* The home page keeps an H1 for search, screen readers and the browser tab.

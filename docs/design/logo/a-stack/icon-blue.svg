@@ -1,0 +1,10 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360' width='1024' height='1024'><rect width='360' height='360' fill='#0E1621'/><g transform='translate(28.8 28.8) scale(0.84)'>
+  <!-- Stack: the database stack of the old mark on its own, with a light top face. -->
+  <ellipse cx="180" cy="106" rx="106" ry="36" fill="#C5E4F3"/>
+  <g fill="none" stroke="#2AABEE" stroke-width="13" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M74 106 A106 36 0 0 1 286 106 L286 254 A106 36 0 0 1 74 254 Z"/>
+    <ellipse cx="180" cy="106" rx="106" ry="36"/>
+    <path d="M74 155 A106 36 0 0 0 286 155"/>
+    <path d="M74 204 A106 36 0 0 0 286 204"/>
+  </g>
+</g></svg>
