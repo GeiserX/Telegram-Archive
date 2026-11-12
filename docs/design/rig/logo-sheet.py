@@ -59,7 +59,7 @@ def inner(svg_text: str) -> str:
 
 
 def recolour(body: str, colourway: str, suffix: str) -> str:
-    for token, colour in zip(TOKENS, COLOURWAYS[colourway]):
+    for token, colour in zip(TOKENS, COLOURWAYS[colourway], strict=True):
         body = body.replace(token, colour)
     # Ids must stay unique when one page holds the same mark several times.
     ids = set(re.findall(r'id="([^"]+)"', body))
