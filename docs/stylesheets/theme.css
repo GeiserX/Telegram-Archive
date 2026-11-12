@@ -28,6 +28,8 @@
    #0F766E is the same hue at 5.5:1. */
 [data-md-color-scheme="default"] {
   --md-typeset-a-color:         #0F766E;
+  /* Material draws a hovered link in the accent: #2DD4BF on white is 1.9:1. */
+  --md-accent-fg-color:         #0D6B63;
 }
 
 /* Give the header logo a fixed size so it does not crowd the site name. */
@@ -81,6 +83,13 @@
   background-color: var(--md-typeset-a-color);
   border-color: var(--md-typeset-a-color);
   color: #ffffff;
+}
+
+/* Dark scheme: the link colour is #2DD4BF, and white on it is 1.9:1. The
+   page colour on it is 9.8:1. */
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):focus,
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  color: #0E1621;
 }
 
 .md-typeset .md-button--primary,
