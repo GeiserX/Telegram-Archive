@@ -348,7 +348,10 @@ class TestConfigMediaFilters(unittest.TestCase):
 
         self.assertEqual(config.download_media_types, {"document", "photo"})
         self.assertEqual(config.download_document_mime_types, {"application/pdf"})
-        self.assertEqual(config.download_document_mime_extensions, {".pdf"})
+        # The extensions come from the host MIME database, which changes between
+        # Python releases (3.15 also maps .ai to application/pdf), so only the
+        # one every release agrees on is pinned.
+        self.assertIn(".pdf", config.download_document_mime_extensions)
 
     def test_invalid_media_type_raises_value_error(self):
         with patch.dict(os.environ, {"DOWNLOAD_MEDIA_TYPES": "hologram"}), self.assertRaises(ValueError) as ctx:
@@ -376,7 +379,7 @@ class TestConfigMediaFilters(unittest.TestCase):
             config = Config()
 
         self.assertEqual(config.download_document_mime_types, {"application/pdf"})
-        self.assertEqual(config.download_document_mime_extensions, {".pdf"})
+        self.assertIn(".pdf", config.download_document_mime_extensions)
         self.assertTrue(config.document_mime_allowed("application/pdf; charset=binary", None))
         self.assertTrue(config.document_mime_allowed("APPLICATION/PDF ; charset=binary", None))
         self.assertFalse(config.document_mime_allowed("application/zip; charset=binary", None))
