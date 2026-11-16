@@ -1,8 +1,8 @@
 # Builder stage: the C toolchain lives here and only here. Every compiled
-# dependency in uv.lock ships a cp314 manylinux wheel today, but keeping gcc
+# dependency in uv.lock ships a cp315 manylinux wheel today, but keeping gcc
 # in the builder means a future sdist-only dependency still builds — without
 # publishing a 182 MB compiler layer the runtime never invokes.
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN uv sync --locked --no-dev --no-install-project
 
 # Runtime stage: ffmpeg (video thumbnail extraction) is the only system
 # dependency the runtime actually invokes.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 
