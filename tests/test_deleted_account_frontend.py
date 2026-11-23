@@ -79,6 +79,12 @@ def test_templates_show_the_tag_and_expose_the_helpers():
         r'<span v-if="isKeptDeletedAccount\(chat\)" class="chat-row-sub deleted-account-tag"[^>]*>.*?Deleted account</span>',
         html,
     )
+    # A message-search hit in a deleted contact's chat: the crossed avatar and the same tag.
+    assert '<template v-else-if="isDeletedChat(row.chat)">' in html
+    assert re.search(
+        r'<span v-if="isKeptDeletedAccount\(row\.chat\)" class="chat-row-sub deleted-account-tag"[^>]*>.*?Deleted account</span>',
+        html,
+    )
     # A group bubble: the tag follows the sender's name.
     assert re.search(
         r'<span v-if="isDeletedSender\(msg\)" class="deleted-account-tag[^"]*"[^>]*>.*?Deleted account</span>', html

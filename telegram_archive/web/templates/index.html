@@ -7192,13 +7192,21 @@
                                     :style="{ background: getSearchChatAvatarFill(row.chat) }">
                                     <img v-if="row.chat.avatar_url" :src="row.chat.avatar_url" class="w-full h-full object-cover"
                                         @error="row.chat.avatar_url = null" :alt="getChatName(row.chat)">
+                                    <template v-else-if="isDeletedChat(row.chat)">
+                                        <!-- Deleted account icon, as in the chat list -->
+                                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
+                                        </svg>
+                                    </template>
                                     <template v-else>{{ getInitials(row.chat) }}</template>
                                 </div>
                                 <div class="flex-1 min-w-0">
                                     <div class="flex justify-between items-baseline gap-2">
+                                        <div class="flex items-baseline gap-1.5 min-w-0">
                                         <h3 class="chat-row-title truncate text-tg-ink" dir="auto">
                                             <span v-if="row.chat.is_forum" title="Forum"><svg class="forum-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg><span class="sr-only">Forum: </span></span>{{ getChatName(row.chat) }}<span v-if="row.topic_title" class="text-tg-muted font-normal"> › {{ row.topic_title }}</span>
                                         </h3>
+                                        <span v-if="isKeptDeletedAccount(row.chat)" class="chat-row-sub deleted-account-tag" title="Deleted account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/></svg><span class="truncate">Deleted account</span></span>
+                                        </div>
                                         <span class="text-xs text-tg-muted shrink-0" :title="formatDateTitle(row.date)">{{ formatDate(row.date) }}</span>
                                     </div>
                                     <p class="text-[13px] leading-[18px] text-tg-muted line-clamp-2 break-words">
