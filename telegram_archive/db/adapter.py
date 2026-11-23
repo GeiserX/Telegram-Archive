@@ -2179,6 +2179,12 @@ class DatabaseAdapter:
             return False
         return True
 
+    @staticmethod
+    def _empty_user_identity(data):
+        # A full Telegram snapshot of a deleted user has all three keys set
+        # to empty values. A partial update can still clear an individual field.
+        return all(key in data and not data[key] for key in ("first_name", "last_name", "username"))
+
     @retry_on_locked()
     async def upsert_chat(self, chat_data: dict[str, Any], *, account_id: int) -> int:
         """Insert or update a chat record.
@@ -2229,6 +2235,9 @@ class DatabaseAdapter:
             ):
                 if field in chat_data:
                     update_set[field] = values[field]
+            if chat_data.get("type") == "private" and self._empty_user_identity(chat_data):
+                for key in ("first_name", "last_name", "username"):
+                    update_set.pop(key)
             # Only update is_forum/is_archived if explicitly provided
             if "is_forum" in chat_data:
                 update_set["is_forum"] = values["is_forum"]
@@ -2265,6 +2274,20 @@ class DatabaseAdapter:
                 await self._record_avatar_sighting(session, account_id, chat_data["id"], values["avatar_photo_id"])
             await session.commit()
             return chat_data["id"]
+
+    def _chat_search_match(self, chat, search: str):
+        full_name = func.trim(func.coalesce(chat.first_name, "") + literal(" ") + func.coalesce(chat.last_name, ""))
+        handle = search.removeprefix("@") or search
+
+        def pattern(value: str) -> str:
+            escaped = value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+            return f"%{escaped}%"
+
+        return or_(
+            chat.title.ilike(pattern(search), escape="\\"),
+            full_name.ilike(pattern(search), escape="\\"),
+            chat.username.ilike(pattern(handle), escape="\\"),
+        )
 
     async def get_all_chats(
         self,
@@ -2365,16 +2388,7 @@ class DatabaseAdapter:
 
             # Apply search filter if provided
             if search:
-                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-                search_pattern = f"%{escaped}%"
-                stmt = stmt.where(
-                    or_(
-                        Chat.title.ilike(search_pattern, escape="\\"),
-                        Chat.first_name.ilike(search_pattern, escape="\\"),
-                        Chat.last_name.ilike(search_pattern, escape="\\"),
-                        Chat.username.ilike(search_pattern, escape="\\"),
-                    )
-                )
+                stmt = stmt.where(self._chat_search_match(Chat, search))
 
             # Order by last message date, referencing the SELECT label so the
             # correlated subquery is evaluated once per row rather than twice.
@@ -2669,16 +2683,7 @@ class DatabaseAdapter:
                 stmt = stmt.where(or_(Chat.is_archived == 0, Chat.is_archived.is_(None)))
 
             if search:
-                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-                search_pattern = f"%{escaped}%"
-                stmt = stmt.where(
-                    or_(
-                        Chat.title.ilike(search_pattern, escape="\\"),
-                        Chat.first_name.ilike(search_pattern, escape="\\"),
-                        Chat.last_name.ilike(search_pattern, escape="\\"),
-                        Chat.username.ilike(search_pattern, escape="\\"),
-                    )
-                )
+                stmt = stmt.where(self._chat_search_match(Chat, search))
 
             result = await session.execute(stmt)
             return result.scalar() or 0
@@ -2694,7 +2699,8 @@ class DatabaseAdapter:
         write NULLs erased the username/last_name/phone the live capture had
         recorded (the same present-keys contract upsert_chat already keeps).
         Callers that observe a removal (backup/listener build every key
-        explicitly) still clear a column by passing the key with None.
+        explicitly) still clear a column by passing the key with None, except that a
+        completely unnamed user snapshot preserves the last archived identity.
         """
         async with self.db_manager.async_session_factory() as session:
             values: dict[str, Any] = {"id": user_data["id"], "updated_at": utcnow_naive()}
@@ -2707,6 +2713,9 @@ class DatabaseAdapter:
             insert_fn = sqlite_insert if self._is_sqlite else pg_insert
             stmt = insert_fn(User).values(**values)
             update_set = {key: getattr(stmt.excluded, key) for key in values if key != "id"}
+            if self._empty_user_identity(user_data):
+                for key in ("first_name", "last_name", "username"):
+                    update_set.pop(key)
             stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
 
             await session.execute(stmt)
