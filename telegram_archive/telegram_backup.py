@@ -2980,6 +2980,10 @@ class TelegramBackup:
         if self.config.download_chat_description:
             chat_data.update(await self._fetch_chat_description(entity))
         await self.db.upsert_chat(chat_data, account_id=self.account_id)
+        # A deleted account sends no more messages, so the sender path never
+        # writes its users row again. Record the deletion there from the dialog.
+        if chat_data.get("account_deleted") is True:
+            await self._save_sender(entity)
 
         # Fetch forum topics early (cheap, message-independent API call) so the viewer
         # shows the topic list immediately, before the slow media backfill (issue #200).

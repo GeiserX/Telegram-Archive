@@ -351,3 +351,39 @@ async def test_import_names_a_chat_the_archive_has_no_name_for(real_adapter, tmp
     async with real_adapter.db_manager.async_session_factory() as session:
         user = (await session.execute(select(UserRow).where(UserRow.id == 203))).scalar_one()
     assert user.first_name == "Sample"
+
+
+async def _backup_private_dialog(user: User):
+    from test_telegram_backup import TestBackupCheckpointing
+
+    case = TestBackupCheckpointing("test_checkpoint_after_every_batch")
+    case.setUp()
+    try:
+        backup = case.backup
+        backup._extract_chat_data = TelegramBackup._extract_chat_data.__get__(backup)
+        backup.config.download_chat_description = False
+
+        async def no_messages(*args, **kwargs):
+            return
+            yield
+
+        backup.client.iter_messages = no_messages
+        backup._sync_pinned_messages = AsyncMock()
+        dialog = MagicMock()
+        dialog.entity = user
+        await backup._backup_dialog(dialog, False)
+        return case.db
+    finally:
+        case.tearDown()
+
+
+async def test_backup_dialog_of_a_deleted_account_records_it_on_the_user_row():
+    # A deleted account sends no more messages, so the sender path never
+    # writes its users row again; the dialog refresh must.
+    db = await _backup_private_dialog(User(id=100, deleted=True))
+    assert db.upsert_chat.call_args[0][0]["account_deleted"] is True
+    db.upsert_user.assert_awaited_once()
+    assert db.upsert_user.call_args[0][0]["account_deleted"] is True
+
+    live = await _backup_private_dialog(User(id=100, first_name="Sample"))
+    live.upsert_user.assert_not_awaited()
