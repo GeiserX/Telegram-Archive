@@ -130,3 +130,62 @@ async def test_partial_update_without_names_clears_username(real_adapter):
     )
     await real_adapter.upsert_user({"id": 151, "username": None})
     assert (await _user_row(real_adapter, 151))[:3] == ("Sample", "Person", None)
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"first_name": None, "last_name": "Person", "username": None},
+        {"first_name": None, "last_name": None, "username": "new_handle"},
+    ],
+)
+async def test_snapshot_with_one_identity_field_still_overwrites(real_adapter, snapshot):
+    named = {"id": 160, "first_name": "Sample", "last_name": "Other", "username": "sample_user"}
+    await real_adapter.upsert_chat({**named, "type": "private"}, account_id=1)
+    await real_adapter.upsert_chat({"id": 160, "type": "private", **snapshot}, account_id=1)
+    row = (await real_adapter.get_all_chats(account_id=1))[0]
+    expected = (snapshot["first_name"], snapshot["last_name"], snapshot["username"])
+    assert (row["first_name"], row["last_name"], row["username"]) == expected
+    await real_adapter.upsert_user(named)
+    await real_adapter.upsert_user({"id": 160, **snapshot})
+    assert (await _user_row(real_adapter, 160))[:3] == expected
+
+
+async def test_channel_snapshot_without_names_clears_username(real_adapter):
+    # The listener sends first_name/last_name keys for every chat type, so a
+    # channel that drops its public username must not count as a deleted user.
+    await real_adapter.upsert_chat({"id": -1001, "type": "channel", "title": "News", "username": "news"}, account_id=1)
+    await real_adapter.upsert_chat(
+        {"id": -1001, "type": "channel", "title": "News", "username": None, "first_name": None, "last_name": None},
+        account_id=1,
+    )
+    row = (await real_adapter.get_all_chats(account_id=1))[0]
+    assert (row["title"], row["username"]) == ("News", None)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # A lone "@" is not an empty handle search that lists every chat with a username.
+        ("@", set()),
+        # The full name is the trimmed join, so a first-name-only chat reads "Solo", not "Solo ".
+        ("Solo ", set()),
+        ("100%", {172}),
+        ("a_b", {173}),
+        ("c\\d", {175}),
+    ],
+)
+async def test_chat_search_edge_queries(real_adapter, query, expected):
+    chats = [
+        {"id": 170, "type": "private", "first_name": "Solo", "username": "solo_user"},
+        {"id": 171, "type": "group", "title": "1000 members"},
+        {"id": 172, "type": "group", "title": "100% match"},
+        {"id": 173, "type": "group", "title": "a_b"},
+        {"id": 174, "type": "group", "title": "axb cd"},
+        {"id": 175, "type": "group", "title": "c\\d"},
+    ]
+    for chat in chats:
+        await real_adapter.upsert_chat(chat, account_id=1)
+    rows = await real_adapter.get_all_chats(search=query, account_id=1)
+    assert {row["id"] for row in rows} == expected
+    assert await real_adapter.get_chat_count(search=query, account_id=1) == len(expected)
