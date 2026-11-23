@@ -103,3 +103,30 @@ async def test_unnamed_snapshot_with_phone_still_updates_phone(real_adapter):
     await real_adapter.upsert_user(named)
     await real_adapter.upsert_user(unnamed)
     assert await _user_row(real_adapter, 141) == ("Sample", "Person", "sample_user", "15550199")
+
+
+async def test_first_name_only_snapshot_still_overwrites(real_adapter):
+    named = {"id": 150, "first_name": "Sample", "last_name": "Person", "username": "sample_user"}
+    first_only = {"id": 150, "first_name": "Solo", "last_name": None, "username": None}
+    await real_adapter.upsert_chat({**named, "type": "private"}, account_id=1)
+    await real_adapter.upsert_chat({**first_only, "type": "private"}, account_id=1)
+    row = (await real_adapter.get_all_chats(account_id=1))[0]
+    assert (row["first_name"], row["last_name"], row["username"]) == ("Solo", None, None)
+    await real_adapter.upsert_user(named)
+    await real_adapter.upsert_user(first_only)
+    assert (await _user_row(real_adapter, 150))[:3] == ("Solo", None, None)
+
+
+async def test_partial_update_without_names_clears_username(real_adapter):
+    await real_adapter.upsert_chat(
+        {"id": 151, "type": "private", "first_name": "Sample", "last_name": "Person", "username": "sample_user"},
+        account_id=1,
+    )
+    await real_adapter.upsert_chat({"id": 151, "type": "private", "username": None}, account_id=1)
+    row = (await real_adapter.get_all_chats(account_id=1))[0]
+    assert (row["first_name"], row["last_name"], row["username"]) == ("Sample", "Person", None)
+    await real_adapter.upsert_user(
+        {"id": 151, "first_name": "Sample", "last_name": "Person", "username": "sample_user"}
+    )
+    await real_adapter.upsert_user({"id": 151, "username": None})
+    assert (await _user_row(real_adapter, 151))[:3] == ("Sample", "Person", None)
