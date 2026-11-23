@@ -2982,8 +2982,12 @@ class TelegramBackup:
         await self.db.upsert_chat(chat_data, account_id=self.account_id)
         # A deleted account sends no more messages, so the sender path never
         # writes its users row again. Record the deletion there from the dialog.
+        # Best effort: a failed users row must never cost the chat its messages.
         if chat_data.get("account_deleted") is True:
-            await self._save_sender(entity)
+            try:
+                await self._save_sender(entity)
+            except Exception as e:
+                logger.warning(f"Could not record the deleted account on its user row: {e.__class__.__name__}")
 
         # Fetch forum topics early (cheap, message-independent API call) so the viewer
         # shows the topic list immediately, before the slow media backfill (issue #200).

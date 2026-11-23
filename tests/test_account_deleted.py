@@ -358,7 +358,7 @@ async def test_import_names_a_chat_the_archive_has_no_name_for(real_adapter, tmp
     assert user.first_name == "Sample"
 
 
-async def _backup_private_dialog(user: User):
+async def _backup_private_dialog(user: User, user_row_error: Exception | None = None):
     from test_telegram_backup import TestBackupCheckpointing
 
     case = TestBackupCheckpointing("test_checkpoint_after_every_batch")
@@ -374,6 +374,8 @@ async def _backup_private_dialog(user: User):
 
         backup.client.iter_messages = no_messages
         backup._sync_pinned_messages = AsyncMock()
+        if user_row_error is not None:
+            case.db.upsert_user.side_effect = user_row_error
         dialog = MagicMock()
         dialog.entity = user
         await backup._backup_dialog(dialog, False)
@@ -392,3 +394,11 @@ async def test_backup_dialog_of_a_deleted_account_records_it_on_the_user_row():
 
     live = await _backup_private_dialog(User(id=100, first_name="Sample"))
     live.upsert_user.assert_not_awaited()
+
+
+async def test_backup_dialog_of_a_deleted_account_survives_a_failed_user_row():
+    # Recording the deletion on the users row is best effort: a failure there
+    # never stops the dialog's message backup.
+    db = await _backup_private_dialog(User(id=100, deleted=True), user_row_error=RuntimeError("users row"))
+    db.upsert_user.assert_awaited_once()
+    db.get_last_message_id.assert_awaited()
