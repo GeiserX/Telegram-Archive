@@ -626,3 +626,38 @@ class TestEnsureThumbnailContainment(unittest.IsolatedAsyncioTestCase):
                 expected = self._thumbs_root(cache_dir).resolve() / "200" / "1234567890" / "ok.webp"
                 self.assertEqual(result, (expected, "-1234567890"))
                 self.assertEqual(gen.call_args.args[0], alt / "ok.jpg")
+
+    async def test_symlinked_roots_are_resolved_before_the_compare(self):
+        """A media root or cache dir reached through a symlink still serves.
+
+        Each root is resolved like the path under it, so a root given as a
+        symlink does not make every request look outside.
+        """
+        media_link = self.base / "media-link"
+        media_link.symlink_to(self.media, target_is_directory=True)
+        cache_link = self.base / "cache-link"
+        cache_link.symlink_to(self.cache, target_is_directory=True)
+        for cache_dir, real_root in ((cache_link, self.cache), (None, self.media / ".thumbs")):
+            with self.subTest(cache_dir=cache_dir):
+                thumb = self._cached(real_root / "200" / "chat" / "pic.webp")
+                result = await ensure_thumbnail(media_link, 200, "chat", "pic.jpg", cache_dir=cache_dir, generate=False)
+                self.assertEqual(result, (thumb, "chat"))
+
+    async def test_legacy_fallback_root_itself_counts_as_inside(self):
+        """Like Path.is_relative_to, an alternate that resolves to the root passes."""
+        alt = self.media / "-1234567890"
+        alt.mkdir()
+        (alt / "root.jpg").symlink_to(self.media, target_is_directory=True)
+
+        def fake_generate(source, dest, size):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"webp")
+            return True
+
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate) as gen:
+                    result = await self._get("1234567890", "root.jpg", cache_dir, generate=True)
+                expected = self._thumbs_root(cache_dir).resolve() / "200" / "1234567890" / "root.webp"
+                self.assertEqual(result, (expected, "-1234567890"))
+                self.assertEqual(gen.call_args.args[0], self.media)
