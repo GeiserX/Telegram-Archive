@@ -280,23 +280,29 @@ async def ensure_thumbnail(
     if not is_img and not is_vid:
         return None
 
-    # Path traversal protection: resolve and verify containment
-    media_root_resolved = media_root.resolve()
+    # Path traversal protection: resolve symlinks and "..", then require the
+    # result to sit inside its root. The checks are written as os.path.realpath
+    # plus str.startswith, inline, because that is the form CodeQL's
+    # py/path-injection query recognises; it does not model Path.resolve() and
+    # Path.is_relative_to(), so it kept reporting this function. Both sides end
+    # in a separator, so the root itself still passes (as with is_relative_to)
+    # and a sibling such as "media-evil" next to "media" does not. Path() drops
+    # that trailing separator again.
+    media_root_prefix = os.path.join(os.path.realpath(media_root), "")
 
-    source = (media_root / folder / filename).resolve()
-    if not source.is_relative_to(media_root_resolved):
+    source_str = os.path.join(os.path.realpath(os.path.join(media_root, folder, filename)), "")
+    if not source_str.startswith(media_root_prefix):
         return None
+    source = Path(source_str)
 
-    if cache_dir:
-        stem = Path(filename).stem
-        dest = (cache_dir / str(size) / folder / f"{stem}.webp").resolve()
-        if not dest.is_relative_to(cache_dir.resolve()):
-            return None
-    else:
-        dest = _thumb_path(media_root, size, folder, filename).resolve()
-        thumbs_root = (media_root / ".thumbs").resolve()
-        if not dest.is_relative_to(thumbs_root):
-            return None
+    # Same layout as _thumb_path, under cache_dir when one is given.
+    thumbs_root = cache_dir if cache_dir else media_root / ".thumbs"
+    thumbs_root_prefix = os.path.join(os.path.realpath(thumbs_root), "")
+    stem = Path(filename).stem
+    dest_str = os.path.join(os.path.realpath(os.path.join(thumbs_root, str(size), folder, f"{stem}.webp")), "")
+    if not dest_str.startswith(thumbs_root_prefix):
+        return None
+    dest = Path(dest_str)
 
     resolved_folder = folder
 
@@ -310,8 +316,11 @@ async def ensure_thumbnail(
         found = False
         for alt in alt_folders:
             try:
-                alt_source = (media_root / alt / filename).resolve()
-                if alt_source.is_relative_to(media_root_resolved) and alt_source.exists():
+                alt_str = os.path.join(os.path.realpath(os.path.join(media_root, alt, filename)), "")
+                if not alt_str.startswith(media_root_prefix):
+                    continue
+                alt_source = Path(alt_str)
+                if alt_source.exists():
                     logger.debug("Thumbnail legacy fallback resolved via alternate folder")
                     source = alt_source
                     resolved_folder = alt

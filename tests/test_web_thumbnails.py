@@ -500,3 +500,164 @@ class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
             await ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg")
 
         self.assertEqual(mod._inflight_tasks, {})
+
+
+class TestEnsureThumbnailContainment(unittest.IsolatedAsyncioTestCase):
+    """Source and destination stay inside their roots, for both cache layouts.
+
+    Layout under a temp dir: ``media`` is the media root, ``cache`` the
+    THUMBNAIL_CACHE_DIR, and ``media-evil``, ``cache-evil``, ``media/.thumbs-evil``
+    and ``outside`` are places a request must never reach. Each reject case
+    pre-creates the thumbnail the request would return if its check were
+    missing, so a None can only come from the containment check.
+    """
+
+    def setUp(self):
+        import telegram_archive.web.thumbnails as mod
+
+        mod._recent_failures.clear()
+        mod._inflight_tasks.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.media = self.base / "media"
+        self.cache = self.base / "cache"
+        for d in ("media/chat", "media-evil/chat", "outside", "cache", "cache-evil", "media/.thumbs-evil"):
+            (self.base / d).mkdir(parents=True)
+        for d in ("media/chat", "media-evil/chat", "outside"):
+            (self.base / d / "pic.jpg").write_bytes(b"jpeg")
+
+    def _thumbs_root(self, cache_dir):
+        return cache_dir if cache_dir else self.media / ".thumbs"
+
+    def _cached(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"webp")
+        return path
+
+    async def _get(self, folder, filename, cache_dir, generate=False):
+        return await ensure_thumbnail(self.media, 200, folder, filename, cache_dir=cache_dir, generate=generate)
+
+    async def test_plain_request_is_served(self):
+        """Positive control: the layout serves a normal cached thumbnail."""
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                thumb = self._cached(self._thumbs_root(cache_dir) / "200" / "chat" / "pic.webp")
+                self.assertEqual(await self._get("chat", "pic.jpg", cache_dir), (thumb, "chat"))
+
+    async def test_dotdot_in_folder_to_sibling_with_root_prefix_is_rejected(self):
+        """../media-evil shares the root's name as a prefix; still outside."""
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                # The destination of this request stays inside the thumbs root.
+                self._cached(self._thumbs_root(cache_dir) / "media-evil" / "chat" / "pic.webp")
+                self.assertIsNone(await self._get("../media-evil/chat", "pic.jpg", cache_dir))
+
+    async def test_dotdot_in_filename_is_rejected(self):
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                self._cached(self._thumbs_root(cache_dir) / "200" / "chat" / "pic.webp")
+                self.assertIsNone(await self._get("chat", "../../outside/pic.jpg", cache_dir))
+
+    async def test_absolute_folder_is_rejected(self):
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                self._cached(self.base / "outside" / "pic.webp")
+                self.assertIsNone(await self._get(str(self.base / "outside"), "pic.jpg", cache_dir))
+
+    async def test_absolute_filename_is_rejected(self):
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                self._cached(self._thumbs_root(cache_dir) / "200" / "chat" / "pic.webp")
+                self.assertIsNone(await self._get("chat", str(self.base / "outside" / "pic.jpg"), cache_dir))
+
+    async def test_symlink_in_media_root_pointing_outside_is_rejected(self):
+        (self.media / "chat" / "link.jpg").symlink_to(self.base / "outside" / "pic.jpg")
+        (self.media / "linkdir").symlink_to(self.base / "outside", target_is_directory=True)
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                self._cached(self._thumbs_root(cache_dir) / "200" / "chat" / "link.webp")
+                self._cached(self._thumbs_root(cache_dir) / "200" / "linkdir" / "pic.webp")
+                self.assertIsNone(await self._get("chat", "link.jpg", cache_dir))
+                self.assertIsNone(await self._get("linkdir", "pic.jpg", cache_dir))
+
+    async def test_destination_symlink_to_sibling_with_root_prefix_is_rejected(self):
+        """A thumbs folder that links to cache-evil / .thumbs-evil is outside."""
+        cases = ((self.cache, self.base / "cache-evil"), (None, self.media / ".thumbs-evil"))
+        for cache_dir, evil in cases:
+            with self.subTest(cache_dir=cache_dir):
+                size_dir = self._thumbs_root(cache_dir) / "200"
+                size_dir.mkdir(parents=True, exist_ok=True)
+                (size_dir / "chat").symlink_to(evil, target_is_directory=True)
+                self._cached(evil / "pic.webp")
+                self.assertIsNone(await self._get("chat", "pic.jpg", cache_dir))
+
+    async def test_root_itself_counts_as_inside(self):
+        """Like Path.is_relative_to, a path that resolves to the root passes."""
+        (self.media / "chat" / "root.jpg").symlink_to(self.media, target_is_directory=True)
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                thumb = self._cached(self._thumbs_root(cache_dir) / "200" / "chat" / "root.webp")
+                self.assertEqual(await self._get("chat", "root.jpg", cache_dir), (thumb, "chat"))
+        (self.cache / "200" / "chat" / "self.webp").symlink_to(self.cache, target_is_directory=True)
+        (self.media / "chat" / "self.jpg").write_bytes(b"jpeg")
+        self.assertEqual(await self._get("chat", "self.jpg", self.cache), (self.cache, "chat"))
+
+    async def test_legacy_fallback_stays_inside_media_root(self):
+        """The alternate folder is checked like the requested one."""
+        alt = self.media / "-1234567890"
+        alt.mkdir()
+        (alt / "ok.jpg").write_bytes(b"jpeg")
+        (alt / "out.jpg").symlink_to(self.base / "outside" / "pic.jpg")
+        (alt / "evil.jpg").symlink_to(self.base / "media-evil" / "chat" / "pic.jpg")
+
+        def fake_generate(source, dest, size):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"webp")
+            return True
+
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate) as gen:
+                    self.assertIsNone(await self._get("1234567890", "out.jpg", cache_dir, generate=True))
+                    self.assertIsNone(await self._get("1234567890", "evil.jpg", cache_dir, generate=True))
+                    gen.assert_not_called()
+                    result = await self._get("1234567890", "ok.jpg", cache_dir, generate=True)
+                expected = self._thumbs_root(cache_dir).resolve() / "200" / "1234567890" / "ok.webp"
+                self.assertEqual(result, (expected, "-1234567890"))
+                self.assertEqual(gen.call_args.args[0], alt / "ok.jpg")
+
+    async def test_symlinked_roots_are_resolved_before_the_compare(self):
+        """A media root or cache dir reached through a symlink still serves.
+
+        Each root is resolved like the path under it, so a root given as a
+        symlink does not make every request look outside.
+        """
+        media_link = self.base / "media-link"
+        media_link.symlink_to(self.media, target_is_directory=True)
+        cache_link = self.base / "cache-link"
+        cache_link.symlink_to(self.cache, target_is_directory=True)
+        for cache_dir, real_root in ((cache_link, self.cache), (None, self.media / ".thumbs")):
+            with self.subTest(cache_dir=cache_dir):
+                thumb = self._cached(real_root / "200" / "chat" / "pic.webp")
+                result = await ensure_thumbnail(media_link, 200, "chat", "pic.jpg", cache_dir=cache_dir, generate=False)
+                self.assertEqual(result, (thumb, "chat"))
+
+    async def test_legacy_fallback_root_itself_counts_as_inside(self):
+        """Like Path.is_relative_to, an alternate that resolves to the root passes."""
+        alt = self.media / "-1234567890"
+        alt.mkdir()
+        (alt / "root.jpg").symlink_to(self.media, target_is_directory=True)
+
+        def fake_generate(source, dest, size):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"webp")
+            return True
+
+        for cache_dir in (self.cache, None):
+            with self.subTest(cache_dir=cache_dir):
+                with patch("telegram_archive.web.thumbnails._generate_sync", side_effect=fake_generate) as gen:
+                    result = await self._get("1234567890", "root.jpg", cache_dir, generate=True)
+                expected = self._thumbs_root(cache_dir).resolve() / "200" / "1234567890" / "root.webp"
+                self.assertEqual(result, (expected, "-1234567890"))
+                self.assertEqual(gen.call_args.args[0], self.media)
