@@ -176,7 +176,9 @@ def test_upgrade_seeds_from_reactions_and_history_and_changes_nothing_else(datab
                 )
             before = _fingerprint(conn)
 
-        _build_alembic_schema(async_url, "head")
+        # To 040 itself, not head: a later migration that adds a column to a
+        # fingerprinted table (043 on chats and users) is not 040's change.
+        _build_alembic_schema(async_url, migration.revision)
 
         expected = [
             (BIG, 0, 0, None, None, EARLY),

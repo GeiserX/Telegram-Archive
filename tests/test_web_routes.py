@@ -2330,6 +2330,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
         "chat_username": "ana",
         "chat_type": "private",
         "chat_is_forum": False,
+        "chat_account_deleted_at": datetime(2026, 3, 1, 9, 0, 0),
         "topic_title": None,
         "matched_in": "transcript",
     }
@@ -2396,6 +2397,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
                         "username": "ana",
                         "type": "private",
                         "is_forum": False,
+                        "account_deleted_at": "2026-03-01T09:00:00",
                         "avatar_url": "/media/avatar/ref00000000000000000077",
                     },
                 }

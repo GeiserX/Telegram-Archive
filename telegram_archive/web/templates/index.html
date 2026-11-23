@@ -2406,6 +2406,29 @@
             font-size: 13.5px;
             line-height: 19px;
         }
+        /* A deleted account whose name the archive kept: the name stays, and
+           this tag, with the crossed person of the deleted-account avatar, says
+           the account is gone. Muted, so it reads as a status, not a name. On a
+           narrow line the tag gives way first (it shrinks a thousand times
+           faster than the name) down to its icon, which always stays. */
+        .deleted-account-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            flex-shrink: 1000;
+            min-width: 13px;
+            overflow: hidden;
+            white-space: nowrap;
+            font-size: 12px;
+            line-height: 16px;
+            font-weight: 500;
+            color: rgb(var(--tg-muted));
+        }
+        .deleted-account-tag svg {
+            width: 13px;
+            height: 13px;
+            flex-shrink: 0;
+        }
         .chat-row .chat-row-line .account-tag {
             min-width: 0;
         }
@@ -7117,9 +7140,14 @@
 
                                 <div class="flex-1 min-w-0">
                                     <div class="flex justify-between items-baseline gap-2">
+                                        <!-- A deleted account whose name the archive kept shows that
+                                             name and, after it, a tag that says the account is gone. -->
+                                        <div class="flex items-baseline gap-1.5 min-w-0">
                                         <h3 class="chat-row-title truncate text-tg-ink" dir="auto">
                                             <span v-if="chat.is_forum" title="Forum"><svg class="forum-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg><span class="sr-only">Forum: </span></span>{{ getChatName(chat) }}
                                         </h3>
+                                        <span v-if="isKeptDeletedAccount(chat)" class="chat-row-sub deleted-account-tag" title="Deleted account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/></svg><span class="truncate">Deleted account</span></span>
+                                        </div>
                                         <span class="chat-row-sub chat-row-date text-tg-muted shrink-0" :title="formatDateTitle(chat.last_message_date)">{{ formatDate(chat.last_message_date) }}</span>
                                     </div>
                                     <!-- Two lines, like the apps: the name, and the newest message
@@ -7164,13 +7192,21 @@
                                     :style="{ background: getSearchChatAvatarFill(row.chat) }">
                                     <img v-if="row.chat.avatar_url" :src="row.chat.avatar_url" class="w-full h-full object-cover"
                                         @error="row.chat.avatar_url = null" :alt="getChatName(row.chat)">
+                                    <template v-else-if="isDeletedChat(row.chat)">
+                                        <!-- Deleted account icon, as in the chat list -->
+                                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/>
+                                        </svg>
+                                    </template>
                                     <template v-else>{{ getInitials(row.chat) }}</template>
                                 </div>
                                 <div class="flex-1 min-w-0">
                                     <div class="flex justify-between items-baseline gap-2">
+                                        <div class="flex items-baseline gap-1.5 min-w-0">
                                         <h3 class="chat-row-title truncate text-tg-ink" dir="auto">
                                             <span v-if="row.chat.is_forum" title="Forum"><svg class="forum-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg><span class="sr-only">Forum: </span></span>{{ getChatName(row.chat) }}<span v-if="row.topic_title" class="text-tg-muted font-normal"> › {{ row.topic_title }}</span>
                                         </h3>
+                                        <span v-if="isKeptDeletedAccount(row.chat)" class="chat-row-sub deleted-account-tag" title="Deleted account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/></svg><span class="truncate">Deleted account</span></span>
+                                        </div>
                                         <span class="text-xs text-tg-muted shrink-0" :title="formatDateTitle(row.date)">{{ formatDate(row.date) }}</span>
                                     </div>
                                     <p class="text-[13px] leading-[18px] text-tg-muted line-clamp-2 break-words">
@@ -8007,6 +8043,7 @@
                                             class="sender-name min-w-0 truncate text-sm font-semibold leading-[1.125rem]" :style="{ color: getSenderNameColor(msg) }">
                                             {{ getSenderName(msg) }}
                                         </span>
+                                        <span v-if="isDeletedSender(msg)" class="deleted-account-tag ms-1.5" title="Deleted account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke-width="2"/><path d="M4 21a8 8 0 0 1 12.5-6.6" stroke-width="2" stroke-linecap="round"/><path d="m17 17 4 4m0-4-4 4" stroke-width="2" stroke-linecap="round"/></svg><span class="truncate">Deleted account</span></span>
                                         <!-- A deleted message, opened: "Deleted · 21:59" at the far end
                                              of the name line, where Telegram puts "admin", with the time
                                              the archive noticed and, on a later day, its date. Hide folds
@@ -9492,6 +9529,12 @@
                     <p class="mt-0.5 text-[13px] leading-[18px] text-tg-muted">{{ senderInfoMessage.sender_name ? 'Name when this message was sent' : (getCurrentSenderName(senderInfoMessage) ? 'Latest known name' : 'Name') }}</p>
                 </div>
                 <div class="tg-dialog-body mt-2">
+                    <div v-if="isDeletedSender(senderInfoMessage)" class="tg-fact">
+                        <div class="tg-fact-text">
+                            <span class="tg-fact-value">Deleted account</span>
+                            <span class="tg-fact-label">Seen deleted {{ formatStamp(senderInfoMessage.sender_account_deleted_at) }}</span>
+                        </div>
+                    </div>
                     <div v-if="hasDifferentCurrentSenderName(senderInfoMessage)" class="tg-fact">
                         <div class="tg-fact-text">
                             <span class="tg-fact-value">{{ getCurrentSenderName(senderInfoMessage) }}</span>
@@ -16752,10 +16795,26 @@
                     return 'Message'
                 }
 
+                // Deleted when the archive recorded Telegram reporting the account
+                // deleted (account_deleted_at, beside the name it kept), or, for a row
+                // whose names an older snapshot already erased, when no name is left.
                 const isDeletedChat = (chat) => {
                     if (!chat) return false
+                    if (chat.account_deleted_at) return true
                     const name = getChatName(chat)
                     return name === 'Deleted Account'
+                }
+
+                // A deleted account that still shows its kept name, so it needs a tag
+                // to say the account is gone. One with no name left already reads
+                // "Deleted Account" and takes no tag.
+                const isKeptDeletedAccount = (chat) => {
+                    return !!chat?.account_deleted_at && getChatName(chat) !== 'Deleted Account'
+                }
+
+                // The sender of this message was seen deleted (users.account_deleted_at).
+                const isDeletedSender = (msg) => {
+                    return !!msg?.sender_account_deleted_at
                 }
 
                 const isAudioFile = (msg) => {
@@ -21289,6 +21348,8 @@
                     pinnedKindWord,
                     getExtendedMediaChip,
                     isDeletedChat,
+                    isKeptDeletedAccount,
+                    isDeletedSender,
                     isAudioFile,
                     exportChat,
                     runExport,

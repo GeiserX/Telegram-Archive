@@ -96,6 +96,13 @@ def parse_from_id(from_id: str | None) -> int | None:
     return None
 
 
+def _has_archived_name(row: dict[str, Any] | None, keys: tuple[str, ...]) -> bool:
+    """Whether an archived chat or user row already holds a non-blank name in ``keys``."""
+    if not isinstance(row, dict):
+        return False
+    return any(isinstance(row.get(key), str) and row[key].strip() for key in keys)
+
+
 def _clean_sender_name(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -1094,18 +1101,28 @@ class TelegramImporter:
             # type='unknown' / first_name=None here rewrote captured private
             # chats and NULLed the contact's real name on --merge.
             chat_row: dict[str, Any] = {"id": chat_id}
+            existing_chat = await self.db.get_chat_by_id(chat_id, account_id=self.account_id)
+            # A person's name in the export is one display string, and blank for a
+            # deleted account. It only fills a chat the archive has no name for; it
+            # never replaces the first and last name the archive captured.
+            fill_name = not _has_archived_name(existing_chat, ("title", "first_name", "last_name"))
             if export_type == "html_export":
                 # An HTML export names the chat but cannot say what KIND it
                 # is, nor whether that name is a person's first name. The
                 # name is still worth keeping when no row exists yet.
-                if await self.db.get_chat_by_id(chat_id, account_id=self.account_id) is None:
+                if existing_chat is None:
                     chat_row["title"] = chat_name
             elif export_type in ("personal_chat", "bot_chat"):
                 chat_row["type"] = CHAT_TYPE_MAP[export_type]
-                chat_row["first_name"] = chat_name
+                if fill_name:
+                    chat_row["first_name"] = chat_name
             else:
                 chat_row["type"] = CHAT_TYPE_MAP.get(export_type, "unknown")
-                chat_row["title"] = chat_name
+                # A group or channel title is the same kind of value as the
+                # archived one, so a renamed group takes the export's title. Only
+                # a blank title never replaces the archived one.
+                if (isinstance(chat_name, str) and chat_name.strip()) or fill_name:
+                    chat_row["title"] = chat_name
             await self.db.upsert_chat(chat_row, account_id=self.account_id)
 
         seen_users: set[int] = set()
@@ -1132,12 +1149,14 @@ class TelegramImporter:
 
             if sender_id and sender_id > 0 and sender_id not in seen_users and not dry_run:
                 seen_users.add(sender_id)
-                await self.db.upsert_user(
-                    {
-                        "id": sender_id,
-                        "first_name": sender_name or "",
-                    }
-                )
+                # The export's "from" is one display string. It creates a missing
+                # user and fills a nameless one, and never replaces the names the
+                # archive captured (the message keeps it as sender_name anyway).
+                existing_user = await self.db.get_user_by_id(sender_id)
+                if existing_user is None:
+                    await self.db.upsert_user({"id": sender_id, "first_name": sender_name or ""})
+                elif sender_name and not _has_archived_name(existing_user, ("first_name", "last_name")):
+                    await self.db.upsert_user({"id": sender_id, "first_name": sender_name})
 
             if msg_type == "service":
                 text = _build_service_text(msg)
