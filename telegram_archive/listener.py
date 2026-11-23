@@ -46,6 +46,7 @@ from .message_utils import (
     MAP_PREVIEW_TYPES,
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
+    account_deleted,
     build_media_filename,
     check_complete_download,
     classify_media_type,
@@ -1867,6 +1868,7 @@ class TelegramListener:
                         "username": getattr(chat_entity, "username", None),
                         "first_name": getattr(chat_entity, "first_name", None),
                         "last_name": getattr(chat_entity, "last_name", None),
+                        "account_deleted": account_deleted(chat_entity),
                     }
                     await self.db.upsert_chat(chat_data, account_id=self.account_id)
 
@@ -1892,6 +1894,7 @@ class TelegramListener:
                         "last_name": sender.last_name,
                         "phone": sender.phone,
                         "is_bot": sender.bot,
+                        "account_deleted": account_deleted(sender),
                     }
                     await self.db.upsert_user(user_data)
                     sender_user = user_data
@@ -2162,6 +2165,7 @@ class TelegramListener:
                                 # Fresh entity, so record the photo this account
                                 # now sees (None on removal) right away.
                                 "avatar_photo_id": avatar_photo_id(entity),
+                                "account_deleted": account_deleted(entity),
                             }
                             await self.db.upsert_chat(chat_data, account_id=self.account_id)
                             logger.info("✅ Chat metadata updated")

@@ -43,6 +43,15 @@ def parse_utc_timestamp(value: str) -> datetime:
     return parsed
 
 
+def account_deleted(entity: object | None) -> bool:
+    """Whether Telegram reports this entity as a deleted account (``User.deleted``).
+
+    Compared with ``is True`` so only a real Telethon flag counts: a chat or a
+    channel has no such attribute, and a test double's auto-attribute is not True.
+    """
+    return getattr(entity, "deleted", None) is True
+
+
 def sender_display_name(sender: object | None) -> str | None:
     """Return a trimmed capture-time display name for a Telegram sender."""
     if sender is None:

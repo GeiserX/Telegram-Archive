@@ -2189,11 +2189,22 @@ class DatabaseAdapter:
     def _keep_archived_identity(cls, data, update_set):
         # A deleted account also arrives without a phone. Keep the archived
         # phone with the names; a snapshot that does carry a phone still sets it.
-        if cls._empty_user_identity(data):
+        # The explicit flag comes from Telethon's User.deleted; the all-empty
+        # shape stays for callers that do not pass it.
+        if data.get("account_deleted") or cls._empty_user_identity(data):
             for key in ("first_name", "last_name", "username"):
-                update_set.pop(key)
+                update_set.pop(key, None)
             if not data.get("phone"):
                 update_set.pop("phone", None)
+
+    @staticmethod
+    def _record_account_deletion(data, values, update_set, column):
+        # account_deleted_at is set the first time a snapshot reports the
+        # account deleted, then never cleared and never moved: a later snapshot
+        # without the flag leaves it, and a later one with it keeps the first time.
+        if data.get("account_deleted"):
+            values["account_deleted_at"] = utcnow_naive()
+            update_set["account_deleted_at"] = func.coalesce(column, values["account_deleted_at"])
 
     @retry_on_locked()
     async def upsert_chat(self, chat_data: dict[str, Any], *, account_id: int) -> int:
@@ -2223,6 +2234,7 @@ class DatabaseAdapter:
                 "is_forum": chat_data.get("is_forum", 0),
                 "is_archived": chat_data.get("is_archived", 0),
                 "avatar_photo_id": chat_data.get("avatar_photo_id"),
+                "account_deleted_at": None,
                 "updated_at": utcnow_naive(),
             }
 
@@ -2247,6 +2259,7 @@ class DatabaseAdapter:
                     update_set[field] = values[field]
             if chat_data.get("type") == "private":
                 self._keep_archived_identity(chat_data, update_set)
+                self._record_account_deletion(chat_data, values, update_set, Chat.account_deleted_at)
             # Only update is_forum/is_archived if explicitly provided
             if "is_forum" in chat_data:
                 update_set["is_forum"] = values["is_forum"]
@@ -2433,6 +2446,7 @@ class DatabaseAdapter:
                     "is_forum": row.Chat.is_forum,
                     "is_archived": row.Chat.is_archived,
                     "avatar_photo_id": row.Chat.avatar_photo_id,
+                    "account_deleted_at": row.Chat.account_deleted_at,
                     "last_synced_message_id": row.Chat.last_synced_message_id,
                     "created_at": row.Chat.created_at,
                     "updated_at": row.Chat.updated_at,
@@ -2710,6 +2724,8 @@ class DatabaseAdapter:
         Callers that observe a removal (backup/listener build every key
         explicitly) still clear a column by passing the key with None, except that a
         completely unnamed user snapshot preserves the last archived identity.
+        ``account_deleted`` (Telethon's ``User.deleted``) keeps the identity too,
+        and sets ``account_deleted_at`` the first time it is true.
         """
         async with self.db_manager.async_session_factory() as session:
             values: dict[str, Any] = {"id": user_data["id"], "updated_at": utcnow_naive()}
@@ -2720,8 +2736,10 @@ class DatabaseAdapter:
                 values["is_bot"] = 1 if user_data.get("is_bot") else 0
 
             insert_fn = sqlite_insert if self._is_sqlite else pg_insert
+            update_set: dict[str, Any] = {}
+            self._record_account_deletion(user_data, values, update_set, User.account_deleted_at)
             stmt = insert_fn(User).values(**values)
-            update_set = {key: getattr(stmt.excluded, key) for key in values if key != "id"}
+            update_set = {key: getattr(stmt.excluded, key) for key in values if key != "id"} | update_set
             self._keep_archived_identity(user_data, update_set)
             stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
 
@@ -7916,6 +7934,7 @@ class DatabaseAdapter:
         Chat.type.label("chat_type"),
         Chat.is_forum.label("chat_is_forum"),
         Chat.avatar_photo_id.label("chat_avatar_photo_id"),
+        Chat.account_deleted_at.label("chat_account_deleted_at"),
         ForumTopic.title.label("topic_title"),
     )
 
@@ -8024,6 +8043,7 @@ class DatabaseAdapter:
                 "chat_type": row["chat_type"],
                 "chat_is_forum": bool(row["chat_is_forum"]),
                 "chat_avatar_photo_id": row["chat_avatar_photo_id"],
+                "chat_account_deleted_at": row["chat_account_deleted_at"],
                 "topic_title": row["topic_title"],
                 "matched_in": "transcript" if row["via_transcript"] else "message",
             }
@@ -8493,6 +8513,7 @@ class DatabaseAdapter:
                     User.first_name,
                     User.last_name,
                     User.username,
+                    User.account_deleted_at.label("sender_account_deleted_at"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
                 .where(Message.chat_id == chat_id)
@@ -8590,6 +8611,7 @@ class DatabaseAdapter:
                 msg["first_name"] = row.first_name
                 msg["last_name"] = row.last_name
                 msg["username"] = row.username
+                msg["sender_account_deleted_at"] = row.sender_account_deleted_at
                 msg["media"] = None
 
                 # Parse raw_data JSON
@@ -8970,6 +8992,7 @@ class DatabaseAdapter:
                     User.first_name,
                     User.last_name,
                     User.username,
+                    User.account_deleted_at.label("sender_account_deleted_at"),
                     Media.id.label("media_id"),
                     Media.type.label("media_type"),
                     Media.file_path.label("media_file_path"),
@@ -9022,6 +9045,7 @@ class DatabaseAdapter:
             msg["first_name"] = row.first_name
             msg["last_name"] = row.last_name
             msg["username"] = row.username
+            msg["sender_account_deleted_at"] = row.sender_account_deleted_at
 
             # v6.0.0: Media as nested object
             if row.media_type:
@@ -9086,6 +9110,7 @@ class DatabaseAdapter:
             "is_forum": chat.is_forum,
             "is_archived": chat.is_archived,
             "avatar_photo_id": chat.avatar_photo_id,
+            "account_deleted_at": chat.account_deleted_at,
         }
 
     async def get_chat_by_id(self, chat_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
@@ -9158,6 +9183,7 @@ class DatabaseAdapter:
                     User.first_name,
                     User.last_name,
                     User.username,
+                    User.account_deleted_at.label("sender_account_deleted_at"),
                     Media.id.label("media_id"),
                     Media.type.label("media_type"),
                     Media.file_path.label("media_file_path"),
@@ -9196,6 +9222,7 @@ class DatabaseAdapter:
                 msg["first_name"] = row.first_name
                 msg["last_name"] = row.last_name
                 msg["username"] = row.username
+                msg["sender_account_deleted_at"] = row.sender_account_deleted_at
                 row_accounts.append(row.Message.account_id)
 
                 # v6.0.0: Media as nested object
@@ -9312,6 +9339,7 @@ class DatabaseAdapter:
                 "last_name": user.last_name,
                 "phone": user.phone,
                 "is_bot": user.is_bot,
+                "account_deleted_at": user.account_deleted_at,
             }
 
     async def get_messages_for_export(

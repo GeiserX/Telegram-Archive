@@ -2496,6 +2496,7 @@ async def search_messages(
                     "username": row["chat_username"],
                     "type": row["chat_type"],
                     "is_forum": row["chat_is_forum"],
+                    "account_deleted_at": row.get("chat_account_deleted_at"),
                     "avatar_url": _chat_avatar_url(
                         row["chat_id"],
                         row["chat_type"],
@@ -5486,6 +5487,7 @@ async def admin_list_chats(user: UserContext = Depends(require_master)):
                 "username": c.get("username"),
                 "first_name": c.get("first_name"),
                 "last_name": c.get("last_name"),
+                "account_deleted_at": c.get("account_deleted_at"),
             }
         )
     return {"chats": result}

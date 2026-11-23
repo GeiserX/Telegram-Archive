@@ -199,10 +199,14 @@ All of these need any login.
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
 | `GET /api/accounts` | None | `{accounts: [{id, label}]}`. `label` is `TG_ACCOUNT_<N>_LABEL` when set; otherwise `default` for the first account and `account<N>` for the others. |
-| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url`, `accounts` and `preview`, its newest message for the list's second line. See [The chat list preview](#the-chat-list-preview). |
+| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url`, `accounts`, `account_deleted_at` and `preview`, its newest message for the list's second line. See [The chat list preview](#the-chat-list-preview) and [Deleted accounts](#deleted-accounts). |
 | `GET /api/chats/{chat_ref}` | None | One chat in the shape of a list row, without `preview` |
 | `GET /api/folders` | None | `{folders}` with chat counts limited to what the caller can see |
 | `GET /api/archived/count` | None | `{count}` |
+
+### Deleted accounts
+
+When a contact deletes their Telegram account, the archive keeps the names, username and phone it had for that person. `account_deleted_at` on a chat is the time, in UTC, when the archive first saw Telegram report the account behind a private chat as deleted. It is set once and never cleared. It is `null` for every other chat. A deleted account whose names an older release already erased has no name left, and keeps `null` here until the next backup or listener update sees the account. Each message from `GET /api/chats/{chat_ref}/messages`, `/pinned` and `/messages/by-date` carries the same fact for its sender as `sender_account_deleted_at`, beside the sender's `first_name`, `last_name` and `username`.
 
 ### The chat list preview
 
@@ -332,7 +336,7 @@ All of these need any login. Results cover only chats the caller can see.
 | `GET /api/tags/{tag}` | `scope` is `chat`, `mine` or `all`, default `all`. `chat_ref`, required with `scope=chat`. `limit` default 50, up to 200. `offset`. | `{tag, results, has_more, truncated}` |
 | `GET /api/changes` | `since` ISO, inclusive. `cursor` from `next_cursor`, to page older. `before` ISO, exclusive (older date-only bound). `limit` default 50, up to 200. `chat_ref` for one chat. `reactions=true` adds reactions taken back. | `{changes, next_cursor, next_before}` |
 
-`/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum` and `avatar_url`.
+`/api/search/messages` is a word-prefix full-text search across chats, newest first. Each result has `id`, `date`, `text`, `sender_name`, `sender_account_id`, `is_deleted`, `topic_title`, `matched_in` and a `chat` object with `ref`, `title`, `first_name`, `last_name`, `username`, `type`, `is_forum`, `account_deleted_at` and `avatar_url`.
 
 `/api/tags/{tag}` takes a `#hashtag` or a `$CASHTAG` and answers 400 for anything else. Encode `#` as `%23` in the URL:
 
@@ -613,7 +617,7 @@ Every route here is master only, and every write lands in the audit log. The con
 | `POST /api/admin/viewers` | Create an account |
 | `PUT /api/admin/viewers/{id}` | Change an account and end its sessions |
 | `DELETE /api/admin/viewers/{id}` | Delete an account and end its sessions |
-| `GET /api/admin/chats` | Every chat, for picking grants: `{chats: [{id, ref, account_id, title, type, username, first_name, last_name}]}` |
+| `GET /api/admin/chats` | Every chat, for picking grants: `{chats: [{id, ref, account_id, title, type, username, first_name, last_name, account_deleted_at}]}` |
 
 The create body:
 

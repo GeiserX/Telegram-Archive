@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+- **A deleted Telegram account keeps its archived name.** When a contact deleted their account, the next backup or listener update sent it with no first name, last name or username. That snapshot erased the names the archive had. The private chat lost its name and dropped out of chat search. The archive now keeps the names, username and phone it had. Chat search also matches the full "first last" name and a username typed with a leading `@`. Thanks to @skywinder. (#636)
+- **The archive records that an account was deleted, and the viewer shows it.** Since #636 a deleted contact kept its name, but it looked like a live contact. Migration 043 adds `account_deleted_at` to chats and users: the time the archive first saw Telegram report the account deleted. It is set once and never cleared. The viewer shows the kept name with a "Deleted account" tag in the chat list and "deleted account" in the chat header. A deleted sender in a group gets the same tag beside the name. A chat whose names an older snapshot already erased still reads as a deleted account. The API carries the field on chats as `account_deleted_at` and on messages as `sender_account_deleted_at`. It is `null` for a live account. See [Deleted accounts](reference/api.md#deleted-accounts). (#PR_NUMBER)
+- **An import no longer writes the export's display name over the names the archive captured.** `telegram-archive import` wrote each sender's display name into the user's first name, or an empty string for a deleted account. It also wrote the chat's export name into its title or first name. It now fills a name only when the archive has none. (#PR_NUMBER)
+
 ## [9.8.0] - 2026-11-12
 
 A chat can be exported from the command line, and the project has a new logo. No migration. Docker deployments only need the new pins.

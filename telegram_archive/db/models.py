@@ -139,6 +139,10 @@ class Chat(Base):
     # are shared across accounts, but a photo set for a contact is visible to
     # the account that set it only, so the viewer serves this one first.
     avatar_photo_id: Mapped[int | None] = mapped_column(BigInteger)
+    # When the archive first saw the account behind a private chat reported as
+    # deleted by Telegram (043). Set once and never cleared; the names it held
+    # before stay in first_name/last_name/username.
+    account_deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()
@@ -443,6 +447,9 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(50))
     is_bot: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
+    # When the archive first saw this user reported as deleted by Telegram
+    # (043). Set once and never cleared, like chats.account_deleted_at.
+    account_deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()

@@ -67,6 +67,7 @@ from .message_utils import (
     ShortDownloadError,
     _photo_size_bytes,
     _text_with_entities_to_string,
+    account_deleted,
     broken_shared_link_target,
     build_media_filename,
     chat_title_for_log,
@@ -5399,6 +5400,9 @@ class TelegramBackup:
             chat_data["last_name"] = entity.last_name
             chat_data["username"] = entity.username
             chat_data["phone"] = entity.phone
+            # A deleted account comes back with no names; the flag records the
+            # deletion and keeps the names the archive already has.
+            chat_data["account_deleted"] = account_deleted(entity)
         elif isinstance(entity, Chat):
             chat_data["type"] = "group"
             chat_data["title"] = entity.title
@@ -5441,6 +5445,7 @@ class TelegramBackup:
             sender_data["last_name"],
             sender_data["phone"],
             sender_data["is_bot"],
+            sender_data["account_deleted"],
         )
         cache = getattr(self, "_sender_cache", None)
         if cache is None:
@@ -5464,6 +5469,7 @@ class TelegramBackup:
             "last_name": user.last_name,
             "phone": user.phone,
             "is_bot": user.bot,
+            "account_deleted": account_deleted(user),
         }
 
     def _get_chat_name(self, entity) -> str:
