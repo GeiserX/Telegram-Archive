@@ -74,3 +74,32 @@ async def test_author_identity_survives_empty_but_accepts_named_updates(real_ada
         user = (await session.execute(select(User).where(User.id == 123))).scalar_one()
         assert user.first_name == "New"
         assert user.username is None
+
+
+async def _user_row(adapter, user_id):
+    async with adapter.db_manager.async_session_factory() as session:
+        user = (await session.execute(select(User).where(User.id == user_id))).scalar_one()
+        return (user.first_name, user.last_name, user.username, user.phone)
+
+
+async def test_deleted_snapshot_keeps_archived_phone(real_adapter):
+    named = {"id": 140, "first_name": "Sample", "last_name": "Person", "username": "sample_user", "phone": "15550100"}
+    deleted = {"id": 140, "first_name": None, "last_name": None, "username": None, "phone": None}
+    await real_adapter.upsert_chat({**named, "type": "private"}, account_id=1)
+    await real_adapter.upsert_chat({**deleted, "type": "private"}, account_id=1)
+    assert (await real_adapter.get_all_chats(account_id=1))[0]["phone"] == "15550100"
+    await real_adapter.upsert_user(named)
+    await real_adapter.upsert_user(deleted)
+    assert await _user_row(real_adapter, 140) == ("Sample", "Person", "sample_user", "15550100")
+
+
+async def test_unnamed_snapshot_with_phone_still_updates_phone(real_adapter):
+    named = {"id": 141, "first_name": "Sample", "last_name": "Person", "username": "sample_user", "phone": "15550100"}
+    unnamed = {"id": 141, "first_name": "", "last_name": "", "username": "", "phone": "15550199"}
+    await real_adapter.upsert_chat({**named, "type": "private"}, account_id=1)
+    await real_adapter.upsert_chat({**unnamed, "type": "private"}, account_id=1)
+    row = (await real_adapter.get_all_chats(account_id=1))[0]
+    assert (row["first_name"], row["phone"]) == ("Sample", "15550199")
+    await real_adapter.upsert_user(named)
+    await real_adapter.upsert_user(unnamed)
+    assert await _user_row(real_adapter, 141) == ("Sample", "Person", "sample_user", "15550199")

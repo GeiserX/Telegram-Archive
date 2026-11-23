@@ -2185,6 +2185,16 @@ class DatabaseAdapter:
         # to empty values. A partial update can still clear an individual field.
         return all(key in data and not data[key] for key in ("first_name", "last_name", "username"))
 
+    @classmethod
+    def _keep_archived_identity(cls, data, update_set):
+        # A deleted account also arrives without a phone. Keep the archived
+        # phone with the names; a snapshot that does carry a phone still sets it.
+        if cls._empty_user_identity(data):
+            for key in ("first_name", "last_name", "username"):
+                update_set.pop(key)
+            if not data.get("phone"):
+                update_set.pop("phone", None)
+
     @retry_on_locked()
     async def upsert_chat(self, chat_data: dict[str, Any], *, account_id: int) -> int:
         """Insert or update a chat record.
@@ -2235,9 +2245,8 @@ class DatabaseAdapter:
             ):
                 if field in chat_data:
                     update_set[field] = values[field]
-            if chat_data.get("type") == "private" and self._empty_user_identity(chat_data):
-                for key in ("first_name", "last_name", "username"):
-                    update_set.pop(key)
+            if chat_data.get("type") == "private":
+                self._keep_archived_identity(chat_data, update_set)
             # Only update is_forum/is_archived if explicitly provided
             if "is_forum" in chat_data:
                 update_set["is_forum"] = values["is_forum"]
@@ -2713,9 +2722,7 @@ class DatabaseAdapter:
             insert_fn = sqlite_insert if self._is_sqlite else pg_insert
             stmt = insert_fn(User).values(**values)
             update_set = {key: getattr(stmt.excluded, key) for key in values if key != "id"}
-            if self._empty_user_identity(user_data):
-                for key in ("first_name", "last_name", "username"):
-                    update_set.pop(key)
+            self._keep_archived_identity(user_data, update_set)
             stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
 
             await session.execute(stmt)
