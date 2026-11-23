@@ -567,7 +567,14 @@ class TestTelethonContract:
         client.session.close()
 
     def test_telethon_version_is_the_one_this_was_checked_against(self):
-        assert telethon.__version__ == "1.45.0", (
+        # 1.46.0 checked against 1.45.0 (#639): a layer bump (229 to 233). Outside
+        # telethon/tl and version.py, only client/messages.py changed (new
+        # send_message and forward_messages arguments). telegrambaseclient.py
+        # (connect, _switch_dc, _get_dc, exported senders), auth.py (_on_login),
+        # updates.py (catch_up), users.py (_call), _updates/ (MessageBox.load,
+        # try_begin_get_diff, apply_*difference), sessions/ and network/ are
+        # byte-identical. No TL class this repo uses lost a field.
+        assert telethon.__version__ == "1.46.0", (
             "Telethon changed: re-read telegram_archive/update_state.py against the new "
             "connect(), _on_login and MessageBox.load before bumping this pin (#611)"
         )
