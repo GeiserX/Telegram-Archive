@@ -47,6 +47,10 @@ const erased = { type: 'private', first_name: null, last_name: null, username: n
 assert.equal(getChatName(erased), 'Deleted Account');
 assert.equal(isDeletedChat(erased), true);
 assert.equal(isKeptDeletedAccount(erased), false);
+// Erased by an older snapshot, then flagged: the name already says it, so no tag.
+const erasedFlagged = { ...erased, account_deleted_at: '2026-01-02T03:04:05' };
+assert.equal(isDeletedChat(erasedFlagged), true);
+assert.equal(isKeptDeletedAccount(erasedFlagged), false);
 
 const live = { type: 'private', first_name: 'Sample' };
 assert.equal(isDeletedChat(live), false);

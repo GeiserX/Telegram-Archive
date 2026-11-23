@@ -104,6 +104,15 @@ async def test_flag_is_per_account(real_adapter):
     assert (await _chat(real_adapter, account_id=2))["account_deleted_at"] is None
 
 
+async def test_flag_on_a_group_or_channel_records_nothing(real_adapter):
+    # Only a person can be a deleted account, so the column is written for private chats only.
+    for chat_id, chat_type in ((-1000000000801, "group"), (-1000000000802, "channel")):
+        await real_adapter.upsert_chat(
+            {"id": chat_id, "type": chat_type, "title": "Sample group", "account_deleted": True}, account_id=1
+        )
+        assert (await _chat(real_adapter, chat_id))["account_deleted_at"] is None
+
+
 async def test_user_deletion_is_recorded_once_and_keeps_the_identity(real_adapter):
     named = {"id": 301, "first_name": "Sample", "last_name": "Person", "username": "sample_user", "phone": "15550100"}
     await real_adapter.upsert_user(named)
@@ -283,6 +292,18 @@ async def test_listener_new_message_passes_the_flag_for_chat_and_sender():
     assert db.upsert_user.call_args[0][0]["account_deleted"] is True
 
 
+async def test_listener_chat_refresh_passes_the_flag():
+    # The refresh after a photo or title change reads a fresh entity, so it reports the deletion too.
+    from telethon.tl.types import MessageActionChatEditTitle
+    from test_listener_chat_actions import _build, _event, _service_msg
+
+    for entity, expected in ((User(id=201, deleted=True), True), (User(id=201, first_name="Sample"), False)):
+        listener, handler, db = _build()
+        listener.client.get_entity = AsyncMock(return_value=entity)
+        await handler(_event(_service_msg(MessageActionChatEditTitle(title="New title")), new_title="New title"))
+        assert db.upsert_chat.call_args[0][0]["account_deleted"] is expected
+
+
 # ---------------------------------------------------------------------------
 # Importer: the export's display string never replaces a captured name
 # ---------------------------------------------------------------------------
@@ -356,6 +377,26 @@ async def test_import_names_a_chat_the_archive_has_no_name_for(real_adapter, tmp
     async with real_adapter.db_manager.async_session_factory() as session:
         user = (await session.execute(select(UserRow).where(UserRow.id == 203))).scalar_one()
     assert user.first_name == "Sample"
+
+
+async def test_import_reads_a_whitespace_name_as_blank(real_adapter, tmp_path):
+    await real_adapter.upsert_chat({"id": -1000000000781, "type": "group", "title": "Kept title"}, account_id=1)
+    await real_adapter.upsert_user({"id": 601, "first_name": "   "})
+    chats = [
+        {
+            "name": "   ",
+            "type": "private_supergroup",
+            "id": 781,
+            "messages": [_message(1, "Filled Name", 601), _message(2, None, 602)],
+        }
+    ]
+    await _import(real_adapter, tmp_path, chats)
+    # A whitespace export title is blank, so the archived title stays.
+    assert (await _chat(real_adapter, -1000000000781))["title"] == "Kept title"
+    # A whitespace archived name is no name, so the export fills it.
+    assert (await real_adapter.get_user_by_id(601))["first_name"] == "Filled Name"
+    # A sender the archive does not have is still created, even with no name.
+    assert await real_adapter.get_user_by_id(602) is not None
 
 
 async def _backup_private_dialog(user: User, user_row_error: Exception | None = None):
