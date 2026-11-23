@@ -206,7 +206,7 @@ All of these need any login.
 
 ### Deleted accounts
 
-When a contact deletes their Telegram account, the archive keeps the names, username and phone it had for that person. `account_deleted_at` on a chat is the time, in UTC, when the archive first saw Telegram report the account behind a private chat as deleted. It is set once and never cleared. It is `null` for every other chat. A deleted account whose names an older release already erased has no name left, and keeps `null` here until the next backup or listener update sees the account. Each message from `GET /api/chats/{chat_ref}/messages`, `/pinned` and `/messages/by-date` carries the same fact for its sender as `sender_account_deleted_at`, beside the sender's `first_name`, `last_name` and `username`.
+When a contact deletes their Telegram account, the archive keeps the names, username and phone it had for that person. `account_deleted_at` on a chat is the time, in UTC, when the archive first saw Telegram report the account behind a private chat as deleted. It is set once and never cleared. It is `null` for every other chat. A deleted account whose names an older release already erased has no name left, and keeps `null` here until the next backup or listener update sees the account. Each message from `GET /api/chats/{chat_ref}/messages`, `/pinned` and `/messages/by-date` carries the same fact for its sender as `sender_account_deleted_at`, beside the sender's `first_name`, `last_name` and `username`. A sender's field is set only once the archive has seen that account deleted, for example through a private chat with it. A deleted account sends no new messages, so a group member the archive sees only in that group keeps `null`.
 
 ### The chat list preview
 
