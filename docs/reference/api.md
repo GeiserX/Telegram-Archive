@@ -199,7 +199,7 @@ All of these need any login.
 | Method and path | Parameters | Response |
 |-----------------|-----------|----------|
 | `GET /api/accounts` | None | `{accounts: [{id, label}]}`. `label` is `TG_ACCOUNT_<N>_LABEL` when set; otherwise `default` for the first account and `account<N>` for the others. |
-| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches title, name or username. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url`, `accounts`, `account_deleted_at` and `preview`, its newest message for the list's second line. See [The chat list preview](#the-chat-list-preview) and [Deleted accounts](#deleted-accounts). |
+| `GET /api/chats` | `limit` default 50, 1 to 1000. `offset`. `search` matches the title, the first or last name, the full "first last" name, or the username with or without a leading `@`. `archived` true or false. `folder_id`. | `{chats, total, limit, offset, has_more}`. Each chat carries `ref`, `avatar_url`, `accounts`, `account_deleted_at` and `preview`, its newest message for the list's second line. See [The chat list preview](#the-chat-list-preview) and [Deleted accounts](#deleted-accounts). |
 | `GET /api/chats/{chat_ref}` | None | One chat in the shape of a list row, without `preview` |
 | `GET /api/folders` | None | `{folders}` with chat counts limited to what the caller can see |
 | `GET /api/archived/count` | None | `{count}` |
