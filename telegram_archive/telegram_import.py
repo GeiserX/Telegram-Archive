@@ -1102,9 +1102,9 @@ class TelegramImporter:
             # chats and NULLed the contact's real name on --merge.
             chat_row: dict[str, Any] = {"id": chat_id}
             existing_chat = await self.db.get_chat_by_id(chat_id, account_id=self.account_id)
-            # The export's name is one display string, and blank for a deleted
-            # account. It only fills a chat the archive has no name for; it never
-            # replaces the title or the first and last name the archive captured.
+            # A person's name in the export is one display string, and blank for a
+            # deleted account. It only fills a chat the archive has no name for; it
+            # never replaces the first and last name the archive captured.
             fill_name = not _has_archived_name(existing_chat, ("title", "first_name", "last_name"))
             if export_type == "html_export":
                 # An HTML export names the chat but cannot say what KIND it
@@ -1118,7 +1118,10 @@ class TelegramImporter:
                     chat_row["first_name"] = chat_name
             else:
                 chat_row["type"] = CHAT_TYPE_MAP.get(export_type, "unknown")
-                if fill_name:
+                # A group or channel title is the same kind of value as the
+                # archived one, so a renamed group takes the export's title. Only
+                # a blank title never replaces the archived one.
+                if (isinstance(chat_name, str) and chat_name.strip()) or fill_name:
                     chat_row["title"] = chat_name
             await self.db.upsert_chat(chat_row, account_id=self.account_id)
 

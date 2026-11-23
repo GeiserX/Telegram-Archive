@@ -315,6 +315,7 @@ async def _import(real_adapter, tmp_path, chats):
 async def test_import_keeps_captured_names_and_fills_only_missing_ones(real_adapter, tmp_path):
     await real_adapter.upsert_chat(NAMED, account_id=1)
     await real_adapter.upsert_chat({"id": -1000000000777, "type": "group", "title": "Captured title"}, account_id=1)
+    await real_adapter.upsert_chat({"id": -1000000000779, "type": "group", "title": "Kept title"}, account_id=1)
     await real_adapter.upsert_user({"id": 201, "first_name": "Sample", "last_name": "Person"})
     await real_adapter.upsert_user({"id": 501, "first_name": None})
 
@@ -327,12 +328,16 @@ async def test_import_keeps_captured_names_and_fills_only_missing_ones(real_adap
             "id": 777,
             "messages": [_message(1, "Sample Person", 201), _message(2, "Filled Name", 501), _message(3, "New", 502)],
         },
+        # A blank export title never replaces the archived one.
+        {"name": "", "type": "private_supergroup", "id": 779, "messages": [_message(1, "Sample Person", 201)]},
     ]
     await _import(real_adapter, tmp_path, chats)
 
     chat = await _chat(real_adapter)
     assert (chat["first_name"], chat["last_name"], chat["username"]) == ("Sample", "Person", "sample_user")
-    assert (await _chat(real_adapter, -1000000000777))["title"] == "Captured title"
+    # A group renamed after the last backup takes the export's title.
+    assert (await _chat(real_adapter, -1000000000777))["title"] == "Export title"
+    assert (await _chat(real_adapter, -1000000000779))["title"] == "Kept title"
     sender = await real_adapter.get_user_by_id(201)
     assert (sender["first_name"], sender["last_name"]) == ("Sample", "Person")
     assert (await real_adapter.get_user_by_id(501))["first_name"] == "Filled Name"
