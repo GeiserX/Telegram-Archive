@@ -139,7 +139,7 @@ async def test_a_slice_that_ends_exactly_on_the_oldest_completes_next_run_for_fr
 
 @pytest.mark.asyncio
 async def test_the_budget_is_shared_across_chats(real_adapter):
-    """80 + 80 older messages and a budget of 120: the first chat finishes, the second gets 40."""
+    """80 + 80 older messages and a budget of 200: one request each, and both chats finish."""
     await _seed(real_adapter, CHAT_A, older=range(1, 81))
     await _seed(real_adapter, CHAT_B, older=range(1, 81))
     telegram = FakeTelegram()
@@ -389,6 +389,40 @@ async def test_each_account_keeps_its_own_rotation(real_adapter):
 
 
 @pytest.mark.asyncio
+async def test_a_spent_budget_reads_no_further_chat(real_adapter):
+    """Once the budget is used up, the chats left over wait for the next run without a database read."""
+    for chat_id in (CHAT_A, CHAT_B, CHAT_C):
+        await _seed(real_adapter, chat_id, older=range(1, 101))
+    read_chats = []
+    real_read = real_adapter.get_messages_sync_data
+
+    async def counting_read(chat_id, **kwargs):
+        read_chats.append(chat_id)
+        return await real_read(chat_id, **kwargs)
+
+    with patch.object(real_adapter, "get_messages_sync_data", side_effect=counting_read):
+        await _backup(real_adapter, FakeTelegram(), budget=200)._rotate_full_sync(
+            {CHAT_A: "entity-A", CHAT_B: "entity-B", CHAT_C: "entity-C"}
+        )
+
+    assert read_chats == [CHAT_A, CHAT_B]
+    assert await _state(real_adapter, CHAT_C) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_recording_a_completion_clears_the_cursor(real_adapter):
+    """A finished pass starts the next one at the top, whatever cursor the caller hands in."""
+    await _seed(real_adapter, CHAT_A, older=range(1, 11))
+    await real_adapter.save_full_sync_progress(CHAT_A, account_id=1, cursor=5)
+
+    await real_adapter.save_full_sync_progress(CHAT_A, account_id=1, cursor=3, completed_at=utcnow_naive())
+
+    cursor, completed_at = await _state(real_adapter, CHAT_A)
+    assert cursor is None
+    assert completed_at is not None
+
+
+@pytest.mark.asyncio
 async def test_a_chat_with_no_sync_status_row_gets_one(real_adapter):
     """An imported chat may have messages and no sync_status row yet."""
     await _seed(real_adapter, CHAT_A, older=range(1, 151))
@@ -433,6 +467,12 @@ class TestTheBudget(unittest.TestCase):
         )
         self.assertEqual(
             sync_deletions_edits_older_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits_older_per_run": 0})),
+            0,
+        )
+        self.assertEqual(
+            sync_deletions_edits_older_budget(
+                SimpleNamespace(**{**vars(on), "sync_deletions_edits_older_per_run": -5})
+            ),
             0,
         )
 
