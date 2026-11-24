@@ -178,7 +178,7 @@ Each run still checks the window of every chat. After all chats are backed up, t
 
 Only the chats that this run backed up take part. A chat that leaves `CHAT_IDS` or is excluded keeps its place, and continues from there if it comes back. A chat added to the selection has never finished a check, so it goes first. Each account keeps its own progress per chat.
 
-The progress is saved after every request. If the run stops, for example after a crash, at most 100 messages are checked again. If Telegram asks for a longer wait than the [retry](#rate-limits-and-retries) allows, the rotation stops for this run, and the next run continues from the same message. Any other error stops that chat for this run; the other chats still get the rest of the budget.
+The progress is saved after every request. If the run stops, for example after a crash, at most 100 messages are checked again. If Telegram asks for a longer wait than the [retry](#rate-limits-and-retries) allows, the rotation stops for this run, and the next run continues from the same message. Any other error skips that request's 100 messages, the same way the window pass does: the check carries on below them, the run log counts them, and the next pass of that chat tries them again. A database error for one chat keeps its progress, and the other chats still get the rest of the budget.
 
 The run log ends the step with one line, for example:
 

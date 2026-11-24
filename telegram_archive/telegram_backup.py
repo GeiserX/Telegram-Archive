@@ -3529,7 +3529,7 @@ class TelegramBackup:
             return (completed_at is not None, completed_at or datetime.min, chat_id)
 
         remaining = budget
-        checked = deleted = updated = chats_visited = 0
+        checked = deleted = updated = chats_visited = failed = 0
         completed_now: set[int] = set()
         flood_stopped = False
         for chat_id in sorted(entities, key=rotation_order):
@@ -3538,52 +3538,62 @@ class TelegramBackup:
             entity = entities[chat_id]
             cursor = state.get(chat_id, (None, None))[0]
             limit = remaining
-            local_messages = await self.db.get_messages_sync_data(
-                chat_id, account_id=self.account_id, before=before, below_id=cursor, limit=limit
-            )
             chats_visited += 1
-            chat_failed = False
-            if local_messages:
-                logger.info(
-                    f"  → Older-message rotation: checking {len(local_messages)} older messages"
-                    f"{chat_title_for_log(entity, self.config)}"
+            try:
+                local_messages = await self.db.get_messages_sync_data(
+                    chat_id, account_id=self.account_id, before=before, below_id=cursor, limit=limit
                 )
-                unflagged_ids = await self.db.get_unflagged_edit_ids(chat_id, account_id=self.account_id)
-                local_ids = list(local_messages)
-                for i in range(0, len(local_ids), 100):
-                    batch_ids = local_ids[i : i + 100]
-                    remaining -= len(batch_ids)
-                    try:
-                        batch_deleted, batch_updated = await self._sync_message_batch(
-                            chat_id, entity, batch_ids, local_messages, unflagged_ids
-                        )
-                    except (FloodWaitError, FloodPremiumWaitError) as e:
-                        # Telegram wants a longer pause than the retry absorbs: the
-                        # cursor stays above this batch and the rest waits a run.
-                        logger.warning(
-                            f"  → Older-message rotation stopped for this run: {describe_exception(e)}; "
-                            "it resumes at the same message next run"
-                        )
-                        flood_stopped = True
-                        break
-                    except Exception as e:
-                        # The cursor stays above this batch, so the next run tries
-                        # it again; the other chats still get the rest of the budget.
-                        logger.error(f"  → Older-message rotation: error syncing a batch: {describe_exception(e)}")
-                        chat_failed = True
-                        break
-                    checked += len(batch_ids)
-                    deleted += batch_deleted
-                    updated += batch_updated
-                    await self.db.save_full_sync_progress(chat_id, account_id=self.account_id, cursor=batch_ids[-1])
-            if flood_stopped:
-                break
-            if not chat_failed and len(local_messages) < limit:
-                # Fewer than asked for: the slice reached the chat's oldest message.
-                await self.db.save_full_sync_progress(
-                    chat_id, account_id=self.account_id, cursor=None, completed_at=utcnow_naive()
+                if local_messages:
+                    logger.info(
+                        f"  → Older-message rotation: checking {len(local_messages)} older messages"
+                        f"{chat_title_for_log(entity, self.config)}"
+                    )
+                    unflagged_ids = await self.db.get_unflagged_edit_ids(chat_id, account_id=self.account_id)
+                    local_ids = list(local_messages)
+                    for i in range(0, len(local_ids), 100):
+                        batch_ids = local_ids[i : i + 100]
+                        remaining -= len(batch_ids)
+                        try:
+                            batch_deleted, batch_updated = await self._sync_message_batch(
+                                chat_id, entity, batch_ids, local_messages, unflagged_ids
+                            )
+                        except (FloodWaitError, FloodPremiumWaitError) as e:
+                            # Telegram wants a longer pause than the retry absorbs: the
+                            # cursor stays above this batch and the rest waits a run.
+                            logger.warning(
+                                f"  → Older-message rotation stopped for this run: {describe_exception(e)}; "
+                                "it resumes at the same message next run"
+                            )
+                            flood_stopped = True
+                            break
+                        except Exception as e:
+                            # Transient errors were already retried, so this one is
+                            # likely to repeat. Like the window pass, skip the batch:
+                            # the cursor moves past it and the next pass tries it
+                            # again, so one bad batch cannot stall the chat.
+                            logger.error(
+                                f"  → Older-message rotation: skipped a batch after an error: {describe_exception(e)}"
+                            )
+                            failed += len(batch_ids)
+                        else:
+                            checked += len(batch_ids)
+                            deleted += batch_deleted
+                            updated += batch_updated
+                        await self.db.save_full_sync_progress(chat_id, account_id=self.account_id, cursor=batch_ids[-1])
+                if flood_stopped:
+                    break
+                if len(local_messages) < limit:
+                    # Fewer than asked for: the slice reached the chat's oldest message.
+                    await self.db.save_full_sync_progress(
+                        chat_id, account_id=self.account_id, cursor=None, completed_at=utcnow_naive()
+                    )
+                    completed_now.add(chat_id)
+            except Exception as e:
+                # A database error for one chat keeps its saved progress; the
+                # other chats still get the rest of the budget.
+                logger.error(
+                    f"  → Older-message rotation: error in a chat, its progress is kept: {describe_exception(e)}"
                 )
-                completed_now.add(chat_id)
 
         never_completed = sum(
             1 for chat_id in entities if state.get(chat_id, (None, None))[1] is None and chat_id not in completed_now
@@ -3592,6 +3602,7 @@ class TelegramBackup:
             f"Older-message rotation: re-checked {checked} older messages in {chats_visited} chat(s), "
             f"{deleted} deleted, {updated} updated; {len(completed_now)} chat(s) finished a pass, "
             f"{never_completed} of {len(entities)} have not finished one yet"
+            + (f"; {failed} skipped after errors, re-checked next pass" if failed else "")
             + ("; stopped early after a FloodWait" if flood_stopped else "")
         )
 

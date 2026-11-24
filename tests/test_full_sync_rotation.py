@@ -224,16 +224,90 @@ async def test_a_flood_wait_keeps_the_cursor_and_ends_the_runs_rotation(real_ada
     assert resumed.checked("entity-A")[0] == 150
 
 
+class PoisonTelegram(FakeTelegram):
+    """Fails every request that asks for ``poison``, the way a bug on one odd message would."""
+
+    def __init__(self, poison):
+        super().__init__()
+        self.poison = poison
+
+    async def get_messages(self, entity, ids):
+        if self.poison in ids:
+            self.calls.append((entity, list(ids)))
+            raise RuntimeError("boom")
+        return await super().get_messages(entity, ids)
+
+
 @pytest.mark.asyncio
-async def test_another_error_keeps_the_cursor_and_the_next_chat_still_runs(real_adapter):
+async def test_another_error_skips_the_batch_and_the_chat_carries_on(real_adapter):
+    """Like the window pass: the failed batch is skipped, the rest of the chat is still checked."""
     await _seed(real_adapter, CHAT_A, older=range(1, 251))
     await _seed(real_adapter, CHAT_B, older=range(1, 11))
     telegram = FakeTelegram(fail_on_call=2, error=RuntimeError("boom"))
 
     await _backup(real_adapter, telegram, budget=1000)._rotate_full_sync({CHAT_A: "entity-A", CHAT_B: "entity-B"})
 
-    assert await _state(real_adapter, CHAT_A) == (151, None)
+    assert telegram.checked("entity-A") == list(range(250, 0, -1))
+    assert (await _state(real_adapter, CHAT_A))[1] is not None
     assert len(telegram.checked("entity-B")) == 10
+    assert (await _state(real_adapter, CHAT_B))[1] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_always_fails_does_not_stall_the_chat_across_runs(real_adapter, caplog):
+    """A batch that fails on every run is passed over, so the pass reaches the chat's oldest message."""
+    await _seed(real_adapter, CHAT_A, older=range(1, 501))
+
+    run1 = PoisonTelegram(poison=350)
+    await _backup(real_adapter, run1, budget=200)._rotate_full_sync({CHAT_A: "entity-A"})
+    assert await _state(real_adapter, CHAT_A) == (301, None)
+
+    run2 = PoisonTelegram(poison=350)
+    await _backup(real_adapter, run2, budget=200)._rotate_full_sync({CHAT_A: "entity-A"})
+    assert run2.checked()[0] == 300
+    assert await _state(real_adapter, CHAT_A) == (101, None)
+
+    run3 = PoisonTelegram(poison=350)
+    with caplog.at_level("INFO", logger="telegram_archive.telegram_backup"):
+        await _backup(real_adapter, run3, budget=200)._rotate_full_sync({CHAT_A: "entity-A"})
+    assert run3.checked() == list(range(100, 0, -1))
+    assert (await _state(real_adapter, CHAT_A))[1] is not None
+
+    # The next pass starts at the top and asks for the failed batch again.
+    run4 = PoisonTelegram(poison=350)
+    await _backup(real_adapter, run4, budget=200)._rotate_full_sync({CHAT_A: "entity-A"})
+    assert 350 in run4.checked()
+
+
+@pytest.mark.asyncio
+async def test_the_summary_counts_skipped_messages(real_adapter, caplog):
+    await _seed(real_adapter, CHAT_A, older=range(1, 201))
+
+    with caplog.at_level("INFO", logger="telegram_archive.telegram_backup"):
+        await _backup(real_adapter, PoisonTelegram(poison=150), budget=1000)._rotate_full_sync({CHAT_A: "entity-A"})
+
+    assert "re-checked 100 older messages in 1 chat(s)" in caplog.text
+    assert "100 skipped after errors, re-checked next pass" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_database_error_in_one_chat_keeps_its_progress_and_the_next_chat_runs(real_adapter):
+    await _seed(real_adapter, CHAT_A, older=range(1, 251))
+    await _seed(real_adapter, CHAT_B, older=range(1, 11))
+    await real_adapter.save_full_sync_progress(CHAT_A, account_id=1, cursor=201)
+    backup = _backup(real_adapter, FakeTelegram(), budget=1000)
+    real_read = real_adapter.get_messages_sync_data
+
+    async def failing_read(chat_id, **kwargs):
+        if chat_id == CHAT_A:
+            raise RuntimeError("database gone for this chat")
+        return await real_read(chat_id, **kwargs)
+
+    with patch.object(real_adapter, "get_messages_sync_data", side_effect=failing_read):
+        await backup._rotate_full_sync({CHAT_A: "entity-A", CHAT_B: "entity-B"})
+
+    assert await _state(real_adapter, CHAT_A) == (201, None)
+    assert len(backup.client.checked("entity-B")) == 10
     assert (await _state(real_adapter, CHAT_B))[1] is not None
 
 
