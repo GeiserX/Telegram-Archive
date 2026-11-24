@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.10.0] - 2026-11-24
+
+Older messages can now be re-checked for edits and deletions a slice per run, so a large archive no longer needs one very long full run. Migration 044 runs on start. Docker deployments only need the new pins.
+
 ### Added
 - **Older messages can be re-checked a slice per run.** With `SYNC_DELETIONS_EDITS_DAYS` above 0, edits and deletions of older posts were caught only by a run with `SYNC_DELETIONS_EDITS_DAYS=0`. On a large archive that one run takes many hours, mostly waiting on Telegram's rate limit, and it grows with every chat. `SYNC_DELETIONS_EDITS_OLDER_PER_RUN=N` also re-checks up to N messages older than the window on each run, for each account, shared by its chats. Each request to Telegram counts as 100 of them, so a run makes at most N / 100 requests, rounded up. The chats whose last full check is oldest go first, and a large chat continues on the next run from the message where it stopped. When a chat's check reaches its oldest message, the time is recorded and the chat goes to the back of the line. A request that fails with an error other than a FloodWait is skipped and tried again on the chat's next check. So every archived message is re-checked over several runs, without one very long run and without changing `CHAT_IDS`. Telegram takes about 100 seconds per 1000 messages. The default, `0`, changes nothing. Migration 044 adds the progress to `sync_status`. See [Re-checking older messages over several runs](configuration/schedule.md#sync-rotation). Thanks to @Scalpinho for #641.
 
