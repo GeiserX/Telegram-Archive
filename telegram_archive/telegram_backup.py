@@ -3552,7 +3552,10 @@ class TelegramBackup:
                     local_ids = list(local_messages)
                     for i in range(0, len(local_ids), 100):
                         batch_ids = local_ids[i : i + 100]
-                        remaining -= len(batch_ids)
+                        # Telegram limits requests, not ids: a short batch costs a
+                        # full one, so many small chats cannot stretch a run past
+                        # budget / 100 requests.
+                        remaining -= max(len(batch_ids), 100)
                         try:
                             batch_deleted, batch_updated = await self._sync_message_batch(
                                 chat_id, entity, batch_ids, local_messages, unflagged_ids

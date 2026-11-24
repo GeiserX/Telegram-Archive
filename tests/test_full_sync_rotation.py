@@ -144,12 +144,41 @@ async def test_the_budget_is_shared_across_chats(real_adapter):
     await _seed(real_adapter, CHAT_B, older=range(1, 81))
     telegram = FakeTelegram()
 
+    await _backup(real_adapter, telegram, budget=200)._rotate_full_sync({CHAT_A: "entity-A", CHAT_B: "entity-B"})
+
+    assert len(telegram.checked("entity-A")) == 80
+    assert telegram.checked("entity-B") == list(range(80, 0, -1))
+    assert (await _state(real_adapter, CHAT_A))[1] is not None
+    assert (await _state(real_adapter, CHAT_B))[1] is not None
+
+
+@pytest.mark.asyncio
+async def test_each_request_costs_a_full_batch_of_budget(real_adapter):
+    """80 + 80 older messages and a budget of 120: the first chat's one request costs 100, the second gets 20."""
+    await _seed(real_adapter, CHAT_A, older=range(1, 81))
+    await _seed(real_adapter, CHAT_B, older=range(1, 81))
+    telegram = FakeTelegram()
+
     await _backup(real_adapter, telegram, budget=120)._rotate_full_sync({CHAT_A: "entity-A", CHAT_B: "entity-B"})
 
     assert len(telegram.checked("entity-A")) == 80
-    assert telegram.checked("entity-B") == list(range(80, 40, -1))
-    assert (await _state(real_adapter, CHAT_A))[1] is not None
-    assert await _state(real_adapter, CHAT_B) == (41, None)
+    assert telegram.checked("entity-B") == list(range(80, 60, -1))
+    assert await _state(real_adapter, CHAT_B) == (61, None)
+
+
+@pytest.mark.asyncio
+async def test_many_small_chats_make_no_more_requests_than_the_budget_allows(real_adapter):
+    """Telegram limits requests, not ids: 30 chats of 3 older messages and a budget of 1000 make 10 requests."""
+    chats = {CHAT_A + n: f"entity-{n}" for n in range(30)}
+    for chat_id in chats:
+        await _seed(real_adapter, chat_id, older=range(1, 4))
+    telegram = FakeTelegram()
+
+    await _backup(real_adapter, telegram, budget=1000)._rotate_full_sync(chats)
+
+    assert len(telegram.calls) == 10
+    state = await real_adapter.get_full_sync_rotation(account_id=1)
+    assert sum(1 for chat_id in chats if state.get(chat_id, (None, None))[1] is not None) == 10
 
 
 @pytest.mark.asyncio
@@ -362,12 +391,12 @@ async def test_the_summary_counts_chats_without_naming_them(real_adapter, caplog
     await _seed(real_adapter, CHAT_B, older=range(1, 201))
 
     with caplog.at_level("INFO", logger="telegram_archive.telegram_backup"):
-        await _backup(real_adapter, FakeTelegram(gone={5}), budget=100)._rotate_full_sync(
+        await _backup(real_adapter, FakeTelegram(gone={5}), budget=200)._rotate_full_sync(
             {CHAT_A: "entity-A", CHAT_B: "entity-B"}
         )
 
     assert (
-        "Older-message rotation: re-checked 100 older messages in 2 chat(s), 1 deleted, 0 updated; "
+        "Older-message rotation: re-checked 110 older messages in 2 chat(s), 1 deleted, 0 updated; "
         "1 chat(s) finished a pass, 1 of 2 have not finished one yet"
     ) in caplog.text
     assert str(CHAT_A) not in caplog.text and str(CHAT_B) not in caplog.text
