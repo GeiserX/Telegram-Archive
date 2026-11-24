@@ -811,7 +811,7 @@ class SyncStatus(Base):
     last_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     message_count: Mapped[int] = mapped_column(Integer, default=0)
-    # Rotating full pass of SYNC_DELETIONS_EDITS_FULL_PER_RUN (#641). Progress
+    # Rotating full pass of SYNC_DELETIONS_EDITS_OLDER_PER_RUN (#641). Progress
     # bookkeeping, not observed archive state, so both move in place.
     # full_sync_cursor: the current pass has checked every older message with an
     # id at or above it and continues below it; NULL starts at the newest one.

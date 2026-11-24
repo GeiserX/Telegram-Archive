@@ -1261,7 +1261,7 @@ class TestSchedulerMainLogging:
         mock_config.enable_listener = False
         mock_config.sync_deletions_edits = True
         mock_config.sync_deletions_edits_days = 14.0
-        mock_config.sync_deletions_edits_full_per_run = 20000
+        mock_config.sync_deletions_edits_older_per_run = 20000
 
         with (
             caplog.at_level(logging.WARNING, logger="telegram_archive.scheduler"),

@@ -1,4 +1,4 @@
-"""The rotating full deletion and edit pass, SYNC_DELETIONS_EDITS_FULL_PER_RUN (#641).
+"""The rotating full deletion and edit pass, SYNC_DELETIONS_EDITS_OLDER_PER_RUN (#641).
 
 With SYNC_DELETIONS_EDITS_DAYS above 0 a run re-checks only recent messages.
 The rotation re-checks older messages a budgeted slice per run, over the chats
@@ -23,7 +23,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.types import User
 
 from telegram_archive import telegram_backup
-from telegram_archive.config import Config, sync_deletions_edits_full_budget
+from telegram_archive.config import Config, sync_deletions_edits_older_budget
 from telegram_archive.message_utils import utcnow_naive
 from telegram_archive.telegram_backup import TelegramBackup
 
@@ -59,7 +59,7 @@ def _backup(adapter, telegram, *, budget, account_id=1, days=DAYS, deletion_mode
     backup.config = SimpleNamespace(
         sync_deletions_edits=True,
         sync_deletions_edits_days=days,
-        sync_deletions_edits_full_per_run=budget,
+        sync_deletions_edits_older_per_run=budget,
         deletion_mode=deletion_mode,
         log_chat_titles=False,
     )
@@ -422,25 +422,26 @@ async def test_the_summary_counts_chats_without_naming_them(real_adapter, caplog
 class TestTheBudget(unittest.TestCase):
     def test_it_is_zero_unless_sync_is_on_with_a_window(self):
         on = SimpleNamespace(
-            sync_deletions_edits=True, sync_deletions_edits_days=14.0, sync_deletions_edits_full_per_run=500
+            sync_deletions_edits=True, sync_deletions_edits_days=14.0, sync_deletions_edits_older_per_run=500
         )
-        self.assertEqual(sync_deletions_edits_full_budget(on), 500)
+        self.assertEqual(sync_deletions_edits_older_budget(on), 500)
         self.assertEqual(
-            sync_deletions_edits_full_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits": False})), 0
-        )
-        self.assertEqual(
-            sync_deletions_edits_full_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits_days": 0.0})), 0
+            sync_deletions_edits_older_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits": False})), 0
         )
         self.assertEqual(
-            sync_deletions_edits_full_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits_full_per_run": 0})), 0
+            sync_deletions_edits_older_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits_days": 0.0})), 0
+        )
+        self.assertEqual(
+            sync_deletions_edits_older_budget(SimpleNamespace(**{**vars(on), "sync_deletions_edits_older_per_run": 0})),
+            0,
         )
 
     def test_a_mock_config_reads_as_off(self):
-        self.assertEqual(sync_deletions_edits_full_budget(MagicMock()), 0)
+        self.assertEqual(sync_deletions_edits_older_budget(MagicMock()), 0)
         config = MagicMock()
         config.sync_deletions_edits = True
         config.sync_deletions_edits_days = 14.0
-        self.assertEqual(sync_deletions_edits_full_budget(config), 0)
+        self.assertEqual(sync_deletions_edits_older_budget(config), 0)
 
     def test_off_makes_no_database_call(self):
         for budget, days, sync in ((0, 14.0, True), (500, 0.0, True), (500, 14.0, False)):
@@ -450,7 +451,7 @@ class TestTheBudget(unittest.TestCase):
                 backup.config = SimpleNamespace(
                     sync_deletions_edits=sync,
                     sync_deletions_edits_days=days,
-                    sync_deletions_edits_full_per_run=budget,
+                    sync_deletions_edits_older_per_run=budget,
                 )
                 backup.db = AsyncMock()
                 backup.client = AsyncMock()
@@ -472,32 +473,32 @@ class TestTheSetting(unittest.TestCase):
             return Config()
 
     def test_unset_is_off(self):
-        self.assertEqual(self._config().sync_deletions_edits_full_per_run, 0)
+        self.assertEqual(self._config().sync_deletions_edits_older_per_run, 0)
 
     def test_parses_a_count(self):
         self.assertEqual(
-            self._config(SYNC_DELETIONS_EDITS_FULL_PER_RUN="20000").sync_deletions_edits_full_per_run, 20000
+            self._config(SYNC_DELETIONS_EDITS_OLDER_PER_RUN="20000").sync_deletions_edits_older_per_run, 20000
         )
 
     def test_negative_floored_at_zero(self):
-        self.assertEqual(self._config(SYNC_DELETIONS_EDITS_FULL_PER_RUN="-5").sync_deletions_edits_full_per_run, 0)
+        self.assertEqual(self._config(SYNC_DELETIONS_EDITS_OLDER_PER_RUN="-5").sync_deletions_edits_older_per_run, 0)
 
     def test_non_integer_stops_startup(self):
-        with self.assertRaisesRegex(ValueError, "SYNC_DELETIONS_EDITS_FULL_PER_RUN must be an integer"):
-            self._config(SYNC_DELETIONS_EDITS_FULL_PER_RUN="lots")
+        with self.assertRaisesRegex(ValueError, "SYNC_DELETIONS_EDITS_OLDER_PER_RUN must be an integer"):
+            self._config(SYNC_DELETIONS_EDITS_OLDER_PER_RUN="lots")
 
     def test_banner_names_the_rotation_only_when_it_runs(self):
         config = self._config(
-            SYNC_DELETIONS_EDITS="true", SYNC_DELETIONS_EDITS_DAYS="14", SYNC_DELETIONS_EDITS_FULL_PER_RUN="20000"
+            SYNC_DELETIONS_EDITS="true", SYNC_DELETIONS_EDITS_DAYS="14", SYNC_DELETIONS_EDITS_OLDER_PER_RUN="20000"
         )
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config.log_summary()
-        self.assertIn("SYNC_DELETIONS_EDITS_FULL_PER_RUN=20000", "\n".join(logs.output))
+        self.assertIn("SYNC_DELETIONS_EDITS_OLDER_PER_RUN=20000", "\n".join(logs.output))
 
-        config = self._config(SYNC_DELETIONS_EDITS="true", SYNC_DELETIONS_EDITS_FULL_PER_RUN="20000")
+        config = self._config(SYNC_DELETIONS_EDITS="true", SYNC_DELETIONS_EDITS_OLDER_PER_RUN="20000")
         with self.assertLogs("telegram_archive.config", level="WARNING") as logs:
             config.log_summary()
-        self.assertNotIn("SYNC_DELETIONS_EDITS_FULL_PER_RUN", "\n".join(logs.output))
+        self.assertNotIn("SYNC_DELETIONS_EDITS_OLDER_PER_RUN", "\n".join(logs.output))
 
 
 # --- Wiring in backup_all ----------------------------------------------------------
@@ -529,7 +530,7 @@ class TestBackupAllHandsInOnlyBackedUpChats(unittest.TestCase):
         config.should_backup_chat = MagicMock(return_value=True)
         config.sync_deletions_edits = True
         config.sync_deletions_edits_days = 14.0
-        config.sync_deletions_edits_full_per_run = 500
+        config.sync_deletions_edits_older_per_run = 500
         self.backup.client.start = AsyncMock()
         self.backup.client.get_me = AsyncMock(return_value=MagicMock(id=123))
         self.backup.db.calculate_and_store_statistics = AsyncMock(
@@ -570,7 +571,7 @@ class TestBackupAllHandsInOnlyBackedUpChats(unittest.TestCase):
         self.assertEqual(entities, {CHAT_A: ok.entity, CHAT_C: archived.entity})
 
     def test_off_never_calls_the_rotation(self):
-        self.backup.config.sync_deletions_edits_full_per_run = 0
+        self.backup.config.sync_deletions_edits_older_per_run = 0
         self.backup._backup_dialog = AsyncMock(return_value=0)
         self.backup._get_dialogs = AsyncMock(side_effect=[[self._dialog(CHAT_A)], []])
 

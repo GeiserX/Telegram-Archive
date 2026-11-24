@@ -112,10 +112,10 @@ def sync_deletions_edits_window(config) -> float:
     return days
 
 
-def sync_deletions_edits_full_budget(config) -> int:
+def sync_deletions_edits_older_budget(config) -> int:
     """How many older messages the rotating full pass re-checks per run, or 0 when off.
 
-    SYNC_DELETIONS_EDITS_FULL_PER_RUN (#641) only means something with
+    SYNC_DELETIONS_EDITS_OLDER_PER_RUN (#641) only means something with
     SYNC_DELETIONS_EDITS on and SYNC_DELETIONS_EDITS_DAYS above 0: with no window
     every run already re-reads every message. Test doubles built on MagicMock
     answer any attribute with a mock, which must read as 0, so a mock config
@@ -125,7 +125,7 @@ def sync_deletions_edits_full_budget(config) -> int:
         return 0
     if sync_deletions_edits_window(config) <= 0:
         return 0
-    budget = getattr(config, "sync_deletions_edits_full_per_run", 0)
+    budget = getattr(config, "sync_deletions_edits_older_per_run", 0)
     if isinstance(budget, bool) or not isinstance(budget, int):
         return 0
     return max(0, budget)
@@ -1011,11 +1011,11 @@ class Config:
         # millions of messages takes days. 0 (default) re-reads every stored message.
         self.sync_deletions_edits_days: float = max(0.0, _parse_float_env("SYNC_DELETIONS_EDITS_DAYS", 0.0))
 
-        # SYNC_DELETIONS_EDITS_FULL_PER_RUN: with a window set, also re-check up to
+        # SYNC_DELETIONS_EDITS_OLDER_PER_RUN: with a window set, also re-check up to
         # this many OLDER messages per run, rotating over the chats whose last full
         # pass is oldest (#641). 0 (default) leaves older messages to a run with
         # SYNC_DELETIONS_EDITS_DAYS=0, as before.
-        self.sync_deletions_edits_full_per_run: int = max(0, _parse_int_env("SYNC_DELETIONS_EDITS_FULL_PER_RUN", 0))
+        self.sync_deletions_edits_older_per_run: int = max(0, _parse_int_env("SYNC_DELETIONS_EDITS_OLDER_PER_RUN", 0))
 
         # Media verification mode
         # When enabled, checks all media files on disk and re-downloads missing/corrupted ones
@@ -1338,10 +1338,10 @@ class Config:
                     "SYNC_DELETIONS_EDITS enabled - this will check messages from the last "
                     f"{days:g} days for deletions/edits"
                 )
-                budget = sync_deletions_edits_full_budget(self)
+                budget = sync_deletions_edits_older_budget(self)
                 if budget > 0:
                     logger.warning(
-                        f"SYNC_DELETIONS_EDITS_FULL_PER_RUN={budget} - each run also re-checks up to {budget} "
+                        f"SYNC_DELETIONS_EDITS_OLDER_PER_RUN={budget} - each run also re-checks up to {budget} "
                         "older messages, rotating over the chats whose last full pass is oldest"
                     )
             else:

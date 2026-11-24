@@ -1,7 +1,7 @@
 """Track the rotating full deletion and edit pass per chat, on sync_status.
 
 With SYNC_DELETIONS_EDITS_DAYS above 0 a run re-checks only recent messages.
-SYNC_DELETIONS_EDITS_FULL_PER_RUN (#641) re-checks older messages a slice per
+SYNC_DELETIONS_EDITS_OLDER_PER_RUN (#641) re-checks older messages a slice per
 run, rotating over the chats whose last full pass is oldest. Two columns hold
 where each (account, chat) stands:
 

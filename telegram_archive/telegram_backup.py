@@ -44,7 +44,7 @@ from telethon.utils import get_peer_id
 
 from . import LOGIN_DOCS_URL
 from .avatar_utils import avatar_photo_id, get_avatar_paths
-from .config import AccountConfig, Config, sync_deletions_edits_full_budget, sync_deletions_edits_window
+from .config import AccountConfig, Config, sync_deletions_edits_older_budget, sync_deletions_edits_window
 from .custom_emoji import CUSTOM_EMOJI_MAX_ATTEMPTS, CUSTOM_EMOJI_MAX_PER_RUN, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -1672,7 +1672,7 @@ class TelegramBackup:
             # Rotating full deletion and edit pass over older messages (#641),
             # only over the chats this run backed up. Its progress is saved per
             # batch, and a failure here must never cost the run its folders/stats.
-            if sync_deletions_edits_full_budget(self.config) > 0:
+            if sync_deletions_edits_older_budget(self.config) > 0:
                 rotation_entities: dict[int, object] = {}
                 for dialog in list(filtered_dialogs) + list(archived_to_backup):
                     dialog_chat_id = self._get_marked_id(dialog.entity)
@@ -3502,7 +3502,7 @@ class TelegramBackup:
 
         With SYNC_DELETIONS_EDITS_DAYS above 0 the per-chat pass reads only the
         window; older messages were re-checked only by a run with DAYS=0, which
-        on a large archive takes many hours. SYNC_DELETIONS_EDITS_FULL_PER_RUN
+        on a large archive takes many hours. SYNC_DELETIONS_EDITS_OLDER_PER_RUN
         spreads that full pass over runs: each run re-checks up to that many
         messages posted before the window, shared across chats.
 
@@ -3515,7 +3515,7 @@ class TelegramBackup:
         next time. Each chat is visited once per run, so a budget larger than
         the older messages of every chat gives each a full pass every run.
         """
-        budget = sync_deletions_edits_full_budget(self.config)
+        budget = sync_deletions_edits_older_budget(self.config)
         if budget <= 0 or not entities:
             return
         # Taken after the per-chat window passes, so this bound is a little
