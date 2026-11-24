@@ -1274,7 +1274,7 @@ class TestSchedulerMainLogging:
 
             await main()
 
-        assert "Older messages are re-checked 20000 per run, rotating over the chats" in caplog.text
+        assert "Older messages are re-checked up to 20000 per account per run, rotating over the chats" in caplog.text
         assert "only on a run with SYNC_DELETIONS_EDITS_DAYS=0" not in caplog.text
 
     @pytest.mark.parametrize("days", [0.0, None])

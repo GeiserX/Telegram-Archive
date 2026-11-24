@@ -965,7 +965,7 @@ async def main():
                 budget = sync_deletions_edits_older_budget(config)
                 if budget > 0:
                     logger.warning(
-                        f"   → Older messages are re-checked {budget} per run, rotating over the chats "
+                        f"   → Older messages are re-checked up to {budget} per account per run, rotating over the chats "
                         "(SYNC_DELETIONS_EDITS_OLDER_PER_RUN)"
                     )
                 else:
