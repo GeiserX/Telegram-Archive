@@ -3551,8 +3551,10 @@ class TelegramBackup:
                         f"  → Older-message rotation: checking {len(local_messages)} older messages"
                         f"{chat_title_for_log(entity, self.config)}"
                     )
-                    unflagged_ids = await self.db.get_unflagged_edit_ids(chat_id, account_id=self.account_id)
                     local_ids = list(local_messages)
+                    unflagged_ids = await self.db.get_unflagged_edit_ids(
+                        chat_id, account_id=self.account_id, id_range=(min(local_ids), max(local_ids))
+                    )
                     for i in range(0, len(local_ids), 100):
                         batch_ids = local_ids[i : i + 100]
                         # Telegram limits requests, not ids: a short batch costs a

@@ -453,6 +453,41 @@ async def test_the_summary_counts_chats_without_naming_them(real_adapter, caplog
 # --- Off means today's behaviour --------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_a_capped_or_resumed_read_walks_down_from_the_newest_id(real_adapter):
+    """A LIMIT or an id bound with no window still reads the newest ids first, never an arbitrary slice."""
+    await _seed(real_adapter, CHAT_A, older=range(1, 11))
+
+    assert list(await real_adapter.get_messages_sync_data(CHAT_A, account_id=1, limit=3)) == [10, 9, 8]
+    assert list(await real_adapter.get_messages_sync_data(CHAT_A, account_id=1, below_id=5, limit=2)) == [4, 3]
+    assert list(await real_adapter.get_messages_sync_data(CHAT_A, account_id=1, below_id=4)) == [3, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_the_rotation_reads_unflagged_edits_of_its_slice_only(real_adapter):
+    """The edit-flag lookup covers the slice in hand, not every unflagged edit of a large chat."""
+    await _seed(real_adapter, CHAT_A)
+    edited_at = utcnow_naive() - timedelta(days=99)
+    old_date = utcnow_naive() - timedelta(days=100)
+    rows = [{"id": i, "chat_id": CHAT_A, "date": old_date, "text": "t", "edit_date": edited_at} for i in range(1, 301)]
+    await real_adapter.insert_messages_batch(rows, account_id=1)
+    assert len(await real_adapter.get_unflagged_edit_ids(CHAT_A, account_id=1)) == 300
+    assert await real_adapter.get_unflagged_edit_ids(CHAT_A, account_id=1, id_range=(201, 210)) == set(range(201, 211))
+
+    lookups = []
+    real_lookup = real_adapter.get_unflagged_edit_ids
+
+    async def spying_lookup(chat_id, **kwargs):
+        found = await real_lookup(chat_id, **kwargs)
+        lookups.append(found)
+        return found
+
+    with patch.object(real_adapter, "get_unflagged_edit_ids", side_effect=spying_lookup):
+        await _backup(real_adapter, FakeTelegram(), budget=100)._rotate_full_sync({CHAT_A: "entity-A"})
+
+    assert lookups == [set(range(201, 301))]
+
+
 class TestTheBudget(unittest.TestCase):
     def test_it_is_zero_unless_sync_is_on_with_a_window(self):
         on = SimpleNamespace(

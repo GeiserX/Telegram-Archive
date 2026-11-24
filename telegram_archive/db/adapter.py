@@ -2965,11 +2965,15 @@ class DatabaseAdapter:
                 )
             )
             if since is not None:
-                stmt = stmt.where(Message.date >= since).order_by(Message.id.desc())
+                stmt = stmt.where(Message.date >= since)
             if before is not None:
-                stmt = stmt.where(Message.date < before).order_by(Message.id.desc())
+                stmt = stmt.where(Message.date < before)
             if below_id is not None:
                 stmt = stmt.where(Message.id < below_id)
+            # A filtered or capped read walks down from the newest id: a LIMIT
+            # with no order would return an arbitrary slice.
+            if since is not None or before is not None or below_id is not None or limit is not None:
+                stmt = stmt.order_by(Message.id.desc())
             if limit is not None:
                 stmt = stmt.limit(limit)
             result = await session.execute(stmt)
@@ -3019,13 +3023,18 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
-    async def get_unflagged_edit_ids(self, chat_id: int, *, account_id: int) -> set[int]:
+    async def get_unflagged_edit_ids(
+        self, chat_id: int, *, account_id: int, id_range: tuple[int, int] | None = None
+    ) -> set[int]:
         """IDs of a chat's messages with ``edit_date`` set and no ``edit_hide`` flag.
 
         These rows were archived before migration 034 kept the flag. The sync
         pass fills the flag for them from the message it already fetched when
         the edit_date matches, so a reaction Telegram hid stops showing as an
         edit. The set shrinks to nothing as the flags are filled.
+
+        ``id_range`` (lowest, highest), both inclusive, keeps only the ids of one
+        slice: the rotating older-message pass (#641) reads a slice, not the chat.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(Message.id).where(
@@ -3037,6 +3046,8 @@ class DatabaseAdapter:
                     or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
                 )
             )
+            if id_range is not None:
+                stmt = stmt.where(Message.id.between(id_range[0], id_range[1]))
             result = await session.execute(stmt)
             return {row.id for row in result}
 
