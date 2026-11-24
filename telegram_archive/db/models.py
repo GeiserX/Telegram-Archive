@@ -811,6 +811,14 @@ class SyncStatus(Base):
     last_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     message_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Rotating full pass of SYNC_DELETIONS_EDITS_OLDER_PER_RUN (#641). Progress
+    # bookkeeping, not observed archive state, so both move in place.
+    # full_sync_cursor: the current pass has checked every older message with an
+    # id at or above it and continues below it; NULL starts at the newest one.
+    # full_sync_completed_at: when the last pass reached the chat's oldest
+    # message; NULL for a chat that never finished one, which goes first.
+    full_sync_cursor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    full_sync_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationship
     chat: Mapped[Chat] = relationship("Chat", back_populates="sync_status")

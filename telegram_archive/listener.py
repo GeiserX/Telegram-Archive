@@ -35,7 +35,7 @@ from telethon.tl.types import (
 from telethon.utils import get_peer_id
 
 from .avatar_utils import avatar_photo_id, get_avatar_paths
-from .config import AccountConfig, Config, sync_deletions_edits_window
+from .config import AccountConfig, Config, sync_deletions_edits_older_budget, sync_deletions_edits_window
 from .custom_emoji import CUSTOM_EMOJI_BATCH, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -1542,7 +1542,13 @@ class TelegramListener:
         keeps these messages as they were; only a deletion sweep records them.
         """
         days = sync_deletions_edits_window(self.config)
-        if self.config.sync_deletions_edits is True and days > 0:
+        if self.config.sync_deletions_edits is True and days > 0 and sync_deletions_edits_older_budget(self.config) > 0:
+            recovery = (
+                f"SYNC_DELETIONS_EDITS is on with SYNC_DELETIONS_EDITS_DAYS={days:g}, so the next backup "
+                f"records those posted in the last {days:g} days; older ones when the rotation "
+                "(SYNC_DELETIONS_EDITS_OLDER_PER_RUN) reaches them"
+            )
+        elif self.config.sync_deletions_edits is True and days > 0:
             recovery = (
                 f"SYNC_DELETIONS_EDITS is on with SYNC_DELETIONS_EDITS_DAYS={days:g}, so the next backup "
                 f"records those posted in the last {days:g} days; older ones only on a full pass "

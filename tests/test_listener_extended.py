@@ -3041,6 +3041,25 @@ class TestBlockedDeletionsAreVisible:
         assert "records those posted in the last 14 days" in caplog.text
         assert "older ones only on a full pass (SYNC_DELETIONS_EDITS_DAYS=0)" in caplog.text
 
+    async def test_the_log_names_the_rotation_when_it_reaches_older_posts(self, caplog):
+        """#641: with SYNC_DELETIONS_EDITS_OLDER_PER_RUN older posts are not left to a DAYS=0 run."""
+        listener, handlers, _, config = _make_listener_with_handlers(
+            mass_operation_threshold=1, mass_operation_window_seconds=60
+        )
+        config.sync_deletions_edits = True
+        config.sync_deletions_edits_days = 14.0
+        config.sync_deletions_edits_older_per_run = 20000
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [1, 2]
+
+        with caplog.at_level(logging.WARNING, logger="telegram_archive.listener"):
+            await handlers[events.MessageDeleted](event)
+
+        assert "records those posted in the last 14 days" in caplog.text
+        assert "older ones when the rotation (SYNC_DELETIONS_EDITS_OLDER_PER_RUN) reaches them" in caplog.text
+        assert "SYNC_DELETIONS_EDITS_DAYS=0" not in caplog.text
+
     async def test_no_line_when_nothing_was_blocked(self, caplog):
         _, handlers, _, _ = _make_listener_with_handlers()
         event = MagicMock()

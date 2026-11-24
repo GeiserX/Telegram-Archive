@@ -44,7 +44,7 @@ from telethon.utils import get_peer_id
 
 from . import LOGIN_DOCS_URL
 from .avatar_utils import avatar_photo_id, get_avatar_paths
-from .config import AccountConfig, Config, sync_deletions_edits_window
+from .config import AccountConfig, Config, sync_deletions_edits_older_budget, sync_deletions_edits_window
 from .custom_emoji import CUSTOM_EMOJI_MAX_ATTEMPTS, CUSTOM_EMOJI_MAX_PER_RUN, fetch_custom_emoji
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -1668,6 +1668,20 @@ class TelegramBackup:
             # (#224) — directly after the dialog loops, so a later failure in
             # topics/folders/statistics cannot drop the cursor update.
             await self._finalize_resweep_cycle()
+
+            # Rotating full deletion and edit pass over older messages (#641),
+            # only over the chats this run backed up. Its progress is saved per
+            # batch, and a failure here must never cost the run its folders/stats.
+            if sync_deletions_edits_older_budget(self.config) > 0:
+                rotation_entities: dict[int, object] = {}
+                for dialog in list(filtered_dialogs) + list(archived_to_backup):
+                    dialog_chat_id = self._get_marked_id(dialog.entity)
+                    if dialog_chat_id in backed_up_chat_ids:
+                        rotation_entities.setdefault(dialog_chat_id, dialog.entity)
+                try:
+                    await self._rotate_full_sync(rotation_entities)
+                except Exception as e:
+                    logger.error(f"Older-message rotation failed (resumes next run): {describe_exception(e)}")
 
             # Reconcile group→supergroup migrations (#228): warn (count-only)
             # about tracked groups that migrated out of scope, and — when
@@ -3468,103 +3482,11 @@ class TelegramBackup:
             batch_ids = local_ids[i : i + batch_size]
 
             try:
-                # Fetch current state from Telegram
-                remote_messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch_ids)
-
-                # Telethon buffers one entry per RETURNED message, and its own
-                # comment warns Telegram "may decide to not send" invalid ids at
-                # all on the non-channel path — one omission shifts every later
-                # position, and a positional zip would overwrite message A's
-                # text with message B's or hard-delete a live message. Trust
-                # positions only when the response provably lines up; otherwise
-                # key by id and treat unmatched ids as unknown — a destructive
-                # write never rides an ambiguous signal.
-                aligned = len(remote_messages) == len(batch_ids) and all(
-                    remote_msg is None or remote_msg.id == msg_id
-                    for msg_id, remote_msg in zip(batch_ids, remote_messages)
+                deleted, updated = await self._sync_message_batch(
+                    chat_id, entity, batch_ids, local_messages, unflagged_ids
                 )
-                if aligned:
-                    pairs = list(zip(batch_ids, remote_messages))
-                else:
-                    remote_by_id = {m.id: m for m in remote_messages if m is not None}
-                    pairs = [(msg_id, remote_by_id.get(msg_id)) for msg_id in batch_ids]
-                    unmatched = len(batch_ids) - sum(1 for _, m in pairs if m is not None)
-                    logger.warning(
-                        f"  → Sync response misaligned for a batch ({unmatched} of {len(batch_ids)} ids "
-                        "unmatched) — treating the unmatched ids as unknown this run, no deletions for them"
-                    )
-
-                for msg_id, remote_msg in pairs:
-                    # Check for deletion
-                    if remote_msg is None:
-                        if not aligned:
-                            # Ambiguous: the id was omitted from a misaligned
-                            # response, not confirmed deleted. Retry next run.
-                            continue
-                        if getattr(self.config, "deletion_mode", "soft") == "soft":
-                            # mark_message_deleted defaults deleted_at to now(UTC); this path
-                            # doesn't broadcast, so no need to pass an explicit timestamp.
-                            await self.db.mark_message_deleted(chat_id, msg_id, account_id=self.account_id)
-                        else:
-                            await self.db.delete_message(chat_id, msg_id, account_id=self.account_id)
-                        total_deleted += 1
-                        continue
-
-                    # Check for edits. Telethon delivers tz-aware UTC datetimes
-                    # while the archive stores naive UTC — normalize before
-                    # comparing, otherwise every previously-edited message looks
-                    # changed on every sync pass and pays a pointless locked
-                    # update round-trip.
-                    remote_edit_date = remote_msg.edit_date
-                    if remote_edit_date is not None and remote_edit_date.tzinfo is not None:
-                        remote_edit_date = remote_edit_date.replace(tzinfo=None)
-                    local_edit_date = local_messages[msg_id]
-
-                    if remote_edit_date and remote_edit_date == local_edit_date and msg_id in unflagged_ids:
-                        # Same edit, archived before the flag was kept: fill the
-                        # flag only. Text, edit_date and versions stay as they are.
-                        await self.db.fill_edit_hide(
-                            chat_id,
-                            msg_id,
-                            remote_edit_date,
-                            message_edit_hide(remote_msg),
-                            account_id=self.account_id,
-                        )
-                    elif remote_edit_date and remote_edit_date != local_edit_date:
-                        # An edit may have replaced the photo or file: the old
-                        # media is kept as a version before the text moves, so
-                        # both carry the date the old state began.
-                        media_replaced = await self._keep_replaced_media(remote_msg, chat_id, "sync")
-                        # Update text and edit_date; count only edits the archive
-                        # actually accepted (the adapter re-checks under lock).
-                        outcome = await self._apply_edit(remote_msg, chat_id, "sync", media_changed=media_replaced)
-                        if outcome == "applied":
-                            total_updated += 1
-                        if media_replaced:
-                            await self._download_replaced_media(remote_msg, chat_id)
-
-                    # A poll's votes or closing, or a changed link preview, moves no
-                    # edit_date: the message is in hand, so its state is compared
-                    # with the newest kept on every pass.
-                    await self._keep_snapshots(remote_msg, chat_id, "sync")
-
-                    # Piggyback reaction reconcile (#221): the full message is already
-                    # in hand, so harvest its reactions at zero extra API cost. Skip
-                    # None (extraction failure) and min payloads (partial; may omit the
-                    # account's own reaction → false tombstone). PII: aggregate only.
-                    reactions_obj = getattr(remote_msg, "reactions", None)
-                    if not getattr(reactions_obj, "min", False):
-                        observed = extract_reactions(reactions_obj)
-                        if observed is not None:
-                            await self.db.reconcile_reactions(
-                                msg_id,
-                                chat_id,
-                                observed,
-                                mark_removed=True,
-                                account_id=self.account_id,
-                                source="backup",
-                            )
-
+                total_deleted += deleted
+                total_updated += updated
             except Exception as e:
                 logger.error(f"Error syncing batch for chat: {describe_exception(e)}")
 
@@ -3574,6 +3496,237 @@ class TelegramBackup:
 
         if total_deleted > 0 or total_updated > 0:
             logger.info(f"  → Sync result: {total_deleted} deleted, {total_updated} updated")
+
+    async def _rotate_full_sync(self, entities: dict[int, object]) -> None:
+        """Re-check a budgeted slice of OLDER messages, rotating over chats (#641).
+
+        With SYNC_DELETIONS_EDITS_DAYS above 0 the per-chat pass reads only the
+        window; older messages were re-checked only by a run with DAYS=0, which
+        on a large archive takes many hours. SYNC_DELETIONS_EDITS_OLDER_PER_RUN
+        spreads that full pass over runs: each run re-checks up to that many
+        messages posted before the window, shared across chats.
+
+        ``entities`` maps the chats this run backed up to their entity, so a chat
+        outside CHAT_IDS, excluded, skipped or forbidden is never touched. The
+        chats go in order of their last completed pass, never-completed first.
+        A chat resumes below its saved cursor, which moves after every batch, so
+        a crash or FloodWait loses one batch at most. A chat whose slice reaches
+        its oldest message records the completion and starts over at the top
+        next time. Each chat is visited once per run, so a budget larger than
+        the older messages of every chat gives each a full pass every run.
+        """
+        budget = sync_deletions_edits_older_budget(self.config)
+        if budget <= 0 or not entities:
+            return
+        # Taken after the per-chat window passes, so this bound is a little
+        # later than theirs: messages on the boundary are checked twice rather
+        # than not at all.
+        before = utcnow_naive() - timedelta(days=sync_deletions_edits_window(self.config))
+        state = await self.db.get_full_sync_rotation(account_id=self.account_id)
+
+        def rotation_order(chat_id: int) -> tuple:
+            # Never-completed chats first; within each group a chat in the middle
+            # of a pass goes before one that has not started, so a chat added to
+            # the selection cannot push a half-checked chat back.
+            cursor, completed_at = state.get(chat_id, (None, None))
+            return (completed_at is not None, cursor is None, completed_at or datetime.min, chat_id)
+
+        remaining = budget
+        checked = deleted = updated = chats_visited = failed = 0
+        completed_now: set[int] = set()
+        flood_stopped = False
+        for chat_id in sorted(entities, key=rotation_order):
+            if remaining <= 0:
+                break
+            entity = entities[chat_id]
+            cursor = state.get(chat_id, (None, None))[0]
+            limit = remaining
+            chats_visited += 1
+            try:
+                local_messages = await self.db.get_messages_sync_data(
+                    chat_id, account_id=self.account_id, before=before, below_id=cursor, limit=limit
+                )
+                if local_messages:
+                    logger.info(
+                        f"  → Older-message rotation: checking {len(local_messages)} older messages"
+                        f"{chat_title_for_log(entity, self.config)}"
+                    )
+                    local_ids = list(local_messages)
+                    unflagged_ids = await self.db.get_unflagged_edit_ids(
+                        chat_id, account_id=self.account_id, id_range=(min(local_ids), max(local_ids))
+                    )
+                    for i in range(0, len(local_ids), 100):
+                        batch_ids = local_ids[i : i + 100]
+                        # Telegram limits requests, not ids: a short batch costs a
+                        # full one, so many small chats cannot stretch a run past
+                        # budget / 100 requests.
+                        remaining -= max(len(batch_ids), 100)
+                        try:
+                            batch_deleted, batch_updated = await self._sync_message_batch(
+                                chat_id, entity, batch_ids, local_messages, unflagged_ids
+                            )
+                        except (FloodWaitError, FloodPremiumWaitError) as e:
+                            # Telegram wants a longer pause than the retry absorbs: the
+                            # cursor stays above this batch and the rest waits a run.
+                            logger.warning(
+                                f"  → Older-message rotation stopped for this run: {describe_exception(e)}; "
+                                "it resumes at the same message next run"
+                            )
+                            flood_stopped = True
+                            break
+                        except Exception as e:
+                            # Transient errors were already retried, so this one is
+                            # likely to repeat. Like the window pass, skip the batch:
+                            # the cursor moves past it and the next pass tries it
+                            # again, so one bad batch cannot stall the chat.
+                            logger.error(
+                                f"  → Older-message rotation: skipped a batch after an error: {describe_exception(e)}"
+                            )
+                            failed += len(batch_ids)
+                        else:
+                            checked += len(batch_ids)
+                            deleted += batch_deleted
+                            updated += batch_updated
+                        await self.db.save_full_sync_progress(chat_id, account_id=self.account_id, cursor=batch_ids[-1])
+                if flood_stopped:
+                    break
+                if len(local_messages) < limit:
+                    # Fewer than asked for: the slice reached the chat's oldest message.
+                    await self.db.save_full_sync_progress(
+                        chat_id, account_id=self.account_id, cursor=None, completed_at=utcnow_naive()
+                    )
+                    completed_now.add(chat_id)
+            except Exception as e:
+                # A database error for one chat keeps its saved progress; the
+                # other chats still get the rest of the budget.
+                logger.error(
+                    f"  → Older-message rotation: error in a chat, its progress is kept: {describe_exception(e)}"
+                )
+
+        never_completed = sum(
+            1 for chat_id in entities if state.get(chat_id, (None, None))[1] is None and chat_id not in completed_now
+        )
+        logger.info(
+            f"Older-message rotation: re-checked {checked} older messages in {chats_visited} chat(s), "
+            f"{deleted} deleted, {updated} updated; {len(completed_now)} chat(s) finished a pass, "
+            f"{never_completed} of {len(entities)} have not finished one yet"
+            + (f"; {failed} skipped after errors, re-checked next pass" if failed else "")
+            + ("; stopped early after a FloodWait" if flood_stopped else "")
+        )
+
+    async def _sync_message_batch(
+        self,
+        chat_id: int,
+        entity,
+        batch_ids: list[int],
+        local_messages: dict,
+        unflagged_ids: set[int],
+    ) -> tuple[int, int]:
+        """Check one batch of up to 100 stored ids against Telegram: ``(deleted, updated)``.
+
+        The body of the deletion and edit sync, shared by the per-chat pass and
+        the rotating full pass (#641). Raises when the fetch fails; the caller
+        decides whether to skip the batch or stop.
+        """
+        deleted = 0
+        updated = 0
+        # Fetch current state from Telegram
+        remote_messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch_ids)
+
+        # Telethon buffers one entry per RETURNED message, and its own
+        # comment warns Telegram "may decide to not send" invalid ids at
+        # all on the non-channel path — one omission shifts every later
+        # position, and a positional zip would overwrite message A's
+        # text with message B's or hard-delete a live message. Trust
+        # positions only when the response provably lines up; otherwise
+        # key by id and treat unmatched ids as unknown — a destructive
+        # write never rides an ambiguous signal.
+        aligned = len(remote_messages) == len(batch_ids) and all(
+            remote_msg is None or remote_msg.id == msg_id for msg_id, remote_msg in zip(batch_ids, remote_messages)
+        )
+        if aligned:
+            pairs = list(zip(batch_ids, remote_messages))
+        else:
+            remote_by_id = {m.id: m for m in remote_messages if m is not None}
+            pairs = [(msg_id, remote_by_id.get(msg_id)) for msg_id in batch_ids]
+            unmatched = len(batch_ids) - sum(1 for _, m in pairs if m is not None)
+            logger.warning(
+                f"  → Sync response misaligned for a batch ({unmatched} of {len(batch_ids)} ids "
+                "unmatched) — treating the unmatched ids as unknown this run, no deletions for them"
+            )
+
+        for msg_id, remote_msg in pairs:
+            # Check for deletion
+            if remote_msg is None:
+                if not aligned:
+                    # Ambiguous: the id was omitted from a misaligned
+                    # response, not confirmed deleted. Retry next run.
+                    continue
+                if getattr(self.config, "deletion_mode", "soft") == "soft":
+                    # mark_message_deleted defaults deleted_at to now(UTC); this path
+                    # doesn't broadcast, so no need to pass an explicit timestamp.
+                    await self.db.mark_message_deleted(chat_id, msg_id, account_id=self.account_id)
+                else:
+                    await self.db.delete_message(chat_id, msg_id, account_id=self.account_id)
+                deleted += 1
+                continue
+
+            # Check for edits. Telethon delivers tz-aware UTC datetimes
+            # while the archive stores naive UTC — normalize before
+            # comparing, otherwise every previously-edited message looks
+            # changed on every sync pass and pays a pointless locked
+            # update round-trip.
+            remote_edit_date = remote_msg.edit_date
+            if remote_edit_date is not None and remote_edit_date.tzinfo is not None:
+                remote_edit_date = remote_edit_date.replace(tzinfo=None)
+            local_edit_date = local_messages[msg_id]
+
+            if remote_edit_date and remote_edit_date == local_edit_date and msg_id in unflagged_ids:
+                # Same edit, archived before the flag was kept: fill the
+                # flag only. Text, edit_date and versions stay as they are.
+                await self.db.fill_edit_hide(
+                    chat_id,
+                    msg_id,
+                    remote_edit_date,
+                    message_edit_hide(remote_msg),
+                    account_id=self.account_id,
+                )
+            elif remote_edit_date and remote_edit_date != local_edit_date:
+                # An edit may have replaced the photo or file: the old
+                # media is kept as a version before the text moves, so
+                # both carry the date the old state began.
+                media_replaced = await self._keep_replaced_media(remote_msg, chat_id, "sync")
+                # Update text and edit_date; count only edits the archive
+                # actually accepted (the adapter re-checks under lock).
+                outcome = await self._apply_edit(remote_msg, chat_id, "sync", media_changed=media_replaced)
+                if outcome == "applied":
+                    updated += 1
+                if media_replaced:
+                    await self._download_replaced_media(remote_msg, chat_id)
+
+            # A poll's votes or closing, or a changed link preview, moves no
+            # edit_date: the message is in hand, so its state is compared
+            # with the newest kept on every pass.
+            await self._keep_snapshots(remote_msg, chat_id, "sync")
+
+            # Piggyback reaction reconcile (#221): the full message is already
+            # in hand, so harvest its reactions at zero extra API cost. Skip
+            # None (extraction failure) and min payloads (partial; may omit the
+            # account's own reaction → false tombstone). PII: aggregate only.
+            reactions_obj = getattr(remote_msg, "reactions", None)
+            if not getattr(reactions_obj, "min", False):
+                observed = extract_reactions(reactions_obj)
+                if observed is not None:
+                    await self.db.reconcile_reactions(
+                        msg_id,
+                        chat_id,
+                        observed,
+                        mark_removed=True,
+                        account_id=self.account_id,
+                        source="backup",
+                    )
+
+        return deleted, updated
 
     def _ensure_resweep_state(self) -> None:
         """Lazy-init the per-run re-sweep pacing/deferral state (#224).

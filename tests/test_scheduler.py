@@ -1251,6 +1251,32 @@ class TestSchedulerMainLogging:
         assert "SYNC_DELETIONS_EDITS: ENABLED (messages from the last 14 days)" in caplog.text
         assert "re-check ALL messages" not in caplog.text
 
+    async def test_main_banner_names_the_rotation(self, caplog):
+        """#641: with a full-pass budget the banner says older messages rotate, not wait for DAYS=0."""
+        mock_config = MagicMock()
+        mock_config.schedule = "0 */6 * * *"
+        mock_config.backup_path = "/data/backups"
+        mock_config.download_media = True
+        mock_config.chat_types = ["private"]
+        mock_config.enable_listener = False
+        mock_config.sync_deletions_edits = True
+        mock_config.sync_deletions_edits_days = 14.0
+        mock_config.sync_deletions_edits_older_per_run = 20000
+
+        with (
+            caplog.at_level(logging.WARNING, logger="telegram_archive.scheduler"),
+            patch("telegram_archive.scheduler.signal.signal"),
+            patch("telegram_archive.config.Config", return_value=mock_config),
+            patch("telegram_archive.config.setup_logging"),
+            patch("telegram_archive.scheduler.BackupScheduler", return_value=AsyncMock()),
+        ):
+            from telegram_archive.scheduler import main
+
+            await main()
+
+        assert "Older messages are re-checked up to 20000 per account per run, rotating over the chats" in caplog.text
+        assert "only on a run with SYNC_DELETIONS_EDITS_DAYS=0" not in caplog.text
+
     @pytest.mark.parametrize("days", [0.0, None])
     async def test_main_banner_without_window_is_unchanged(self, caplog, days):
         """#608: DAYS=0 (or a MagicMock config with no number) keeps the ALL-messages banner."""

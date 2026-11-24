@@ -919,7 +919,7 @@ async def main():
     """Main entry point for the scheduler."""
     try:
         # Load configuration
-        from .config import Config, setup_logging, sync_deletions_edits_window
+        from .config import Config, setup_logging, sync_deletions_edits_older_budget, sync_deletions_edits_window
 
         config = Config()
         setup_logging(config)
@@ -962,7 +962,14 @@ async def main():
             days = sync_deletions_edits_window(config)
             if days > 0:
                 logger.warning(f"⚠️  SYNC_DELETIONS_EDITS: ENABLED (messages from the last {days:g} days)")
-                logger.warning("   → Older messages are re-checked only on a run with SYNC_DELETIONS_EDITS_DAYS=0")
+                budget = sync_deletions_edits_older_budget(config)
+                if budget > 0:
+                    logger.warning(
+                        f"   → Older messages are re-checked up to {budget} per account per run, rotating over the chats "
+                        "(SYNC_DELETIONS_EDITS_OLDER_PER_RUN)"
+                    )
+                else:
+                    logger.warning("   → Older messages are re-checked only on a run with SYNC_DELETIONS_EDITS_DAYS=0")
             else:
                 logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
                 logger.warning("   → Will re-check ALL messages for edits/deletions each run")

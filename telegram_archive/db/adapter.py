@@ -2935,12 +2935,24 @@ class DatabaseAdapter:
             return self._message_to_dict(message) if message else None
 
     async def get_messages_sync_data(
-        self, chat_id: int, *, account_id: int, since: datetime | None = None
+        self,
+        chat_id: int,
+        *,
+        account_id: int,
+        since: datetime | None = None,
+        before: datetime | None = None,
+        below_id: int | None = None,
+        limit: int | None = None,
     ) -> dict[int, str | None]:
         """Get message IDs and their edit dates for sync checking.
 
         ``since`` keeps only messages posted at or after it, highest id first
         (SYNC_DELETIONS_EDITS_DAYS, #608). None returns every stored message.
+
+        ``before`` is the other side of that window: only messages posted
+        before it, highest id first, for the rotating full pass (#641).
+        ``below_id`` resumes that pass under its cursor (ids strictly below it)
+        and ``limit`` caps the slice to the run's remaining budget.
         """
         async with self.db_manager.async_session_factory() as session:
             # Exclude soft-deleted rows so sync doesn't re-check them. The is_(None) arm is
@@ -2953,17 +2965,76 @@ class DatabaseAdapter:
                 )
             )
             if since is not None:
-                stmt = stmt.where(Message.date >= since).order_by(Message.id.desc())
+                stmt = stmt.where(Message.date >= since)
+            if before is not None:
+                stmt = stmt.where(Message.date < before)
+            if below_id is not None:
+                stmt = stmt.where(Message.id < below_id)
+            # A filtered or capped read walks down from the newest id: a LIMIT
+            # with no order would return an arbitrary slice.
+            if since is not None or before is not None or below_id is not None or limit is not None:
+                stmt = stmt.order_by(Message.id.desc())
+            if limit is not None:
+                stmt = stmt.limit(limit)
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
 
-    async def get_unflagged_edit_ids(self, chat_id: int, *, account_id: int) -> set[int]:
+    async def get_full_sync_rotation(self, *, account_id: int) -> dict[int, tuple[int | None, datetime | None]]:
+        """``{chat_id: (full_sync_cursor, full_sync_completed_at)}`` of one account (#641).
+
+        Every sync_status row of the account; the caller keeps the chats its run
+        backs up. A chat with no row has never started a pass.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(SyncStatus.chat_id, SyncStatus.full_sync_cursor, SyncStatus.full_sync_completed_at).where(
+                SyncStatus.account_id == account_id
+            )
+            result = await session.execute(stmt)
+            return {row.chat_id: (row.full_sync_cursor, row.full_sync_completed_at) for row in result}
+
+    @retry_on_locked()
+    async def save_full_sync_progress(
+        self, chat_id: int, *, account_id: int, cursor: int | None, completed_at: datetime | None = None
+    ) -> None:
+        """Move the rotating full pass of one chat (#641).
+
+        With ``completed_at`` None the pass is still running: ``cursor`` is the
+        lowest id it has checked, and the completion time stays as it is. With
+        ``completed_at`` set the pass reached the oldest message: it is recorded
+        and the cursor goes back to None, so the next pass starts at the top.
+        Upserts, so a chat archived before it had a sync_status row gets one
+        with the same zero counters a first backup would write.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            values = {
+                "account_id": account_id,
+                "chat_id": chat_id,
+                "last_message_id": 0,
+                "message_count": 0,
+                "full_sync_cursor": None if completed_at is not None else cursor,
+                "full_sync_completed_at": completed_at,
+            }
+            insert = sqlite_insert if self._is_sqlite else pg_insert
+            stmt = insert(SyncStatus).values(**values)
+            set_ = {"full_sync_cursor": stmt.excluded.full_sync_cursor}
+            if completed_at is not None:
+                set_["full_sync_completed_at"] = stmt.excluded.full_sync_completed_at
+            stmt = stmt.on_conflict_do_update(index_elements=["account_id", "chat_id"], set_=set_)
+            await session.execute(stmt)
+            await session.commit()
+
+    async def get_unflagged_edit_ids(
+        self, chat_id: int, *, account_id: int, id_range: tuple[int, int] | None = None
+    ) -> set[int]:
         """IDs of a chat's messages with ``edit_date`` set and no ``edit_hide`` flag.
 
         These rows were archived before migration 034 kept the flag. The sync
         pass fills the flag for them from the message it already fetched when
         the edit_date matches, so a reaction Telegram hid stops showing as an
         edit. The set shrinks to nothing as the flags are filled.
+
+        ``id_range`` (lowest, highest), both inclusive, keeps only the ids of one
+        slice: the rotating older-message pass (#641) reads a slice, not the chat.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(Message.id).where(
@@ -2975,6 +3046,8 @@ class DatabaseAdapter:
                     or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
                 )
             )
+            if id_range is not None:
+                stmt = stmt.where(Message.id.between(id_range[0], id_range[1]))
             result = await session.execute(stmt)
             return {row.id for row in result}
 

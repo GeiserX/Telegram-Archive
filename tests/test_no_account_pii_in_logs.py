@@ -723,7 +723,8 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         path = REPO / "telegram_archive" / "telegram_backup.py"
         source = path.read_text(encoding="utf-8")
         anchor = f"{TITLE_LOG_SINK}(entity, self.config)"
-        self.assertEqual(2, source.count(anchor), "both sanctioned call sites must use the exact anchor")
+        # The dialog loop, the archived loop and the full-pass rotation (#641).
+        self.assertEqual(3, source.count(anchor), "every sanctioned call site must use the exact anchor")
 
         self.assertEqual([], _violations_in_tree("telegram_archive/telegram_backup.py", ast.parse(source)))
         for replacement in ("entity.title", "chat_title", "self._get_marked_id(entity) or entity.title"):

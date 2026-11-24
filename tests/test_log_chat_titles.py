@@ -308,7 +308,8 @@ class TestTheGateIsTheOnlyRoute(unittest.TestCase):
             / "telegram_archive"
             / "telegram_backup.py"
         ).read_text(encoding="utf-8")
-        self.assertEqual(2, source.count("chat_title_for_log(entity, self.config)"), str(backup_path))
+        # The dialog loop, the archived loop and the full-pass rotation (#641).
+        self.assertEqual(3, source.count("chat_title_for_log(entity, self.config)"), str(backup_path))
         tree = ast.parse(source)
         hoisted = [
             node.lineno

@@ -113,3 +113,11 @@ class TestShippedDefaults(unittest.TestCase):
         self.assertEqual(float(_compose_default("SYNC_DELETIONS_EDITS_DAYS")), default)
         self.assertEqual(float(_env_example_value("SYNC_DELETIONS_EDITS_DAYS")), default)
         self.assertEqual(_reference_default("SYNC_DELETIONS_EDITS_DAYS"), "`0`")
+
+    def test_the_full_pass_budget_matches_the_code(self):
+        """SYNC_DELETIONS_EDITS_OLDER_PER_RUN (#641): 0, off, in all four places."""
+        default = _config().sync_deletions_edits_older_per_run
+        self.assertEqual(default, 0)
+        self.assertEqual(int(_compose_default("SYNC_DELETIONS_EDITS_OLDER_PER_RUN")), default)
+        self.assertEqual(int(_env_example_value("SYNC_DELETIONS_EDITS_OLDER_PER_RUN")), default)
+        self.assertEqual(_reference_default("SYNC_DELETIONS_EDITS_OLDER_PER_RUN"), "`0`")

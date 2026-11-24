@@ -98,12 +98,13 @@ For each account, in order:
     5. Refresh pinned messages, up to 100 per chat.
     6. Re-check recent reactions, if the [reaction re-sweep](#reaction-re-sweep) is on.
 7. Back up archived chats that the main loop did not already cover.
-8. Reconcile group-to-supergroup migrations.
-9. Refresh [forum topics and folders](#forum-topics-and-folders).
-10. Recalculate statistics.
-11. Retry failed media downloads. See [Media downloads](media.md).
-12. Verify media files, if `VERIFY_MEDIA` is on.
-13. Send pending media for [transcription](transcription.md).
+8. Re-check a slice of older messages, if [`SYNC_DELETIONS_EDITS_OLDER_PER_RUN`](#sync-rotation) is set.
+9. Reconcile group-to-supergroup migrations.
+10. Refresh [forum topics and folders](#forum-topics-and-folders).
+11. Recalculate statistics.
+12. Retry failed media downloads. See [Media downloads](media.md).
+13. Verify media files, if `VERIFY_MEDIA` is on.
+14. Send pending media for [transcription](transcription.md).
 
 The run clears the "backup in progress" flag at the end, even when it fails.
 
@@ -126,7 +127,7 @@ Older messages are never read again by a normal run. Edits and deletions of mess
 | Option | What it catches | Cost |
 |--------|-----------------|------|
 | [Real-time listener](listener.md) | Edits, deletions, new messages and reactions as they happen | A process that stays connected. |
-| [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) | Edits and deletions of every archived message, or of the last N days with [`SYNC_DELETIONS_EDITS_DAYS`](#sync-window) | Re-reads the whole archive, or the window, on every run. Telegram answers about 300 ids per 30 seconds, so a million messages take more than a day. |
+| [`SYNC_DELETIONS_EDITS`](#sync_deletions_edits) | Edits and deletions of every archived message, or of the last N days with [`SYNC_DELETIONS_EDITS_DAYS`](#sync-window), plus a slice of older messages per run with [`SYNC_DELETIONS_EDITS_OLDER_PER_RUN`](#sync-rotation) | Re-reads the whole archive, or the window and the slice, on every run. Telegram answers about 300 ids per 30 seconds, so a million messages take more than a day. |
 | [`REACTION_RESWEEP_DAYS`](#reaction-re-sweep) | Reaction changes on recent messages | Up to 500 messages per chat per run, spaced out. |
 | [`FILL_GAPS`](#gap-fill) | Messages missing between two archived messages | One scan of the stored ids per chat after each backup run. |
 
@@ -152,7 +153,46 @@ SYNC_DELETIONS_EDITS=true
 SYNC_DELETIONS_EDITS_DAYS=14
 ```
 
-The window is a deliberate blind spot. Edits, deletions, poll, preview and reaction changes on older posts are not seen, including changes made while the archive was down. To catch them, run a full pass: set `SYNC_DELETIONS_EDITS_DAYS=0`, or unset it, and recreate the container. With Docker Compose that is `docker compose up -d`: `docker compose restart` keeps the old environment. The [`schedule`](#the-schedule-command) command runs one backup straight away on start. Set the window back once that run ends.
+The window is a deliberate blind spot. Edits, deletions, poll, preview and reaction changes on older posts are not seen, including changes made while the archive was down. There are two ways to catch them:
+
+- Re-check them a slice per run with [`SYNC_DELETIONS_EDITS_OLDER_PER_RUN`](#sync-rotation). No run takes much longer than the others.
+- Run one full check: set `SYNC_DELETIONS_EDITS_DAYS=0`, or unset it, and recreate the container. With Docker Compose that is `docker compose up -d`: `docker compose restart` keeps the old environment. The [`schedule`](#the-schedule-command) command runs one backup straight away on start. Set the window back once that run ends. On a large archive this one run takes many hours.
+
+#### Re-checking older messages over several runs {#sync-rotation}
+
+[`SYNC_DELETIONS_EDITS_OLDER_PER_RUN`](../reference/environment-variables.md#sync_deletions_edits_older_per_run) spreads the check of older messages over many runs. It works only with `SYNC_DELETIONS_EDITS=true` and `SYNC_DELETIONS_EDITS_DAYS` above 0.
+
+```bash
+SYNC_DELETIONS_EDITS=true
+SYNC_DELETIONS_EDITS_DAYS=14
+SYNC_DELETIONS_EDITS_OLDER_PER_RUN=20000
+```
+
+Each run still checks the window of every chat. After all chats are backed up, the run re-checks up to `SYNC_DELETIONS_EDITS_OLDER_PER_RUN` messages posted before the window. The number applies to each account on its own, and the accounts run one after another. Within an account, all its chats share it:
+
+1. The chats that never finished a full check go first. Then the chat whose last full check is oldest. In each of these two groups, a chat in the middle of a check goes before one that has not started. Otherwise the order is fixed by chat id, so a large chat can take many runs, and the next chat starts when it finishes. The whole archive takes the same number of runs in any order.
+2. In each chat, the check goes from the newest older message down, 100 ids per request. Each request counts as 100 messages of the budget, even when a small chat has fewer, because Telegram limits requests, not messages. So a run makes at most one request per 100 of the budget, rounded up, however many small chats it reaches.
+3. A chat that has more older messages than the run has left continues on the next run from the same message.
+4. When a chat's check reaches its oldest message, the time is recorded. The chat goes to the back of the line, and its next check starts again from the newest older message.
+5. A run visits each chat once at most. When every chat has had its turn, the rotation ends, even with budget left.
+
+Only the chats that this run backed up take part. A chat that leaves `CHAT_IDS` or is excluded keeps its place, and continues from there if it comes back. A chat added to the selection has never finished a check, so it goes first. Each account keeps its own progress per chat.
+
+The progress is saved after every request. If the run stops, for example after a crash, at most 100 messages are checked again. If Telegram asks for a longer wait than the [retry](#rate-limits-and-retries) allows, the rotation stops for this run, and the next run continues from the same message. Any other error skips that request's 100 messages, the same way the window pass does: the check carries on below them, the run log counts them, and the next pass of that chat tries them again. A database error for one chat keeps its progress, and the other chats still get the rest of the budget.
+
+The run log ends the step with one line, for example:
+
+```text
+Older-message rotation: re-checked 20000 older messages in 3 chat(s), 2 deleted, 5 updated; 1 chat(s) finished a pass, 40 of 120 have not finished one yet
+```
+
+When a request failed, the line adds `N skipped after errors, re-checked next pass`. The count "have not finished one yet" covers only the chats this run backs up. When it reaches 0, each of those chats has finished one check. Messages of a skipped request, and ids that a misaligned answer from Telegram left out, wait for that chat's next check. A message that leaves the window while its chat's check is under way, above the point the check has reached, waits for the next check of that chat. The window pass checked it until then.
+
+**How to size it.** Telegram takes about 100 seconds per 1000 messages, so 20,000 messages add about 35 minutes to a run for each account. Size it per account: to re-check an account's history once per period, divide its messages older than the window by the number of runs in that period, and use the largest result. `Total messages` at the end of a run counts every account together, so split it first. For example, an account with 1,500,000 older messages and one run a day re-checks every message once a month with about 50,000 per run, which adds about 85 minutes. With a run every 6 hours, 12,500 per run is enough, about 20 minutes each. Each account adds its own time, so two accounts that each use the whole budget take twice as long. An account with fewer older messages than the budget gets a full check on every run. Because a request counts as 100 (step 2), an archive with many small chats takes more runs per cycle than this division gives. The window's messages come on top of this.
+
+Deletions follow `DELETION_MODE`, the same as on a run with `SYNC_DELETIONS_EDITS_DAYS=0`. With `hard`, a message Telegram no longer returns is removed from the archive, and the rotation now reaches older messages on routine runs. A chat whose old history the account can no longer read, while the chat itself is still backed up, has those older messages marked deleted, or removed with `hard`. A group that hides its history from new members, left and joined again, is one example.
+
+Turning it off (`0`) stops the rotation and keeps the saved progress; turning it on again continues from there. With `SYNC_DELETIONS_EDITS_DAYS=0` every run already checks every message, so the rotation does not run.
 
 ### Reaction re-sweep
 
