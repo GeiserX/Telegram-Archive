@@ -198,6 +198,20 @@ async def test_the_chat_whose_last_pass_is_oldest_goes_first_never_completed_bef
 
 
 @pytest.mark.asyncio
+async def test_a_chat_in_the_middle_of_a_pass_goes_before_one_that_has_not_started(real_adapter):
+    """A chat added to the selection, with a lower id, must not push a half-checked chat back."""
+    await _seed(real_adapter, CHAT_A, older=range(1, 301))
+    await _seed(real_adapter, CHAT_B, older=range(1, 301))
+    await real_adapter.save_full_sync_progress(CHAT_B, account_id=1, cursor=201)
+    telegram = FakeTelegram()
+
+    await _backup(real_adapter, telegram, budget=100)._rotate_full_sync({CHAT_A: "entity-A", CHAT_B: "entity-B"})
+
+    assert telegram.checked() == list(range(200, 100, -1))
+    assert [entity for entity, _ in telegram.calls] == ["entity-B"]
+
+
+@pytest.mark.asyncio
 async def test_a_mid_pass_cursor_survives_while_the_completion_time_stays(real_adapter):
     """Saving a cursor must not clear the last completion, or the chat would jump the queue."""
     await _seed(real_adapter, CHAT_A, older=range(1, 301))

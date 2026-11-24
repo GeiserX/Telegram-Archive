@@ -3525,8 +3525,11 @@ class TelegramBackup:
         state = await self.db.get_full_sync_rotation(account_id=self.account_id)
 
         def rotation_order(chat_id: int) -> tuple:
-            completed_at = state.get(chat_id, (None, None))[1]
-            return (completed_at is not None, completed_at or datetime.min, chat_id)
+            # Never-completed chats first; within each group a chat in the middle
+            # of a pass goes before one that has not started, so a chat added to
+            # the selection cannot push a half-checked chat back.
+            cursor, completed_at = state.get(chat_id, (None, None))
+            return (completed_at is not None, cursor is None, completed_at or datetime.min, chat_id)
 
         remaining = budget
         checked = deleted = updated = chats_visited = failed = 0

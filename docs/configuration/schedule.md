@@ -170,7 +170,7 @@ SYNC_DELETIONS_EDITS_FULL_PER_RUN=20000
 
 Each run still checks the window of every chat. After all chats are backed up, the run re-checks up to `SYNC_DELETIONS_EDITS_FULL_PER_RUN` messages posted before the window. This number is shared by all chats of the account:
 
-1. The chats that never finished a full check go first. Then the chat whose last full check is oldest.
+1. The chats that never finished a full check go first. Then the chat whose last full check is oldest. In each of these two groups, a chat in the middle of a check goes before one that has not started. Otherwise the order is fixed by chat id, so a large chat can take many runs, and the next chat starts when it finishes. The whole archive takes the same number of runs in any order.
 2. In each chat, the check goes from the newest older message down, 100 ids per request. Each request counts as 100 messages of the budget, even when a small chat has fewer, because Telegram limits requests, not messages. So a run makes at most one request per 100 of the budget, however many small chats it reaches.
 3. A chat that has more older messages than the run has left continues on the next run from the same message.
 4. When a chat's check reaches its oldest message, the time is recorded. The chat goes to the back of the line, and its next check starts again from the newest older message.
