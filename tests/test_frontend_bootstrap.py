@@ -5565,12 +5565,11 @@ def test_bubbles_draw_no_neutral_scale_text():
     assert ".message-bubble.bubble-out {\n            --tg-focus: var(--tg-quote-out);" in html
 
 
-def test_a_jump_marks_its_target_in_the_selection_colour():
+def test_a_jump_marks_its_target_in_the_accent():
+    """The outline itself is covered in test_linked_message_frontend.py."""
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "bg-tg-warning/10" not in html
-    assert "el.classList.add('message-flash')" in html
-    flash = html[html.index("@keyframes message-flash") :]
-    assert "var(--tg-selection-bg)" in flash[: flash.index("}")]
+    assert "markJumpTarget(msgId)" in html
 
 
 def test_a_failed_load_does_not_look_like_loading():

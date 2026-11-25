@@ -56,14 +56,6 @@
     <script src="/static/vendor/flatpickr-4.6.13.min.js"></script>
     <style>
         [v-cloak] { display: none !important; }
-        [data-linked-message] > .message-bubble,
-        [data-linked-message] > .service-message,
-        [data-linked-message][data-album-message-id] {
-            outline: 3px solid rgb(var(--tg-accent));
-        }
-        [data-linked-message][data-album-message-id] {
-            outline-offset: -3px;
-        }
         /* iOS Safe Area Support */
         :root {
             --sat: env(safe-area-inset-top, 0px);
@@ -4698,22 +4690,17 @@
             transform: translate(-50%, -50%);
         }
 
-        /* The row a jump landed on (a reply quote, Go to message, a search hit):
-           the selection colour, fading out. With reduced motion it stays still
-           and goes away with the class. */
-        .message-flash {
-            border-radius: 0.5rem;
-            animation: message-flash 2s ease-out;
+        /* The message a jump landed on (a shared link, a reply quote, Go to
+           message, a search hit): an accent outline on its bubble, or on its one
+           picture in an album, for JUMP_OUTLINE_MS. Nothing moves, so reduced
+           motion needs no variant. */
+        .jump-target > .message-bubble,
+        .jump-target > .service-message,
+        .album-item.jump-target {
+            outline: 3px solid rgb(var(--tg-accent));
         }
-        @keyframes message-flash {
-            0%, 45% { background-color: var(--tg-selection-bg); }
-            100% { background-color: transparent; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .message-flash {
-                animation: none;
-                background-color: var(--tg-selection-bg);
-            }
+        .album-item.jump-target {
+            outline-offset: -3px;
         }
 
         /* The row the info panel is describing (#433): the tint the apps give a
@@ -6585,14 +6572,15 @@
 
 <body class="bg-tg-header text-tg-ink h-screen overflow-hidden">
     <div id="app" v-cloak class="w-full h-full">
-        <div v-if="(!isAuthenticated && loadingAuth) || (isAuthenticated && openingLink)"
+        <!-- Only the first session check: a sign-in attempt keeps the form mounted. -->
+        <div v-if="checkingSession"
             role="status" class="fixed inset-0 grid place-items-center bg-tg-header text-tg-muted">
-            {{ openingLink ? 'Opening linked chat…' : 'Loading archive…' }}
+            Loading archive…
         </div>
         <!-- Login Page -->
         <!-- Drawn from the theme tokens: the pre-paint script has already set the
              palette, so the sign-in card matches the archive behind it. -->
-        <div v-if="!isAuthenticated && !loadingAuth" class="login-page chat-wallpaper w-full h-full flex items-center justify-center p-4">
+        <div v-else-if="!isAuthenticated" class="login-page chat-wallpaper w-full h-full flex items-center justify-center p-4">
             <div
                 class="login-card bg-tg-sidebar rounded-2xl shadow-popup p-10 w-full max-w-md border border-tg-border">
                 <!-- The mark: one disc in the accent with the plane on it. -->
@@ -6659,8 +6647,7 @@
         </div>
 
         <!-- Main App -->
-        <div v-if="isAuthenticated" :inert="openingLink" :style="{visibility: openingLink ? 'hidden' : ''}"
-            class="flex w-full h-full bg-tg-header">
+        <div v-else class="flex w-full h-full bg-tg-header">
             <!-- Sidebar - hidden on mobile when chat is selected -->
             <div class="chat-list-pane relative bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
                 :class="{'hidden md:flex': selectedChat || showChangesFeed}"
@@ -7958,7 +7945,8 @@
                                  wording is rebuilt from raw_data at render time.
                                  #260: rendered from structured parts (actor + tail) so the
                                  actor can be a real button — never by parsing the sentence. -->
-                            <div v-if="msg.raw_data?.service_type === 'service'" :data-msg-id="msg.id" class="flex justify-center my-2">
+                            <div v-if="msg.raw_data?.service_type === 'service'" :data-msg-id="msg.id" class="flex justify-center my-2"
+                                :class="{ 'jump-target': isJumpTarget(msg.id) }">
                                 <template v-for="view in [serviceMessageView(msg)]" :key="msg.id">
                                     <div v-if="view.tail || view.actor"
                                         class="service-message px-2.5 py-[3px] rounded-xl text-[0.8125rem] leading-5 font-medium text-center max-w-[80%]"
@@ -7984,7 +7972,8 @@
                                     isOwnMessage(msg) ? 'justify-end' : 'justify-start',
                                     getRunClasses(index),
                                     isSenderBreak(index) ? 'message-run-break' : 'message-run-continue',
-                                    isSelectedMessage(msg) || isVersionsPanelOpenFor(msg) ? 'message-info-selected' : ''
+                                    isSelectedMessage(msg) || isVersionsPanelOpenFor(msg) ? 'message-info-selected' : '',
+                                    isJumpTarget(msg.id) && !isFirstInAlbum(msg, index) ? 'jump-target' : ''
                                 ]">
                                 <!-- Sender avatar gutter (#229): group + non-own only.
                                      The circle sits on the run's LAST bubble, beside the
@@ -8288,7 +8277,7 @@
                                             <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
                                                     <div v-if="mediaUnavailable(albumMsg) || !albumMsg.media?.file_path" class="album-item album-missing" :data-album-message-id="albumMsg.id" role="img"
-                                                        :class="{ 'is-attention': mediaMissingReason(albumMsg) === 'missing' }"
+                                                        :class="{ 'is-attention': mediaMissingReason(albumMsg) === 'missing', 'jump-target': isJumpTarget(albumMsg.id) }"
                                                         :aria-label="`${albumMsg.media?.type === 'video' ? 'Video' : 'Photo'}. ${mediaMissingWords(albumMsg)}`"
                                                         :title="mediaMissingWords(albumMsg)">
                                                         <span class="media-placeholder-disc" aria-hidden="true">
@@ -8298,6 +8287,7 @@
                                                     <button type="button" class="album-item media-open relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
                                                         v-else
                                                         :aria-label="(albumMsg.media?.type === 'video' ? 'Play video' : 'Open photo') + (albumMsg.is_deleted ? ', deleted in Telegram' : '')"
+                                                        :class="{ 'jump-target': isJumpTarget(albumMsg.id) }"
                                                         :data-album-message-id="albumMsg.id" @click="openMedia(albumMsg)">
                                                         <img v-if="albumMsg.media?.type === 'photo'"
                                                             :src="getMediaUrl(albumMsg)"
@@ -10608,6 +10598,10 @@
                 const oidcEnabled = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
+                // True until the first /api/auth/check settles. Only this gates the
+                // loading screen: loadingAuth is also a sign-in attempt in flight,
+                // and that must keep the form mounted.
+                const checkingSession = ref(true)
                 const linkUrl = new URL(location.href)
                 const linkParams = linkUrl.searchParams
                 const ssoLinkKey = 'archive_sso_link'
@@ -10624,12 +10618,14 @@
                     }
                     sessionStorage.removeItem(ssoLinkKey)
                 } catch { /* Session storage is optional. */ }
-                const openingLink = ref(Boolean(linkParams.get('chat')))
+                // Carries the link this page holds now, so a link that already
+                // opened (and left the URL) is not carried again.
                 const rememberSsoLink = () => {
-                    if (!openingLink.value) return
+                    const params = new URL(location.href).searchParams
+                    if (!params.get('chat')) return
                     try {
                         sessionStorage.setItem(ssoLinkKey, JSON.stringify({
-                            chat: linkParams.get('chat'), msg: linkParams.get('msg'), expires: Date.now() + 600000
+                            chat: params.get('chat'), msg: params.get('msg'), expires: Date.now() + 600000
                         }))
                     } catch { /* The provider can still authenticate this tab. */ }
                 }
@@ -13068,12 +13064,14 @@
                                 `/api/chats/${encodeURIComponent(targetChat.ref)}/messages?after_id=${messageId - 1}&limit=1`,
                                 { credentials: 'same-origin' }
                             )
-                            const rows = resp.ok ? await resp.json() : []
-                            const target = Array.isArray(rows) && rows.find(m => Number(m.id) === Number(messageId))
-                            if (!target) {
-                                showToast('Linked message unavailable')
+                            if (!resp.ok) {
+                                showToast('Could not locate that topic')
                                 return false
                             }
+                            const rows = await resp.json()
+                            const target = Array.isArray(rows) && rows.find(m => Number(m.id) === Number(messageId))
+                            // Not in the archive: the caller says so in its own words.
+                            if (!target) return false
                             const topicId = target?.reply_to_top_id ?? GENERAL_TOPIC_ID
                             let topic = topics.value.find(t => Number(t.id) === Number(topicId))
                             if (!topic && Number(topicId) === Number(GENERAL_TOPIC_ID)) {
@@ -13304,30 +13302,69 @@
                     await openNotificationTarget(chatRef, messageId)
                 }
 
-                const openInitialView = async () => {
-                    if (openingLink.value) {
-                        try {
-                            const chatRef = linkParams.get('chat')
-                            const raw = linkParams.get('msg')
-                            const id = raw === null ? null : Number(raw)
-                            if (raw !== null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(id) || id < 1)) {
-                                showToast('Invalid linked message')
-                            } else if (await openNotificationTarget(chatRef, id)) {
-                                const url = new URL(location.href)
-                                url.searchParams.delete('chat')
-                                url.searchParams.delete('msg')
-                                history.replaceState(history.state, '', url)
-                            }
-                        } finally {
-                            openingLink.value = false
-                        }
+                // Remove link fields from the address bar, keeping everything else.
+                const dropLinkParams = (...names) => {
+                    const url = new URL(location.href)
+                    for (const name of names) url.searchParams.delete(name)
+                    history.replaceState(history.state, '', url)
+                }
+
+                // Whether the archive answers that this chat has no message with this id.
+                // Any failure to ask is "not known", so the link stays for a retry.
+                const linkedMessageMissing = async (chatRef, messageId) => {
+                    try {
+                        const res = await fetch(
+                            `/api/chats/${encodeURIComponent(chatRef)}/messages?after_id=${messageId - 1}&limit=1`,
+                            { credentials: 'include' }
+                        )
+                        if (!res.ok) return false
+                        const data = await res.json()
+                        const rows = data.messages || data
+                        return Array.isArray(rows) && !rows.some(m => Number(m.id) === messageId)
+                    } catch (e) {
+                        return false
                     }
-                    // Chat rows use the account labels on their first paint.
-                    await loadAccounts()
-                    await loadTranscriptionState()
-                    await Promise.all([loadChats(), loadStats(), loadFolders(), loadArchivedCount()])
+                }
+
+                // Open /?chat=<ref>&msg=<id>. The URL is cleaned once the link has done
+                // all it can: it opened, or the archive has no such message. It stays
+                // after a failure on the way (network, server, a chat not visible yet),
+                // so a refresh retries it.
+                const openLinkedMessage = async () => {
+                    const params = new URL(location.href).searchParams
+                    const chatRef = params.get('chat')
+                    if (!chatRef) return
+                    const raw = params.get('msg')
+                    let messageId = raw === null ? null : Number(raw)
+                    if (raw !== null && !(/^\d+$/.test(raw) && Number.isSafeInteger(messageId) && messageId > 0)) {
+                        // No message can match: open the chat at its newest page.
+                        messageId = null
+                        dropLinkParams('msg')
+                    }
+                    // No identifiers in the log line: message ids are PII.
+                    console.log('[Link] Opening a linked chat')
+                    if (await openNotificationTarget(chatRef, messageId)) {
+                        dropLinkParams('chat', 'msg')
+                        return
+                    }
+                    if (messageId === null || selectedChat.value?.ref !== chatRef) return
+                    if (await linkedMessageMissing(chatRef, messageId)) {
+                        showToast('Linked message unavailable')
+                        dropLinkParams('chat', 'msg')
+                    }
+                }
+
+                const openInitialView = async () => {
+                    // Chat rows and bubbles read these on their first paint: the
+                    // account labels, the transcript buttons and the viewer's time zone.
+                    await Promise.all([loadAccounts(), loadTranscriptionState(), loadStats()])
+                    // A shared link opens beside the sidebar. Neither waits for the
+                    // other, and the sidebar loaders never touch the open chat.
+                    const link = openLinkedMessage()
+                    await Promise.all([loadChats(), loadFolders(), loadArchivedCount()])
                     checkNewChanges()
                     setupInfiniteScroll()
+                    await link
                 }
 
                 // Auth check on mount
@@ -13428,6 +13465,7 @@
                                 }
                             }
 
+                            checkingSession.value = false
                             if (isAuthenticated.value) {
                                 await openInitialView()
                             }
@@ -13443,6 +13481,7 @@
                         authCheckFailed.value = true
                         // Show login form so user can try
                     } finally {
+                        checkingSession.value = false
                         loadingAuth.value = false
                     }
 
@@ -15327,7 +15366,6 @@
                         setupMessagesScrollObserver()
                         const found = await scrollToMessage(messageId)
                         if (!isCurrentIntent()) return
-                        if (!found) showToast('Linked message unavailable')
                         return found
                     } catch (e) {
                         if (!isCurrentIntent()) return
@@ -19063,32 +19101,21 @@
                     return null
                 }
 
-                const highlightLinkedMessage = (el) => {
-                    const pane = messagesContainer.value
-                    const center = () => {
-                        if (!pane.contains(el)) return
-                        const row = el.getBoundingClientRect()
-                        pane.scrollTop += row.top - pane.getBoundingClientRect().top -
-                            Math.max(0, (pane.clientHeight - row.height) / 2)
-                    }
-                    center()
-                    el.setAttribute('data-linked-message', '')
-                    // Late media and font loads can move the target. Stop correcting
-                    // its position as soon as the reader interacts with the page.
-                    const input = new AbortController()
-                    const layout = new ResizeObserver(center)
-                    layout.observe(pane)
-                    for (const row of pane.children) layout.observe(row)
-                    for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
-                        window.addEventListener(name, () => input.abort(),
-                            { capture: true, passive: true, signal: input.signal })
-                    }
-                    input.signal.addEventListener('abort', () => layout.disconnect(), { once: true })
-                    setTimeout(() => {
-                        input.abort()
-                        el.removeAttribute('data-linked-message')
-                    }, 8000)
+                // The message a jump landed on, outlined for JUMP_OUTLINE_MS. A ref the
+                // template reads, so the outline follows the message when Vue draws its
+                // row or album item again (a picture that fails to load, a refresh).
+                // Message ids repeat across chats, so the chat is part of the target.
+                const JUMP_OUTLINE_MS = 5000
+                const jumpTarget = ref(null)
+                let jumpTargetTimer = null
+                const markJumpTarget = (msgId) => {
+                    jumpTarget.value = { chatRef: selectedChat.value?.ref ?? null, id: Number(msgId) }
+                    clearTimeout(jumpTargetTimer)
+                    jumpTargetTimer = setTimeout(() => { jumpTarget.value = null }, JUMP_OUTLINE_MS)
                 }
+                const isJumpTarget = (msgId) => jumpTarget.value !== null &&
+                    jumpTarget.value.id === Number(msgId) &&
+                    jumpTarget.value.chatRef === (selectedChat.value?.ref ?? null)
 
                 const scrollToMessage = (msgId) => {
                     return nextTick(async () => {
@@ -19105,19 +19132,11 @@
                             await nextTick()
                             el = findMessageElement(msgId) || el
                         }
-                        if (openingLink.value) {
-                            const target = el.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || el
-                            highlightLinkedMessage(target)
-                            return true
-                        }
+                        markJumpTarget(msgId)
+                        // An album member is one picture in its row's grid: center that picture.
+                        const target = el.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || el
                         const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-                        el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
-                        // Mark the target briefly, in the selection colour: it reads on
-                        // every wallpaper, light or dark. Removing first restarts it.
-                        el.classList.remove('message-flash')
-                        void el.offsetWidth
-                        el.classList.add('message-flash')
-                        setTimeout(() => el.classList.remove('message-flash'), 2000)
+                        target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
                         return true
                     })
                 }
@@ -21286,7 +21305,7 @@
                     authRequired,
                     oidcEnabled,
                     authCheckFailed,
-                    loadingAuth, openingLink, rememberSsoLink,
+                    loadingAuth, checkingSession, rememberSsoLink, isJumpTarget,
                     loginForm,
                     loginError,
                     performLogin,

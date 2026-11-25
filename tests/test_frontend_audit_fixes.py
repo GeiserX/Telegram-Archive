@@ -646,7 +646,7 @@ const boot = () => {
 """
         + html[start:end]
         + """
-    return [openingLink.value, linkParams.get('chat'), linkParams.get('msg')];
+    return [Boolean(linkParams.get('chat')), linkParams.get('chat'), linkParams.get('msg')];
 };
 const save = (msg, expires = Date.now() + 60000) =>
     storage.set('archive_sso_link', JSON.stringify({chat: 'saved', msg, expires}));
@@ -664,46 +664,6 @@ assert.deepEqual(boot(), [false, null, null]);
 save(null);
 assert.deepEqual(boot(), [true, 'saved', null]);
 assert.equal(location.search, '?chat=saved');
-"""
-    )
-
-
-def test_initial_message_opens_before_sidebar_after_session_check_or_login() -> None:
-    html = INDEX_HTML.read_text(encoding="utf-8")
-    assert html.count("await openInitialView()") == 2
-    assert 'v-if="!isAuthenticated && !loadingAuth"' in html
-    assert ':inert="openingLink"' in html
-    _run_node(
-        """
-const assert = require('node:assert/strict');
-const location = new URL('https://archive.example/?chat=target&msg=42&keep=1');
-const linkParams = location.searchParams;
-const openingLink = {value: true};
-let opened = false;
-const calls = [];
-const openNotificationTarget = async (ref, id) => {
-    calls.push('target');
-    assert.equal(openingLink.value, true);
-    assert.equal(ref, 'target');
-    assert.equal(id, 42);
-    return opened;
-};
-const history = {replaceState: (_, __, url) => { calls.push(url.search); }};
-const loadChats = () => { assert.equal(openingLink.value, false); calls.push('sidebar'); };
-const noop = () => {};
-const loadAccounts = noop, loadTranscriptionState = noop, checkNewChanges = noop;
-const loadStats = noop, loadFolders = noop, loadArchivedCount = noop, setupInfiniteScroll = noop;
-"""
-        + _extract_const_arrow_function(html, "openInitialView", asynchronous=True)
-        + """
-(async () => {
-    await openInitialView();
-    assert.deepEqual(calls, ['target', 'sidebar']);
-    openingLink.value = opened = true;
-    calls.length = 0;
-    await openInitialView();
-    assert.deepEqual(calls, ['target', '?keep=1', 'sidebar']);
-})().catch(e => { console.error(e); process.exitCode = 1; });
 """
     )
 

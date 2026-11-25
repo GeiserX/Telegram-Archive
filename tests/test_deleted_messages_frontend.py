@@ -306,20 +306,17 @@ class TestAJumpOpensItsTarget(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
-    def _jump(self, rows: list[dict], target: int, rendered: int, *, linked: bool = False) -> dict:
+    def _jump(self, rows: list[dict], target: int, rendered: int) -> dict:
         prelude = f"""
 const ROWS = {json.dumps(rows)}
-const openingLink = {{ value: {json.dumps(linked)} }}
 const sortedMessages = {{ value: ROWS }}
 const SCROLLED = []
 const el = {{
     dataset: {{ msgId: '{rendered}' }},
     querySelector: () => null,
     scrollIntoView: () => SCROLLED.push(Object.keys(openDeletedMessages.value)),
-    classList: {{ add: () => {{}}, remove: () => {{}} }},
-    offsetWidth: 0,
 }}
-const highlightLinkedMessage = () => SCROLLED.push(['highlight', ...Object.keys(openDeletedMessages.value)])
+const markJumpTarget = () => SCROLLED.push(['outline', ...Object.keys(openDeletedMessages.value)])
 const findMessageElement = () => el
 const nextTick = (fn) => Promise.resolve().then(fn)
 const window = {{ matchMedia: () => ({{ matches: true }}) }}
@@ -332,17 +329,13 @@ const window = {{ matchMedia: () => ({{ matches: true }}) }}
 setTimeout(() => console.log(JSON.stringify({{ open: Object.keys(openDeletedMessages.value), scrolled: SCROLLED }})), 20)""",
         )
 
-    def test_a_folded_target_opens_before_the_scroll(self) -> None:
+    def test_a_folded_target_opens_before_the_outline_and_the_scroll(self) -> None:
         out = self._jump([_row(5, deleted_at="2026-09-29T08:38:00")], 5, 5)
-        self.assertEqual(out, {"open": ["7:5"], "scrolled": [["7:5"]]})
+        self.assertEqual(out, {"open": ["7:5"], "scrolled": [["outline", "7:5"], ["7:5"]]})
 
     def test_a_live_target_changes_nothing(self) -> None:
         out = self._jump([_row(6)], 6, 6)
-        self.assertEqual(out, {"open": [], "scrolled": [[]]})
-
-    def test_a_deep_link_unfolds_the_target_before_highlighting(self) -> None:
-        out = self._jump([_row(5, deleted_at="2026-09-29T08:38:00")], 5, 5, linked=True)
-        self.assertEqual(out, {"open": ["7:5"], "scrolled": [["highlight", "7:5"]]})
+        self.assertEqual(out, {"open": [], "scrolled": [["outline"], []]})
 
     def test_an_album_member_opens_the_row_that_draws_the_album(self) -> None:
         rows = []
@@ -357,8 +350,8 @@ setTimeout(() => console.log(JSON.stringify({{ open: Object.keys(openDeletedMess
             + f"""
 ALBUMS = {{ 77: {json.dumps(rows)} }}
 const sortedMessages = {{ value: ALBUMS[77] }}
-const openingLink = {{ value: false }}
-const el = {{ dataset: {{ msgId: '11' }}, scrollIntoView: () => {{}}, classList: {{ add() {{}}, remove() {{}} }} }}
+const markJumpTarget = () => {{}}
+const el = {{ dataset: {{ msgId: '11' }}, querySelector: () => null, scrollIntoView: () => {{}} }}
 const findMessageElement = () => el
 const nextTick = (fn) => Promise.resolve().then(fn)
 const window = {{ matchMedia: () => ({{ matches: false }}) }}
