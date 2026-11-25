@@ -979,6 +979,45 @@ console.log(JSON.stringify(clicks))
         out = _run_setup_program(self.html, (), program, "")
         self.assertEqual(out, {"in a topic": ["navigateBack"], "in a chat": ["closeChat"]})
 
+    def test_a_failed_window_reloads_the_chat_and_keeps_the_link(self) -> None:
+        # The reload is the link's own pick: the pane gets the newest page, and
+        # the URL stays so a refresh retries the message.
+        out = self._run("WINDOW = () => ({ ok: false, status: 500 })", "await openLinkedMessage()")
+        self.assertEqual(out["chat"], "target")
+        self.assertEqual(out["rows"], 2)
+        self.assertEqual(out["url"], "?chat=target&msg=42&keep=1#frag")
+        self.assertEqual(out["toasts"], ["Could not load messages around that message"])
+
+    def test_a_missing_message_answer_after_the_reader_left_stays_quiet(self) -> None:
+        out = self._run(
+            "WINDOW = () => ({ ok: false, status: 500 })\nPROBE_MS = 30\nPROBE = () => ({ ok: true, json: async () => [] })",
+            "const link = openLinkedMessage()\nawait sleep(10)\nawait selectChat(CHATS.other)\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual(out["chat"], "other")
+        self.assertEqual(out["toasts"], ["Could not load messages around that message"])
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_a_forum_probe_failure_after_the_reader_left_stays_quiet(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=forum&msg=42&keep=1#frag')\nPROBE_MS = 30\n"
+            + "PROBE = () => { throw new TypeError('offline') }",
+            "const link = openLinkedMessage()\nawait sleep(10)\n"
+            + "await selectTopic(CHATS.forum, TOPICS.forum[0])\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual([out["chat"], out["topic"]], ["forum", 1])
+        self.assertEqual(out["toasts"], [])
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_a_later_jump_to_the_same_message_is_an_ordinary_jump(self) -> None:
+        # Once the link is done, a reply quote to the same message scrolls
+        # smoothly like every other jump, with no hold.
+        out = self._run(
+            "",
+            "await openLinkedMessage()\nconst held = OBSERVERS.size > 0\nstopHoldingJumpTarget()  // the reader scrolls\n"
+            + "await scrollToMessage(42)\nSEEN.smooth = SMOOTH\nSEEN.held = [held, OBSERVERS.size > 0]",
+        )
+        self.assertEqual(out["seen"], {"smooth": [{"behavior": "smooth", "block": "center"}], "held": [True, False]})
+
     def test_a_forum_link_to_a_message_the_archive_lacks_says_so_once(self) -> None:
         out = self._run(
             "location = new URL('https://archive.example/?chat=forum&msg=99999&keep=1#frag')\n"
@@ -1126,6 +1165,27 @@ seen.outlined = isJumpTarget(42)""",
                         "outlined": True,
                     },
                 )
+
+    def test_a_link_to_an_album_member_centers_its_picture(self) -> None:
+        out = self._run(
+            """const picture = { getBoundingClientRect: () => ({ top: 1100 - pane.scrollTop, height: 50 }) }
+node.querySelector = (selector) => (selector === '[data-album-message-id="42"]' ? picture : null)
+pendingLink = { chatRef: 'r7', messageId: 42 }
+await scrollToMessage(42)
+seen.pictureTop = picture.getBoundingClientRect().top""",
+        )
+        # The middle of a 400 px pane, for a 50 px picture.
+        self.assertEqual(out, {"pictureTop": 175})
+
+    def test_a_target_taller_than_the_pane_lands_with_its_top_at_the_top(self) -> None:
+        out = self._run(
+            """node = makeNode(1000, 1000)
+rows[1] = node
+pendingLink = { chatRef: 'r7', messageId: 42 }
+await scrollToMessage(42)
+seen.top = node.getBoundingClientRect().top""",
+        )
+        self.assertEqual(out, {"top": 0})
 
     def test_every_kind_of_reader_input_and_the_time_limit_end_the_hold(self) -> None:
         for end in ("touchstart", "pointerdown", "keydown", "timer"):
