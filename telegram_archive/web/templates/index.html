@@ -7440,7 +7440,7 @@
                         class="chat-header relative bg-tg-header border-b border-tg-border flex items-center justify-between gap-2 z-10">
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
-                            <button type="button" aria-label="Back" @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
+                            <button type="button" aria-label="Back" @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : closeChat()"
                                 class="tap-target md:hidden p-2 -ml-2 text-tg-bar-icon hover:text-tg-ink">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -12467,7 +12467,6 @@
                 }
 
                 const openForumTopics = async (chat) => {
-                    noteViewPick()
                     // v6.2.12: Store full chat object so selectTopic can use it for display name
                     navigateTo({ type: 'topics', chatRef: chat.ref, chatName: getChatName(chat), chat: chat })
                     await loadTopics(chat.ref)
@@ -13046,8 +13045,11 @@
                 // Open what a notification points at, or say so instead of doing nothing.
                 // Returns whether the chat was opened, so the caller can decide to keep a
                 // deep link in the URL and let a refresh retry it. A shared link passes
-                // its guard: the open stops after any wait once the reader has picked
+                // its guard: the open stops after a wait once the reader has picked
                 // another view, and the picks it makes itself are not the reader's.
+                // The message window does not take that guard. A chat or topic switch
+                // already ends it, and the reader opening a forum's topic list must
+                // not leave the linked chat's pane empty.
                 const openNotificationTarget = async (chatRef, messageId, externalGuard = null) => {
                     const current = () => !externalGuard || externalGuard()
                     const pick = externalGuard ? asLinkPick : (open) => open()
@@ -13061,7 +13063,6 @@
                     // pane needs — the normal tail page would race it (its deferred
                     // scroll-to-bottom fires after the jump has positioned the view).
                     await pick(() => selectChat(targetChat, { skipInitialLoad: Boolean(messageId) }))
-                    if (!current()) return false
                     if (!messageId) return true
                     if (targetChat.is_forum) {
                         // selectChat short-circuits a forum into its topics list
@@ -13102,12 +13103,12 @@
                         }
                     }
                     await nextTick()
-                    if (!current()) return false
                     // The #367-hardened jump: windows around the id even when the
                     // message is far outside the loaded page. scrollToMessage only
                     // worked for already-rendered rows — fine for a fresh push
                     // notification, silently a no-op for a shared link to history.
-                    const jumped = await loadMessagesAroundId(messageId, externalGuard)
+                    const jumped = await loadMessagesAroundId(messageId)
+                    // Once the reader has left, a failed window must not reopen the chat.
                     if (!current()) return false
                     if (jumped === false) await pick(() => reloadViewAfterFailedJump(targetChat))
                     return jumped === true
@@ -13339,12 +13340,12 @@
                     }
                 }
 
-                // selectChat, openForumTopics and selectTopic call this first. Any view
-                // pick ends the outline and the centering of the previous jump. A pick
-                // by the reader also abandons the link, and drops it from the address
+                // selectChat, selectTopic and closeChat call this first. Any view pick
+                // ends the outline and the centering of the previous jump. A pick by
+                // the reader also abandons the link, and drops it from the address
                 // bar, so a refresh does not reopen a link the reader left.
                 const noteViewPick = () => {
-                    clearJumpTarget()
+                    jumpTarget.value = null
                     stopHoldingJumpTarget()
                     if (linkPicking) return
                     pendingLink = null
@@ -13407,7 +13408,7 @@
                             dropLinkParams('chat', 'msg')
                         }
                     } finally {
-                        if (current()) pendingLink = null
+                        pendingLink = null
                     }
                 }
 
@@ -15364,6 +15365,14 @@
                     const when = moment.utc(dateStr).tz(viewerTimezone.value)
                     const now = moment().tz(viewerTimezone.value)
                     return when.isSame(now, 'year') ? when.format('MMM D') : when.format('MMM D, YYYY')
+                }
+
+                // The phone's Back button: back to the chat list. Like a view pick, it
+                // ends the outline and the centering, and abandons a link that is still
+                // opening, so a refresh does not reopen the chat the reader left.
+                const closeChat = () => {
+                    noteViewPick()
+                    selectedChat.value = null
                 }
 
                 const loadMessagesAroundId = async (messageId, externalGuard = null) => {
@@ -19174,10 +19183,6 @@
                 const isJumpTarget = (msgId) => jumpTarget.value !== null &&
                     jumpTarget.value.id === Number(msgId) &&
                     jumpTarget.value.chatRef === (selectedChat.value?.ref ?? null)
-                const clearJumpTarget = () => {
-                    clearTimeout(jumpTargetTimer)
-                    jumpTarget.value = null
-                }
 
                 // The element a jump centers: the message row, or its one picture when
                 // the message is an album member.
@@ -19193,7 +19198,7 @@
                 const centerJumpTarget = (msgId) => {
                     const pane = messagesContainer.value
                     const el = findJumpTarget(msgId)
-                    if (!pane || !el || !pane.contains(el)) return
+                    if (!pane || !el) return
                     const box = el.getBoundingClientRect()
                     pane.scrollTop += box.top - pane.getBoundingClientRect().top -
                         Math.max(0, (pane.clientHeight - box.height) / 2)
@@ -19207,33 +19212,19 @@
                 const JUMP_HOLD_MS = 8000
                 let stopHoldingJumpTarget = () => {}
                 const holdJumpTarget = (msgId) => {
-                    stopHoldingJumpTarget()
                     const pane = messagesContainer.value
-                    if (!pane) return
                     const center = () => centerJumpTarget(msgId)
                     center()
                     const layout = new ResizeObserver(center)
-                    const watchRows = () => {
-                        for (const row of pane.children) layout.observe(row)
-                    }
                     layout.observe(pane)
-                    watchRows()
-                    const rows = new MutationObserver(() => {
-                        watchRows()
-                        center()
-                    })
-                    rows.observe(pane, { childList: true })
+                    for (const row of pane.children) layout.observe(row)
                     const input = new AbortController()
                     const stop = () => input.abort()
                     for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
                         window.addEventListener(name, stop, { capture: true, passive: true, signal: input.signal })
                     }
-                    const timer = setTimeout(stop, JUMP_HOLD_MS)
-                    input.signal.addEventListener('abort', () => {
-                        layout.disconnect()
-                        rows.disconnect()
-                        clearTimeout(timer)
-                    }, { once: true })
+                    setTimeout(stop, JUMP_HOLD_MS)
+                    input.signal.addEventListener('abort', () => layout.disconnect(), { once: true })
                     stopHoldingJumpTarget = stop
                 }
 
@@ -21640,6 +21631,7 @@
                     topicsNavEntry,
                     canGoBack,
                     navigateBack,
+                    closeChat,
                     navigateBackToChats,
                     folders,
                     archivedCount,

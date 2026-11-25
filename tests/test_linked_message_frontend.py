@@ -699,9 +699,11 @@ console.log(JSON.stringify(seen))""",
         self.assertLessEqual(out["ttl"], 600000)
 
 
-# The real view picks (selectChat, openForumTopics, selectTopic), the real open
-# and the real link entry, over a stubbed network. LOOKUP_MS and PROBE_MS delay
-# the chat lookup and the forum probe.
+# The real view picks (selectChat, openForumTopics, selectTopic), the real open,
+# the real link entry and the real message window, scroll and hold, over a
+# stubbed network and one pane. LOOKUP_MS, PROBE_MS and WINDOW_MS delay the chat
+# lookup, the one-row probe and the message window. WINDOWS lists each window
+# asked for: [chat, topic, message id].
 _VIEW_PICK_PRELUDE = """
 const print = console.log
 console.log = () => {}
@@ -734,8 +736,9 @@ const startMessageRefresh = () => {}
 const resetMessagePagination = () => {}
 const setupMessagesScrollObserver = () => {}
 const scrollToBottom = () => {}
-const nextTick = async () => {}
-const loadMessages = async () => {}
+const nextTick = (fn) => Promise.resolve().then(fn)
+// A newest page. Message ids repeat across chats, so every chat has a 42.
+const loadMessages = async () => { messages.value = [{ id: 43 }, { id: 42 }] }
 const loadChatStats = async () => {}
 const loadPinnedMessages = async () => {}
 const getChatName = (chat) => chat.ref
@@ -748,15 +751,66 @@ let LOOKUP_MS = 0
 const resolveChatById = async (chatRef) => { await sleep(LOOKUP_MS); return CHATS[chatRef] || null }
 let PROBE_MS = 0
 let PROBE = () => ({ ok: true, json: async () => [{ id: 42, reply_to_top_id: 7 }] })
-const fetch = async () => { await sleep(PROBE_MS); return PROBE() }
 const WINDOWS = []
-const loadMessagesAroundId = async (messageId, externalGuard = null) => {
-    WINDOWS.push([selectedChat.value?.ref, selectedPaneTopic.value?.id ?? null, messageId])
-    markJumpTarget(messageId)
-    return true
+let WINDOW_MS = 0
+let WINDOW = () => ({ ok: true, json: async () => [{ id: 42 }, { id: 41 }, { id: 40 }] })
+const fetch = async (url) => {
+    const before = /before_id=(\\d+)/.exec(url)
+    if (before) {
+        const topic = /topic_id=(\\d+)/.exec(url)
+        WINDOWS.push([selectedChat.value?.ref, topic ? Number(topic[1]) : null, Number(before[1]) - 1])
+        await sleep(WINDOW_MS)
+        return WINDOW()
+    }
+    // The newer half of a window: the target is the newest message.
+    if (url.includes('&limit=50')) return { ok: true, json: async () => [] }
+    await sleep(PROBE_MS)
+    return PROBE()
 }
-const HOLDS = []
-let stopHoldingJumpTarget = () => { HOLDS.push('stop') }
+// What the message window closes over.
+const activeTopicId = () => {
+    const topicId = selectedPaneTopic.value?.id
+    return !topicId || topicId === 'all' ? null : topicId
+}
+const messageWindowIsContiguous = ref(false)
+let newestMessageId = null
+const newestLoadedMessageId = () => null
+const hasMoreNewer = ref(false)
+const viewingPinnedWindow = ref(false)
+let messagesScrollObserver = null
+let messagesNewerObserver = null
+const loadMoreSentinel = ref(null)
+const loadNewerSentinel = ref(null)
+// One pane with one row, for message 42 of whichever chat is open. relayout()
+// is a late size change: every live observer of the hold sees it.
+const SMOOTH = []
+const pane = { scrollTop: 0, clientHeight: 400, children: [], getBoundingClientRect: () => ({ top: 0 }), contains: () => true }
+const row42 = {
+    offset: 1000, height: 100, dataset: { msgId: '42' }, querySelector: () => null,
+    getBoundingClientRect() { return { top: this.offset - pane.scrollTop, height: this.height } },
+    scrollIntoView: (options) => SMOOTH.push(options),
+}
+pane.children.push(row42)
+const messagesContainer = ref(pane)
+const findMessageElement = (msgId) => (messages.value.some((m) => Number(m.id) === Number(msgId)) ? row42 : null)
+const sortedMessages = { get value() { return messages.value } }
+const openDeletedMessages = ref({})
+const isDeletedFolded = () => false
+const deletedKey = () => ''
+const OBSERVERS = new Set()
+class ResizeObserver {
+    constructor(cb) { this.cb = cb; OBSERVERS.add(this) }
+    observe() {}
+    disconnect() { OBSERVERS.delete(this) }
+}
+class MutationObserver {
+    constructor(cb) { this.cb = cb; OBSERVERS.add(this) }
+    observe() {}
+    disconnect() { OBSERVERS.delete(this) }
+}
+const relayout = () => { for (const o of [...OBSERVERS]) o.cb([]) }
+const window = { matchMedia: () => ({ matches: false }), addEventListener: () => {} }
+const SEEN = {}
 """
 
 
@@ -778,9 +832,17 @@ class TestTheReaderLeavingAbandonsTheLink(unittest.TestCase):
                 _setup_slice(html, "const jumpTarget = ref(null)"),
                 _setup_slice(html, "const markJumpTarget = (msgId) =>"),
                 _setup_slice(html, "const isJumpTarget = (msgId) =>"),
-                _optional(html, "const clearJumpTarget = () =>", "const clearJumpTarget = () => {}"),
+                _optional(html, "const clearJumpTarget = () =>", ""),
+                _optional(html, "const findJumpTarget = (msgId) =>", ""),
+                _optional(html, "const centerJumpTarget = (msgId) =>", ""),
+                _optional(html, "const JUMP_HOLD_MS = ", "let stopHoldingJumpTarget = () => {}"),
+                _optional(html, "const holdJumpTarget = (msgId) =>", "const holdJumpTarget = () => {}"),
+                _setup_slice(html, "const scrollToMessage = (msgId) =>"),
+                _setup_function(html, "const loadMessagesAroundId = async (messageId, externalGuard = null) =>"),
                 _optional(html, "const asLinkPick = (open) =>", "const asLinkPick = (open) => open()"),
                 _optional(html, "const noteViewPick = () =>", "const noteViewPick = () => {}"),
+                # Before closeChat the Back button only closed the pane.
+                _optional(html, "const closeChat = () =>", "const closeChat = () => { selectedChat.value = null }"),
             )
         )
         declarations = (
@@ -798,7 +860,8 @@ class TestTheReaderLeavingAbandonsTheLink(unittest.TestCase):
             + drive
             + "\nprint(JSON.stringify({ chat: selectedChat.value?.ref ?? null,"
             + " topic: selectedPaneTopic.value?.id ?? null, windows: WINDOWS, toasts: TOASTS,"
-            + " url: location.search + location.hash, outlined: isJumpTarget(42), holds: HOLDS }))\n"
+            + " url: location.search + location.hash, outlined: isJumpTarget(42), held: OBSERVERS.size > 0,"
+            + " rows: messages.value.length, nav: currentNav.value.type, seen: SEEN }))\n"
             + "process.exit(0)\n})().catch((e) => { console.error(e); process.exit(1) })"
         )
         return _run_setup_program(html, declarations, prelude, epilogue)
@@ -846,14 +909,75 @@ class TestTheReaderLeavingAbandonsTheLink(unittest.TestCase):
         self.assertEqual(out["url"], "?keep=1#frag")
 
     def test_a_chat_switch_ends_the_outline_and_the_centering(self) -> None:
+        # A notification click opens a chat with no wheel, touch or key input.
+        # The other chat has a message 42 too: a live hold would center it.
         out = self._run(
             "",
-            "await openLinkedMessage()\nconst before = isJumpTarget(42)\nHOLDS.length = 0\n"
-            + "await selectChat(CHATS.other)\nawait selectChat(CHATS.target)\nTOASTS.push(before)",
+            "await openLinkedMessage()\nSEEN.before = [isJumpTarget(42), OBSERVERS.size > 0, pane.scrollTop]\n"
+            + "await selectChat(CHATS.other)\npane.scrollTop = 0\nrow42.offset = 1600\nrelayout()\n"
+            + "SEEN.after = [isJumpTarget(42), pane.scrollTop]",
         )
-        self.assertEqual(out["toasts"], [True])
-        self.assertFalse(out["outlined"])
-        self.assertIn("stop", out["holds"])
+        self.assertEqual(out["seen"], {"before": [True, True, 850], "after": [False, 0]})
+        self.assertEqual(out["chat"], "other")
+        self.assertFalse(out["held"])
+
+    def test_a_forum_list_the_reader_opens_while_the_window_loads_does_not_empty_the_pane(self) -> None:
+        # Opening a forum shows its topic list and keeps the pane on the linked chat.
+        # The window still fills that pane.
+        out = self._run(
+            "WINDOW_MS = 30",
+            "const link = openLinkedMessage()\nawait sleep(10)\nawait selectChat(CHATS.forum)\n"
+            + "await link\nawait sleep(40)\nSEEN.loading = loading.value",
+        )
+        self.assertEqual([out["chat"], out["nav"]], ["target", "topics"])
+        self.assertEqual(out["rows"], 3)
+        self.assertEqual(out["seen"], {"loading": False})
+        self.assertEqual(out["url"], "?keep=1#frag")
+        self.assertEqual(out["toasts"], [])
+
+    def test_leaving_for_the_chat_list_abandons_the_link(self) -> None:
+        # The phone's Back button while the window loads. A refresh must not
+        # reopen the chat, and a failed window must not reopen it either.
+        for name, window in (
+            ("window answers", ""),
+            ("window fails", "WINDOW = () => ({ ok: false, status: 500 })"),
+        ):
+            with self.subTest(name):
+                out = self._run(
+                    "WINDOW_MS = 30\n" + window,
+                    "const link = openLinkedMessage()\nawait sleep(10)\ncloseChat()\nawait link\nawait sleep(40)",
+                )
+                self.assertIsNone(out["chat"])
+                self.assertEqual(out["url"], "?keep=1#frag")
+                self.assertFalse(out["held"])
+
+    def test_the_back_button_leaves_through_close_chat(self) -> None:
+        # The chat header's Back button (phones), compiled and clicked: in a topic
+        # it steps back to the topic list, anywhere else it leaves the chat
+        # through closeChat.
+        start = self.html.index('aria-label="Back" @click="currentNav.type')
+        tag = self.html[self.html.rindex("<button", 0, start) : self.html.index(">", start) + 1]
+        program = (
+            _VUE_RUNTIME
+            + f"""
+const CALLS = []
+const clicks = {{}}
+for (const [name, nav] of [['in a topic', {{ type: 'chat', topicId: 7 }}], ['in a chat', {{ type: 'chat' }}]]) {{
+    CALLS.length = 0
+    const root = mount({json.dumps("<div>" + tag + "</button></div>")}, () => ({{
+        currentNav: nav,
+        selectedChat: {{ ref: 'target' }},
+        navigateBack: () => CALLS.push('navigateBack'),
+        closeChat: () => CALLS.push('closeChat'),
+    }}))
+    walk(root).find((n) => n.tag === 'button').props.onClick()
+    clicks[name] = [...CALLS]
+}}
+console.log(JSON.stringify(clicks))
+"""
+        )
+        out = _run_setup_program(self.html, (), program, "")
+        self.assertEqual(out, {"in a topic": ["navigateBack"], "in a chat": ["closeChat"]})
 
     def test_a_forum_link_to_a_message_the_archive_lacks_says_so_once(self) -> None:
         out = self._run(
@@ -876,8 +1000,8 @@ class TestTheReaderLeavingAbandonsTheLink(unittest.TestCase):
 
 
 # A pane over rows with fixed content offsets: a row's top on screen is its
-# offset minus the pane's scrollTop. RESIZE and MUTATE are the live observer
-# callbacks, null once disconnected.
+# offset minus the pane's scrollTop. RESIZE is the live observer callback, null
+# once disconnected. MUTATE serves an older template that also watched the rows.
 _CENTER_PRELUDE = """
 const print = console.log
 const ref = (value) => ({ value })
@@ -900,25 +1024,24 @@ const rows = [below, node]
 const pane = {
     scrollTop: 0, clientHeight: 400, children: rows,
     getBoundingClientRect: () => ({ top: 0 }),
-    contains: (el) => el === node,
+    contains: () => true,
 }
 const messagesContainer = { value: pane }
 const findMessageElement = () => node
 const OBSERVED = new Set()
 let RESIZE = null
 let MUTATE = null
-let DISCONNECTS = 0
 // A size change reaches the hold only for an element it observes.
 const resize = (el) => { if (RESIZE && OBSERVED.has(el)) RESIZE([]) }
 class ResizeObserver {
     constructor(cb) { RESIZE = cb }
     observe(el) { OBSERVED.add(el) }
-    disconnect() { DISCONNECTS++; RESIZE = null }
+    disconnect() { RESIZE = null }
 }
 class MutationObserver {
     constructor(cb) { MUTATE = cb }
     observe() {}
-    disconnect() { DISCONNECTS++; MUTATE = null }
+    disconnect() { MUTATE = null }
 }
 let REDUCED = false
 const LISTENERS = []
@@ -979,20 +1102,16 @@ node.offset = 1300
 below.offset = 1500
 resize(below)
 seen.afterRowResize = pane.scrollTop
-// Vue draws the target anew: a new node, found by its id.
+// Vue draws the target anew: a new node, found by its id. Then the pane gets
+// shorter (a bar opens above it).
 node = makeNode(1500, 100)
 rows[1] = node
-MUTATE?.([])
-seen.afterRedraw = pane.scrollTop
-seen.watchesRedrawnRow = OBSERVED.has(node)
-// The pane gets shorter (a bar opens above it).
 pane.clientHeight = 300
 resize(pane)
 seen.afterPaneResize = pane.scrollTop
 // The reader scrolls: the hold ends at once.
 input('wheel')
-seen.disconnects = DISCONNECTS
-seen.live = [RESIZE !== null, MUTATE !== null]
+seen.live = RESIZE !== null
 seen.outlined = isJumpTarget(42)""",
                 )
                 self.assertEqual(
@@ -1002,11 +1121,8 @@ seen.outlined = isJumpTarget(42)""",
                         "smooth": 0,
                         "landed": 850,
                         "afterRowResize": 1150,
-                        "afterRedraw": 1350,
-                        "watchesRedrawnRow": True,
                         "afterPaneResize": 1400,
-                        "disconnects": 2,
-                        "live": [False, False],
+                        "live": False,
                         "outlined": True,
                     },
                 )
@@ -1017,10 +1133,10 @@ seen.outlined = isJumpTarget(42)""",
                 stop = "TIMERS.find((t) => t.ms === 8000).fn()" if end == "timer" else f"input('{end}')"
                 out = self._run(
                     "pendingLink = { chatRef: 'r7', messageId: 42 }\nawait scrollToMessage(42)\n"
-                    + f"seen.before = [RESIZE !== null, MUTATE !== null]\n{stop}\n"
-                    + "seen.after = [RESIZE !== null, MUTATE !== null]",
+                    + f"seen.before = RESIZE !== null\n{stop}\n"
+                    + "seen.after = RESIZE !== null",
                 )
-                self.assertEqual(out, {"before": [True, True], "after": [False, False]})
+                self.assertEqual(out, {"before": True, "after": False})
 
     def test_other_jumps_keep_their_smooth_scroll(self) -> None:
         out = self._run(
