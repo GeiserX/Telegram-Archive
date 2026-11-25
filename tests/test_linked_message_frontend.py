@@ -316,7 +316,9 @@ class TestTheLinkOpensBesideTheSidebar(unittest.TestCase):
         self.assertEqual(out["url"], "?chat=target")
 
     def test_a_message_the_archive_lacks_says_so_once_and_cleans_the_url(self) -> None:
-        cases = {"inside a gap": "[{ id: 43 }]"}
+        # Past the newest message the archive answers an empty page. A gap in the
+        # ids answers the next message instead.
+        cases = {"past the newest message": "[]", "inside a gap": "[{ id: 43 }]"}
         for name, rows in cases.items():
             with self.subTest(name):
                 out = self._run(
@@ -571,6 +573,130 @@ const fetch = async () => ANSWER
         self.assertEqual(out["serverError"], [False, ["Could not locate that topic"]])
         self.assertEqual(out["missing"], [False, []])
         self.assertEqual(out["found"], [True, []])
+
+
+def _auth_check_on_mount(html: str) -> str:
+    """The ``onMounted`` call that runs the first session check, as one statement."""
+    call = html.index("onMounted(async () =>", html.index("// Auth check on mount"))
+    return _setup_function(html[call:], "onMounted(async () =>") + ");"
+
+
+# What the first session check closes over. SEEN records checkingSession at the
+# moment the first view starts to load.
+_AUTH_CHECK_PRELUDE = """
+const print = console.log
+console.log = () => {}
+console.warn = () => {}
+console.error = () => {}
+const ref = (value) => ({ value })
+let MOUNT = null
+const onMounted = (fn) => { MOUNT = fn }
+const navigator = {}
+let notificationClickReady = false
+let pendingNotificationClick = null
+const openNotificationTarget = async () => {}
+const authRequired = ref(false)
+const oidcEnabled = ref(false)
+const isAuthenticated = ref(false)
+const userRole = ref('')
+const currentUsername = ref('')
+const noDownload = ref(false)
+const loginError = ref('')
+const authCheckFailed = ref(false)
+const loadingAuth = ref(true)
+const checkingSession = ref(true)
+const window = { location: new URL('https://archive.example/?chat=target&msg=42') }
+const history = { replaceState() {} }
+const SEEN = []
+let VIEW = async () => {}
+const openInitialView = () => { SEEN.push(checkingSession.value); return VIEW() }
+const initNotifications = async () => {}
+const initWebSocket = () => {}
+const flushPendingNotificationClick = async () => {}
+const finishInitialization = () => {}
+let AUTH = async () => ({ ok: true, json: async () => ({ authenticated: true }) })
+const fetch = (url) => AUTH(url)
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+"""
+
+
+@unittest.skipUnless(NODE, "node is required to execute the session check")
+class TestTheFirstSessionCheckEndsTheLoadingScreen(unittest.TestCase):
+    """The loading screen belongs to the first /api/auth/check only, whatever it answers."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _run(self, setup: str, drive: str) -> dict:
+        program = _AUTH_CHECK_PRELUDE + setup + "\n" + _auth_check_on_mount(self.html) + "\n"
+        epilogue = (
+            "(async () => {\n"
+            + drive
+            + "\nprint(JSON.stringify({ checking: checkingSession.value, failed: authCheckFailed.value,"
+            + " loading: loadingAuth.value, seen: SEEN }))\nprocess.exit(0)\n})()"
+        )
+        return _run_setup_program(self.html, (), program, epilogue)
+
+    def test_a_failed_session_check_shows_the_sign_in_form(self) -> None:
+        cases = {
+            "server error": "AUTH = async () => ({ ok: false, status: 502 })",
+            "network error": "AUTH = async () => { throw new TypeError('offline') }",
+        }
+        for name, setup in cases.items():
+            with self.subTest(name):
+                out = self._run(setup, "await MOUNT()")
+                self.assertEqual(out, {"checking": False, "failed": True, "loading": False, "seen": []})
+
+    def test_a_signed_in_boot_drops_the_loading_screen_before_the_first_view_loads(self) -> None:
+        # The first view never finishes here: the app must be on screen anyway.
+        out = self._run("VIEW = () => new Promise(() => {})", "MOUNT()\nawait sleep(20)")
+        self.assertEqual(out["seen"], [False])
+        self.assertFalse(out["checking"])
+
+    def test_a_signed_out_answer_shows_the_form_without_loading_a_view(self) -> None:
+        out = self._run(
+            "AUTH = async () => ({ ok: true, json: async () => ({ authenticated: false, auth_required: true }) })",
+            "await MOUNT()",
+        )
+        self.assertEqual(out, {"checking": False, "failed": False, "loading": False, "seen": []})
+
+
+@unittest.skipUnless(NODE, "node is required to execute the helper")
+class TestSingleSignOnCarriesOnlyTheCurrentLink(unittest.TestCase):
+    """A link that already opened left the URL. A later single sign-on must not carry it again."""
+
+    def test_the_carry_reads_the_address_bar_of_now(self) -> None:
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        out = _run_setup_program(
+            html,
+            ("const rememberSsoLink = () =>",),
+            """
+// The page loaded with a link, and the link opened and left the URL.
+let location = new URL('https://archive.example/?keep=1')
+const linkUrl = new URL('https://archive.example/?chat=old&msg=7')
+const linkParams = linkUrl.searchParams
+const ssoLinkKey = 'archive_sso_link'
+const STORE = {}
+const sessionStorage = {
+    setItem: (key, value) => { STORE[key] = value },
+    getItem: (key) => STORE[key] ?? null,
+    removeItem: (key) => { delete STORE[key] },
+}
+""",
+            """rememberSsoLink()
+const seen = { opened: STORE[ssoLinkKey] ?? null }
+location = new URL('https://archive.example/?chat=new&msg=9&keep=1')
+rememberSsoLink()
+const carried = JSON.parse(STORE[ssoLinkKey])
+seen.carried = { chat: carried.chat, msg: carried.msg }
+seen.ttl = carried.expires - Date.now()
+console.log(JSON.stringify(seen))""",
+        )
+        self.assertIsNone(out["opened"])
+        self.assertEqual(out["carried"], {"chat": "new", "msg": "9"})
+        self.assertGreater(out["ttl"], 590000)
+        self.assertLessEqual(out["ttl"], 600000)
 
 
 # The real view picks (selectChat, openForumTopics, selectTopic), the real open
