@@ -319,6 +319,7 @@ const el = {{
 const markJumpTarget = () => SCROLLED.push(['outline', ...Object.keys(openDeletedMessages.value)])
 const findMessageElement = () => el
 const nextTick = (fn) => Promise.resolve().then(fn)
+const pendingLink = null
 const window = {{ matchMedia: () => ({{ matches: true }}) }}
 """
         return _run_setup_program(
@@ -354,6 +355,7 @@ const markJumpTarget = () => {{}}
 const el = {{ dataset: {{ msgId: '11' }}, querySelector: () => null, scrollIntoView: () => {{}} }}
 const findMessageElement = () => el
 const nextTick = (fn) => Promise.resolve().then(fn)
+const pendingLink = null
 const window = {{ matchMedia: () => ({{ matches: false }}) }}
 """,
             """scrollToMessage(12)

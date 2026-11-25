@@ -2145,6 +2145,7 @@ const loadChatStats = async () => {}
 const loadPinnedMessages = async () => {}
 const getChatName = (chat) => chat.title || ''
 const navigateTo = (entry) => { navStack.value.push(entry) }
+const noteViewPick = () => {}
 const loadTopics = async (ref) => { topics.value = TOPICS_BY_REF[ref] || [] }
 const findMessageElement = () => null
 const scrollToMessage = (id) => { SCROLLS.push(id) }

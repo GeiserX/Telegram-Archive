@@ -12467,12 +12467,14 @@
                 }
 
                 const openForumTopics = async (chat) => {
+                    noteViewPick()
                     // v6.2.12: Store full chat object so selectTopic can use it for display name
                     navigateTo({ type: 'topics', chatRef: chat.ref, chatName: getChatName(chat), chat: chat })
                     await loadTopics(chat.ref)
                 }
 
                 const selectTopic = async (chat, topic, options = {}) => {
+                    noteViewPick()
                     // Invalidate any in-flight loads from previous chat/topic
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
@@ -13043,9 +13045,14 @@
 
                 // Open what a notification points at, or say so instead of doing nothing.
                 // Returns whether the chat was opened, so the caller can decide to keep a
-                // deep link in the URL and let a refresh retry it.
-                const openNotificationTarget = async (chatRef, messageId) => {
+                // deep link in the URL and let a refresh retry it. A shared link passes
+                // its guard: the open stops after any wait once the reader has picked
+                // another view, and the picks it makes itself are not the reader's.
+                const openNotificationTarget = async (chatRef, messageId, externalGuard = null) => {
+                    const current = () => !externalGuard || externalGuard()
+                    const pick = externalGuard ? asLinkPick : (open) => open()
                     const targetChat = await resolveChatById(chatRef)
+                    if (!current()) return false
                     if (!targetChat) {
                         showToast('Could not open that chat')
                         return false
@@ -13053,7 +13060,8 @@
                     // With a message to land on, the window around it is the only load the
                     // pane needs — the normal tail page would race it (its deferred
                     // scroll-to-bottom fires after the jump has positioned the view).
-                    await selectChat(targetChat, { skipInitialLoad: Boolean(messageId) })
+                    await pick(() => selectChat(targetChat, { skipInitialLoad: Boolean(messageId) }))
+                    if (!current()) return false
                     if (!messageId) return true
                     if (targetChat.is_forum) {
                         // selectChat short-circuits a forum into its topics list
@@ -13064,11 +13072,13 @@
                                 `/api/chats/${encodeURIComponent(targetChat.ref)}/messages?after_id=${messageId - 1}&limit=1`,
                                 { credentials: 'same-origin' }
                             )
+                            if (!current()) return false
                             if (!resp.ok) {
                                 showToast('Could not locate that topic')
                                 return false
                             }
                             const rows = await resp.json()
+                            if (!current()) return false
                             const target = Array.isArray(rows) && rows.find(m => Number(m.id) === Number(messageId))
                             // Not in the archive: the caller says so in its own words.
                             if (!target) return false
@@ -13083,19 +13093,23 @@
                                 showToast('Could not locate that topic')
                                 return false
                             }
-                            await selectTopic(targetChat, topic, { skipInitialLoad: true })
+                            await pick(() => selectTopic(targetChat, topic, { skipInitialLoad: true }))
+                            if (!current()) return false
                         } catch (e) {
+                            if (!current()) return false
                             showToast('Could not locate that topic')
                             return false
                         }
                     }
                     await nextTick()
+                    if (!current()) return false
                     // The #367-hardened jump: windows around the id even when the
                     // message is far outside the loaded page. scrollToMessage only
                     // worked for already-rendered rows — fine for a fresh push
                     // notification, silently a no-op for a shared link to history.
-                    const jumped = await loadMessagesAroundId(messageId)
-                    if (jumped === false) await reloadViewAfterFailedJump(targetChat)
+                    const jumped = await loadMessagesAroundId(messageId, externalGuard)
+                    if (!current()) return false
+                    if (jumped === false) await pick(() => reloadViewAfterFailedJump(targetChat))
                     return jumped === true
                 }
 
@@ -13308,6 +13322,35 @@
                     for (const name of names) url.searchParams.delete(name)
                     history.replaceState(history.state, '', url)
                 }
+                // The shared link being opened ({ chatRef, messageId }), or null. The
+                // reader picking a chat or a topic abandons it at once.
+                let pendingLink = null
+                // True only while the link itself calls selectChat or selectTopic.
+                let linkPicking = false
+
+                // Run one view pick on behalf of the link. The pick notes itself in
+                // its synchronous start, so the flag only needs to cover the call.
+                const asLinkPick = (open) => {
+                    linkPicking = true
+                    try {
+                        return open()
+                    } finally {
+                        linkPicking = false
+                    }
+                }
+
+                // selectChat, openForumTopics and selectTopic call this first. Any view
+                // pick ends the outline and the centering of the previous jump. A pick
+                // by the reader also abandons the link, and drops it from the address
+                // bar, so a refresh does not reopen a link the reader left.
+                const noteViewPick = () => {
+                    clearJumpTarget()
+                    stopHoldingJumpTarget()
+                    if (linkPicking) return
+                    pendingLink = null
+                    const params = new URL(location.href).searchParams
+                    if (params.has('chat') || params.has('msg')) dropLinkParams('chat', 'msg')
+                }
 
                 // Whether the archive answers that this chat has no message with this id.
                 // Any failure to ask is "not known", so the link stays for a retry.
@@ -13329,7 +13372,8 @@
                 // Open /?chat=<ref>&msg=<id>. The URL is cleaned once the link has done
                 // all it can: it opened, or the archive has no such message. It stays
                 // after a failure on the way (network, server, a chat not visible yet),
-                // so a refresh retries it.
+                // so a refresh retries it. The reader picking another view abandons the
+                // link: every step after a wait checks that it is still the current one.
                 const openLinkedMessage = async () => {
                     const params = new URL(location.href).searchParams
                     const chatRef = params.get('chat')
@@ -13343,14 +13387,27 @@
                     }
                     // No identifiers in the log line: message ids are PII.
                     console.log('[Link] Opening a linked chat')
-                    if (await openNotificationTarget(chatRef, messageId)) {
-                        dropLinkParams('chat', 'msg')
-                        return
-                    }
-                    if (messageId === null || selectedChat.value?.ref !== chatRef) return
-                    if (await linkedMessageMissing(chatRef, messageId)) {
-                        showToast('Linked message unavailable')
-                        dropLinkParams('chat', 'msg')
+                    const link = { chatRef, messageId }
+                    pendingLink = link
+                    const current = () => pendingLink === link
+                    try {
+                        const opened = await openNotificationTarget(chatRef, messageId, current)
+                        if (!current()) return
+                        if (opened) {
+                            dropLinkParams('chat', 'msg')
+                            return
+                        }
+                        // Ask only when the chat did open: its pane, or a forum's topic list.
+                        const onChat = selectedChat.value?.ref === chatRef || currentNav.value?.chatRef === chatRef
+                        if (messageId === null || !onChat) return
+                        const missing = await linkedMessageMissing(chatRef, messageId)
+                        if (!current()) return
+                        if (missing) {
+                            showToast('Linked message unavailable')
+                            dropLinkParams('chat', 'msg')
+                        }
+                    } finally {
+                        if (current()) pendingLink = null
                     }
                 }
 
@@ -15960,6 +16017,7 @@
                 }
 
                 const selectChat = async (chat, options = {}) => {
+                    noteViewPick()
                     // v6.2.0: If forum chat, open topics list instead
                     if (chat.is_forum) {
                         await openForumTopics(chat)
@@ -19116,6 +19174,68 @@
                 const isJumpTarget = (msgId) => jumpTarget.value !== null &&
                     jumpTarget.value.id === Number(msgId) &&
                     jumpTarget.value.chatRef === (selectedChat.value?.ref ?? null)
+                const clearJumpTarget = () => {
+                    clearTimeout(jumpTargetTimer)
+                    jumpTarget.value = null
+                }
+
+                // The element a jump centers: the message row, or its one picture when
+                // the message is an album member.
+                const findJumpTarget = (msgId) => {
+                    const row = findMessageElement(msgId)
+                    return row?.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || row
+                }
+
+                // Put a jump target in the middle of the pane at once, or its top at the
+                // top when it is taller than the pane. Looked up by id on every call:
+                // Vue can replace the element (a picture that fails to load becomes the
+                // missing placeholder), and a held node would be out of the page.
+                const centerJumpTarget = (msgId) => {
+                    const pane = messagesContainer.value
+                    const el = findJumpTarget(msgId)
+                    if (!pane || !el || !pane.contains(el)) return
+                    const box = el.getBoundingClientRect()
+                    pane.scrollTop += box.top - pane.getBoundingClientRect().top -
+                        Math.max(0, (pane.clientHeight - box.height) / 2)
+                }
+
+                // A shared link keeps its target centered while late content settles
+                // (pictures, fonts, the rows and bars drawn after the first paint).
+                // Any size change of the pane or of a row centers it again. It stops at
+                // the reader's first wheel, touch, pointer or key input, at the next view
+                // pick, or after JUMP_HOLD_MS.
+                const JUMP_HOLD_MS = 8000
+                let stopHoldingJumpTarget = () => {}
+                const holdJumpTarget = (msgId) => {
+                    stopHoldingJumpTarget()
+                    const pane = messagesContainer.value
+                    if (!pane) return
+                    const center = () => centerJumpTarget(msgId)
+                    center()
+                    const layout = new ResizeObserver(center)
+                    const watchRows = () => {
+                        for (const row of pane.children) layout.observe(row)
+                    }
+                    layout.observe(pane)
+                    watchRows()
+                    const rows = new MutationObserver(() => {
+                        watchRows()
+                        center()
+                    })
+                    rows.observe(pane, { childList: true })
+                    const input = new AbortController()
+                    const stop = () => input.abort()
+                    for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+                        window.addEventListener(name, stop, { capture: true, passive: true, signal: input.signal })
+                    }
+                    const timer = setTimeout(stop, JUMP_HOLD_MS)
+                    input.signal.addEventListener('abort', () => {
+                        layout.disconnect()
+                        rows.disconnect()
+                        clearTimeout(timer)
+                    }, { once: true })
+                    stopHoldingJumpTarget = stop
+                }
 
                 const scrollToMessage = (msgId) => {
                     return nextTick(async () => {
@@ -19133,6 +19253,13 @@
                             el = findMessageElement(msgId) || el
                         }
                         markJumpTarget(msgId)
+                        // A shared link lands at once, with no smooth scroll, and holds
+                        // its target centered while the page settles. Other jumps keep
+                        // their smooth scroll.
+                        if (pendingLink !== null && pendingLink.messageId === Number(msgId)) {
+                            holdJumpTarget(msgId)
+                            return true
+                        }
                         // An album member is one picture in its row's grid: center that picture.
                         const target = el.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || el
                         const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches

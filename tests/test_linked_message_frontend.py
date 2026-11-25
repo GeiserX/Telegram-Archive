@@ -76,6 +76,18 @@ const mount = (template, setup) => {{
 """
 
 
+# The open behind every notification, search hit and link. It takes the link's
+# guard since the link stops when the reader leaves.
+_ONT_DECLARATION = next(
+    d
+    for d in (
+        "const openNotificationTarget = async (chatRef, messageId, externalGuard = null) =>",
+        "const openNotificationTarget = async (chatRef, messageId) =>",
+    )
+    if d in INDEX_HTML.read_text(encoding="utf-8")
+)
+
+
 def _optional(html: str, declaration: str, fallback: str) -> str:
     """The declaration when the template has it, else a stand-in.
 
@@ -213,6 +225,7 @@ const EVENTS = []
 const TOASTS = []
 const showToast = (message) => { TOASTS.push(message) }
 const selectedChat = { value: null }
+const currentNav = { value: { type: 'chatList' } }
 const later = (name) => new Promise((resolve) => setTimeout(() => { EVENTS.push(name); resolve() }, 5))
 const loadAccounts = () => later('accounts')
 const loadTranscriptionState = () => later('transcription')
@@ -303,17 +316,18 @@ class TestTheLinkOpensBesideTheSidebar(unittest.TestCase):
         self.assertEqual(out["url"], "?chat=target")
 
     def test_a_message_the_archive_lacks_says_so_once_and_cleans_the_url(self) -> None:
-        out = self._run(
-            """
-TARGET = async (ref) => { selectedChat.value = { ref }; return false }
-PROBE = async () => ({ ok: true, json: async () => [{ id: 43 }] })
-""",
-            "await openInitialView()",
-        )
-        self.assertEqual(out["toasts"], ["Linked message unavailable"])
-        self.assertEqual(out["url"], "?keep=1")
-        probes = [e for e in out["events"] if isinstance(e, list) and e[0] == "probe"]
-        self.assertEqual(probes, [["probe", "/api/chats/target/messages?after_id=41&limit=1"]])
+        cases = {"inside a gap": "[{ id: 43 }]"}
+        for name, rows in cases.items():
+            with self.subTest(name):
+                out = self._run(
+                    "TARGET = async (ref) => { selectedChat.value = { ref }; return false }\n"
+                    + f"PROBE = async () => ({{ ok: true, json: async () => {rows} }})",
+                    "await openInitialView()",
+                )
+                self.assertEqual(out["toasts"], ["Linked message unavailable"])
+                self.assertEqual(out["url"], "?keep=1")
+                probes = [e for e in out["events"] if isinstance(e, list) and e[0] == "probe"]
+                self.assertEqual(probes, [["probe", "/api/chats/target/messages?after_id=41&limit=1"]])
 
     def test_a_failure_on_the_way_keeps_the_link_for_a_refresh(self) -> None:
         cases = {
@@ -385,6 +399,7 @@ const row = {
 const findMessageElement = () => row
 const nextTick = (fn) => Promise.resolve().then(fn)
 const window = { matchMedia: () => ({ matches: true }) }
+const pendingLink = null
 """ + self._jump_state("(value) => ({ value })")
         out = _run_setup_program(
             self.html,
@@ -540,7 +555,7 @@ const fetch = async () => ANSWER
 """
         out = _run_setup_program(
             self.html,
-            ("const openNotificationTarget = async (chatRef, messageId) =>",),
+            (_ONT_DECLARATION,),
             prelude,
             """(async () => {
     const seen = {}
@@ -556,3 +571,336 @@ const fetch = async () => ANSWER
         self.assertEqual(out["serverError"], [False, ["Could not locate that topic"]])
         self.assertEqual(out["missing"], [False, []])
         self.assertEqual(out["found"], [True, []])
+
+
+# The real view picks (selectChat, openForumTopics, selectTopic), the real open
+# and the real link entry, over a stubbed network. LOOKUP_MS and PROBE_MS delay
+# the chat lookup and the forum probe.
+_VIEW_PICK_PRELUDE = """
+const print = console.log
+console.log = () => {}
+console.error = () => {}
+let location = new URL('https://archive.example/?chat=target&msg=42&keep=1#frag')
+const history = { state: null, replaceState(state, _, url) { location = new URL(url) } }
+const ref = (value) => ({ value })
+const selectedChat = ref(null)
+const selectedPaneTopic = ref(null)
+const messages = ref([])
+const messageSearchQuery = ref('')
+const deletedOnly = ref(false)
+const editedOnly = ref(false)
+const chatStats = ref(null)
+const pinnedMessages = ref([])
+const currentPinnedIndex = ref(0)
+const showPinnedOnly = ref(false)
+const showMediaGallery = ref(false)
+const loading = ref(false)
+const navStack = ref([{ type: 'chatList', filter: 'all' }])
+const currentNav = { get value() { return navStack.value[navStack.value.length - 1] } }
+const topics = ref([])
+let chatVersion = 0
+let galleryReturnState = null
+const GENERAL_TOPIC_ID = 1
+const TOASTS = []
+const showToast = (m) => { TOASTS.push(m) }
+const stopMessageRefresh = () => {}
+const startMessageRefresh = () => {}
+const resetMessagePagination = () => {}
+const setupMessagesScrollObserver = () => {}
+const scrollToBottom = () => {}
+const nextTick = async () => {}
+const loadMessages = async () => {}
+const loadChatStats = async () => {}
+const loadPinnedMessages = async () => {}
+const getChatName = (chat) => chat.ref
+const navigateTo = (entry) => { navStack.value.push(entry) }
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const CHATS = { target: { ref: 'target' }, other: { ref: 'other' }, forum: { ref: 'forum', is_forum: true } }
+const TOPICS = { forum: [{ id: 1, title: 'General' }, { id: 7, title: 'Topic 7' }] }
+const loadTopics = async (chatRef) => { topics.value = TOPICS[chatRef] || [] }
+let LOOKUP_MS = 0
+const resolveChatById = async (chatRef) => { await sleep(LOOKUP_MS); return CHATS[chatRef] || null }
+let PROBE_MS = 0
+let PROBE = () => ({ ok: true, json: async () => [{ id: 42, reply_to_top_id: 7 }] })
+const fetch = async () => { await sleep(PROBE_MS); return PROBE() }
+const WINDOWS = []
+const loadMessagesAroundId = async (messageId, externalGuard = null) => {
+    WINDOWS.push([selectedChat.value?.ref, selectedPaneTopic.value?.id ?? null, messageId])
+    markJumpTarget(messageId)
+    return true
+}
+const HOLDS = []
+let stopHoldingJumpTarget = () => { HOLDS.push('stop') }
+"""
+
+
+@unittest.skipUnless(NODE, "node is required to execute the navigation chain")
+class TestTheReaderLeavingAbandonsTheLink(unittest.TestCase):
+    """A late answer for the link never pulls the reader back to the linked chat."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _run(self, setup: str, drive: str) -> dict:
+        html = self.html
+        prelude = "\n".join(
+            (
+                _VIEW_PICK_PRELUDE,
+                setup,
+                _setup_slice(html, "const JUMP_OUTLINE_MS = "),
+                _setup_slice(html, "const jumpTarget = ref(null)"),
+                _setup_slice(html, "const markJumpTarget = (msgId) =>"),
+                _setup_slice(html, "const isJumpTarget = (msgId) =>"),
+                _optional(html, "const clearJumpTarget = () =>", "const clearJumpTarget = () => {}"),
+                _optional(html, "const asLinkPick = (open) =>", "const asLinkPick = (open) => open()"),
+                _optional(html, "const noteViewPick = () =>", "const noteViewPick = () => {}"),
+            )
+        )
+        declarations = (
+            "const reloadViewAfterFailedJump = async (chat) =>",
+            "const openForumTopics = async (chat) =>",
+            "const selectTopic = async (chat, topic, options = {}) =>",
+            "const selectChat = async (chat, options = {}) =>",
+            _ONT_DECLARATION,
+            "const dropLinkParams = (...names) =>",
+            "const linkedMessageMissing = async (chatRef, messageId) =>",
+            "const openLinkedMessage = async () =>",
+        )
+        epilogue = (
+            "(async () => {\n"
+            + drive
+            + "\nprint(JSON.stringify({ chat: selectedChat.value?.ref ?? null,"
+            + " topic: selectedPaneTopic.value?.id ?? null, windows: WINDOWS, toasts: TOASTS,"
+            + " url: location.search + location.hash, outlined: isJumpTarget(42), holds: HOLDS }))\n"
+            + "process.exit(0)\n})().catch((e) => { console.error(e); process.exit(1) })"
+        )
+        return _run_setup_program(html, declarations, prelude, epilogue)
+
+    def test_a_chat_the_reader_opens_while_the_lookup_runs_stays_open(self) -> None:
+        out = self._run(
+            "LOOKUP_MS = 30",
+            "const link = openLinkedMessage()\nawait sleep(10)\nawait selectChat(CHATS.other)\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual(out["chat"], "other")
+        self.assertEqual(out["windows"], [])
+        self.assertEqual(out["toasts"], [])
+        # A refresh must not reopen the link the reader left. The rest stays.
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_a_topic_the_reader_opens_while_the_forum_probe_runs_stays_open(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=forum&msg=42&keep=1#frag')\nPROBE_MS = 30",
+            "const link = openLinkedMessage()\nawait sleep(10)\n"
+            + "await selectTopic(CHATS.forum, TOPICS.forum[0])\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual([out["chat"], out["topic"]], ["forum", 1])
+        self.assertEqual(out["windows"], [])
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_the_links_own_picks_do_not_abandon_it(self) -> None:
+        for name, url, window in (
+            ("plain chat", "?chat=target&msg=42&keep=1#frag", ["target", None, 42]),
+            ("forum topic", "?chat=forum&msg=42&keep=1#frag", ["forum", 7, 42]),
+        ):
+            with self.subTest(name):
+                out = self._run(f"location = new URL('https://archive.example/{url}')", "await openLinkedMessage()")
+                self.assertEqual(out["windows"], [window])
+                self.assertTrue(out["outlined"])
+                self.assertEqual(out["url"], "?keep=1#frag")
+                self.assertEqual(out["toasts"], [])
+
+    def test_a_link_kept_for_a_retry_leaves_the_url_when_the_reader_moves_on(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=gone&msg=42&keep=1#frag')",
+            "await openLinkedMessage()\nconst kept = location.search\nawait selectChat(CHATS.other)\n"
+            + "TOASTS.push(kept)",
+        )
+        self.assertEqual(out["toasts"], ["Could not open that chat", "?chat=gone&msg=42&keep=1"])
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_a_chat_switch_ends_the_outline_and_the_centering(self) -> None:
+        out = self._run(
+            "",
+            "await openLinkedMessage()\nconst before = isJumpTarget(42)\nHOLDS.length = 0\n"
+            + "await selectChat(CHATS.other)\nawait selectChat(CHATS.target)\nTOASTS.push(before)",
+        )
+        self.assertEqual(out["toasts"], [True])
+        self.assertFalse(out["outlined"])
+        self.assertIn("stop", out["holds"])
+
+    def test_a_forum_link_to_a_message_the_archive_lacks_says_so_once(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=forum&msg=99999&keep=1#frag')\n"
+            + "PROBE = () => ({ ok: true, json: async () => [] })",
+            "await openLinkedMessage()",
+        )
+        self.assertEqual(out["toasts"], ["Linked message unavailable"])
+        self.assertEqual(out["url"], "?keep=1#frag")
+        self.assertEqual(out["windows"], [])
+
+    def test_a_forum_link_keeps_the_url_after_a_server_error(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=forum&msg=42&keep=1#frag')\n"
+            + "PROBE = () => ({ ok: false, status: 502 })",
+            "await openLinkedMessage()",
+        )
+        self.assertEqual(out["toasts"], ["Could not locate that topic"])
+        self.assertEqual(out["url"], "?chat=forum&msg=42&keep=1#frag")
+
+
+# A pane over rows with fixed content offsets: a row's top on screen is its
+# offset minus the pane's scrollTop. RESIZE and MUTATE are the live observer
+# callbacks, null once disconnected.
+_CENTER_PRELUDE = """
+const print = console.log
+const ref = (value) => ({ value })
+const selectedChat = ref({ ref: 'r7' })
+let pendingLink = null
+const sortedMessages = { value: [{ id: 42 }] }
+const openDeletedMessages = { value: {} }
+const isDeletedFolded = () => false
+const deletedKey = () => ''
+const nextTick = (fn) => Promise.resolve().then(fn)
+const SMOOTH = []
+const makeNode = (offset, height) => ({
+    offset, height, dataset: { msgId: '42' }, querySelector: () => null,
+    getBoundingClientRect() { return { top: this.offset - pane.scrollTop, height: this.height } },
+    scrollIntoView: (options) => SMOOTH.push(options),
+})
+let node = makeNode(1000, 100)
+const below = makeNode(1200, 80)
+const rows = [below, node]
+const pane = {
+    scrollTop: 0, clientHeight: 400, children: rows,
+    getBoundingClientRect: () => ({ top: 0 }),
+    contains: (el) => el === node,
+}
+const messagesContainer = { value: pane }
+const findMessageElement = () => node
+const OBSERVED = new Set()
+let RESIZE = null
+let MUTATE = null
+let DISCONNECTS = 0
+// A size change reaches the hold only for an element it observes.
+const resize = (el) => { if (RESIZE && OBSERVED.has(el)) RESIZE([]) }
+class ResizeObserver {
+    constructor(cb) { RESIZE = cb }
+    observe(el) { OBSERVED.add(el) }
+    disconnect() { DISCONNECTS++; RESIZE = null }
+}
+class MutationObserver {
+    constructor(cb) { MUTATE = cb }
+    observe() {}
+    disconnect() { DISCONNECTS++; MUTATE = null }
+}
+let REDUCED = false
+const LISTENERS = []
+const window = {
+    matchMedia: () => ({ matches: REDUCED }),
+    addEventListener: (name, fn, options) => { LISTENERS.push({ name, fn, options }) },
+}
+const input = (name) => {
+    for (const l of LISTENERS) if (l.name === name && !l.options.signal.aborted) l.fn()
+}
+const TIMERS = []
+const setTimeout = (fn, ms) => { TIMERS.push({ fn, ms }); return TIMERS.length }
+const clearTimeout = () => {}
+"""
+
+
+@unittest.skipUnless(NODE, "node is required to execute the helpers")
+class TestALinkHoldsItsTargetCentered(unittest.TestCase):
+    """A link lands on its target at once and keeps it centered while the page settles."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _run(self, drive: str) -> dict:
+        html = self.html
+        prelude = "\n".join(
+            (
+                _CENTER_PRELUDE,
+                _setup_slice(html, "const JUMP_OUTLINE_MS = "),
+                _setup_slice(html, "const jumpTarget = ref(null)"),
+                _setup_slice(html, "const markJumpTarget = (msgId) =>"),
+                _setup_slice(html, "const isJumpTarget = (msgId) =>"),
+                _optional(html, "const findJumpTarget = (msgId) =>", ""),
+                _optional(html, "const centerJumpTarget = (msgId) =>", ""),
+                _optional(html, "const JUMP_HOLD_MS = ", ""),
+                _optional(html, "const holdJumpTarget = (msgId) =>", "const holdJumpTarget = () => {}"),
+            )
+        )
+        epilogue = (
+            "(async () => {\nconst seen = {}\n"
+            + drive
+            + "\nprint(JSON.stringify(seen))\nprocess.exit(0)\n})().catch((e) => { console.error(e); process.exit(1) })"
+        )
+        return _run_setup_program(html, ("const scrollToMessage = (msgId) =>",), prelude, epilogue)
+
+    def test_late_layout_keeps_the_target_centered_until_the_reader_scrolls(self) -> None:
+        for reduced in (False, True):
+            with self.subTest(reduced_motion=reduced):
+                out = self._run(
+                    f"""REDUCED = {str(reduced).lower()}
+pendingLink = {{ chatRef: 'r7', messageId: 42 }}
+seen.found = await scrollToMessage(42)
+seen.smooth = SMOOTH.length
+seen.landed = pane.scrollTop
+// A picture in a row below the target gets its size and pushes the target.
+node.offset = 1300
+below.offset = 1500
+resize(below)
+seen.afterRowResize = pane.scrollTop
+// Vue draws the target anew: a new node, found by its id.
+node = makeNode(1500, 100)
+rows[1] = node
+MUTATE?.([])
+seen.afterRedraw = pane.scrollTop
+seen.watchesRedrawnRow = OBSERVED.has(node)
+// The pane gets shorter (a bar opens above it).
+pane.clientHeight = 300
+resize(pane)
+seen.afterPaneResize = pane.scrollTop
+// The reader scrolls: the hold ends at once.
+input('wheel')
+seen.disconnects = DISCONNECTS
+seen.live = [RESIZE !== null, MUTATE !== null]
+seen.outlined = isJumpTarget(42)""",
+                )
+                self.assertEqual(
+                    out,
+                    {
+                        "found": True,
+                        "smooth": 0,
+                        "landed": 850,
+                        "afterRowResize": 1150,
+                        "afterRedraw": 1350,
+                        "watchesRedrawnRow": True,
+                        "afterPaneResize": 1400,
+                        "disconnects": 2,
+                        "live": [False, False],
+                        "outlined": True,
+                    },
+                )
+
+    def test_every_kind_of_reader_input_and_the_time_limit_end_the_hold(self) -> None:
+        for end in ("touchstart", "pointerdown", "keydown", "timer"):
+            with self.subTest(end):
+                stop = "TIMERS.find((t) => t.ms === 8000).fn()" if end == "timer" else f"input('{end}')"
+                out = self._run(
+                    "pendingLink = { chatRef: 'r7', messageId: 42 }\nawait scrollToMessage(42)\n"
+                    + f"seen.before = [RESIZE !== null, MUTATE !== null]\n{stop}\n"
+                    + "seen.after = [RESIZE !== null, MUTATE !== null]",
+                )
+                self.assertEqual(out, {"before": [True, True], "after": [False, False]})
+
+    def test_other_jumps_keep_their_smooth_scroll(self) -> None:
+        out = self._run(
+            "seen.found = await scrollToMessage(42)\nseen.smooth = SMOOTH\n"
+            + "seen.scrollTop = pane.scrollTop\nseen.held = RESIZE !== null",
+        )
+        self.assertEqual(
+            out, {"found": True, "smooth": [{"behavior": "smooth", "block": "center"}], "scrollTop": 0, "held": False}
+        )
