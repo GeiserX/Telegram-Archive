@@ -10605,17 +10605,21 @@
                 const oidcEnabled = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
-                const linkParams = new URLSearchParams(location.search)
+                const linkUrl = new URL(location.href)
+                const linkParams = linkUrl.searchParams
                 const ssoLinkKey = 'archive_sso_link'
                 // SSO returns to the site root. Only carry the two route fields
                 // in this tab, and consume them once on return.
                 try {
                     const saved = JSON.parse(sessionStorage.getItem(ssoLinkKey))
-                    sessionStorage.removeItem(ssoLinkKey)
                     if (!linkParams.has('chat') && saved?.expires > Date.now()) {
                         linkParams.set('chat', saved.chat)
                         if (saved.msg !== null) linkParams.set('msg', saved.msg)
+                        else linkParams.delete('msg')
+                        // Keep the target retryable on refresh until the jump succeeds.
+                        history.replaceState(history.state, '', linkUrl)
                     }
+                    sessionStorage.removeItem(ssoLinkKey)
                 } catch { /* Session storage is optional. */ }
                 const openingLink = ref(Boolean(linkParams.get('chat')))
                 const rememberSsoLink = () => {

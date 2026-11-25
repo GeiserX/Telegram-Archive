@@ -627,6 +627,47 @@ const fetch = async url => {
     _run_node(script)
 
 
+def test_sso_return_restores_the_target_to_the_url_for_refresh() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index("const loadingAuth = ref(true)")
+    end = html.index("const rememberSsoLink =", start)
+    _run_node(
+        """
+const assert = require('node:assert/strict');
+const ref = value => ({value});
+const storage = new Map();
+const sessionStorage = {getItem: k => storage.get(k) ?? null, removeItem: k => storage.delete(k)};
+let location = new URL('https://archive.example/?keep=1#section');
+const history = {state: {tab: 1}, replaceState(state, _, url) {
+    assert.equal(state, this.state);
+    location = new URL(url);
+}};
+const boot = () => {
+"""
+        + html[start:end]
+        + """
+    return [openingLink.value, linkParams.get('chat'), linkParams.get('msg')];
+};
+const save = (msg, expires = Date.now() + 60000) =>
+    storage.set('archive_sso_link', JSON.stringify({chat: 'saved', msg, expires}));
+save('42');
+assert.deepEqual(boot(), [true, 'saved', '42']);
+assert.equal(storage.size, 0);
+assert.equal(location.href, 'https://archive.example/?keep=1&chat=saved&msg=42#section');
+assert.deepEqual(boot(), [true, 'saved', '42']); // Reload after the target failed to open.
+location = new URL('https://archive.example/?chat=explicit&msg=9');
+save('42');
+assert.deepEqual(boot(), [true, 'explicit', '9']);
+location = new URL('https://archive.example/');
+save('42', 0);
+assert.deepEqual(boot(), [false, null, null]);
+save(null);
+assert.deepEqual(boot(), [true, 'saved', null]);
+assert.equal(location.search, '?chat=saved');
+"""
+    )
+
+
 def test_initial_message_opens_before_sidebar_after_session_check_or_login() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert html.count("await openInitialView()") == 2
