@@ -56,10 +56,13 @@
     <script src="/static/vendor/flatpickr-4.6.13.min.js"></script>
     <style>
         [v-cloak] { display: none !important; }
-        [data-linked-message] {
+        [data-linked-message] > .message-bubble,
+        [data-linked-message] > .service-message,
+        [data-linked-message][data-album-message-id] {
             outline: 3px solid rgb(var(--tg-accent));
+        }
+        [data-linked-message][data-album-message-id] {
             outline-offset: -3px;
-            border-radius: 0.5rem;
         }
         /* iOS Safe Area Support */
         :root {
