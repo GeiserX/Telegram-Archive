@@ -349,7 +349,7 @@ const nextTick = async () => {};
 const toasts = [];
 const showToast = message => { toasts.push(message); };
 const console = { error: () => {}, log: () => {}, warn: () => {} };
-const fetch = async () => ({ ok: true, json: async () => [] });
+const fetch = async () => ({ ok: true, json: async () => [{id: 99}] });
 """,
             _extract_const_arrow_function(html, "resolveChatById", asynchronous=True),
             _extract_const_arrow_function(html, "openNotificationTarget", asynchronous=True),
@@ -369,18 +369,18 @@ const fetch = async () => ({ ok: true, json: async () => [] });
 
     // The jump fails on an empty pane: fall back to the ordinary entry.
     opened.length = 0; jumps.length = 0; jumpResult = false;
-    assert.equal(await openNotificationTarget('plainRef', 4243), true);
+    assert.equal(await openNotificationTarget('plainRef', 4243), false);
     assert.deepEqual(opened, [['plainRef', true], ['plainRef', false]]);
 
     // A stale-view abort is not a failure (undefined, not false): no fallback.
     opened.length = 0; jumpResult = undefined;
-    assert.equal(await openNotificationTarget('plainRef', 4244), true);
+    assert.equal(await openNotificationTarget('plainRef', 4244), false);
     assert.deepEqual(opened, [['plainRef', true]]);
 
     // A forum jump enters its topic without the topic's own load; the fallback re-enters that topic.
     opened.length = 0; topicsOpened.length = 0; jumpResult = false;
     selectedPaneTopic.value = { id: 1, title: 'General' };
-    assert.equal(await openNotificationTarget('forumRef', 99), true);
+    assert.equal(await openNotificationTarget('forumRef', 99), false);
     assert.deepEqual(topicsOpened, [['forumRef', 1, true], ['forumRef', 1, false]]);
     assert.deepEqual(toasts, []);
 })().catch(error => {
@@ -576,7 +576,7 @@ const selectChat = async chat => { opened.push(chat.id); };
 // The shared opener rides the #367-hardened jump now (scrollToMessage was a
 // silent no-op outside the rendered window); the non-forum path never touches
 // the topic helpers, but the identifiers must exist for the forum branch.
-const loadMessagesAroundId = async id => { scrolled.push(id); };
+const loadMessagesAroundId = async id => { scrolled.push(id); return true; };
 const GENERAL_TOPIC_ID = 1;
 const topics = { value: [] };
 const selectTopic = async () => {};
@@ -627,16 +627,44 @@ const fetch = async url => {
     _run_node(script)
 
 
-def test_failed_deep_link_keeps_the_url_so_a_refresh_retries() -> None:
-    """The URL is scrubbed only once the chat actually opened."""
+def test_initial_message_opens_before_sidebar_after_session_check_or_login() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
-
-    start = html.index("const chatRefParam = urlParams.get('chat')")
-    block = html[start : html.index("window.history.replaceState({}, '', '/')", start) + 80]
-
-    assert "const opened = await openNotificationTarget(chatRefParam, msgId)" in block
-    assert "if (opened) {" in block
-    assert block.index("if (opened) {") < block.index("window.history.replaceState({}, '', '/')")
+    assert html.count("await openInitialView()") == 2
+    assert 'v-if="!isAuthenticated && !loadingAuth"' in html
+    assert ':inert="openingLink"' in html
+    _run_node(
+        """
+const assert = require('node:assert/strict');
+const location = new URL('https://archive.example/?chat=target&msg=42&keep=1');
+const linkParams = location.searchParams;
+const openingLink = {value: true};
+let opened = false;
+const calls = [];
+const openNotificationTarget = async (ref, id) => {
+    calls.push('target');
+    assert.equal(openingLink.value, true);
+    assert.equal(ref, 'target');
+    assert.equal(id, 42);
+    return opened;
+};
+const history = {replaceState: (_, __, url) => { calls.push(url.search); }};
+const loadChats = () => { assert.equal(openingLink.value, false); calls.push('sidebar'); };
+const noop = () => {};
+const loadAccounts = noop, loadTranscriptionState = noop, checkNewChanges = noop;
+const loadStats = noop, loadFolders = noop, loadArchivedCount = noop, setupInfiniteScroll = noop;
+"""
+        + _extract_const_arrow_function(html, "openInitialView", asynchronous=True)
+        + """
+(async () => {
+    await openInitialView();
+    assert.deepEqual(calls, ['target', 'sidebar']);
+    openingLink.value = opened = true;
+    calls.length = 0;
+    await openInitialView();
+    assert.deepEqual(calls, ['target', '?keep=1', 'sidebar']);
+})().catch(e => { console.error(e); process.exitCode = 1; });
+"""
+    )
 
 
 def test_notification_click_listener_is_not_gated_on_an_active_controller() -> None:

@@ -562,7 +562,8 @@ def test_jump_window_fetches_context_and_scrolls_to_target():
     assert "before_id=${messageId + 1}" in jump_body
     assert "after_id=${messageId}" in jump_body
     # Both window fetches must carry the forum-topic scope.
-    assert jump_body.count("${topicParam}") == 2
+    assert "${windowLimit}${topicParam}" in jump_body
+    assert "await Promise.all([" in jump_body
     # Target scroll goes through the shared id-anchored helper.
     assert "scrollToMessage(messageId)" in jump_body
 
@@ -834,8 +835,8 @@ def test_toast_exists_and_is_wired_into_jump_failure_path():
     jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
     jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
     assert "showToast('Could not load messages around that message')" in jump_body
-    # Both the primary-fetch !res.ok branch and a thrown network error must toast.
-    assert jump_body.count("showToast('Could not load messages around that message')") == 2
+    # HTTP errors and rejected requests share the jump failure handler.
+    assert "if (!response.ok) throw" in jump_body
 
     chats_start = html.index("const loadChats = async (append = false) =>")
     chats_body = html[chats_start : html.index("const loadMessages = async () =>", chats_start)]
@@ -1258,7 +1259,8 @@ def test_date_jump_latest_intent_wins_and_cancellation_propagates_to_window_load
     window_body = html[window_start : html.index("watch(showMediaGallery", window_start)]
     assert "const isCurrentIntent = () =>" in window_body
     assert "!externalGuard || externalGuard()" in window_body
-    assert window_body.count("if (!isCurrentIntent()) return") >= 6
+    assert window_body.index("await Promise.all(") < window_body.index("if (!isCurrentIntent()) return")
+    assert window_body.index("if (!isCurrentIntent()) return") < window_body.index("messages.value = [...afterRows")
 
 
 def test_date_separators_are_not_individually_sticky():
@@ -2835,7 +2837,7 @@ class TestMessageWindowContiguityIsDeclaredByProducers(unittest.TestCase):
             + """
 const newestLoadedMessageId = () => 9
 const setupMessagesScrollObserver = () => {}
-const scrollToMessage = () => {}
+const scrollToMessage = () => true
 const startMessageRefresh = () => {}
 let messagesNewerObserver = null
 const loadNewerSentinel = { value: null }
@@ -5505,7 +5507,7 @@ def test_page_chrome_paints_the_header_not_the_wallpaper():
         rule = rule[: rule.index("\n        }")]
         assert "background-color: rgb(var(--tg-header));" in rule, selector
         assert "--tg-bg" not in rule, selector
-    assert '<div v-else class="flex w-full h-full bg-tg-header">' in html
+    assert 'class="flex w-full h-full bg-tg-header">' in html
 
 
 def test_no_palette_shadow_is_none():

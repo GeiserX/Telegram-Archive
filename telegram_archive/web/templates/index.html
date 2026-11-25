@@ -55,6 +55,12 @@
     <link rel="stylesheet" href="/static/vendor/flatpickr-4.6.13.min.css">
     <script src="/static/vendor/flatpickr-4.6.13.min.js"></script>
     <style>
+        [v-cloak] { display: none !important; }
+        [data-linked-message] {
+            outline: 3px solid rgb(var(--tg-accent));
+            outline-offset: -3px;
+            border-radius: 0.5rem;
+        }
         /* iOS Safe Area Support */
         :root {
             --sat: env(safe-area-inset-top, 0px);
@@ -6575,11 +6581,15 @@
 </head>
 
 <body class="bg-tg-header text-tg-ink h-screen overflow-hidden">
-    <div id="app" class="w-full h-full">
+    <div id="app" v-cloak class="w-full h-full">
+        <div v-if="(!isAuthenticated && loadingAuth) || (isAuthenticated && openingLink)"
+            role="status" class="fixed inset-0 grid place-items-center bg-tg-header text-tg-muted">
+            {{ openingLink ? 'Opening linked chat…' : 'Loading archive…' }}
+        </div>
         <!-- Login Page -->
         <!-- Drawn from the theme tokens: the pre-paint script has already set the
              palette, so the sign-in card matches the archive behind it. -->
-        <div v-if="!isAuthenticated" class="login-page chat-wallpaper w-full h-full flex items-center justify-center p-4">
+        <div v-if="!isAuthenticated && !loadingAuth" class="login-page chat-wallpaper w-full h-full flex items-center justify-center p-4">
             <div
                 class="login-card bg-tg-sidebar rounded-2xl shadow-popup p-10 w-full max-w-md border border-tg-border">
                 <!-- The mark: one disc in the accent with the plane on it. -->
@@ -6637,7 +6647,7 @@
                         class="w-full bg-tg-accent-strong text-tg-on-accent hover:bg-tg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition">
                         Sign in
                     </button>
-                    <a v-if="oidcEnabled" href="/api/oidc/login"
+                    <a v-if="oidcEnabled" href="/api/oidc/login" @click="rememberSsoLink"
                         class="block w-full text-center bg-tg-field text-tg-ink hover:bg-tg-field-border rounded-xl py-3 font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
                         Sign in with single sign-on
                     </a>
@@ -6646,7 +6656,8 @@
         </div>
 
         <!-- Main App -->
-        <div v-else class="flex w-full h-full bg-tg-header">
+        <div v-if="isAuthenticated" :inert="openingLink" :style="{visibility: openingLink ? 'hidden' : ''}"
+            class="flex w-full h-full bg-tg-header">
             <!-- Sidebar - hidden on mobile when chat is selected -->
             <div class="chat-list-pane relative bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
                 :class="{'hidden md:flex': selectedChat || showChangesFeed}"
@@ -8273,7 +8284,7 @@
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
                                             <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
-                                                    <div v-if="mediaUnavailable(albumMsg) || !albumMsg.media?.file_path" class="album-item album-missing" role="img"
+                                                    <div v-if="mediaUnavailable(albumMsg) || !albumMsg.media?.file_path" class="album-item album-missing" :data-album-message-id="albumMsg.id" role="img"
                                                         :class="{ 'is-attention': mediaMissingReason(albumMsg) === 'missing' }"
                                                         :aria-label="`${albumMsg.media?.type === 'video' ? 'Video' : 'Photo'}. ${mediaMissingWords(albumMsg)}`"
                                                         :title="mediaMissingWords(albumMsg)">
@@ -8284,7 +8295,7 @@
                                                     <button type="button" class="album-item media-open relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
                                                         v-else
                                                         :aria-label="(albumMsg.media?.type === 'video' ? 'Play video' : 'Open photo') + (albumMsg.is_deleted ? ', deleted in Telegram' : '')"
-                                                        @click="openMedia(albumMsg)">
+                                                        :data-album-message-id="albumMsg.id" @click="openMedia(albumMsg)">
                                                         <img v-if="albumMsg.media?.type === 'photo'"
                                                             :src="getMediaUrl(albumMsg)"
                                                             loading="lazy"
@@ -10594,6 +10605,27 @@
                 const oidcEnabled = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
+                const linkParams = new URLSearchParams(location.search)
+                const ssoLinkKey = 'archive_sso_link'
+                // SSO returns to the site root. Only carry the two route fields
+                // in this tab, and consume them once on return.
+                try {
+                    const saved = JSON.parse(sessionStorage.getItem(ssoLinkKey))
+                    sessionStorage.removeItem(ssoLinkKey)
+                    if (!linkParams.has('chat') && saved?.expires > Date.now()) {
+                        linkParams.set('chat', saved.chat)
+                        if (saved.msg !== null) linkParams.set('msg', saved.msg)
+                    }
+                } catch { /* Session storage is optional. */ }
+                const openingLink = ref(Boolean(linkParams.get('chat')))
+                const rememberSsoLink = () => {
+                    if (!openingLink.value) return
+                    try {
+                        sessionStorage.setItem(ssoLinkKey, JSON.stringify({
+                            chat: linkParams.get('chat'), msg: linkParams.get('msg'), expires: Date.now() + 600000
+                        }))
+                    } catch { /* The provider can still authenticate this tab. */ }
+                }
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
                 const userRole = ref('')
@@ -12474,7 +12506,7 @@
                     } else {
                         if (chatVersion !== myVersion) return
 
-                        await loadChatStats(chat.ref)
+                        void loadChatStats(chat.ref)
                     }
                 }
 
@@ -13030,7 +13062,11 @@
                                 { credentials: 'same-origin' }
                             )
                             const rows = resp.ok ? await resp.json() : []
-                            const target = Array.isArray(rows) ? rows.find(m => m.id === messageId) || rows[0] : null
+                            const target = Array.isArray(rows) && rows.find(m => Number(m.id) === Number(messageId))
+                            if (!target) {
+                                showToast('Linked message unavailable')
+                                return false
+                            }
                             const topicId = target?.reply_to_top_id ?? GENERAL_TOPIC_ID
                             let topic = topics.value.find(t => Number(t.id) === Number(topicId))
                             if (!topic && Number(topicId) === Number(GENERAL_TOPIC_ID)) {
@@ -13055,7 +13091,7 @@
                     // notification, silently a no-op for a shared link to history.
                     const jumped = await loadMessagesAroundId(messageId)
                     if (jumped === false) await reloadViewAfterFailedJump(targetChat)
-                    return true
+                    return jumped === true
                 }
 
                 // A failed jump must not leave the pane empty: re-enter the view the way
@@ -13261,6 +13297,32 @@
                     await openNotificationTarget(chatRef, messageId)
                 }
 
+                const openInitialView = async () => {
+                    if (openingLink.value) {
+                        try {
+                            const chatRef = linkParams.get('chat')
+                            const raw = linkParams.get('msg')
+                            const id = raw === null ? null : Number(raw)
+                            if (raw !== null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(id) || id < 1)) {
+                                showToast('Invalid linked message')
+                            } else if (await openNotificationTarget(chatRef, id)) {
+                                const url = new URL(location.href)
+                                url.searchParams.delete('chat')
+                                url.searchParams.delete('msg')
+                                history.replaceState(history.state, '', url)
+                            }
+                        } finally {
+                            openingLink.value = false
+                        }
+                    }
+                    // Chat rows use the account labels on their first paint.
+                    await loadAccounts()
+                    await loadTranscriptionState()
+                    await Promise.all([loadChats(), loadStats(), loadFolders(), loadArchivedCount()])
+                    checkNewChanges()
+                    setupInfiniteScroll()
+                }
+
                 // Auth check on mount
                 onMounted(async () => {
                     // Listen for notification clicks when app is already open.
@@ -13360,36 +13422,7 @@
                             }
 
                             if (isAuthenticated.value) {
-                                // Before loadChats: the chat rows it renders carry
-                                // account ids, and a label map that arrives later
-                                // paints the badges in a second frame.
-                                await loadAccounts()
-                                await loadTranscriptionState()
-                                await loadChats()
-                                await loadStats()
-                                await loadFolders()
-                                await loadArchivedCount()
-                                checkNewChanges()
-                                setupInfiniteScroll()
-
-                                // Handle deep link from push notification. /?chat= carries the
-                                // chat's opaque ref, so the chat id stays out of browser history.
-                                const urlParams = new URLSearchParams(window.location.search)
-                                const chatRefParam = urlParams.get('chat')
-                                const msgIdParam = urlParams.get('msg')
-
-                                if (chatRefParam) {
-                                    const msgId = msgIdParam ? parseInt(msgIdParam) : null
-                                    // No identifiers in the log line: message ids are PII.
-                                    console.log('[Notification] Deep linking to a chat')
-                                    const opened = await openNotificationTarget(chatRefParam, msgId)
-                                    // Clean URL without reload to prevent re-navigation on refresh —
-                                    // but only once the link actually opened, so a failed one stays
-                                    // retryable by refresh instead of being scrubbed away.
-                                    if (opened) {
-                                        window.history.replaceState({}, '', '/')
-                                    }
-                                }
+                                await openInitialView()
                             }
                         } else {
                             // If status endpoint returns non-2xx, mark auth check as failed
@@ -14986,14 +15019,7 @@
                             userRole.value = data.role || 'master'
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
-                            await loadAccounts()
-                            await loadTranscriptionState()
-                            await loadChats()
-                            await loadStats()
-                            await loadFolders()
-                            await loadArchivedCount()
-                            checkNewChanges()
-                            setupInfiniteScroll()
+                            await openInitialView()
                             await initNotifications()
                         } else {
                             loginError.value = 'Login failed'
@@ -15254,39 +15280,21 @@
                         // messages fetch — without it a topic view jumps into cross-topic rows.
                         const topicId = activeTopicId()
                         const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
-                        // before_id is an exclusive bound, so +1 keeps the target itself as the
-                        // newest row of the history half of the window.
-                        const res = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
-                            credentials: 'include'
-                        })
-                        if (!isCurrentIntent()) return
-                        if (!res.ok) {
-                            showToast('Could not load messages around that message')
-                            return false
+                        const fetchWindow = async (cursor) => {
+                            const url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?${cursor}&limit=${windowLimit}${topicParam}`
+                            const response = await fetch(url, { credentials: 'include' })
+                            if (!response.ok) throw new Error('Message window request failed')
+                            const data = await response.json()
+                            return data.messages || data
                         }
-                        const data = await res.json()
+                        // The history page includes the target. Newer context is optional.
+                        const [windowRows, newer] = await Promise.all([
+                            fetchWindow(`before_id=${messageId + 1}`),
+                            fetchWindow(`after_id=${messageId}`).catch(() => null)
+                        ])
                         if (!isCurrentIntent()) return
-                        const windowRows = data.messages || data
-                        // After-context so the target can sit centered with history on both
-                        // sides (Telegram-style). Best-effort: without it the target still
-                        // renders at the window's bottom edge.
-                        let afterRows = []
-                        let afterFetchComplete = false
-                        try {
-                            const afterRes = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
-                                credentials: 'include'
-                            })
-                            if (!isCurrentIntent()) return
-                            if (afterRes.ok) {
-                                const afterData = await afterRes.json()
-                                if (!isCurrentIntent()) return
-                                afterRows = afterData.messages || afterData
-                                afterFetchComplete = true
-                            }
-                        } catch (e) {
-                            console.warn('[Jump] after-context fetch failed, showing history-only window', e)
-                        }
-                        if (!isCurrentIntent()) return
+                        const afterFetchComplete = newer !== null
+                        const afterRows = newer || []
                         messages.value = [...afterRows, ...windowRows]
                         resetMessagePagination()
                         // #268: declare what was just written. Both halves are pages of the
@@ -15310,8 +15318,10 @@
                         await nextTick()
                         if (!isCurrentIntent()) return
                         setupMessagesScrollObserver()
-                        scrollToMessage(messageId)
-                        return true
+                        const found = await scrollToMessage(messageId)
+                        if (!isCurrentIntent()) return
+                        if (!found) showToast('Linked message unavailable')
+                        return found
                     } catch (e) {
                         if (!isCurrentIntent()) return
                         console.error('[Jump] Failed to load messages around id', e)
@@ -15946,8 +15956,8 @@
                         // The caller will populate the message window itself,
                         // e.g. openNotificationTarget() via loadMessagesAroundId().
                         if (chatVersion !== myVersion) return
-                        await loadChatStats(chat.ref)
-                        await loadPinnedMessages(chat.ref)
+                        void loadChatStats(chat.ref)
+                        void loadPinnedMessages(chat.ref)
                     }
                 }
 
@@ -19046,12 +19056,38 @@
                     return null
                 }
 
+                const highlightLinkedMessage = (el) => {
+                    const pane = messagesContainer.value
+                    const center = () => {
+                        if (!pane.contains(el)) return
+                        const row = el.getBoundingClientRect()
+                        pane.scrollTop += row.top - pane.getBoundingClientRect().top -
+                            Math.max(0, (pane.clientHeight - row.height) / 2)
+                    }
+                    center()
+                    el.setAttribute('data-linked-message', '')
+                    // Late media and font loads can move the target. Stop correcting
+                    // its position as soon as the reader interacts with the page.
+                    const input = new AbortController()
+                    const layout = new ResizeObserver(center)
+                    layout.observe(pane)
+                    for (const row of pane.children) layout.observe(row)
+                    for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+                        window.addEventListener(name, () => input.abort(),
+                            { capture: true, passive: true, signal: input.signal })
+                    }
+                    input.signal.addEventListener('abort', () => layout.disconnect(), { once: true })
+                    setTimeout(() => {
+                        input.abort()
+                        el.removeAttribute('data-linked-message')
+                    }, 8000)
+                }
+
                 const scrollToMessage = (msgId) => {
-                    nextTick(async () => {
+                    return nextTick(async () => {
                         let el = findMessageElement(msgId)
                         if (!el) {
-                            console.log('Message not loaded yet')
-                            return
+                            return false
                         }
                         // A jump that lands on a folded deleted message opens it: the
                         // reader went there to read it. The row is the rendered one,
@@ -19062,6 +19098,11 @@
                             await nextTick()
                             el = findMessageElement(msgId) || el
                         }
+                        if (openingLink.value) {
+                            const target = el.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || el
+                            highlightLinkedMessage(target)
+                            return true
+                        }
                         const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
                         el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
                         // Mark the target briefly, in the selection colour: it reads on
@@ -19070,6 +19111,7 @@
                         void el.offsetWidth
                         el.classList.add('message-flash')
                         setTimeout(() => el.classList.remove('message-flash'), 2000)
+                        return true
                     })
                 }
 
@@ -21237,7 +21279,7 @@
                     authRequired,
                     oidcEnabled,
                     authCheckFailed,
-                    loadingAuth,
+                    loadingAuth, openingLink, rememberSsoLink,
                     loginForm,
                     loginError,
                     performLogin,
