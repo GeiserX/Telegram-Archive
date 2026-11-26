@@ -6,6 +6,20 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [9.11.0] - 2026-11-26
+
+A shared message link now opens on its message, centered and outlined, after any kind of sign-in. No migration. Docker deployments only need the new pins.
+
+### Added
+- **A shared message link opens on its message.** A `/?chat=<ref>&msg=<id>` link, from **Copy link** or a push notification, now opens its chat and lands on the message, centered and outlined, even far back in history, in a forum topic, inside an album or on a folded deleted message. It works when the reader is already signed in, after a password or share-token sign-in and after single sign-on; before, a sign-in lost the link. The app stays usable while the link loads, and the message stays centered while pictures above it load, until the reader scrolls, taps or types. Thanks to @skywinder. (#645)
+
+### Changed
+- **Every jump outlines its target the same way.** A reply quote, a search hit, the gallery, a date jump and a shared link all outline the message they land on, and a jump to one picture of an album outlines that picture. (#645)
+
+### Fixed
+- **A link that cannot open says so once.** A link to a message the archive does not have shows "Linked message unavailable" once and leaves the address bar. A link with a malformed message id opens the chat at its newest messages. A network or server error keeps the link, so a refresh can retry it. If the reader opens another chat, a topic or goes back to the chat list while a link loads, the link stops and leaves the address bar. (#645)
+- **The sign-in form no longer shows before the session check ends.** The viewer shows "Loading archive…" during the first session check instead of the sign-in form, and a wrong password keeps the form on screen with the cursor in the password field. (#645)
+
 ## [9.10.0] - 2026-11-24
 
 Older messages can now be re-checked for edits and deletions a slice per run, so a large archive no longer needs one very long full run. Migration 044 runs on start. Docker deployments only need the new pins.
