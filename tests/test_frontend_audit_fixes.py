@@ -349,7 +349,7 @@ const nextTick = async () => {};
 const toasts = [];
 const showToast = message => { toasts.push(message); };
 const console = { error: () => {}, log: () => {}, warn: () => {} };
-const fetch = async () => ({ ok: true, json: async () => [] });
+const fetch = async () => ({ ok: true, json: async () => [{id: 99}] });
 """,
             _extract_const_arrow_function(html, "resolveChatById", asynchronous=True),
             _extract_const_arrow_function(html, "openNotificationTarget", asynchronous=True),
@@ -369,18 +369,18 @@ const fetch = async () => ({ ok: true, json: async () => [] });
 
     // The jump fails on an empty pane: fall back to the ordinary entry.
     opened.length = 0; jumps.length = 0; jumpResult = false;
-    assert.equal(await openNotificationTarget('plainRef', 4243), true);
+    assert.equal(await openNotificationTarget('plainRef', 4243), false);
     assert.deepEqual(opened, [['plainRef', true], ['plainRef', false]]);
 
     // A stale-view abort is not a failure (undefined, not false): no fallback.
     opened.length = 0; jumpResult = undefined;
-    assert.equal(await openNotificationTarget('plainRef', 4244), true);
+    assert.equal(await openNotificationTarget('plainRef', 4244), false);
     assert.deepEqual(opened, [['plainRef', true]]);
 
     // A forum jump enters its topic without the topic's own load; the fallback re-enters that topic.
     opened.length = 0; topicsOpened.length = 0; jumpResult = false;
     selectedPaneTopic.value = { id: 1, title: 'General' };
-    assert.equal(await openNotificationTarget('forumRef', 99), true);
+    assert.equal(await openNotificationTarget('forumRef', 99), false);
     assert.deepEqual(topicsOpened, [['forumRef', 1, true], ['forumRef', 1, false]]);
     assert.deepEqual(toasts, []);
 })().catch(error => {
@@ -576,7 +576,7 @@ const selectChat = async chat => { opened.push(chat.id); };
 // The shared opener rides the #367-hardened jump now (scrollToMessage was a
 // silent no-op outside the rendered window); the non-forum path never touches
 // the topic helpers, but the identifiers must exist for the forum branch.
-const loadMessagesAroundId = async id => { scrolled.push(id); };
+const loadMessagesAroundId = async id => { scrolled.push(id); return true; };
 const GENERAL_TOPIC_ID = 1;
 const topics = { value: [] };
 const selectTopic = async () => {};
@@ -627,16 +627,45 @@ const fetch = async url => {
     _run_node(script)
 
 
-def test_failed_deep_link_keeps_the_url_so_a_refresh_retries() -> None:
-    """The URL is scrubbed only once the chat actually opened."""
+def test_sso_return_restores_the_target_to_the_url_for_refresh() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
-
-    start = html.index("const chatRefParam = urlParams.get('chat')")
-    block = html[start : html.index("window.history.replaceState({}, '', '/')", start) + 80]
-
-    assert "const opened = await openNotificationTarget(chatRefParam, msgId)" in block
-    assert "if (opened) {" in block
-    assert block.index("if (opened) {") < block.index("window.history.replaceState({}, '', '/')")
+    start = html.index("const loadingAuth = ref(true)")
+    end = html.index("const rememberSsoLink =", start)
+    _run_node(
+        """
+const assert = require('node:assert/strict');
+const ref = value => ({value});
+const storage = new Map();
+const sessionStorage = {getItem: k => storage.get(k) ?? null, removeItem: k => storage.delete(k)};
+let location = new URL('https://archive.example/?keep=1#section');
+const history = {state: {tab: 1}, replaceState(state, _, url) {
+    assert.equal(state, this.state);
+    location = new URL(url);
+}};
+const boot = () => {
+"""
+        + html[start:end]
+        + """
+    return [Boolean(linkParams.get('chat')), linkParams.get('chat'), linkParams.get('msg')];
+};
+const save = (msg, expires = Date.now() + 60000) =>
+    storage.set('archive_sso_link', JSON.stringify({chat: 'saved', msg, expires}));
+save('42');
+assert.deepEqual(boot(), [true, 'saved', '42']);
+assert.equal(storage.size, 0);
+assert.equal(location.href, 'https://archive.example/?keep=1&chat=saved&msg=42#section');
+assert.deepEqual(boot(), [true, 'saved', '42']); // Reload after the target failed to open.
+location = new URL('https://archive.example/?chat=explicit&msg=9');
+save('42');
+assert.deepEqual(boot(), [true, 'explicit', '9']);
+location = new URL('https://archive.example/');
+save('42', 0);
+assert.deepEqual(boot(), [false, null, null]);
+save(null);
+assert.deepEqual(boot(), [true, 'saved', null]);
+assert.equal(location.search, '?chat=saved');
+"""
+    )
 
 
 def test_notification_click_listener_is_not_gated_on_an_active_controller() -> None:

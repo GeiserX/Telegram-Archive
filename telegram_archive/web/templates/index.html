@@ -55,6 +55,7 @@
     <link rel="stylesheet" href="/static/vendor/flatpickr-4.6.13.min.css">
     <script src="/static/vendor/flatpickr-4.6.13.min.js"></script>
     <style>
+        [v-cloak] { display: none !important; }
         /* iOS Safe Area Support */
         :root {
             --sat: env(safe-area-inset-top, 0px);
@@ -4689,22 +4690,17 @@
             transform: translate(-50%, -50%);
         }
 
-        /* The row a jump landed on (a reply quote, Go to message, a search hit):
-           the selection colour, fading out. With reduced motion it stays still
-           and goes away with the class. */
-        .message-flash {
-            border-radius: 0.5rem;
-            animation: message-flash 2s ease-out;
+        /* The message a jump landed on (a shared link, a reply quote, Go to
+           message, a search hit): an accent outline on its bubble, or on its one
+           picture in an album, for JUMP_OUTLINE_MS. Nothing moves, so reduced
+           motion needs no variant. */
+        .jump-target > .message-bubble,
+        .jump-target > .service-message,
+        .album-item.jump-target {
+            outline: 3px solid rgb(var(--tg-accent));
         }
-        @keyframes message-flash {
-            0%, 45% { background-color: var(--tg-selection-bg); }
-            100% { background-color: transparent; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .message-flash {
-                animation: none;
-                background-color: var(--tg-selection-bg);
-            }
+        .album-item.jump-target {
+            outline-offset: -3px;
         }
 
         /* The row the info panel is describing (#433): the tint the apps give a
@@ -6575,11 +6571,16 @@
 </head>
 
 <body class="bg-tg-header text-tg-ink h-screen overflow-hidden">
-    <div id="app" class="w-full h-full">
+    <div id="app" v-cloak class="w-full h-full">
+        <!-- Only the first session check: a sign-in attempt keeps the form mounted. -->
+        <div v-if="checkingSession"
+            role="status" class="fixed inset-0 grid place-items-center bg-tg-header text-tg-muted">
+            Loading archive…
+        </div>
         <!-- Login Page -->
         <!-- Drawn from the theme tokens: the pre-paint script has already set the
              palette, so the sign-in card matches the archive behind it. -->
-        <div v-if="!isAuthenticated" class="login-page chat-wallpaper w-full h-full flex items-center justify-center p-4">
+        <div v-else-if="!isAuthenticated" class="login-page chat-wallpaper w-full h-full flex items-center justify-center p-4">
             <div
                 class="login-card bg-tg-sidebar rounded-2xl shadow-popup p-10 w-full max-w-md border border-tg-border">
                 <!-- The mark: one disc in the accent with the plane on it. -->
@@ -6637,7 +6638,7 @@
                         class="w-full bg-tg-accent-strong text-tg-on-accent hover:bg-tg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition">
                         Sign in
                     </button>
-                    <a v-if="oidcEnabled" href="/api/oidc/login"
+                    <a v-if="oidcEnabled" href="/api/oidc/login" @click="rememberSsoLink"
                         class="block w-full text-center bg-tg-field text-tg-ink hover:bg-tg-field-border rounded-xl py-3 font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-focus">
                         Sign in with single sign-on
                     </a>
@@ -7439,7 +7440,7 @@
                         class="chat-header relative bg-tg-header border-b border-tg-border flex items-center justify-between gap-2 z-10">
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
-                            <button type="button" aria-label="Back" @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
+                            <button type="button" aria-label="Back" @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : closeChat()"
                                 class="tap-target md:hidden p-2 -ml-2 text-tg-bar-icon hover:text-tg-ink">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -7944,7 +7945,8 @@
                                  wording is rebuilt from raw_data at render time.
                                  #260: rendered from structured parts (actor + tail) so the
                                  actor can be a real button — never by parsing the sentence. -->
-                            <div v-if="msg.raw_data?.service_type === 'service'" :data-msg-id="msg.id" class="flex justify-center my-2">
+                            <div v-if="msg.raw_data?.service_type === 'service'" :data-msg-id="msg.id" class="flex justify-center my-2"
+                                :class="{ 'jump-target': isJumpTarget(msg.id) }">
                                 <template v-for="view in [serviceMessageView(msg)]" :key="msg.id">
                                     <div v-if="view.tail || view.actor"
                                         class="service-message px-2.5 py-[3px] rounded-xl text-[0.8125rem] leading-5 font-medium text-center max-w-[80%]"
@@ -7970,7 +7972,8 @@
                                     isOwnMessage(msg) ? 'justify-end' : 'justify-start',
                                     getRunClasses(index),
                                     isSenderBreak(index) ? 'message-run-break' : 'message-run-continue',
-                                    isSelectedMessage(msg) || isVersionsPanelOpenFor(msg) ? 'message-info-selected' : ''
+                                    isSelectedMessage(msg) || isVersionsPanelOpenFor(msg) ? 'message-info-selected' : '',
+                                    isJumpTarget(msg.id) && !isFirstInAlbum(msg, index) ? 'jump-target' : ''
                                 ]">
                                 <!-- Sender avatar gutter (#229): group + non-own only.
                                      The circle sits on the run's LAST bubble, beside the
@@ -8273,8 +8276,8 @@
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
                                             <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
-                                                    <div v-if="mediaUnavailable(albumMsg) || !albumMsg.media?.file_path" class="album-item album-missing" role="img"
-                                                        :class="{ 'is-attention': mediaMissingReason(albumMsg) === 'missing' }"
+                                                    <div v-if="mediaUnavailable(albumMsg) || !albumMsg.media?.file_path" class="album-item album-missing" :data-album-message-id="albumMsg.id" role="img"
+                                                        :class="{ 'is-attention': mediaMissingReason(albumMsg) === 'missing', 'jump-target': isJumpTarget(albumMsg.id) }"
                                                         :aria-label="`${albumMsg.media?.type === 'video' ? 'Video' : 'Photo'}. ${mediaMissingWords(albumMsg)}`"
                                                         :title="mediaMissingWords(albumMsg)">
                                                         <span class="media-placeholder-disc" aria-hidden="true">
@@ -8284,7 +8287,8 @@
                                                     <button type="button" class="album-item media-open relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
                                                         v-else
                                                         :aria-label="(albumMsg.media?.type === 'video' ? 'Play video' : 'Open photo') + (albumMsg.is_deleted ? ', deleted in Telegram' : '')"
-                                                        @click="openMedia(albumMsg)">
+                                                        :class="{ 'jump-target': isJumpTarget(albumMsg.id) }"
+                                                        :data-album-message-id="albumMsg.id" @click="openMedia(albumMsg)">
                                                         <img v-if="albumMsg.media?.type === 'photo'"
                                                             :src="getMediaUrl(albumMsg)"
                                                             loading="lazy"
@@ -10594,6 +10598,37 @@
                 const oidcEnabled = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
+                // True until the first /api/auth/check settles. Only this gates the
+                // loading screen: loadingAuth is also a sign-in attempt in flight,
+                // and that must keep the form mounted.
+                const checkingSession = ref(true)
+                const linkUrl = new URL(location.href)
+                const linkParams = linkUrl.searchParams
+                const ssoLinkKey = 'archive_sso_link'
+                // SSO returns to the site root. Only carry the two route fields
+                // in this tab, and consume them once on return.
+                try {
+                    const saved = JSON.parse(sessionStorage.getItem(ssoLinkKey))
+                    if (!linkParams.has('chat') && saved?.expires > Date.now()) {
+                        linkParams.set('chat', saved.chat)
+                        if (saved.msg !== null) linkParams.set('msg', saved.msg)
+                        else linkParams.delete('msg')
+                        // Keep the target retryable on refresh until the jump succeeds.
+                        history.replaceState(history.state, '', linkUrl)
+                    }
+                    sessionStorage.removeItem(ssoLinkKey)
+                } catch { /* Session storage is optional. */ }
+                // Carries the link this page holds now, so a link that already
+                // opened (and left the URL) is not carried again.
+                const rememberSsoLink = () => {
+                    const params = new URL(location.href).searchParams
+                    if (!params.get('chat')) return
+                    try {
+                        sessionStorage.setItem(ssoLinkKey, JSON.stringify({
+                            chat: params.get('chat'), msg: params.get('msg'), expires: Date.now() + 600000
+                        }))
+                    } catch { /* The provider can still authenticate this tab. */ }
+                }
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
                 const userRole = ref('')
@@ -12438,6 +12473,7 @@
                 }
 
                 const selectTopic = async (chat, topic, options = {}) => {
+                    noteViewPick()
                     // Invalidate any in-flight loads from previous chat/topic
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
@@ -12474,7 +12510,7 @@
                     } else {
                         if (chatVersion !== myVersion) return
 
-                        await loadChatStats(chat.ref)
+                        void loadChatStats(chat.ref)
                     }
                 }
 
@@ -13008,9 +13044,17 @@
 
                 // Open what a notification points at, or say so instead of doing nothing.
                 // Returns whether the chat was opened, so the caller can decide to keep a
-                // deep link in the URL and let a refresh retry it.
-                const openNotificationTarget = async (chatRef, messageId) => {
+                // deep link in the URL and let a refresh retry it. A shared link passes
+                // its guard: the open stops after a wait once the reader has picked
+                // another view, and the picks it makes itself are not the reader's.
+                // The message window does not take that guard. A chat or topic switch
+                // already ends it, and the reader opening a forum's topic list must
+                // not leave the linked chat's pane empty.
+                const openNotificationTarget = async (chatRef, messageId, externalGuard = null) => {
+                    const current = () => !externalGuard || externalGuard()
+                    const pick = externalGuard ? asLinkPick : (open) => open()
                     const targetChat = await resolveChatById(chatRef)
+                    if (!current()) return false
                     if (!targetChat) {
                         showToast('Could not open that chat')
                         return false
@@ -13018,7 +13062,7 @@
                     // With a message to land on, the window around it is the only load the
                     // pane needs — the normal tail page would race it (its deferred
                     // scroll-to-bottom fires after the jump has positioned the view).
-                    await selectChat(targetChat, { skipInitialLoad: Boolean(messageId) })
+                    await pick(() => selectChat(targetChat, { skipInitialLoad: Boolean(messageId) }))
                     if (!messageId) return true
                     if (targetChat.is_forum) {
                         // selectChat short-circuits a forum into its topics list
@@ -13029,8 +13073,16 @@
                                 `/api/chats/${encodeURIComponent(targetChat.ref)}/messages?after_id=${messageId - 1}&limit=1`,
                                 { credentials: 'same-origin' }
                             )
-                            const rows = resp.ok ? await resp.json() : []
-                            const target = Array.isArray(rows) ? rows.find(m => m.id === messageId) || rows[0] : null
+                            if (!current()) return false
+                            if (!resp.ok) {
+                                showToast('Could not locate that topic')
+                                return false
+                            }
+                            const rows = await resp.json()
+                            if (!current()) return false
+                            const target = Array.isArray(rows) && rows.find(m => Number(m.id) === Number(messageId))
+                            // Not in the archive: the caller says so in its own words.
+                            if (!target) return false
                             const topicId = target?.reply_to_top_id ?? GENERAL_TOPIC_ID
                             let topic = topics.value.find(t => Number(t.id) === Number(topicId))
                             if (!topic && Number(topicId) === Number(GENERAL_TOPIC_ID)) {
@@ -13042,8 +13094,10 @@
                                 showToast('Could not locate that topic')
                                 return false
                             }
-                            await selectTopic(targetChat, topic, { skipInitialLoad: true })
+                            await pick(() => selectTopic(targetChat, topic, { skipInitialLoad: true }))
+                            if (!current()) return false
                         } catch (e) {
+                            if (!current()) return false
                             showToast('Could not locate that topic')
                             return false
                         }
@@ -13054,8 +13108,10 @@
                     // worked for already-rendered rows — fine for a fresh push
                     // notification, silently a no-op for a shared link to history.
                     const jumped = await loadMessagesAroundId(messageId)
-                    if (jumped === false) await reloadViewAfterFailedJump(targetChat)
-                    return true
+                    // Once the reader has left, a failed window must not reopen the chat.
+                    if (!current()) return false
+                    if (jumped === false) await pick(() => reloadViewAfterFailedJump(targetChat))
+                    return jumped === true
                 }
 
                 // A failed jump must not leave the pane empty: re-enter the view the way
@@ -13261,6 +13317,114 @@
                     await openNotificationTarget(chatRef, messageId)
                 }
 
+                // Remove link fields from the address bar, keeping everything else.
+                const dropLinkParams = (...names) => {
+                    const url = new URL(location.href)
+                    for (const name of names) url.searchParams.delete(name)
+                    history.replaceState(history.state, '', url)
+                }
+                // The shared link being opened ({ chatRef, messageId }), or null. The
+                // reader picking a chat or a topic abandons it at once.
+                let pendingLink = null
+                // True only while the link itself calls selectChat or selectTopic.
+                let linkPicking = false
+
+                // Run one view pick on behalf of the link. The pick notes itself in
+                // its synchronous start, so the flag only needs to cover the call.
+                const asLinkPick = (open) => {
+                    linkPicking = true
+                    try {
+                        return open()
+                    } finally {
+                        linkPicking = false
+                    }
+                }
+
+                // selectChat, selectTopic and closeChat call this first. Any view pick
+                // ends the outline and the centering of the previous jump. A pick by
+                // the reader also abandons the link, and drops it from the address
+                // bar, so a refresh does not reopen a link the reader left.
+                const noteViewPick = () => {
+                    jumpTarget.value = null
+                    stopHoldingJumpTarget()
+                    if (linkPicking) return
+                    pendingLink = null
+                    const params = new URL(location.href).searchParams
+                    if (params.has('chat') || params.has('msg')) dropLinkParams('chat', 'msg')
+                }
+
+                // Whether the archive answers that this chat has no message with this id.
+                // Any failure to ask is "not known", so the link stays for a retry.
+                const linkedMessageMissing = async (chatRef, messageId) => {
+                    try {
+                        const res = await fetch(
+                            `/api/chats/${encodeURIComponent(chatRef)}/messages?after_id=${messageId - 1}&limit=1`,
+                            { credentials: 'include' }
+                        )
+                        if (!res.ok) return false
+                        const data = await res.json()
+                        const rows = data.messages || data
+                        return Array.isArray(rows) && !rows.some(m => Number(m.id) === messageId)
+                    } catch (e) {
+                        return false
+                    }
+                }
+
+                // Open /?chat=<ref>&msg=<id>. The URL is cleaned once the link has done
+                // all it can: it opened, or the archive has no such message. It stays
+                // after a failure on the way (network, server, a chat not visible yet),
+                // so a refresh retries it. The reader picking another view abandons the
+                // link: every step after a wait checks that it is still the current one.
+                const openLinkedMessage = async () => {
+                    const params = new URL(location.href).searchParams
+                    const chatRef = params.get('chat')
+                    if (!chatRef) return
+                    const raw = params.get('msg')
+                    let messageId = raw === null ? null : Number(raw)
+                    if (raw !== null && !(/^\d+$/.test(raw) && Number.isSafeInteger(messageId) && messageId > 0)) {
+                        // No message can match: open the chat at its newest page.
+                        messageId = null
+                        dropLinkParams('msg')
+                    }
+                    // No identifiers in the log line: message ids are PII.
+                    console.log('[Link] Opening a linked chat')
+                    const link = { chatRef, messageId }
+                    pendingLink = link
+                    const current = () => pendingLink === link
+                    try {
+                        const opened = await openNotificationTarget(chatRef, messageId, current)
+                        if (!current()) return
+                        if (opened) {
+                            dropLinkParams('chat', 'msg')
+                            return
+                        }
+                        // Ask only when the chat did open: its pane, or a forum's topic list.
+                        const onChat = selectedChat.value?.ref === chatRef || currentNav.value?.chatRef === chatRef
+                        if (messageId === null || !onChat) return
+                        const missing = await linkedMessageMissing(chatRef, messageId)
+                        if (!current()) return
+                        if (missing) {
+                            showToast('Linked message unavailable')
+                            dropLinkParams('chat', 'msg')
+                        }
+                    } finally {
+                        pendingLink = null
+                    }
+                }
+
+                const openInitialView = async () => {
+                    // Chat rows and bubbles read these on their first paint: the
+                    // account labels, the transcript buttons and the viewer's time zone.
+                    await Promise.all([loadAccounts(), loadTranscriptionState(), loadStats()])
+                    // A shared link opens beside the sidebar. Neither waits for the
+                    // other, and the sidebar loaders never touch the open chat.
+                    const link = openLinkedMessage()
+                    await Promise.all([loadChats(), loadFolders(), loadArchivedCount()])
+                    checkNewChanges()
+                    setupInfiniteScroll()
+                    await link
+                }
+
                 // Auth check on mount
                 onMounted(async () => {
                     // Listen for notification clicks when app is already open.
@@ -13359,37 +13523,9 @@
                                 }
                             }
 
+                            checkingSession.value = false
                             if (isAuthenticated.value) {
-                                // Before loadChats: the chat rows it renders carry
-                                // account ids, and a label map that arrives later
-                                // paints the badges in a second frame.
-                                await loadAccounts()
-                                await loadTranscriptionState()
-                                await loadChats()
-                                await loadStats()
-                                await loadFolders()
-                                await loadArchivedCount()
-                                checkNewChanges()
-                                setupInfiniteScroll()
-
-                                // Handle deep link from push notification. /?chat= carries the
-                                // chat's opaque ref, so the chat id stays out of browser history.
-                                const urlParams = new URLSearchParams(window.location.search)
-                                const chatRefParam = urlParams.get('chat')
-                                const msgIdParam = urlParams.get('msg')
-
-                                if (chatRefParam) {
-                                    const msgId = msgIdParam ? parseInt(msgIdParam) : null
-                                    // No identifiers in the log line: message ids are PII.
-                                    console.log('[Notification] Deep linking to a chat')
-                                    const opened = await openNotificationTarget(chatRefParam, msgId)
-                                    // Clean URL without reload to prevent re-navigation on refresh —
-                                    // but only once the link actually opened, so a failed one stays
-                                    // retryable by refresh instead of being scrubbed away.
-                                    if (opened) {
-                                        window.history.replaceState({}, '', '/')
-                                    }
-                                }
+                                await openInitialView()
                             }
                         } else {
                             // If status endpoint returns non-2xx, mark auth check as failed
@@ -13403,6 +13539,7 @@
                         authCheckFailed.value = true
                         // Show login form so user can try
                     } finally {
+                        checkingSession.value = false
                         loadingAuth.value = false
                     }
 
@@ -14986,14 +15123,7 @@
                             userRole.value = data.role || 'master'
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
-                            await loadAccounts()
-                            await loadTranscriptionState()
-                            await loadChats()
-                            await loadStats()
-                            await loadFolders()
-                            await loadArchivedCount()
-                            checkNewChanges()
-                            setupInfiniteScroll()
+                            await openInitialView()
                             await initNotifications()
                         } else {
                             loginError.value = 'Login failed'
@@ -15237,6 +15367,14 @@
                     return when.isSame(now, 'year') ? when.format('MMM D') : when.format('MMM D, YYYY')
                 }
 
+                // The phone's Back button: back to the chat list. Like a view pick, it
+                // ends the outline and the centering, and abandons a link that is still
+                // opening, so a refresh does not reopen the chat the reader left.
+                const closeChat = () => {
+                    noteViewPick()
+                    selectedChat.value = null
+                }
+
                 const loadMessagesAroundId = async (messageId, externalGuard = null) => {
                     if (!selectedChat.value) return false
                     // Same stale-response idiom as selectChat/selectTopic: bump chatVersion so
@@ -15254,39 +15392,21 @@
                         // messages fetch — without it a topic view jumps into cross-topic rows.
                         const topicId = activeTopicId()
                         const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
-                        // before_id is an exclusive bound, so +1 keeps the target itself as the
-                        // newest row of the history half of the window.
-                        const res = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
-                            credentials: 'include'
-                        })
-                        if (!isCurrentIntent()) return
-                        if (!res.ok) {
-                            showToast('Could not load messages around that message')
-                            return false
+                        const fetchWindow = async (cursor) => {
+                            const url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?${cursor}&limit=${windowLimit}${topicParam}`
+                            const response = await fetch(url, { credentials: 'include' })
+                            if (!response.ok) throw new Error('Message window request failed')
+                            const data = await response.json()
+                            return data.messages || data
                         }
-                        const data = await res.json()
+                        // The history page includes the target. Newer context is optional.
+                        const [windowRows, newer] = await Promise.all([
+                            fetchWindow(`before_id=${messageId + 1}`),
+                            fetchWindow(`after_id=${messageId}`).catch(() => null)
+                        ])
                         if (!isCurrentIntent()) return
-                        const windowRows = data.messages || data
-                        // After-context so the target can sit centered with history on both
-                        // sides (Telegram-style). Best-effort: without it the target still
-                        // renders at the window's bottom edge.
-                        let afterRows = []
-                        let afterFetchComplete = false
-                        try {
-                            const afterRes = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
-                                credentials: 'include'
-                            })
-                            if (!isCurrentIntent()) return
-                            if (afterRes.ok) {
-                                const afterData = await afterRes.json()
-                                if (!isCurrentIntent()) return
-                                afterRows = afterData.messages || afterData
-                                afterFetchComplete = true
-                            }
-                        } catch (e) {
-                            console.warn('[Jump] after-context fetch failed, showing history-only window', e)
-                        }
-                        if (!isCurrentIntent()) return
+                        const afterFetchComplete = newer !== null
+                        const afterRows = newer || []
                         messages.value = [...afterRows, ...windowRows]
                         resetMessagePagination()
                         // #268: declare what was just written. Both halves are pages of the
@@ -15310,8 +15430,9 @@
                         await nextTick()
                         if (!isCurrentIntent()) return
                         setupMessagesScrollObserver()
-                        scrollToMessage(messageId)
-                        return true
+                        const found = await scrollToMessage(messageId)
+                        if (!isCurrentIntent()) return
+                        return found
                     } catch (e) {
                         if (!isCurrentIntent()) return
                         console.error('[Jump] Failed to load messages around id', e)
@@ -15905,6 +16026,7 @@
                 }
 
                 const selectChat = async (chat, options = {}) => {
+                    noteViewPick()
                     // v6.2.0: If forum chat, open topics list instead
                     if (chat.is_forum) {
                         await openForumTopics(chat)
@@ -15946,8 +16068,8 @@
                         // The caller will populate the message window itself,
                         // e.g. openNotificationTarget() via loadMessagesAroundId().
                         if (chatVersion !== myVersion) return
-                        await loadChatStats(chat.ref)
-                        await loadPinnedMessages(chat.ref)
+                        void loadChatStats(chat.ref)
+                        void loadPinnedMessages(chat.ref)
                     }
                 }
 
@@ -19046,12 +19168,71 @@
                     return null
                 }
 
+                // The message a jump landed on, outlined for JUMP_OUTLINE_MS. A ref the
+                // template reads, so the outline follows the message when Vue draws its
+                // row or album item again (a picture that fails to load, a refresh).
+                // Message ids repeat across chats, so the chat is part of the target.
+                const JUMP_OUTLINE_MS = 5000
+                const jumpTarget = ref(null)
+                let jumpTargetTimer = null
+                const markJumpTarget = (msgId) => {
+                    jumpTarget.value = { chatRef: selectedChat.value?.ref ?? null, id: Number(msgId) }
+                    clearTimeout(jumpTargetTimer)
+                    jumpTargetTimer = setTimeout(() => { jumpTarget.value = null }, JUMP_OUTLINE_MS)
+                }
+                const isJumpTarget = (msgId) => jumpTarget.value !== null &&
+                    jumpTarget.value.id === Number(msgId) &&
+                    jumpTarget.value.chatRef === (selectedChat.value?.ref ?? null)
+
+                // The element a jump centers: the message row, or its one picture when
+                // the message is an album member.
+                const findJumpTarget = (msgId) => {
+                    const row = findMessageElement(msgId)
+                    return row?.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || row
+                }
+
+                // Put a jump target in the middle of the pane at once, or its top at the
+                // top when it is taller than the pane. Looked up by id on every call:
+                // Vue can replace the element (a picture that fails to load becomes the
+                // missing placeholder), and a held node would be out of the page.
+                const centerJumpTarget = (msgId) => {
+                    const pane = messagesContainer.value
+                    const el = findJumpTarget(msgId)
+                    if (!pane || !el) return
+                    const box = el.getBoundingClientRect()
+                    pane.scrollTop += box.top - pane.getBoundingClientRect().top -
+                        Math.max(0, (pane.clientHeight - box.height) / 2)
+                }
+
+                // A shared link keeps its target centered while late content settles
+                // (pictures, fonts, the rows and bars drawn after the first paint).
+                // Any size change of the pane or of a row centers it again. It stops at
+                // the reader's first wheel, touch, pointer or key input, at the next view
+                // pick, or after JUMP_HOLD_MS.
+                const JUMP_HOLD_MS = 8000
+                let stopHoldingJumpTarget = () => {}
+                const holdJumpTarget = (msgId) => {
+                    const pane = messagesContainer.value
+                    const center = () => centerJumpTarget(msgId)
+                    center()
+                    const layout = new ResizeObserver(center)
+                    layout.observe(pane)
+                    for (const row of pane.children) layout.observe(row)
+                    const input = new AbortController()
+                    const stop = () => input.abort()
+                    for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+                        window.addEventListener(name, stop, { capture: true, passive: true, signal: input.signal })
+                    }
+                    setTimeout(stop, JUMP_HOLD_MS)
+                    input.signal.addEventListener('abort', () => layout.disconnect(), { once: true })
+                    stopHoldingJumpTarget = stop
+                }
+
                 const scrollToMessage = (msgId) => {
-                    nextTick(async () => {
+                    return nextTick(async () => {
                         let el = findMessageElement(msgId)
                         if (!el) {
-                            console.log('Message not loaded yet')
-                            return
+                            return false
                         }
                         // A jump that lands on a folded deleted message opens it: the
                         // reader went there to read it. The row is the rendered one,
@@ -19062,14 +19243,19 @@
                             await nextTick()
                             el = findMessageElement(msgId) || el
                         }
+                        markJumpTarget(msgId)
+                        // A shared link lands at once, with no smooth scroll, and holds
+                        // its target centered while the page settles. Other jumps keep
+                        // their smooth scroll.
+                        if (pendingLink !== null && pendingLink.messageId === Number(msgId)) {
+                            holdJumpTarget(msgId)
+                            return true
+                        }
+                        // An album member is one picture in its row's grid: center that picture.
+                        const target = el.querySelector(`[data-album-message-id="${Number(msgId)}"]`) || el
                         const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-                        el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
-                        // Mark the target briefly, in the selection colour: it reads on
-                        // every wallpaper, light or dark. Removing first restarts it.
-                        el.classList.remove('message-flash')
-                        void el.offsetWidth
-                        el.classList.add('message-flash')
-                        setTimeout(() => el.classList.remove('message-flash'), 2000)
+                        target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
+                        return true
                     })
                 }
 
@@ -21237,7 +21423,7 @@
                     authRequired,
                     oidcEnabled,
                     authCheckFailed,
-                    loadingAuth,
+                    loadingAuth, checkingSession, rememberSsoLink, isJumpTarget,
                     loginForm,
                     loginError,
                     performLogin,
@@ -21445,6 +21631,7 @@
                     topicsNavEntry,
                     canGoBack,
                     navigateBack,
+                    closeChat,
                     navigateBackToChats,
                     folders,
                     archivedCount,

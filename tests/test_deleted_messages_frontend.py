@@ -313,12 +313,13 @@ const sortedMessages = {{ value: ROWS }}
 const SCROLLED = []
 const el = {{
     dataset: {{ msgId: '{rendered}' }},
+    querySelector: () => null,
     scrollIntoView: () => SCROLLED.push(Object.keys(openDeletedMessages.value)),
-    classList: {{ add: () => {{}}, remove: () => {{}} }},
-    offsetWidth: 0,
 }}
+const markJumpTarget = () => SCROLLED.push(['outline', ...Object.keys(openDeletedMessages.value)])
 const findMessageElement = () => el
 const nextTick = (fn) => Promise.resolve().then(fn)
+const pendingLink = null
 const window = {{ matchMedia: () => ({{ matches: true }}) }}
 """
         return _run_setup_program(
@@ -329,13 +330,13 @@ const window = {{ matchMedia: () => ({{ matches: true }}) }}
 setTimeout(() => console.log(JSON.stringify({{ open: Object.keys(openDeletedMessages.value), scrolled: SCROLLED }})), 20)""",
         )
 
-    def test_a_folded_target_opens_before_the_scroll(self) -> None:
+    def test_a_folded_target_opens_before_the_outline_and_the_scroll(self) -> None:
         out = self._jump([_row(5, deleted_at="2026-09-29T08:38:00")], 5, 5)
-        self.assertEqual(out, {"open": ["7:5"], "scrolled": [["7:5"]]})
+        self.assertEqual(out, {"open": ["7:5"], "scrolled": [["outline", "7:5"], ["7:5"]]})
 
     def test_a_live_target_changes_nothing(self) -> None:
         out = self._jump([_row(6)], 6, 6)
-        self.assertEqual(out, {"open": [], "scrolled": [[]]})
+        self.assertEqual(out, {"open": [], "scrolled": [["outline"], []]})
 
     def test_an_album_member_opens_the_row_that_draws_the_album(self) -> None:
         rows = []
@@ -350,9 +351,11 @@ setTimeout(() => console.log(JSON.stringify({{ open: Object.keys(openDeletedMess
             + f"""
 ALBUMS = {{ 77: {json.dumps(rows)} }}
 const sortedMessages = {{ value: ALBUMS[77] }}
-const el = {{ dataset: {{ msgId: '11' }}, scrollIntoView: () => {{}}, classList: {{ add() {{}}, remove() {{}} }} }}
+const markJumpTarget = () => {{}}
+const el = {{ dataset: {{ msgId: '11' }}, querySelector: () => null, scrollIntoView: () => {{}} }}
 const findMessageElement = () => el
 const nextTick = (fn) => Promise.resolve().then(fn)
+const pendingLink = null
 const window = {{ matchMedia: () => ({{ matches: false }}) }}
 """,
             """scrollToMessage(12)
