@@ -230,7 +230,8 @@ const later = (name) => new Promise((resolve) => setTimeout(() => { EVENTS.push(
 const loadAccounts = () => later('accounts')
 const loadTranscriptionState = () => later('transcription')
 const loadStats = () => later('stats')
-const loadChats = async () => { EVENTS.push('chats') }
+let CHATS_LOAD = async () => {}
+const loadChats = async () => { EVENTS.push('chats'); await CHATS_LOAD() }
 const loadFolders = async () => { EVENTS.push('folders') }
 const loadArchivedCount = async () => { EVENTS.push('archived') }
 const checkNewChanges = () => { EVENTS.push('changes') }
@@ -284,6 +285,14 @@ class TestTheLinkOpensBesideTheSidebar(unittest.TestCase):
         names = [e if isinstance(e, str) else e[0] for e in out["events"]]
         for name in ("chats", "folders", "archived", "changes", "scroll"):
             self.assertIn(name, names)
+
+    def test_a_stalled_sidebar_does_not_hold_the_link(self) -> None:
+        out = self._run(
+            "CHATS_LOAD = () => new Promise(() => {})  // the chat list never answers",
+            "openInitialView(); await new Promise((r) => setTimeout(r, 50))",
+        )
+        self.assertIn(["target", "target", 42], out["events"])
+        self.assertEqual(out["url"], "?keep=1")
 
     def test_viewer_settings_load_before_the_link_and_the_sidebar(self) -> None:
         out = self._run("", "await openInitialView()")
@@ -1008,6 +1017,40 @@ console.log(JSON.stringify(clicks))
         self.assertEqual(out["toasts"], [])
         self.assertEqual(out["url"], "?keep=1#frag")
 
+    def test_a_forum_probe_server_error_after_the_reader_left_stays_quiet(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=forum&msg=42&keep=1#frag')\nPROBE_MS = 30\n"
+            + "PROBE = () => ({ ok: false, status: 502 })",
+            "const link = openLinkedMessage()\nawait sleep(10)\n"
+            + "await selectTopic(CHATS.forum, TOPICS.forum[0])\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual([out["chat"], out["topic"]], ["forum", 1])
+        self.assertEqual(out["toasts"], [])
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_a_forum_probe_answer_read_after_the_reader_left_opens_no_topic(self) -> None:
+        # The reader leaves while the probe's body is still on its way.
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=forum&msg=42&keep=1#frag')\n"
+            + "PROBE = () => ({ ok: true, json: async () => { await sleep(30); return [{ id: 42, reply_to_top_id: 7 }] } })",
+            "const link = openLinkedMessage()\nawait sleep(10)\nawait selectChat(CHATS.other)\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual([out["chat"], out["topic"]], ["other", None])
+        self.assertEqual(out["windows"], [])
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_a_chat_link_the_reader_leaves_drops_the_chat_from_the_url(self) -> None:
+        out = self._run(
+            "location = new URL('https://archive.example/?chat=target&keep=1#frag')\nLOOKUP_MS = 30",
+            "const link = openLinkedMessage()\nawait sleep(10)\nawait selectChat(CHATS.other)\nawait link\nawait sleep(40)",
+        )
+        self.assertEqual(out["chat"], "other")
+        self.assertEqual(out["url"], "?keep=1#frag")
+
+    def test_picking_the_linked_chat_again_ends_the_outline(self) -> None:
+        out = self._run("", "await openLinkedMessage()\nSEEN.before = isJumpTarget(42)\nawait selectChat(CHATS.target)")
+        self.assertEqual([out["seen"]["before"], out["outlined"]], [True, False])
+
     def test_a_later_jump_to_the_same_message_is_an_ordinary_jump(self) -> None:
         # Once the link is done, a reply quote to the same message scrolls
         # smoothly like every other jump, with no hold.
@@ -1090,6 +1133,11 @@ const window = {
 }
 const input = (name) => {
     for (const l of LISTENERS) if (l.name === name && !l.options.signal.aborted) l.fn()
+}
+// An input that a handler on the way stopped (Escape in the date picker): it
+// reaches window only in the capture phase.
+const stoppedInput = (name) => {
+    for (const l of LISTENERS) if (l.name === name && l.options.capture && !l.options.signal.aborted) l.fn()
 }
 const TIMERS = []
 const setTimeout = (fn, ms) => { TIMERS.push({ fn, ms }); return TIMERS.length }
@@ -1197,6 +1245,21 @@ seen.top = node.getBoundingClientRect().top""",
                     + "seen.after = RESIZE !== null",
                 )
                 self.assertEqual(out, {"before": True, "after": False})
+
+    def test_a_key_stopped_on_its_way_still_ends_the_hold(self) -> None:
+        out = self._run(
+            "pendingLink = { chatRef: 'r7', messageId: 42 }\nawait scrollToMessage(42)\n"
+            + "seen.before = RESIZE !== null\nstoppedInput('keydown')\nseen.after = RESIZE !== null",
+        )
+        self.assertEqual(out, {"before": True, "after": False})
+
+    def test_another_jump_while_the_link_opens_keeps_its_smooth_scroll(self) -> None:
+        # A date pick while the link's window loads: only the link's own target is held.
+        out = self._run(
+            "pendingLink = { chatRef: 'r7', messageId: 7 }\nseen.found = await scrollToMessage(42)\n"
+            + "seen.smooth = SMOOTH.length\nseen.held = RESIZE !== null",
+        )
+        self.assertEqual(out, {"found": True, "smooth": 1, "held": False})
 
     def test_other_jumps_keep_their_smooth_scroll(self) -> None:
         out = self._run(
