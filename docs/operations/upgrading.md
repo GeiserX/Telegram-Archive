@@ -11,9 +11,9 @@ Most upgrades are a pin change and a restart. A few releases need an extra step,
     ```yaml
     services:
       telegram-backup:
-        image: drumsergio/telegram-archive:9.10.0
+        image: drumsergio/telegram-archive:9.11.0
       telegram-viewer:
-        image: drumsergio/telegram-archive-viewer:9.10.0
+        image: drumsergio/telegram-archive-viewer:9.11.0
     ```
 
 4. Pull and recreate the containers:
@@ -38,7 +38,7 @@ Migrations only go forward. You cannot downgrade to an older release. To go back
 
 | Tag | What it is |
 |-----|------------|
-| `9.10.0`, `v9.10.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
+| `9.11.0`, `v9.11.0` | A release. The two names point at the same image. The backup and viewer images publish release tags for `linux/amd64` and `linux/arm64`. |
 | `latest` | Rebuilt from pushes to `main` that touch the image's code. It can carry code that is not released yet. Do not use it. |
 | `dev` | Built from pull requests opened from the repository itself, `linux/amd64` only. It is a test image. |
 
@@ -75,6 +75,7 @@ Every release needs the routine upgrade. This table lists the extra steps, newes
 
 | Release | What to do |
 |---------|------------|
+| 9.11.0 | Nothing to change. No migration; the release changes the viewer only. |
 | 9.10.0 | Nothing to change. Migration 044 runs on the first start and adds two empty columns to `sync_status`, `full_sync_cursor` and `full_sync_completed_at`; it is quick. The new `SYNC_DELETIONS_EDITS_OLDER_PER_RUN` defaults to `0`, which changes nothing. To re-check older messages a slice per run, see [Re-checking older messages over several runs](../configuration/schedule.md#sync-rotation). |
 | 9.9.0 | Nothing to change. Migration 043 runs on the first start and adds an empty `account_deleted_at` column to `chats` and `users`; it is quick. The viewer API adds `account_deleted_at` to chats and `sender_account_deleted_at` to messages, both `null` for a live account, so existing API clients keep working. See [Deleted accounts](../reference/api.md#deleted-accounts). |
 | 9.8.0 | Nothing to change. No migration. The logo, the favicon and the installed-app icons are new; a browser that installed the viewer as an app keeps the old icon until it reads the manifest again. |
